@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 use crate::agent::{generate_product_handle, AgentDefinition, AgentKind};
 use crate::commands::setup_daemon_agent;
+use crate::plugins::acp::{
+    install_acp_catalog_agent, AcpCatalogInstallRequest, AcpCatalogInstallResult,
+};
 use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 #[cfg(test)]
 use crate::registration::DidAuthMaterial;
@@ -80,6 +83,67 @@ pub struct SetupDaemonAgentOptions {
     pub handle: String,
     pub controller_did: String,
     pub registration_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInstallOptions {
+    pub acp_agent_id: String,
+    pub install_mode: String,
+    pub local_checkout: Option<PathBuf>,
+    pub package_version: Option<String>,
+}
+
+pub fn install_runtime(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    options: RuntimeInstallOptions,
+) -> Result<AcpCatalogInstallResult> {
+    let request = AcpCatalogInstallRequest {
+        acp_agent_id: options.acp_agent_id,
+        install_mode: options.install_mode,
+        local_checkout: options.local_checkout,
+        package_version: options.package_version,
+    };
+    match install_acp_catalog_agent(config, &request) {
+        Ok(result) => {
+            state.insert_audit_event_json(
+                "runtime.install",
+                None,
+                None,
+                None,
+                None,
+                serde_json::json!({
+                    "status": "ready",
+                    "source": "daemon_cli",
+                    "acp_agent_id": result.acp_agent_id,
+                    "install_mode": result.install_mode,
+                    "installed_version": result.installed_version,
+                    "installed_packages": result.installed_packages,
+                }),
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            let sanitized = crate::plugins::acp::connection::redact_line(&error.to_string());
+            state.insert_audit_event_json(
+                "runtime.install",
+                None,
+                None,
+                None,
+                None,
+                serde_json::json!({
+                    "status": "failed",
+                    "source": "daemon_cli",
+                    "acp_agent_id": crate::plugins::acp::connection::redact_line(
+                        &request.acp_agent_id,
+                    ),
+                    "install_mode": request.install_mode,
+                    "reason": sanitized.clone(),
+                }),
+            )?;
+            Err(anyhow::anyhow!(sanitized))
+        }
+    }
 }
 
 pub fn list_agents(state: &DaemonState) -> Result<AgentListOutput> {
@@ -789,6 +853,72 @@ mod tests {
         let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
         state.initialize().unwrap();
         (root, config, state)
+    }
+
+    #[test]
+    fn runtime_install_cli_audits_successful_local_install() {
+        let (root, config, state) = fixture();
+        let checkout = root.path().join("deepseek-harness");
+        let entrypoint = checkout.join("packages/examples/acp-demo/lib/bin.js");
+        std::fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        std::fs::write(&entrypoint, "// built fixture\n").unwrap();
+
+        let result = install_runtime(
+            &config,
+            &state,
+            RuntimeInstallOptions {
+                acp_agent_id: "deepseek-harness".to_string(),
+                install_mode: "local".to_string(),
+                local_checkout: Some(checkout),
+                package_version: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.installed_version, "local");
+        let audit: String = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT detail_json FROM audit_log WHERE event_type = 'runtime.install' ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(audit.contains("\"status\":\"ready\""));
+        assert!(audit.contains("\"acp_agent_id\":\"deepseek-harness\""));
+        assert!(audit.contains("\"installed_version\":\"local\""));
+    }
+
+    #[test]
+    fn runtime_install_cli_audits_failure_without_leaking_untrusted_agent_id() {
+        let (_root, config, state) = fixture();
+        let untrusted_agent_id = "missing-sk-1234567890abcdefghijklmnop";
+
+        let error = install_runtime(
+            &config,
+            &state,
+            RuntimeInstallOptions {
+                acp_agent_id: untrusted_agent_id.to_string(),
+                install_mode: "local".to_string(),
+                local_checkout: None,
+                package_version: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(!error.to_string().contains(untrusted_agent_id));
+        let audit: String = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT detail_json FROM audit_log WHERE event_type = 'runtime.install' ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(audit.contains("\"status\":\"failed\""));
+        assert!(!audit.contains(untrusted_agent_id));
     }
 
     fn write_status_manifest(root: &std::path::Path, latest: &str) -> PathBuf {

@@ -9,7 +9,9 @@ use crate::security::runtime_token::RuntimeRpcToken;
 use crate::state::CliRouteSessionRecord;
 use crate::workspace::{WorkspaceInstance, WorkspaceMode};
 
+pub mod dispatch;
 pub mod host;
+pub mod prompt_context;
 pub mod reply_payload;
 
 pub fn canonical_full_handle(value: &str) -> Result<String> {

@@ -87,6 +87,10 @@ pub enum DaemonCommand {
     RuntimeList {
         state_root: PathBuf,
     },
+    RuntimeInstall {
+        state_root: PathBuf,
+        options: crate::daemon_cli::RuntimeInstallOptions,
+    },
     CliEnvCapture {
         state_root: PathBuf,
     },
@@ -120,6 +124,7 @@ pub enum DaemonCommandOutput {
     Foreground(crate::foreground::ForegroundRunSummary),
     Install(crate::daemon_cli::InstallOutput),
     RuntimeList(crate::daemon_cli::AgentListOutput),
+    RuntimeInstall(crate::plugins::acp::AcpCatalogInstallResult),
     CliEnvCapture(crate::cli_runtime_env::CliRuntimeEnvCaptureReport),
     ArchiveDaemonFinalize(crate::archive::DaemonArchiveFinalizeReport),
     SetupDaemonAgent(crate::daemon_cli::SetupDaemonAgentOutput),
@@ -163,6 +168,7 @@ fn command_output_json(output: DaemonCommandOutput) -> Result<Value> {
         DaemonCommandOutput::AgentList(output) | DaemonCommandOutput::RuntimeList(output) => {
             Ok(serde_json::to_value(output)?)
         }
+        DaemonCommandOutput::RuntimeInstall(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::CliEnvCapture(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::AgentStatus(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::Foreground(output) => Ok(serde_json::to_value(output)?),
@@ -202,6 +208,14 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             let (_config, state, _status) = initialize_state_for_management(state_root).await?;
             let output = crate::daemon_cli::list_runtime_agents(&state)?;
             Ok(DaemonCommandOutput::RuntimeList(output))
+        }
+        DaemonCommand::RuntimeInstall {
+            state_root,
+            options,
+        } => {
+            let (config, state, _status) = initialize_state_for_management(state_root).await?;
+            let output = crate::daemon_cli::install_runtime(&config, &state, options)?;
+            Ok(DaemonCommandOutput::RuntimeInstall(output))
         }
         DaemonCommand::CliEnvCapture { state_root } => {
             let (config, _state, _status) = initialize_state_for_management(state_root).await?;

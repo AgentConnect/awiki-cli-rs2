@@ -28,8 +28,10 @@ use crate::outbox::{
     ImCoreAgentOutbox, RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
     RuntimeMessageSendResult, RuntimeOutbox,
 };
-use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
-use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
+use crate::plugins::hermes::StdioHermesGateway;
+#[cfg(test)]
+use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
+use crate::runtime::dispatch::with_runtime_plugin;
 use crate::runtime::host::run_existing_runtime_task_with_config;
 use crate::runtime::{
     RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRunStatus, RuntimeTask,
@@ -216,45 +218,28 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
         let profile = self.state.load_runtime_agent_profile(&task.agent_did)?;
         let run_id = delegated_runtime_run_id(self.state, &task.task_id)?;
         let outbox = UserDelegatedRuntimeOutbox::new(self.state);
-        match profile.runtime_plugin_id.as_str() {
-            HERMES_RUNTIME_PLUGIN_ID => {
-                let hermes_profile = self.state.load_hermes_profile(&profile.agent_did)?;
-                let plugin = HermesRuntimePlugin::with_state(
-                    self.hermes_gateway.clone(),
-                    hermes_profile,
-                    self.state.clone(),
-                );
+        let dispatched = with_runtime_plugin(
+            self.config,
+            self.state,
+            &profile,
+            self.hermes_gateway.clone(),
+            |plugin| {
                 run_existing_runtime_task_with_config(
                     self.config,
                     self.state,
                     &profile,
-                    &plugin,
+                    plugin,
                     &outbox,
-                    task,
-                    run_id,
-                )?;
-            }
-            GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-                let cli_profile = self
-                    .state
-                    .load_cli_runtime_profile(&profile.runtime_profile_id)?;
-                let plugin = GenericCliDriverRegistry::new(cli_profile);
-                run_existing_runtime_task_with_config(
-                    self.config,
-                    self.state,
-                    &profile,
-                    &plugin,
-                    &outbox,
-                    task,
-                    run_id,
-                )?;
-            }
-            _ => {
-                bail!(
-                    "unsupported app message runtime plugin: {}",
-                    profile.runtime_plugin_id
-                );
-            }
+                    task.clone(),
+                    run_id.clone(),
+                )
+            },
+        )?;
+        if dispatched.is_none() {
+            bail!(
+                "unsupported app message runtime plugin: {}",
+                profile.runtime_plugin_id
+            );
         }
         Ok(())
     }

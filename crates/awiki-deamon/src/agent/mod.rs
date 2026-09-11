@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 
 use crate::config::DaemonConfig;
 
+pub use crate::plugins::acp::catalog::deepseek_harness::DEEPSEEK_HARNESS_AGENT_ID as DEEPSEEK_HARNESS_ACP_AGENT_ID;
+pub use crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID;
+
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = "generic-cli";
 pub const CODEX_CLI_DRIVER_ID: &str = "codex";
 pub const CLAUDE_CODE_CLI_DRIVER_ID: &str = "claude-code";
@@ -256,9 +259,13 @@ pub fn resolve_runtime(
             GEMINI_CLI_DRIVER_ID,
             "runtime.cli.gemini-cli",
         ),
+        "acp" | ACP_RUNTIME_PLUGIN_ID => acp_runtime_resolution(driver_id_override, true),
         "hermes" => native_runtime_resolution("runtime.hermes", driver_id_override),
         "openclaw" => native_runtime_resolution("runtime.openclaw", driver_id_override),
-        _ => native_runtime_resolution(runtime, driver_id_override),
+        _ => match crate::plugins::acp::catalog::find(&key)? {
+            Some(entry) => acp_alias_resolution(driver_id_override, entry.agent_id),
+            None => native_runtime_resolution(runtime, driver_id_override),
+        },
     }
 }
 
@@ -269,14 +276,17 @@ pub fn runtime_plugin_id(runtime: &str) -> Result<String> {
     if runtime.is_empty() {
         bail!("runtime must not be empty");
     }
-    let plugin = match runtime {
+    let normalized = runtime.to_ascii_lowercase();
+    let plugin = match normalized.as_str() {
         "generic-cli" => "generic-cli",
         "claude-code" => "runtime.cli.claude-code",
         "codex" | "codex-cli" => "runtime.cli.codex",
         "gemini" | "gemini-cli" => "runtime.cli.gemini-cli",
+        "acp" => ACP_RUNTIME_PLUGIN_ID,
         "hermes" => "runtime.hermes",
         "openclaw" => "runtime.openclaw",
-        other => other,
+        _ if crate::plugins::acp::catalog::find(&normalized)?.is_some() => ACP_RUNTIME_PLUGIN_ID,
+        _ => runtime,
     };
     Ok(plugin.to_string())
 }
@@ -447,6 +457,45 @@ fn native_runtime_resolution(
         legacy_runtime_plugin_id: None,
         defaulted_driver_id: false,
     })
+}
+
+fn acp_runtime_resolution(
+    driver_id_override: Option<&str>,
+    default_when_absent: bool,
+) -> Result<RuntimeResolution> {
+    let (driver_id, defaulted_driver_id) = match driver_id_override {
+        Some(driver_id) => (normalize_acp_agent_id(driver_id)?, false),
+        None if default_when_absent => (DEEPSEEK_HARNESS_ACP_AGENT_ID.to_string(), true),
+        None => (DEEPSEEK_HARNESS_ACP_AGENT_ID.to_string(), false),
+    };
+    Ok(RuntimeResolution {
+        runtime_plugin_id: ACP_RUNTIME_PLUGIN_ID.to_string(),
+        driver_id: Some(driver_id),
+        legacy_runtime_plugin_id: None,
+        defaulted_driver_id,
+    })
+}
+
+fn acp_alias_resolution(
+    driver_id_override: Option<&str>,
+    canonical_agent_id: &str,
+) -> Result<RuntimeResolution> {
+    if let Some(driver_id) = driver_id_override {
+        let driver_id = normalize_acp_agent_id(driver_id)?;
+        if driver_id != canonical_agent_id {
+            bail!("runtime alias requires driver_id {canonical_agent_id}, got {driver_id}");
+        }
+    }
+    acp_runtime_resolution(Some(canonical_agent_id), false)
+}
+
+fn normalize_acp_agent_id(input: &str) -> Result<String> {
+    let value = input.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        bail!("ACP agent id must not be empty");
+    }
+    crate::plugins::acp::catalog::entry(&value)?;
+    Ok(value)
 }
 
 fn normalize_cli_driver_id(input: &str) -> Result<String> {

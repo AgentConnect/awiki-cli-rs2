@@ -7,6 +7,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
+use crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID;
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{
     ensure_runtime_model_config, hermes_runtime_model_config_status,
@@ -16,7 +17,8 @@ use crate::plugins::hermes::{
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, UserServiceAgentRegistrationClient,
 };
-use crate::runtime::RuntimePlugin;
+use crate::runtime::dispatch::with_runtime_plugin;
+use crate::runtime::{RuntimeAgentProfile, RuntimeInstallStatus, RuntimePlugin};
 use crate::security::runtime_token::current_time_millis;
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::state::{CliRuntimeProfileRecord, DaemonState};
@@ -743,8 +745,19 @@ fn runtime_status_summary_with_gateway_status(
     let is_hermes = runtime.runtime_plugin_id.as_deref()
         == Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID);
     if !is_hermes {
+        if runtime.runtime_plugin_id.as_deref() == Some(ACP_RUNTIME_PLUGIN_ID) {
+            let (needs_config, last_error_code) = acp_runtime_status(config, state, runtime);
+            return RuntimeStatusSummary {
+                is_hermes,
+                needs_config,
+                last_error_code,
+                gateway_command_status: None,
+                model_config_status: None,
+            };
+        }
         if runtime.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
-            let (needs_config, last_error_code) = generic_cli_runtime_status(state, runtime);
+            let (needs_config, last_error_code) =
+                generic_cli_runtime_status(config, state, runtime);
             return RuntimeStatusSummary {
                 is_hermes,
                 needs_config,
@@ -804,6 +817,30 @@ fn runtime_diagnostics_summary(
     runtime: &AgentDefinition,
     runtime_status: &RuntimeStatusSummary,
 ) -> Value {
+    if runtime.runtime_plugin_id.as_deref() == Some(ACP_RUNTIME_PLUGIN_ID) {
+        return match runtime
+            .runtime_profile_id
+            .as_deref()
+            .and_then(|profile_id| state.load_acp_runtime_profile(profile_id).ok())
+        {
+            Some(profile) => json!({
+                "profile_status": profile.status,
+                "runtime_version": profile.installed_version,
+                "config_summary": {
+                    "acp_agent_id": profile.acp_agent_id,
+                    "install_mode": profile.install_mode,
+                    "permission_policy": profile.permission_policy,
+                    "credential_env_name_count": profile.credential_env_names.len(),
+                },
+            }),
+            None => json!({
+                "profile_status": "missing",
+                "config_summary": {
+                    "acp_agent_id": null,
+                },
+            }),
+        };
+    }
     if runtime.runtime_plugin_id.as_deref()
         != Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID)
     {
@@ -844,7 +881,26 @@ fn runtime_diagnostics_summary(
     }
 }
 
+fn acp_runtime_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime: &AgentDefinition,
+) -> (bool, Option<String>) {
+    let Some(runtime_profile_id) = runtime.runtime_profile_id.as_deref() else {
+        return (true, Some("acp_profile_missing".to_string()));
+    };
+    if state.load_acp_runtime_profile(runtime_profile_id).is_err() {
+        return (true, Some("acp_profile_missing".to_string()));
+    }
+    match dispatched_runtime_install_status(config, state, runtime) {
+        Ok(Some(status)) if status.installed => (false, None),
+        Ok(Some(_)) => (true, Some("runtime_not_installed".to_string())),
+        Ok(None) | Err(_) => (true, Some("acp_profile_invalid".to_string())),
+    }
+}
+
 fn generic_cli_runtime_status(
+    config: &DaemonConfig,
     state: &DaemonState,
     runtime: &AgentDefinition,
 ) -> (bool, Option<String>) {
@@ -859,11 +915,12 @@ fn generic_cli_runtime_status(
             .config_home
             .as_ref()
             .is_some_and(|path| path.is_dir());
-    let install_status = GenericCliDriverRegistry::new(profile.clone()).check_install_status();
+    let install_status = dispatched_runtime_install_status(config, state, runtime);
     let missing_binary = install_status
         .as_ref()
-        .map(|status| !status.installed)
-        .unwrap_or(true);
+        .ok()
+        .and_then(|status| status.as_ref())
+        .is_none_or(|status| !status.installed);
     let auth_status = generic_cli_auth_status(&profile);
     let last_error_code = if missing_config_home {
         Some("generic_cli_config_home_missing".to_string())
@@ -881,6 +938,37 @@ fn generic_cli_runtime_status(
     (
         missing_config_home || missing_binary || matches!(auth_status, "missing" | "unknown"),
         last_error_code,
+    )
+}
+
+fn dispatched_runtime_install_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime: &AgentDefinition,
+) -> Result<Option<RuntimeInstallStatus>> {
+    let profile = state
+        .load_runtime_agent_profile(&runtime.agent_did)
+        .unwrap_or_else(|_| RuntimeAgentProfile {
+            agent_did: runtime.agent_did.clone(),
+            agent_handle: runtime.handle.clone(),
+            controller_user_id: runtime.controller_user_id.clone(),
+            controller_full_handle: runtime.controller_full_handle.clone(),
+            controller_scope_key: runtime.controller_scope_key.clone(),
+            controller_did: runtime.controller_did.clone(),
+            runtime_profile_id: runtime.runtime_profile_id.clone().unwrap_or_default(),
+            runtime_plugin_id: runtime.runtime_plugin_id.clone().unwrap_or_default(),
+            display_name: None,
+            preferred_language: "en".to_string(),
+            workspace_id: runtime.workspace_id.clone(),
+            workspace_root: None,
+            workspace_mode: None,
+        });
+    with_runtime_plugin(
+        config,
+        state,
+        &profile,
+        StdioHermesGateway::from_config_without_detection(config),
+        |plugin| plugin.check_install_status(),
     )
 }
 
@@ -1889,6 +1977,7 @@ fn runtime_name_from_plugin(plugin_id: Option<&str>) -> &'static str {
     match plugin_id {
         Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID) => "hermes",
         Some(crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID) => "generic-cli",
+        Some(crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID) => "acp",
         _ => "runtime",
     }
 }
@@ -1960,8 +2049,9 @@ mod tests {
         RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTask, RuntimeTaskTriggerKind,
     };
     use crate::state::{
-        BootstrapReplayRecord, CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference,
-        CreateCliRouteSession, HermesProfileRecord, UserDelegatedIdentityRecord,
+        AcpRuntimeProfileRecord, BootstrapReplayRecord, CliRuntimeProfileRecord,
+        CreateCliRouteMessageQueueReference, CreateCliRouteSession, HermesProfileRecord,
+        UserDelegatedIdentityRecord,
     };
     use crate::workspace::WorkspaceMode;
     use std::collections::BTreeSet;
@@ -2084,6 +2174,88 @@ mod tests {
             message_db_path: "agents/command/messages.db".to_string(),
             status: "active".to_string(),
         }
+    }
+
+    fn acp_runtime() -> AgentDefinition {
+        AgentDefinition {
+            agent_did: "did:agent:acp".to_string(),
+            handle: "alice-acp".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: TEST_CONTROLLER_USER_ID.to_string(),
+            controller_full_handle: TEST_CONTROLLER_FULL_HANDLE.to_string(),
+            controller_scope_key: TEST_CONTROLLER_SCOPE_KEY.to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: Some(crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID.to_string()),
+            runtime_profile_id: Some("profile_acp_alice".to_string()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/acp/agent.db".to_string(),
+            message_db_path: "agents/acp/messages.db".to_string(),
+            status: "active".to_string(),
+        }
+    }
+
+    #[test]
+    fn daemon_snapshot_reports_acp_runtime_status_without_paths_or_secrets() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
+        state.initialize().unwrap();
+        let daemon = daemon();
+        let runtime = acp_runtime();
+        state.upsert_agent_definition(&daemon).unwrap();
+        state.upsert_agent_definition(&runtime).unwrap();
+        state
+            .upsert_runtime_daemon_binding(
+                &runtime.agent_did,
+                &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
+                &daemon.controller_did,
+            )
+            .unwrap();
+        let install_root = root.path().join("runtime/acp/profile");
+        let workspace = install_root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let config_path = install_root.join("cordis.yml");
+        std::fs::write(&config_path, "stub: true\n").unwrap();
+        let dotenv_path = install_root.join(".env");
+        std::fs::write(&dotenv_path, "DEEPSEEK_API_KEY=\"fixture-only\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dotenv_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        state
+            .upsert_acp_runtime_profile(&AcpRuntimeProfileRecord {
+                runtime_profile_id: runtime.runtime_profile_id.clone().unwrap(),
+                agent_did: runtime.agent_did.clone(),
+                acp_agent_id: "deepseek-harness".to_string(),
+                install_mode: "local".to_string(),
+                install_root,
+                entry_command_json: json!({"program": "sh", "args": []}),
+                config_path,
+                cwd_root: workspace,
+                credential_env_names: vec!["DEEPSEEK_API_KEY".to_string()],
+                permission_policy: "allow-once".to_string(),
+                installed_version: Some("local".to_string()),
+                status: "ready".to_string(),
+            })
+            .unwrap();
+
+        let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+        let runtime_payload = &payload["runtimes"][0];
+        assert_eq!(runtime_payload["runtime"], "acp");
+        assert_eq!(runtime_payload["status"], "ready");
+        assert_eq!(
+            runtime_payload["diagnostics_summary"]["config_summary"]["acp_agent_id"],
+            "deepseek-harness"
+        );
+        let dump = runtime_payload.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("DEEPSEEK_API_KEY="));
     }
 
     fn create_test_route_session(

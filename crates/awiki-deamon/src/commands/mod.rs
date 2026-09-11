@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Chain, Context, Result};
@@ -12,6 +13,10 @@ use crate::agent::{
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
+use crate::plugins::acp::{
+    initialize_acp_profile, install_acp_catalog_agent, AcpCatalogInstallRequest,
+    AcpProfileInitRequest, ACP_RUNTIME_PLUGIN_ID,
+};
 use crate::plugins::hermes::{
     initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
 };
@@ -44,6 +49,7 @@ use latest_value_dispatcher::LatestValueDispatcher;
 const AGENT_COMMAND_SCHEMA: &str = "awiki.agent.command.v1";
 const AGENT_STATUS_SCHEMA: &str = "awiki.agent.status.v1";
 const RUNTIME_AGENT_CREATE: &str = "runtime.agent.create";
+const RUNTIME_INSTALL: &str = "runtime.install";
 const AGENT_STATUS_QUERY: &str = "agent.status.query";
 const RUNTIME_SESSION_LIST: &str = "runtime.session.list";
 const RUNTIME_SESSION_STATUS: &str = "runtime.session.status";
@@ -149,6 +155,7 @@ pub struct RuntimeAgentCreateRequest {
     pub display_name: Option<String>,
     pub driver_id: Option<String>,
     pub driver_config: Option<Value>,
+    pub secrets: Option<Value>,
     pub recipient_policy: Option<Value>,
     pub workspace: Option<String>,
     pub workspace_mode: Option<String>,
@@ -180,7 +187,15 @@ impl RuntimeAgentMessageReadiness for AssumeRuntimeAgentMessageReady {
 )]
 pub enum AgentCommandOutcome {
     RuntimeAgentCreated(RuntimeAgentCreateOutcome),
-    StatusReported { command_id: String },
+    RuntimeInstalled {
+        command_id: String,
+        acp_agent_id: String,
+        install_mode: String,
+        installed_version: String,
+    },
+    StatusReported {
+        command_id: String,
+    },
 }
 
 impl std::fmt::Debug for RuntimeAgentCreateRequest {
@@ -192,6 +207,14 @@ impl std::fmt::Debug for RuntimeAgentCreateRequest {
             .field("display_name", &self.display_name)
             .field("driver_id", &self.driver_id)
             .field("driver_config", &self.driver_config)
+            .field(
+                "secret_names",
+                &self
+                    .secrets
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .map(|object| object.keys().collect::<Vec<_>>()),
+            )
             .field("recipient_policy", &self.recipient_policy)
             .field("workspace", &self.workspace)
             .field("workspace_mode", &self.workspace_mode)
@@ -309,6 +332,8 @@ struct RuntimeAgentCreateArgs {
     #[serde(default)]
     driver_config: Option<Value>,
     #[serde(default)]
+    secrets: Option<Value>,
+    #[serde(default)]
     recipient_policy: Option<Value>,
     #[serde(default)]
     workspace: Option<String>,
@@ -326,6 +351,21 @@ struct RuntimeAgentCreateArgs {
     registration_token: String,
     #[serde(default)]
     client_request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RuntimeInstallArgs {
+    acp_agent_id: String,
+    #[serde(default = "default_acp_install_mode")]
+    install_mode: String,
+    #[serde(default)]
+    local_checkout: Option<PathBuf>,
+    #[serde(default)]
+    package_version: Option<String>,
+}
+
+fn default_acp_install_mode() -> String {
+    "npm".to_string()
 }
 
 #[derive(Clone, Deserialize)]
@@ -487,6 +527,83 @@ where
             }
 
             Ok(AgentCommandOutcome::RuntimeAgentCreated(outcome))
+        }
+        RUNTIME_INSTALL => {
+            let args: RuntimeInstallArgs = serde_json::from_value(envelope.args.clone())
+                .context("parse runtime.install args")?;
+            let request = AcpCatalogInstallRequest {
+                acp_agent_id: args.acp_agent_id,
+                install_mode: args.install_mode,
+                local_checkout: args.local_checkout,
+                package_version: args.package_version,
+            };
+            let result = match install_acp_catalog_agent(config, &request) {
+                Ok(result) => result,
+                Err(error) => {
+                    let sanitized =
+                        crate::plugins::acp::connection::redact_line(&error.to_string());
+                    state.insert_audit_event_json(
+                        "runtime.install",
+                        Some(&daemon_agent.agent_did),
+                        None,
+                        None,
+                        None,
+                        json!({
+                            "status": "failed",
+                            "acp_agent_id": crate::plugins::acp::connection::redact_line(
+                                &request.acp_agent_id,
+                            ),
+                            "install_mode": request.install_mode,
+                            "reason": sanitized.clone(),
+                        }),
+                    )?;
+                    send_command_status(
+                        outbox,
+                        &daemon_agent,
+                        &message,
+                        &envelope.command_id,
+                        "failed",
+                        Some(sanitized.clone()),
+                        json!({"command": RUNTIME_INSTALL}),
+                    )?;
+                    return Err(anyhow::anyhow!(sanitized));
+                }
+            };
+            state.insert_audit_event_json(
+                "runtime.install",
+                Some(&daemon_agent.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "status": "ready",
+                    "acp_agent_id": result.acp_agent_id,
+                    "install_mode": result.install_mode,
+                    "installed_version": result.installed_version,
+                    "installed_packages": result.installed_packages,
+                }),
+            )?;
+            send_command_status(
+                outbox,
+                &daemon_agent,
+                &message,
+                &envelope.command_id,
+                "ready",
+                Some("runtime installed".to_string()),
+                json!({
+                    "command": RUNTIME_INSTALL,
+                    "acp_agent_id": result.acp_agent_id,
+                    "install_mode": result.install_mode,
+                    "installed_version": result.installed_version,
+                    "installed_packages": result.installed_packages,
+                }),
+            )?;
+            Ok(AgentCommandOutcome::RuntimeInstalled {
+                command_id: envelope.command_id,
+                acp_agent_id: result.acp_agent_id,
+                install_mode: result.install_mode,
+                installed_version: result.installed_version,
+            })
         }
         AGENT_STATUS_QUERY => {
             send_snapshot_status(
@@ -858,6 +975,7 @@ where
                 display_name: request.display_name,
                 driver_id: request.driver_id,
                 driver_config: request.driver_config,
+                secrets: request.secrets,
                 recipient_policy: request.recipient_policy,
                 workspace: request.workspace,
                 workspace_mode: request.workspace_mode,
@@ -1099,6 +1217,55 @@ where
             }
         }
     }
+    if profile.runtime_plugin_id == ACP_RUNTIME_PLUGIN_ID {
+        let acp_agent_id = resolution
+            .driver_id
+            .as_deref()
+            .context("ACP runtime must have acp_agent_id")?;
+        match initialize_acp_profile(
+            config,
+            state,
+            &profile,
+            AcpProfileInitRequest {
+                acp_agent_id,
+                driver_config: payload.args.driver_config.as_ref(),
+                secrets: payload.args.secrets.as_ref(),
+            },
+        ) {
+            Ok(install) => {
+                state.insert_audit_event_json(
+                    "acp.profile.initialize",
+                    Some(&profile.agent_did),
+                    Some(&profile.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "status": install.record.status,
+                        "acp_agent_id": install.record.acp_agent_id,
+                        "install_mode": install.record.install_mode,
+                        "installed_version": install.record.installed_version,
+                        "installed_packages": install.installed_packages,
+                        "credential_env_names": install.record.credential_env_names,
+                    }),
+                )?;
+            }
+            Err(error) => {
+                state.insert_audit_event_json(
+                    "acp.profile.initialize",
+                    Some(&profile.agent_did),
+                    Some(&profile.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "status": "failed",
+                        "acp_agent_id": acp_agent_id,
+                        "reason": crate::plugins::acp::connection::redact_line(&error.to_string()),
+                    }),
+                )?;
+                return Err(error).context("initialize ACP profile");
+            }
+        }
+    }
 
     let outcome = RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),
@@ -1254,6 +1421,7 @@ fn validate_runtime_create_args_contract(
 ) -> Result<crate::agent::RuntimeResolution> {
     let resolution = resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
     validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
+    validate_optional_object(args.secrets.as_ref(), "secrets")?;
     validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
     if let Some(workspace_mode) = args.workspace_mode.as_deref() {
         WorkspaceMode::parse(workspace_mode)?;

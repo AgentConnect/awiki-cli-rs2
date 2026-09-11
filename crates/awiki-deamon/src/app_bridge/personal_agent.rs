@@ -223,6 +223,7 @@ where
             display_name: Some(canonical_display_name(desired.display_name.as_deref())),
             driver_id: None,
             driver_config: None,
+            secrets: None,
             recipient_policy: Some(personal_agent_recipient_policy(&identity.user_did)),
             workspace: None,
             workspace_mode: None,

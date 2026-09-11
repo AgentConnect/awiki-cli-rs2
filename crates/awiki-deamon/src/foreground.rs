@@ -45,11 +45,11 @@ use crate::outbox::{
     RuntimeMessageSendResult, RuntimeMessageTarget, RuntimeOutbox,
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
-use crate::plugins::hermes::{
-    repair_hermes_profile_if_needed, HermesGateway, HermesRuntimePlugin, StdioHermesGateway,
-    HERMES_RUNTIME_PLUGIN_ID,
-};
+#[cfg(test)]
+use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
+use crate::plugins::hermes::{HermesGateway, StdioHermesGateway};
 use crate::registration::{AgentInventoryClient, UserServiceAgentRegistrationClient};
+use crate::runtime::dispatch::with_runtime_plugin;
 use crate::runtime::host::{
     flush_runtime_final_outbox, run_controller_text_task_with_config,
     run_controller_text_task_with_verified_sender_config, run_existing_runtime_task_with_config,
@@ -1825,49 +1825,29 @@ fn run_runtime_retry(
     let profile = state.load_runtime_agent_profile(&retry.agent_did)?;
     validate_retry_task_binding(&task, &profile)?;
     let run_id = format!("run_{}", retry.retry_id);
-    match profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway.clone(),
-                hermes_profile,
-                state.clone(),
-            );
+    let dispatched =
+        with_runtime_plugin(config, state, &profile, hermes_gateway.clone(), |plugin| {
             run_existing_runtime_task_with_config(
                 config,
                 state,
                 &profile,
-                &plugin,
+                plugin,
                 outbox,
-                task,
+                task.clone(),
                 run_id.clone(),
-            )?;
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            run_existing_runtime_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                outbox,
-                task,
-                run_id.clone(),
-            )?;
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_existing_runtime_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                outbox,
-                task,
-                run_id.clone(),
-            )?;
-        }
+            )
+        })?;
+    if dispatched.is_none() {
+        let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
+        run_existing_runtime_task_with_config(
+            config,
+            state,
+            &profile,
+            &plugin,
+            outbox,
+            task,
+            run_id.clone(),
+        )?;
     }
     Ok(run_id)
 }
@@ -3448,96 +3428,53 @@ where
     G: HermesGateway + Clone,
 {
     let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
-    match current_profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile =
-                current_hermes_profile_for_runtime(config, state, &current_profile)?;
-            let plugin =
-                HermesRuntimePlugin::with_state(hermes_gateway, hermes_profile, state.clone());
+    let dispatched =
+        with_runtime_plugin(config, state, &current_profile, hermes_gateway, |plugin| {
             if let Some(verified) = verified_sender.as_ref() {
                 run_controller_text_task_with_verified_sender_config(
                     config,
                     state,
                     &current_profile,
                     verified,
-                    &plugin,
+                    plugin,
                     outbox,
-                    message,
+                    message.clone(),
                 )
             } else {
                 run_controller_text_task_with_config(
                     config,
                     state,
                     &current_profile,
-                    &plugin,
+                    plugin,
                     outbox,
-                    message,
+                    message.clone(),
                 )
             }
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile =
-                state.load_cli_runtime_profile(&current_profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            if let Some(verified) = verified_sender.as_ref() {
-                run_controller_text_task_with_verified_sender_config(
-                    config,
-                    state,
-                    &current_profile,
-                    verified,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            } else {
-                run_controller_text_task_with_config(
-                    config,
-                    state,
-                    &current_profile,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            }
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            if let Some(verified) = verified_sender.as_ref() {
-                run_controller_text_task_with_verified_sender_config(
-                    config,
-                    state,
-                    &current_profile,
-                    verified,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            } else {
-                run_controller_text_task_with_config(
-                    config,
-                    state,
-                    &current_profile,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            }
-        }
+        })?;
+    if let Some(result) = dispatched {
+        return Ok(result);
     }
-}
-
-fn current_hermes_profile_for_runtime(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    profile: &crate::runtime::RuntimeAgentProfile,
-) -> Result<crate::state::HermesProfileRecord> {
-    let definition = state.load_agent_definition(&profile.agent_did)?;
-    if let Some(repaired) =
-        repair_hermes_profile_if_needed(config, state, profile, &definition.handle)?
-    {
-        return Ok(repaired.record);
+    let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
+    if let Some(verified) = verified_sender.as_ref() {
+        run_controller_text_task_with_verified_sender_config(
+            config,
+            state,
+            &current_profile,
+            verified,
+            &plugin,
+            outbox,
+            message,
+        )
+    } else {
+        run_controller_text_task_with_config(
+            config,
+            state,
+            &current_profile,
+            &plugin,
+            outbox,
+            message,
+        )
     }
-    state.load_hermes_profile(&profile.agent_did)
 }
 
 fn run_runtime_task_command(
@@ -3587,46 +3524,27 @@ fn run_runtime_task_command(
         target_agent_did,
         text: payload.text,
     };
-    match profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway.clone(),
-                hermes_profile,
-                state.clone(),
-            );
+    let dispatched =
+        with_runtime_plugin(config, state, &profile, hermes_gateway.clone(), |plugin| {
             run_controller_text_task_with_config(
                 config,
                 state,
                 &profile,
-                &plugin,
+                plugin,
                 &runtime_outbox,
-                task_message,
-            )?;
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            run_controller_text_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                &runtime_outbox,
-                task_message,
-            )?;
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_controller_text_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                &runtime_outbox,
-                task_message,
-            )?;
-        }
+                task_message.clone(),
+            )
+        })?;
+    if dispatched.is_none() {
+        let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
+        run_controller_text_task_with_config(
+            config,
+            state,
+            &profile,
+            &plugin,
+            &runtime_outbox,
+            task_message,
+        )?;
     }
     Ok(())
 }

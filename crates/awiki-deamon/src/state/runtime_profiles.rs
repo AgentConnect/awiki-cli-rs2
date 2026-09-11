@@ -1001,6 +1001,289 @@ ORDER BY runtime_profile_id ASC
         Ok(profiles)
     }
 
+    pub fn upsert_acp_runtime_profile(&self, profile: &AcpRuntimeProfileRecord) -> Result<()> {
+        profile.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let entry_command_json = serde_json::to_string(&profile.entry_command_json)?;
+        let credential_env_names_json = serde_json::to_string(&profile.credential_env_names)?;
+        connection.execute(
+            r#"
+INSERT INTO acp_runtime_profile (
+    runtime_profile_id,
+    agent_did,
+    acp_agent_id,
+    install_mode,
+    install_root,
+    entry_command_json,
+    config_path,
+    cwd_root,
+    credential_env_names_json,
+    permission_policy,
+    installed_version,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+ON CONFLICT(runtime_profile_id) DO UPDATE SET
+    agent_did = excluded.agent_did,
+    acp_agent_id = excluded.acp_agent_id,
+    install_mode = excluded.install_mode,
+    install_root = excluded.install_root,
+    entry_command_json = excluded.entry_command_json,
+    config_path = excluded.config_path,
+    cwd_root = excluded.cwd_root,
+    credential_env_names_json = excluded.credential_env_names_json,
+    permission_policy = excluded.permission_policy,
+    installed_version = excluded.installed_version,
+    status = excluded.status,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                profile.runtime_profile_id,
+                profile.agent_did,
+                profile.acp_agent_id,
+                profile.install_mode,
+                profile.install_root.display().to_string(),
+                entry_command_json,
+                profile.config_path.display().to_string(),
+                profile.cwd_root.display().to_string(),
+                credential_env_names_json,
+                profile.permission_policy,
+                profile.installed_version,
+                profile.status,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_acp_runtime_profile(
+        &self,
+        runtime_profile_id: &str,
+    ) -> Result<AcpRuntimeProfileRecord> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    runtime_profile_id,
+    agent_did,
+    acp_agent_id,
+    install_mode,
+    install_root,
+    entry_command_json,
+    config_path,
+    cwd_root,
+    credential_env_names_json,
+    permission_policy,
+    installed_version,
+    status
+FROM acp_runtime_profile
+WHERE runtime_profile_id = ?1
+"#,
+                [runtime_profile_id],
+                |row| {
+                    let entry_command_json: String = row.get(5)?;
+                    let credential_env_names_json: String = row.get(8)?;
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        entry_command_json,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        credential_env_names_json,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                },
+            )
+            .with_context(|| format!("load ACP runtime profile {runtime_profile_id}"))
+            .and_then(
+                |(
+                    runtime_profile_id,
+                    agent_did,
+                    acp_agent_id,
+                    install_mode,
+                    install_root,
+                    entry_command_json,
+                    config_path,
+                    cwd_root,
+                    credential_env_names_json,
+                    permission_policy,
+                    installed_version,
+                    status,
+                )| {
+                    let record = AcpRuntimeProfileRecord {
+                        runtime_profile_id,
+                        agent_did,
+                        acp_agent_id,
+                        install_mode,
+                        install_root: PathBuf::from(install_root),
+                        entry_command_json: serde_json::from_str(&entry_command_json)
+                            .context("parse ACP entry command JSON")?,
+                        config_path: PathBuf::from(config_path),
+                        cwd_root: PathBuf::from(cwd_root),
+                        credential_env_names: serde_json::from_str(&credential_env_names_json)
+                            .context("parse ACP credential env names JSON")?,
+                        permission_policy,
+                        installed_version,
+                        status,
+                    };
+                    record.validate()?;
+                    Ok(record)
+                },
+            )
+    }
+
+    pub fn store_acp_native_session(&self, session: &AcpNativeSessionRecord) -> Result<()> {
+        session.validate()?;
+        let connection_epoch = i64::try_from(session.connection_epoch)
+            .context("ACP connection_epoch exceeds SQLite integer range")?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+INSERT INTO acp_native_sessions (
+    route_key,
+    agent_did,
+    runtime_profile_id,
+    acp_session_id,
+    connection_epoch,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+ON CONFLICT(route_key) DO UPDATE SET
+    agent_did = excluded.agent_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    acp_session_id = excluded.acp_session_id,
+    connection_epoch = excluded.connection_epoch,
+    status = excluded.status,
+    created_at_ms = excluded.created_at_ms,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                session.route_key,
+                session.agent_did,
+                session.runtime_profile_id,
+                session.acp_session_id,
+                connection_epoch,
+                session.status,
+                session.created_at_ms,
+                session.updated_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_active_acp_session_by_route(
+        &self,
+        route_key: &str,
+        connection_epoch: u64,
+    ) -> Result<Option<AcpNativeSessionRecord>> {
+        if route_key.trim().is_empty() {
+            bail!("ACP route_key must not be empty");
+        }
+        let connection_epoch = i64::try_from(connection_epoch)
+            .context("ACP connection_epoch exceeds SQLite integer range")?;
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    route_key,
+    agent_did,
+    runtime_profile_id,
+    acp_session_id,
+    connection_epoch,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM acp_native_sessions
+WHERE route_key = ?1
+  AND connection_epoch = ?2
+  AND status = 'active'
+"#,
+                rusqlite::params![route_key, connection_epoch],
+                |row| {
+                    let epoch: i64 = row.get(4)?;
+                    Ok(AcpNativeSessionRecord {
+                        route_key: row.get(0)?,
+                        agent_did: row.get(1)?,
+                        runtime_profile_id: row.get(2)?,
+                        acp_session_id: row.get(3)?,
+                        connection_epoch: u64::try_from(epoch)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, epoch))?,
+                        status: row.get(5)?,
+                        created_at_ms: row.get(6)?,
+                        updated_at_ms: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load active ACP session by route")
+    }
+
+    pub fn latest_acp_session_epoch_by_route(&self, route_key: &str) -> Result<Option<u64>> {
+        if route_key.trim().is_empty() {
+            bail!("ACP route_key must not be empty");
+        }
+        let connection = self.connection()?;
+        let epoch: Option<i64> = connection.query_row(
+            "SELECT MAX(connection_epoch) FROM acp_native_sessions WHERE route_key = ?1",
+            [route_key],
+            |row| row.get(0),
+        )?;
+        epoch
+            .map(|epoch| u64::try_from(epoch).context("stored ACP connection epoch is invalid"))
+            .transpose()
+    }
+
+    pub fn mark_acp_sessions_stale_before_epoch(
+        &self,
+        runtime_profile_id: &str,
+        connection_epoch: u64,
+    ) -> Result<usize> {
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        let connection_epoch = i64::try_from(connection_epoch)
+            .context("ACP connection_epoch exceeds SQLite integer range")?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE acp_native_sessions
+SET status = 'stale',
+    updated_at_ms = ?1
+WHERE runtime_profile_id = ?2
+  AND connection_epoch < ?3
+  AND status = 'active'
+"#,
+            rusqlite::params![current_time_millis()?, runtime_profile_id, connection_epoch,],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn latest_acp_connection_epoch(&self, runtime_profile_id: &str) -> Result<u64> {
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let epoch: Option<i64> = connection.query_row(
+            "SELECT MAX(connection_epoch) FROM acp_native_sessions WHERE runtime_profile_id = ?1",
+            [runtime_profile_id],
+            |row| row.get(0),
+        )?;
+        match epoch {
+            Some(epoch) => u64::try_from(epoch).context("stored ACP connection epoch is invalid"),
+            None => Ok(0),
+        }
+    }
+
     pub fn upsert_hermes_profile(&self, profile: &HermesProfileRecord) -> Result<()> {
         profile.validate()?;
         let connection = self.connection()?;

@@ -125,10 +125,8 @@ pub(crate) fn runtime_env_key_allowed(key: &str, selectors: &[RuntimeEnvSelector
 
 fn capture_current_process_env() -> CapturedCliRuntimeEnv {
     let extra_selectors = std::env::var(CLI_ENV_PASSTHROUGH_KEY).ok();
-    let selectors = runtime_env_selectors(
-        DEFAULT_CLI_ENV_PASSTHROUGH_SELECTORS,
-        extra_selectors.as_deref(),
-    );
+    let default_selectors = daemon_runtime_env_passthrough_selectors();
+    let selectors = runtime_env_selectors(&default_selectors, extra_selectors.as_deref());
     let passthrough_selectors = selectors
         .iter()
         .map(RuntimeEnvSelector::as_token)
@@ -164,6 +162,18 @@ fn capture_current_process_env() -> CapturedCliRuntimeEnv {
         values,
         path_entry_count,
     }
+}
+
+fn daemon_runtime_env_passthrough_selectors() -> Vec<&'static str> {
+    let mut selectors = DEFAULT_CLI_ENV_PASSTHROUGH_SELECTORS.to_vec();
+    for entry in crate::plugins::acp::catalog::entries() {
+        for name in entry.credential_env_names {
+            if !selectors.contains(name) {
+                selectors.push(name);
+            }
+        }
+    }
+    selectors
 }
 
 fn render_env_file(capture: &CapturedCliRuntimeEnv) -> String {
@@ -366,6 +376,22 @@ mod tests {
             CLI_ENV_PASSTHROUGH_KEY,
             &selectors
         ));
+    }
+
+    #[test]
+    fn default_runtime_env_selectors_allow_deepseek_credentials() {
+        let defaults = daemon_runtime_env_passthrough_selectors();
+        let selectors = runtime_env_selectors(&defaults, None);
+        assert!(runtime_env_key_allowed("DEEPSEEK_API_KEY", &selectors));
+        assert!(runtime_env_key_allowed("DEEPSEEK_BASE_URL", &selectors));
+        for entry in crate::plugins::acp::catalog::entries() {
+            for credential in entry.credential_env_names {
+                assert!(
+                    runtime_env_key_allowed(credential, &selectors),
+                    "catalog credential {credential} must be captured for daemon fallback"
+                );
+            }
+        }
     }
 
     #[test]

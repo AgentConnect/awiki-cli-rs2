@@ -6,7 +6,7 @@ use awiki_deamon::{
         run_wrapper_command, runtime_token_from_env_or_arg, socket_from_env_or_arg,
         CliWrapperCommand,
     },
-    daemon_cli::{InstallOptions, SetupDaemonAgentOptions},
+    daemon_cli::{InstallOptions, RuntimeInstallOptions, SetupDaemonAgentOptions},
     foreground::ForegroundOptions,
     run_command_json,
     service::ServiceAction,
@@ -222,8 +222,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
     let mut foreground = false;
     let mut no_service = false;
     let mut print_json = false;
+    let mut acp_agent_id = None;
+    let mut install_mode = None;
+    let mut local_checkout = None;
+    let mut package_version = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--acp-agent-id" => {
+                acp_agent_id = Some(args.next().context("--acp-agent-id requires a value")?);
+            }
             "--agent-did" => {
                 let value = args.next().context("--agent-did requires a DID argument")?;
                 agent_did = Some(value);
@@ -273,6 +280,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
             }
             "--no-service" => {
                 no_service = true;
+            }
+            "--install-mode" => {
+                install_mode = Some(args.next().context("--install-mode requires a value")?);
+            }
+            "--local-checkout" => {
+                local_checkout = Some(PathBuf::from(
+                    args.next().context("--local-checkout requires a path")?,
+                ));
+            }
+            "--package-version" => {
+                package_version = Some(args.next().context("--package-version requires a value")?);
             }
             "--poll-interval-ms" => {
                 let value = args
@@ -359,6 +377,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
         "runtime-list" => Ok(DaemonCommand::RuntimeList {
             state_root: required_state_root(state_root)?,
         }),
+        "runtime-install" => Ok(DaemonCommand::RuntimeInstall {
+            state_root: required_state_root(state_root)?,
+            options: RuntimeInstallOptions {
+                acp_agent_id: acp_agent_id.unwrap_or_else(|| "deepseek-harness".to_string()),
+                install_mode: install_mode.unwrap_or_else(|| "npm".to_string()),
+                local_checkout,
+                package_version,
+            },
+        }),
         "cli-env-capture" => Ok(DaemonCommand::CliEnvCapture {
             state_root: state_root_or_default(state_root)?,
         }),
@@ -425,7 +452,7 @@ fn state_root_or_default(state_root: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 fn usage_error<T>() -> Result<T> {
-    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|cli-env-capture|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
+    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|runtime-install|cli-env-capture|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [runtime-install: --acp-agent-id <id> --install-mode <npm|local> --local-checkout <path> --package-version <version>] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
 }
 
 fn self_check_usage_error<T>() -> Result<T> {

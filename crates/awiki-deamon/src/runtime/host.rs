@@ -134,7 +134,7 @@ pub fn run_controller_text_task<P, O>(
     message: ControllerTextMessage,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     run_controller_text_task_with_socket(state, profile, plugin, outbox, message, None, None)
@@ -149,7 +149,7 @@ pub fn run_controller_text_task_with_config<P, O>(
     message: ControllerTextMessage,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     run_controller_text_task_with_socket(
@@ -173,7 +173,7 @@ pub fn run_controller_text_task_with_verified_sender_config<P, O>(
     message: ControllerTextMessage,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     run_controller_text_task_with_verified_sender_socket(
@@ -198,7 +198,7 @@ fn run_controller_text_task_with_socket<P, O>(
     runtime_temp_dir: Option<std::path::PathBuf>,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     profile.validate()?;
@@ -227,7 +227,7 @@ fn run_controller_text_task_with_verified_sender_socket<P, O>(
     runtime_temp_dir: Option<std::path::PathBuf>,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     profile.validate()?;
@@ -255,7 +255,7 @@ pub fn run_existing_runtime_task_with_config<P, O>(
     run_id: impl Into<String>,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     run_existing_runtime_task_with_socket(
@@ -281,7 +281,7 @@ fn run_existing_runtime_task_with_socket<P, O>(
     runtime_temp_dir: Option<std::path::PathBuf>,
 ) -> Result<RuntimeTaskRunResult>
 where
-    P: RuntimePlugin,
+    P: RuntimePlugin + ?Sized,
     O: RuntimeOutbox,
 {
     profile.validate()?;
@@ -337,21 +337,47 @@ where
 
     let install_status = plugin.check_install_status()?;
     if !install_status.installed {
-        if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        if is_native_runtime_plugin(plugin.plugin_id()) {
             let detail = install_status
                 .detail
                 .as_deref()
-                .unwrap_or("Hermes gateway command is not configured");
-            let (error_code, error_summary) = hermes_launch_error_detail(detail);
-            emit_hermes_failure_outputs(
-                state,
-                outbox,
-                profile,
-                &task_reply_recipient_did,
-                &run,
-                error_code,
-                error_summary.as_str(),
-            )?;
+                .unwrap_or("native runtime is not installed");
+            if plugin.plugin_id() == crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID {
+                let metadata = json!({
+                    "schema_version": 1,
+                    "runtime_family": "acp",
+                    "error_code": "runtime_not_installed",
+                    "next_action": "setup_required",
+                    "retryable": false,
+                    "deferred": false,
+                    "failed_message_recovery": "unsupported",
+                    "source": "install_status",
+                });
+                emit_native_runtime_failure_outputs_with_metadata(
+                    state,
+                    outbox,
+                    profile,
+                    &task_reply_recipient_did,
+                    &run,
+                    plugin.plugin_id(),
+                    "runtime_not_installed",
+                    detail,
+                    Some(&metadata),
+                )?;
+            } else {
+                let (error_code, error_summary) =
+                    native_runtime_launch_error_detail(plugin.plugin_id(), detail);
+                emit_native_runtime_failure_outputs(
+                    state,
+                    outbox,
+                    profile,
+                    &task_reply_recipient_did,
+                    &run,
+                    plugin.plugin_id(),
+                    &error_code,
+                    error_summary.as_str(),
+                )?;
+            }
         } else if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
             let error_summary = install_status
                 .detail
@@ -556,21 +582,45 @@ where
                         Some(&metadata),
                     )?;
                 }
-            } else if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
-                let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
-                emit_hermes_failure_outputs(
+            } else if is_native_runtime_plugin(plugin.plugin_id()) {
+                let (error_code, error_summary) =
+                    native_runtime_launch_error_detail(plugin.plugin_id(), &error.to_string());
+                emit_native_runtime_failure_outputs(
                     state,
                     outbox,
                     profile,
                     &task_reply_recipient_did,
                     &run,
-                    error_code,
+                    plugin.plugin_id(),
+                    &error_code,
                     error_summary.as_str(),
                 )?;
             }
             return Err(error).context("launch runtime run");
         }
     };
+    if plugin.plugin_id() == crate::agent::ACP_RUNTIME_PLUGIN_ID
+        && launch_outcome
+            .metadata
+            .get("session_recreated")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        let session_status = launch_outcome
+            .metadata
+            .get("session_status")
+            .and_then(Value::as_str)
+            .unwrap_or("ACP subprocess restarted; created a new session");
+        try_emit_runtime_status(
+            state,
+            outbox,
+            &run,
+            "running",
+            Some(session_status),
+            None,
+            None,
+        )?;
+    }
     let mut generic_cli_late_callback_rejected = false;
     for callback in launch_outcome.callbacks.iter().cloned() {
         match execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
@@ -608,31 +658,36 @@ where
         true
     };
 
-    if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
-        let hermes_failed = hermes_has_error(&launch_outcome.metadata)?;
-        if hermes_failed {
-            let error = hermes_structured_error(&launch_outcome.metadata);
+    if is_native_runtime_plugin(plugin.plugin_id()) {
+        let native_failed = native_runtime_has_error(plugin.plugin_id(), &launch_outcome.metadata)?;
+        if native_failed {
+            let error = native_runtime_structured_error(&launch_outcome.metadata);
             let error_code = error
                 .as_ref()
                 .map(|error| error.0.clone())
-                .unwrap_or_else(|| "hermes_error".to_string());
+                .unwrap_or_else(|| native_runtime_default_error_code(plugin.plugin_id()));
             let error_summary = error
                 .as_ref()
                 .map(|error| error.1.clone())
-                .or_else(|| hermes_error_summary(&launch_outcome.metadata))
-                .unwrap_or_else(|| "Hermes run failed".to_string());
-            emit_hermes_failure_outputs(
+                .or_else(|| {
+                    native_runtime_error_summary(plugin.plugin_id(), &launch_outcome.metadata)
+                })
+                .unwrap_or_else(|| native_runtime_failed_text(plugin.plugin_id()));
+            emit_native_runtime_failure_outputs(
                 state,
                 outbox,
                 profile,
                 &task_reply_recipient_did,
                 &run,
+                plugin.plugin_id(),
                 &error_code,
                 &error_summary,
             )?;
         } else {
-            let final_text = hermes_final_text(&launch_outcome.metadata)?;
+            let final_text =
+                native_runtime_final_text(plugin.plugin_id(), &launch_outcome.metadata)?;
             if let Some(final_text) = final_text.as_deref() {
+                let final_source = native_runtime_final_source(plugin.plugin_id());
                 let final_record = runtime_final_outbox_record(
                     profile,
                     &task_controller_did,
@@ -640,35 +695,36 @@ where
                     &run,
                     task_conversation_id.as_deref(),
                     final_text,
-                    "hermes_final_text",
+                    final_source,
                 )?;
                 state.upsert_runtime_final_outbox_pending(&final_record)?;
                 flush_runtime_final_outbox(state, outbox, 8)
-                    .context("send Hermes final text as runtime message")?;
+                    .context("send native runtime final text as runtime message")?;
                 let refreshed = state
                     .load_runtime_final_outbox_by_run(&run.run_id)?
-                    .context("Hermes final outbox record missing after flush")?;
+                    .context("native runtime final outbox record missing after flush")?;
                 if refreshed.status != "sent" {
                     try_emit_runtime_status(
                         state,
                         outbox,
                         &run,
                         "running",
-                        Some("Hermes response is ready; delivery is retrying"),
+                        Some(native_runtime_delivery_retry_text(plugin.plugin_id())),
                         refreshed.last_error_code.as_deref(),
                         refreshed.last_error_summary.as_deref(),
                     )?;
                 }
             } else {
-                let error_summary = "Hermes run completed without final text";
-                emit_hermes_failure_outputs(
+                let error_summary = native_runtime_missing_final_text(plugin.plugin_id());
+                emit_native_runtime_failure_outputs(
                     state,
                     outbox,
                     profile,
                     &task_reply_recipient_did,
                     &run,
+                    plugin.plugin_id(),
                     "final_text_missing",
-                    error_summary,
+                    &error_summary,
                 )?;
                 anyhow::bail!("{error_summary}");
             }
@@ -1716,18 +1772,113 @@ fn hermes_launch_error_detail(error: &str) -> (&'static str, String) {
     ("launch_failed", error.to_string())
 }
 
-fn emit_hermes_failure_outputs(
+fn is_native_runtime_plugin(plugin_id: &str) -> bool {
+    matches!(
+        plugin_id,
+        crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID
+            | crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID
+    )
+}
+
+fn native_runtime_name(plugin_id: &str) -> &'static str {
+    if plugin_id == crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID {
+        "ACP"
+    } else {
+        "Hermes"
+    }
+}
+
+fn native_runtime_default_error_code(plugin_id: &str) -> String {
+    if plugin_id == crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID {
+        "acp_error"
+    } else {
+        "hermes_error"
+    }
+    .to_string()
+}
+
+fn native_runtime_failed_text(plugin_id: &str) -> String {
+    format!("{} run failed", native_runtime_name(plugin_id))
+}
+
+fn native_runtime_missing_final_text(plugin_id: &str) -> String {
+    format!(
+        "{} run completed without final text",
+        native_runtime_name(plugin_id)
+    )
+}
+
+fn native_runtime_final_source(plugin_id: &str) -> &'static str {
+    if plugin_id == crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID {
+        "acp_final_text"
+    } else {
+        "hermes_final_text"
+    }
+}
+
+fn native_runtime_delivery_retry_text(plugin_id: &str) -> &'static str {
+    if plugin_id == crate::plugins::acp::ACP_RUNTIME_PLUGIN_ID {
+        "ACP response is ready; delivery is retrying"
+    } else {
+        "Hermes response is ready; delivery is retrying"
+    }
+}
+
+fn native_runtime_launch_error_detail(plugin_id: &str, error: &str) -> (String, String) {
+    if plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        let (code, summary) = hermes_launch_error_detail(error);
+        return (code.to_string(), summary);
+    }
+    (
+        if error.to_ascii_lowercase().contains("not installed") {
+            "runtime_not_installed"
+        } else {
+            "launch_failed"
+        }
+        .to_string(),
+        sanitize_user_visible_error_summary(error),
+    )
+}
+
+fn emit_native_runtime_failure_outputs(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     profile: &RuntimeAgentProfile,
     controller_did: &str,
     run: &RuntimeRun,
+    plugin_id: &str,
     error_code: &str,
     error_summary: &str,
 ) -> Result<()> {
+    emit_native_runtime_failure_outputs_with_metadata(
+        state,
+        outbox,
+        profile,
+        controller_did,
+        run,
+        plugin_id,
+        error_code,
+        error_summary,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_native_runtime_failure_outputs_with_metadata(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    profile: &RuntimeAgentProfile,
+    controller_did: &str,
+    run: &RuntimeRun,
+    plugin_id: &str,
+    error_code: &str,
+    error_summary: &str,
+    metadata: Option<&Value>,
+) -> Result<()> {
     let sanitized = sanitize_user_visible_error_summary(error_summary);
     let context = runtime_output_context(state, profile, run, RpcMethod::MsgSend)?;
-    let failure_text = format!("Hermes 运行失败：{sanitized}");
+    let runtime_name = native_runtime_name(plugin_id);
+    let failure_text = format!("{runtime_name} 运行失败：{sanitized}");
     let _ = outbox.send_message(
         &context,
         &crate::outbox::RuntimeMessageSend {
@@ -1746,13 +1897,14 @@ fn emit_hermes_failure_outputs(
         },
     );
     if mark_active_runtime_run_failed(state, &run.run_id)? {
-        emit_runtime_status(
+        emit_runtime_status_with_metadata(
             outbox,
             run,
             "failed",
-            Some("Hermes run failed"),
+            Some(&format!("{runtime_name} run failed")),
             Some(error_code),
             Some(&sanitized),
+            metadata,
         )?;
     }
     Ok(())
@@ -2013,7 +2165,10 @@ fn sanitize_user_visible_error_summary(message: &str) -> String {
     sanitized
 }
 
-fn hermes_error_summary(metadata: &Value) -> Option<String> {
+fn native_runtime_error_summary(plugin_id: &str, metadata: &Value) -> Option<String> {
+    if plugin_id != crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        return None;
+    }
     metadata
         .get("events")
         .and_then(Value::as_array)?
@@ -2042,7 +2197,7 @@ fn hermes_error_summary(metadata: &Value) -> Option<String> {
         })
 }
 
-fn hermes_structured_error(metadata: &Value) -> Option<(String, String)> {
+fn native_runtime_structured_error(metadata: &Value) -> Option<(String, String)> {
     let error = metadata.get("error")?;
     let code = error
         .get("code")
@@ -2054,13 +2209,16 @@ fn hermes_structured_error(metadata: &Value) -> Option<(String, String)> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|summary| !summary.is_empty())
-        .unwrap_or("Hermes run failed");
+        .unwrap_or("Native runtime failed");
     Some((code.to_string(), summary.to_string()))
 }
 
-fn hermes_has_error(metadata: &Value) -> Result<bool> {
+fn native_runtime_has_error(plugin_id: &str, metadata: &Value) -> Result<bool> {
     if metadata.get("error").is_some_and(|value| !value.is_null()) {
         return Ok(true);
+    }
+    if plugin_id != crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        return Ok(false);
     }
     let Some(events) = metadata.get("events").and_then(Value::as_array) else {
         return Ok(false);
@@ -2077,7 +2235,7 @@ fn hermes_has_error(metadata: &Value) -> Result<bool> {
     }))
 }
 
-fn hermes_final_text(metadata: &Value) -> Result<Option<String>> {
+fn native_runtime_final_text(plugin_id: &str, metadata: &Value) -> Result<Option<String>> {
     if let Some(text) = metadata
         .get("final_text")
         .and_then(Value::as_str)
@@ -2086,6 +2244,9 @@ fn hermes_final_text(metadata: &Value) -> Result<Option<String>> {
         .map(str::to_string)
     {
         return Ok(Some(text));
+    }
+    if plugin_id != crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        return Ok(None);
     }
     let Some(events) = metadata.get("events").and_then(Value::as_array) else {
         return Ok(None);
@@ -2380,7 +2541,7 @@ fn runtime_recipient_policy(
     {
         return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
     }
-    if profile.runtime_plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+    if is_native_runtime_plugin(&profile.runtime_plugin_id) {
         return match authority {
             RuntimeInvocationAuthority::Controller => {
                 Ok(RecipientPolicy::hermes_default(controller_did))

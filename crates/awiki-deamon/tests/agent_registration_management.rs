@@ -7,6 +7,7 @@ use awiki_deamon::commands::{
     RuntimeAgentMessageReadiness,
 };
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
+use awiki_deamon::plugins::acp::ACP_RUNTIME_PLUGIN_ID;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
     AgentInventoryClient, AgentInvocationAuthorization, AgentLatestStatusUpdateItem,
@@ -606,6 +607,209 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert!(audit_dump.contains("\"driver_id\":\"claude-code\""));
     assert!(audit_dump.contains("\"legacy_runtime_plugin_id\":\"runtime.cli.claude-code\""));
     assert!(!audit_dump.contains("tok_runtime_secret_value"));
+}
+
+#[test]
+fn runtime_agent_create_initializes_local_acp_profile_without_persisting_secret() {
+    let (root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_acp").unwrap(),
+    )
+    .unwrap();
+    let checkout = root.path().join("deepseek-harness");
+    let bin = checkout.join("packages/examples/acp-demo/lib/bin.js");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        r#"import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,agentInfo:{name:'stub',version:'1'},agentCapabilities:{},authMethods:[]}}) + '\n');
+}
+"#,
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_acp".to_string(),
+            conversation_id: Some("conv_daemon_acp".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_acp",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-acp",
+                    "runtime": "deepseek-harness",
+                    "driver_config": {
+                        "install_mode": "local",
+                        "local_checkout": checkout
+                    },
+                    "secrets": {
+                        "DEEPSEEK_API_KEY": "acp-create-secret"
+                    },
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_acp",
+                    "display_name": "Alice ACP"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let created = expect_created(outcome);
+    assert_eq!(created.runtime_plugin_id, ACP_RUNTIME_PLUGIN_ID);
+    assert_eq!(created.driver_id.as_deref(), Some("deepseek-harness"));
+    let acp = state
+        .load_acp_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(acp.status, "ready");
+    assert_eq!(acp.install_mode, "local");
+    assert_eq!(acp.credential_env_names, vec!["DEEPSEEK_API_KEY"]);
+    let database = std::fs::read(&config.daemon_db_path).unwrap();
+    assert!(!String::from_utf8_lossy(&database).contains("acp-create-secret"));
+    assert!(acp.config_path.parent().unwrap().join(".env").is_file());
+}
+
+#[test]
+fn runtime_install_command_prepares_local_acp_catalog_entry() {
+    let (root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_acp_install").unwrap(),
+    )
+    .unwrap();
+    let checkout = root.path().join("deepseek-harness");
+    let bin = checkout.join("packages/examples/acp-demo/lib/bin.js");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(&bin, "process.exit(0);\n").unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_install_acp".to_string(),
+            conversation_id: Some("conv_daemon_acp_install".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_install_acp",
+                "command": "runtime.install",
+                "args": {
+                    "acp_agent_id": "deepseek-harness",
+                    "install_mode": "local",
+                    "local_checkout": checkout
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    match outcome {
+        AgentCommandOutcome::RuntimeInstalled {
+            command_id,
+            acp_agent_id,
+            install_mode,
+            installed_version,
+        } => {
+            assert_eq!(command_id, "cmd_install_acp");
+            assert_eq!(acp_agent_id, "deepseek-harness");
+            assert_eq!(install_mode, "local");
+            assert_eq!(installed_version, "local");
+        }
+        other => panic!("unexpected runtime install outcome: {other:?}"),
+    }
+    assert_eq!(outbox.agent_statuses()[0].payload["state"], "ready");
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["installed_packages"],
+        json!([])
+    );
+}
+
+#[test]
+fn runtime_install_failure_is_audited_without_leaking_untrusted_agent_id() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_acp_install_failure").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let untrusted_agent_id = "sk-1234567890abcdefghijklmnop";
+
+    let error = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_install_acp_failure".to_string(),
+            conversation_id: Some("conv_daemon_acp_install_failure".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_install_acp_failure",
+                "command": "runtime.install",
+                "args": {
+                    "acp_agent_id": untrusted_agent_id,
+                    "install_mode": "local",
+                    "local_checkout": "/tmp/not-used"
+                }
+            }),
+        },
+    )
+    .expect_err("unsupported ACP catalog entry must fail");
+    assert!(!error.to_string().contains(untrusted_agent_id));
+
+    let statuses = outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].payload["state"], "failed");
+    assert_eq!(statuses[0].payload["message"], "<redacted>");
+
+    let connection = rusqlite::Connection::open(&config.daemon_db_path).unwrap();
+    let detail: String = connection
+        .query_row(
+            "SELECT detail_json FROM audit_log WHERE event_type = 'runtime.install' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(detail.contains("\"status\":\"failed\""));
+    assert!(detail.contains("\"reason\":\"<redacted>\""));
+    assert!(!detail.contains(untrusted_agent_id));
 }
 
 #[test]

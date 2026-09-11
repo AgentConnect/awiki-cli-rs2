@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -642,6 +642,54 @@ pub struct HermesProfileRecord {
     pub hermes_version: Option<String>,
     pub awiki_skills_version: String,
     pub status: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpRuntimeProfileRecord {
+    pub runtime_profile_id: String,
+    pub agent_did: String,
+    pub acp_agent_id: String,
+    pub install_mode: String,
+    pub install_root: PathBuf,
+    pub entry_command_json: Value,
+    pub config_path: PathBuf,
+    pub cwd_root: PathBuf,
+    pub credential_env_names: Vec<String>,
+    pub permission_policy: String,
+    pub installed_version: Option<String>,
+    pub status: String,
+}
+
+impl std::fmt::Debug for AcpRuntimeProfileRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AcpRuntimeProfileRecord")
+            .field("runtime_profile_id", &self.runtime_profile_id)
+            .field("agent_did", &self.agent_did)
+            .field("acp_agent_id", &self.acp_agent_id)
+            .field("install_mode", &self.install_mode)
+            .field("install_root", &self.install_root)
+            .field("entry_command_json", &self.entry_command_json)
+            .field("config_path", &self.config_path)
+            .field("cwd_root", &self.cwd_root)
+            .field("credential_env_names", &self.credential_env_names)
+            .field("permission_policy", &self.permission_policy)
+            .field("installed_version", &self.installed_version)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpNativeSessionRecord {
+    pub route_key: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub acp_session_id: String,
+    pub connection_epoch: u64,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1392,6 +1440,103 @@ impl HermesProfileRecord {
         }
         if self.status.trim().is_empty() {
             bail!("hermes profile status must not be empty");
+        }
+        Ok(())
+    }
+}
+
+impl AcpRuntimeProfileRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("acp_agent_id", self.acp_agent_id.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field} must not be empty");
+            }
+        }
+        if !matches!(self.install_mode.as_str(), "npm" | "local") {
+            bail!("ACP install_mode must be npm or local");
+        }
+        for (field, path) in [
+            ("install_root", self.install_root.as_path()),
+            ("config_path", self.config_path.as_path()),
+            ("cwd_root", self.cwd_root.as_path()),
+        ] {
+            if !path.is_absolute() {
+                bail!("ACP {field} must be an absolute path");
+            }
+        }
+        if !self.entry_command_json.is_object()
+            || self
+                .entry_command_json
+                .get("program")
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            || self
+                .entry_command_json
+                .get("args")
+                .and_then(Value::as_array)
+                .is_none()
+        {
+            bail!("ACP entry_command_json must contain program and args");
+        }
+        if let Some(cwd) = self.entry_command_json.get("cwd") {
+            let Some(cwd) = cwd.as_str() else {
+                bail!("ACP entry_command_json cwd must be a string");
+            };
+            if !Path::new(cwd).is_absolute() {
+                bail!("ACP entry_command_json cwd must be an absolute path");
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &self.credential_env_names {
+            let valid = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+                && name
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_uppercase() || byte == b'_');
+            if !valid || !seen.insert(name) {
+                bail!("ACP credential env name must be a unique uppercase variable name");
+            }
+        }
+        if !matches!(
+            self.permission_policy.as_str(),
+            "allow-once" | "reject-once"
+        ) {
+            bail!("ACP permission_policy must be allow-once or reject-once");
+        }
+        if self
+            .installed_version
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("ACP installed_version must not be empty when present");
+        }
+        Ok(())
+    }
+}
+
+impl AcpNativeSessionRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("route_key", self.route_key.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("acp_session_id", self.acp_session_id.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field} must not be empty");
+            }
+        }
+        if self.connection_epoch == 0 {
+            bail!("ACP connection_epoch must be positive");
         }
         Ok(())
     }

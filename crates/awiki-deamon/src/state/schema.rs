@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 35;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 36;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -388,6 +388,37 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         ON hermes_native_sessions(route_key)
         WHERE status = 'active';
 
+        CREATE TABLE IF NOT EXISTS acp_runtime_profile (
+            runtime_profile_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            acp_agent_id TEXT NOT NULL,
+            install_mode TEXT NOT NULL,
+            install_root TEXT NOT NULL,
+            entry_command_json TEXT NOT NULL,
+            config_path TEXT NOT NULL,
+            cwd_root TEXT NOT NULL,
+            credential_env_names_json TEXT NOT NULL,
+            permission_policy TEXT NOT NULL,
+            installed_version TEXT,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS acp_native_sessions (
+            route_key TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            acp_session_id TEXT NOT NULL,
+            connection_epoch INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_acp_native_sessions_profile_epoch
+        ON acp_native_sessions(runtime_profile_id, connection_epoch, status);
+
         CREATE TABLE IF NOT EXISTS runtime_daemon_binding (
             runtime_agent_did TEXT PRIMARY KEY,
             daemon_agent_did TEXT NOT NULL,
@@ -705,6 +736,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_user_delegated_identity_vault_refs_v33(connection)?;
     migrate_legacy_message_agent_binding_v34(connection)?;
     migrate_agent_device_identity_v35(connection)?;
+    migrate_acp_runtime_v36(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -712,6 +744,44 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_acp_runtime_v36(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS acp_runtime_profile (
+            runtime_profile_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            acp_agent_id TEXT NOT NULL,
+            install_mode TEXT NOT NULL,
+            install_root TEXT NOT NULL,
+            entry_command_json TEXT NOT NULL,
+            config_path TEXT NOT NULL,
+            cwd_root TEXT NOT NULL,
+            credential_env_names_json TEXT NOT NULL,
+            permission_policy TEXT NOT NULL,
+            installed_version TEXT,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS acp_native_sessions (
+            route_key TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            acp_session_id TEXT NOT NULL,
+            connection_epoch INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_acp_native_sessions_profile_epoch
+        ON acp_native_sessions(runtime_profile_id, connection_epoch, status);
+        "#,
     )?;
     Ok(())
 }

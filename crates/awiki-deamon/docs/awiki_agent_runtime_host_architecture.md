@@ -1,8 +1,8 @@
 
 # Awiki Agent Runtime Host 技术架构设计
 
-> 版本：v0.3
-> 范围：通用 daemon 架构、Daemon Agent、Agent DID 创建、Runtime 插件层、Skill + daemon CLI wrapper 回传链路、消息文本/附件/结构化 JSON 分层、本地数据库与目录策略、核心流程、MVP 落地顺序
+> 版本：v0.4
+> 范围：通用 daemon 架构、Daemon Agent、Agent DID 创建、Runtime 插件层、ACP 原生运行时家族、Skill + daemon CLI wrapper 回传链路、消息文本/附件/结构化 JSON 分层、本地数据库与目录策略、核心流程、MVP 落地顺序
 > 非范围：Hermes / OpenClaw / Claude Code / Codex / Gemini CLI 等具体插件内部实现细节；AVIC / AMP 等复杂授权凭证；群组协作的完整细节
 
 ---
@@ -40,13 +40,14 @@ awiki daemon
         │       └── 管理本机所有 runtime agents
         │
         ├── Runtime Agent DID: Hermes Agent
+        ├── Runtime Agent DID: ACP Agent
         ├── Runtime Agent DID: OpenClaw Agent
         ├── Runtime Agent DID: Claude Code Agent
         ├── Runtime Agent DID: Codex Agent
         └── Runtime Agent DID: Gemini CLI Agent
 ```
 
-Hermes、OpenClaw、Claude Code、Codex、Gemini CLI 都只是 daemon 下面的不同 **Agent Runtime Backend**。
+Hermes、ACP Agent、OpenClaw、Claude Code、Codex、Gemini CLI 都只是 daemon 下面的不同 **Agent Runtime Backend**。
 
 最重要的设计取舍：
 
@@ -174,6 +175,7 @@ Native Runtime Plugins / Generic CLI Runtime Plugin
 ┌──────────────────────────────────────────────┐
 │ Runtime Plugin Layer                         │
 │ - Hermes Runtime Plugin                      │
+│ - ACP Runtime Plugin + Agent Catalog         │
 │ - OpenClaw Runtime Plugin                    │
 │ - Generic CLI Runtime Plugin                 │
 │   - Claude Code Driver                       │
@@ -185,6 +187,7 @@ Native Runtime Plugins / Generic CLI Runtime Plugin
 ┌──────────────────────────────────────────────┐
 │ Concrete Runtime Backends                    │
 │ - Hermes                                     │
+│ - DeepSeek Harness ACP                       │
 │ - OpenClaw                                   │
 │ - Claude Code                                │
 │ - Codex CLI                                  │
@@ -360,6 +363,13 @@ agent_definition (
   → runtime_plugin_id = runtime.hermes
   → runtime_profile_id = hermes-main
 
+@alice-deepseek
+  → agent_kind = runtime
+  → controller_did = did:human:alice
+  → runtime_plugin_id = runtime.acp
+  → driver_id = deepseek-harness
+  → runtime_profile_id = acp-deepseek-main
+
 @alice-awiki-coder
   → agent_kind = runtime
   → controller_did = did:human:alice
@@ -380,7 +390,7 @@ Runtime Plugin
 
 插件分类：
 
-1. **Native Runtime Plugin**：适合 Hermes、OpenClaw 这类有原生 session、event、tool、approval、gateway 能力的 runtime。
+1. **Native Runtime Plugin**：适合 Hermes、ACP Agent、OpenClaw 这类有原生 session、event、tool、approval、gateway 能力的 runtime。
 2. **Generic CLI Runtime Plugin**：适合 Claude Code、Codex CLI、Gemini CLI 等 workspace-bound CLI agent。
 3. **Future Runtime Plugin**：未来可接入其他自研 agent runtime、MCP agent、浏览器 agent、容器 agent 等。
 
@@ -398,6 +408,17 @@ Hermes profile / HERMES_HOME / config / memory / skills / sessions
 
 ```text
 OpenClaw agent profile / gateway config / tool config
+```
+
+对 ACP Agent：
+
+```text
+ACP Agent Catalog 条目
+安装来源（npm / local checkout）
+stdio 启动命令与私有 cordis.yml
+凭证环境变量名与私有 .env
+permission policy
+connection epoch / native session
 ```
 
 对 CLI 类 Agent：
@@ -510,11 +531,13 @@ runtime_session_mapping (
 
 说明：
 
-1. `native_session_id`：runtime 原生 session，例如 Hermes session、OpenClaw session、Claude Code session。
+1. `native_session_id`：runtime 原生 session，例如 Hermes session、ACP session、OpenClaw session、Claude Code session。
 2. `synthetic_session_id`：如果 runtime 没有可靠原生 session，则由 daemon 自己维护。
 3. `daemon_session_id`：daemon 内部稳定 session ID，用于映射 App conversation 与 runtime 执行上下文。
 4. 对来自 controller 的自然语言任务，默认按 `agent_did + conversation_id` 创建或复用 session。
 5. 对 JSON 命令，可以根据 `command_id / task_id` 创建 task-scoped session。
+6. ACP v1 没有 session resume/load；ACP session 只在创建它的 `connection_epoch` 内有效。进程重启后 daemon 将旧 route 标为 stale，在同一 route 上建立新 session，并向上层发送明确的 session-recreated running status。
+7. 同一 ACP runner 同时只允许一个 in-flight prompt；第二个 prompt 明确失败，`session/cancel` 可通过独立 stdin 写入路径在首个 prompt 等待期间送达子进程。
 
 ### 3.9 RuntimeTask
 
@@ -1239,6 +1262,7 @@ trait AgentRuntimePlugin {
 
 ```text
 Hermes
+ACP Agent（首个 catalog 条目：DeepSeek Harness）
 OpenClaw
 ```
 
@@ -1249,6 +1273,12 @@ OpenClaw
 3. runtime 可能支持原生 tool / skill / plugin。
 4. daemon 只做能力适配，不复制 runtime 内部逻辑。
 5. runtime 执行中仍通过 Awiki Skill + daemon CLI wrapper 调 daemon 发消息。
+
+ACP 是 Native Runtime Plugin 的一个通用家族，固定 plugin id 为 `runtime.acp`。插件负责 ACP v1 的 stdio NDJSON JSON-RPC、常驻进程、session、permission 与最终文本回传；具体启动命令、安装配方、配置渲染和凭证变量由 ACP Agent Catalog 条目提供。新增兼容 Agent 时只增加 catalog 条目，不增加新的 runtime dispatch 分支。
+
+首个 ACP catalog 条目是 `deepseek-harness`。它只声明 daemon 已实现的客户端能力，当前不提供 fs、terminal 等 ACP 反向能力；`session/request_permission` 按 profile 的 `allow-once` 或 `reject-once` 策略自动回答。
+
+ACP 安装支持 npm 与已构建 local checkout。npm 覆盖版本必须是精确 SemVer，安装进程清空继承环境并使用私有 cache；CLI/JSON 两种 `runtime.install` 入口都记录脱敏审计。运行前 `check_install_status` 会复核 profile、程序、配置及 catalog 必需凭证，失败时 native host 以 `runtime_not_installed` 和 `next_action: setup_required` 结束 run，不创建 session 或 final outbox。
 
 ### 7.4 Generic CLI Runtime Plugin
 
@@ -1303,6 +1333,21 @@ headless / SDK 优先
 PTY 仅作为兜底
 container 用于高风险任务
 ```
+
+### 7.6 Runtime 分派与 Native Outcome
+
+daemon 通过统一 runtime dispatch 入口构造 `runtime.hermes`、`generic-cli` 或 `runtime.acp` 插件。消息前台、委托收件箱和状态诊断不得各自维护 plugin id 的硬编码分支。
+
+Native runtime 的完成契约统一放在 `RuntimeLaunchOutcome.metadata`：
+
+```json
+{
+  "final_text": "runtime 聚合后的最终文本",
+  "error": null
+}
+```
+
+失败时 `error` 使用 `{ "code": "...", "summary": "..." }`。Hermes 与 ACP 共用持久化 `runtime_final_outbox` 回传路径和 controller/requester recipient policy；runtime 私有协议帧不会直接成为 ANP 消息。
 
 ---
 
@@ -1574,6 +1619,7 @@ Plugin DB：每个 agent + runtime plugin 独立数据库
 │   ├── logs/
 │   └── plugins/
 │       ├── runtime.hermes/
+│       ├── runtime.acp/
 │       └── generic-cli/
 │
 ├── identities/
@@ -1657,6 +1703,8 @@ plugin_hermes_session_mapping
 plugin_cli_driver_profile
 plugin_cli_workspace_runtime_state
 plugin_cli_process_run
+acp_runtime_profile
+acp_native_sessions
 ```
 
 ### 10.4 未来 Agent DB
@@ -1717,6 +1765,15 @@ worktree_mapping
 skill_installation
 process_run
 ```
+
+例如 ACP plugin：
+
+```text
+acp_runtime_profile
+acp_native_sessions
+```
+
+`acp_runtime_profile` 只保存启动配置、安装版本、permission policy 和凭证变量名清单；凭证值只能写入 profile 私有 `.env` 或从 daemon 白名单环境回落。`acp_native_sessions` 保存 route、ACP session id 和 connection epoch，不承诺跨进程恢复。
 
 原则：
 
@@ -2233,13 +2290,13 @@ flowchart TB
 5. Awiki Skill / daemon CLI wrapper / MCP bridge。
 6. controller text task 完整闭环。
 
-### Phase 8：Hermes / OpenClaw Native Plugin
+### Phase 8：Hermes / ACP / OpenClaw Native Plugin
 
 目标：接入具备原生 session / tool / skill 能力的 runtime。
 
 交付：
 
-1. Hermes / OpenClaw runtime profile binding。
+1. Hermes / ACP / OpenClaw runtime profile binding。
 2. session mapping。
 3. RuntimeEvent 观测日志。
 4. Awiki Skill 安装。
@@ -2283,6 +2340,7 @@ flowchart TB
 7. **普通文本、附件和结构化 JSON 需要成为 ANP message 的一等 body 类型**；协议、SDK、im-core Interface 的详细修改作为独立工作项。
 8. **首个版本使用一个 daemon.db**，不同 agent 和 runtime plugin 通过字段、索引和私有表隔离；后续再考虑拆库。
 9. **CLI 类 Agent 必须 workspace-bound**；只有 container / sandbox 模式能作为安全边界，shared-root 和 worktree-per-task 不是完整隔离。
+10. **ACP 采用通用协议插件 + Agent Catalog**；协议、进程、session 与回传留在 `runtime.acp`，具体 Agent 的安装、启动和配置由 catalog 条目描述。
 10. **Hermes / OpenClaw 走 native plugin，Claude Code / Codex / Gemini CLI 先走 Generic CLI Runtime Plugin**。
 
 这套架构能保证后续新增任意 Agent Runtime 时，不破坏 Awiki / ANP 的通信主链路，也不破坏 daemon 作为本地信任边界、消息发送边界和任务路由边界的地位。
