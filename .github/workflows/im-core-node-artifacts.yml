@@ -375,6 +375,7 @@ jobs:
   publish-test-channel:
     name: Publish approved Apache-2.0 artifact channel
     needs: [build-platform, build-wrapper, packed-install]
+    if: ${{ always() && needs.build-platform.result == 'success' && needs.build-wrapper.result == 'success' && (inputs.build_only || needs.packed-install.result == 'success') }}
     runs-on: ubuntu-22.04
     steps:
       - name: Download verified packages

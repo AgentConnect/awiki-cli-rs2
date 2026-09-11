@@ -1,7 +1,7 @@
 # `@awiki/im-core-node` 原生制品
 
-当前发布版本为 `0.2.5`，native API 为 `14`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
-`workflow_dispatch` 可显式选择 `build_only=true`，仅构建和打包，不执行安装测试；默认 CI 仍保留安装测试。
+当前发布版本为 `0.2.6`，native API 为 `14`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+`workflow_dispatch` 可显式选择 `build_only=true`，仅构建和打包，不执行安装测试；全部构建成功后仍聚合完整六包候选，默认 CI 仍保留安装测试。
 
 ## 第一版发行决策
 
