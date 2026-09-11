@@ -329,6 +329,9 @@ Registry 已无法把它证明为当前本机身份时，返回 `LocalIdentityRe
 JSON-RPC 收到 HTTP 2xx 但响应体为零字节时返回固定、无响应内容 detail 的
 `TransportUnavailable`；非空畸形 JSON 仍返回 `Serialization`。HTTP 状态、响应体或其片段
 不得被拼入该空响应诊断。
+User Service 注册返回 `error.data.awiki_code=identity.short_handle_invite_required` 时，Core
+保留该机器码，Node facade 将其收敛为非重试 `short_handle_invite_required`；Host 不得按
+Handle 长度或服务端 message 推断该策略。注册关闭、邀请码无效和其他业务错误不映射为此码。
 
 ## 5. 基础类型
 

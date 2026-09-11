@@ -166,6 +166,8 @@ exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使�
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
+- User Service 的精确 `identity.short_handle_invite_required` 注册码映射为非重试
+  `short_handle_invite_required`；不解析 Handle 长度或服务端 message。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
 - 当前 `0.2.5` 源码 candidate 的 Native contract version 为 `15`，增加接收、处理观察及

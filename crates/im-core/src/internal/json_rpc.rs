@@ -333,6 +333,39 @@ mod tests {
     }
 
     #[test]
+    fn short_handle_invite_required_wire_code_reaches_core_unchanged() {
+        let raw = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": "short-handle-contract",
+            "result": null,
+            "error": {
+                "code": -32004,
+                "message": "localized policy detail must not be classified",
+                "data": {
+                    "awiki_code": "identity.short_handle_invite_required",
+                    "retryable": false
+                }
+            }
+        }))
+        .unwrap();
+
+        let error = decode_response(&raw).unwrap_err();
+        let crate::ImError::Service { code, data, .. } = error else {
+            panic!("expected service error")
+        };
+        assert_eq!(
+            code.as_deref(),
+            Some("identity.short_handle_invite_required")
+        );
+        let data = data.unwrap();
+        assert_eq!(
+            data.get("json_rpc_code").and_then(Value::as_i64),
+            Some(-32004)
+        );
+        assert_eq!(data.get("retryable").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
     fn json_rpc_error_accepts_frozen_join_contract_code() {
         let response = json!({
             "jsonrpc": "2.0",

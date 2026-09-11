@@ -224,6 +224,8 @@ identity-provider store，但不删除远端账号或 Handle、不撤销其他�
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
+注册响应的精确 `identity.short_handle_invite_required` 映射为非重试
+`short_handle_invite_required`；近似码、Handle 长度和 message 文本都不能触发该映射。
 注册 bootstrap 发现多设备 provider 身份与空 Core Registry 分裂时返回稳定的
 `local_identity_recovery_required`（不可自动重试）；Host 必须展示本地恢复/完整清除动作，不能映射
 为 `permission_denied` 或注册白名单失败。

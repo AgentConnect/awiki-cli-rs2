@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Map the exact User Service `identity.short_handle_invite_required` registration
+  code to the secret-free, non-retryable `short_handle_invite_required` Node error.
+
 ## 0.2.5
 
 - License the wrapper and all five native packages under Apache-2.0.
