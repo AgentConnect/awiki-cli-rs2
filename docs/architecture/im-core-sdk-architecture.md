@@ -258,6 +258,8 @@ tail-only 历史边界，也不适用于验证码/邮箱等待/Join 准备结果
 CLI 收件箱/历史查询将带有 `sync.budget_exhausted` 的 Idle/Changed 结果视为
 未完成错误，不以成功的空投影掩盖仍待处理的分页或超时。
 
+compact recovery 的 manifest 页数预算与单轮增量页数预算分别计数；达到合法的 100 页历史边界不消耗后续增量的 20 页额度。总运行时间预算仍有效，未完成时保留公开的 `sync.budget_exhausted` 可续跑错误。前台处理等待遇到广播通知积压仍按 SQLite 待处理输入和在途任务继续等待，最终返回 `sync.processing_updates_lagged`，由宿主重读已提交视图；不能把丢失通知伪装成完整处理观察。
+
 Legacy identities keep `device_state` absent until an explicit one-time upgrade.
 Only the original device that still has the usable Legacy `key-1` is supported:
 Core treats that key as the existing DID root, creates new independent device
@@ -1499,6 +1501,10 @@ Schema 3 compact recovery 的接收流程为：delta（或 existing-device boots
 
 本地基线使用同一 `sync_lane_inbox` 中的 `baseline` 内部类别；它不参与 ANP lane negotiation，也不增加服务端流。基线仅执行本地权威替换、Group/read state 提交，没有 Directory 或网络等待。普通投影领取和提交等待尚存的基线完成，避免后续已提交消息被较早 snapshot 替换；同一 owner 的多个基线按接收顺序处理。基线完成后，各条 snapshot 消息、通知和 post-anchor delta 独立领取，失败不回退已提交的接收游标。epoch 切换保留尚未过期或淘汰的旧输入。snapshot 消息可恢复本地事实，但不作为实时 incoming 通知交付；post-anchor delta 继续按现有实时条件交付。
 
+每次 bootstrap/snapshot 响应是一次新的基线观察，即使 epoch 与 anchor 相同，时间、已读状态或替换集合也可能变化。基线使用独立的本地接收 ID 和位置，不以远端 anchor 充当不可变事件 ID；原始 anchor 显式保存在私有载荷中，提交通知仍使用该 anchor。普通消息与 P5/P6 的事件 ID、载荷冲突校验及检查点提交条件保持不变。
+
+P5/P6 的 epoch fence 均通过显式 lane bootstrap 恢复，每条 lane 每次接收运行至多尝试一次。先保存当前页其他有效 lane，再协商失败 lane；同 epoch 的协商结果不得回退本地已持久接收的位置，新 epoch 从服务端返回的位置接续，并保留旧 epoch 的待处理输入。畸形 lane 保留失败前检查点、独立重试；CLI 返回其他有效流的可用投影并携带 lane warning，真实的全局接收失败与未完成的分页预算仍按原错误边界处理。
+
 Tail-only bootstrap 同样只提交原始基线输入与游标，业务处理发生在接收事务之外。`MessageReceiveOutcome.older_history_excluded` 与兼容 `MessageSyncOutcome` 的对应字段保持产品层含义。正常 history budget 边界视为成功；完整必需状态或单项超出协议容量仍返回现有容量错误。若进程在接收事务之前中断，重启把下载 recovery 标为 `retryable` 并保留旧游标，重新取得下载 token；接收事务之后则从统一接收表恢复处理，无需重新下载已经接收的数据。
 
 Core uses one process-local single-flight coordinator per
@@ -1623,6 +1629,7 @@ Conversation-level read state is separate from reliable sync checkpoints:
 - Direct read watermarks use direct thread-local `server_seq`.
 - Group read watermarks use the group thread view `server_seq`; the service may map it from group host `group_event_seq`, but public SDK/API callers do not submit `read_up_to_group_event_seq`.
 - Local truth lives in `thread_read_state`; `conversation_summaries` caches unread/read display projection but is not the only source of truth.
+- 基线读水位或未绑定 read-state backlog 可以先于消息完成投影。每次消息写入或 hydration 完成时，Core 在同一事务内、更新会话摘要前，按已解析的 owner／canonical conversation 和持久化后的 `server_seq` 应用已有水位；水位以内的已解码入站消息继承已读，高于水位或序号未知的消息保持原状态。此过程不修改远端版本或 ACK 状态。
 - `MarkThreadReadResult.effective_watermark` reports the locally committed watermark. Callers may treat `pending_remote_ack=true` as local-first success only when that effective watermark covers their target; remote acknowledgement is an independent convergence state.
 - Remote ack uses `message-service` `read_state.mark_read` with profile `anp.read_state.local.v1`.
   The wire thread is resolved by `im-core` to direct / group; raw canonical storage

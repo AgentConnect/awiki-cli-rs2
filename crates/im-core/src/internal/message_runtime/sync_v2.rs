@@ -1421,7 +1421,7 @@ where
                     .extend(processed.committed_incoming_messages);
             }
         }
-        if self.drain_read_outbox(&db, &binding, 16).await.is_err() {
+        if self.process_read_outbox(&db, &binding, 16).await.is_err() {
             outcome
                 .warnings
                 .push("sync.read_state_writeback_deferred".into());
@@ -1587,7 +1587,10 @@ where
         let mut recovery_token_retries = 0_u8;
         let mut failure_fingerprints = BTreeMap::new();
         let mut blocked_lanes = BTreeSet::new();
-        let mut p5_lane_recovery_attempted = false;
+        let mut lane_recovery_attempted = BTreeSet::new();
+        // Compact recovery has its own manifest-validated page budget. Only
+        // reliable delta pages consume this run's incremental paging budget.
+        let mut delta_pages_fetched = 0_u32;
         loop {
             let cursor = crate::internal::wire::sync_v2::SyncCursorV2 {
                 stream_epoch: state.stream_epoch.clone(),
@@ -1682,6 +1685,7 @@ where
             };
             validate_page_binding(&page, &binding, &state)?;
             result.pages_fetched = result.pages_fetched.saturating_add(1);
+            delta_pages_fetched = delta_pages_fetched.saturating_add(1);
             result.warnings.extend(page.warnings.clone());
             let lane_has_more = self
                 .apply_lane_delta_sections(
@@ -1693,7 +1697,7 @@ where
                     &requested_lanes,
                     &mut lane_states,
                     &mut blocked_lanes,
-                    &mut p5_lane_recovery_attempted,
+                    &mut lane_recovery_attempted,
                     &mut result,
                 )
                 .await?;
@@ -1783,7 +1787,7 @@ where
             state.last_success_at = Some(unix_time_i64());
             let has_continuation = page.has_more || lane_has_more;
             if has_continuation
-                && (result.pages_fetched >= SYNC_RUN_MAX_PAGES
+                && (delta_pages_fetched >= SYNC_RUN_MAX_PAGES
                     || run_started.elapsed() >= SYNC_RUN_DEADLINE)
             {
                 result.warnings.push("sync.budget_exhausted".to_owned());
@@ -1837,7 +1841,7 @@ where
             crate::internal::local_state::sync_v2::LaneSyncState,
         >,
         blocked_lanes: &mut BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
-        p5_lane_recovery_attempted: &mut bool,
+        lane_recovery_attempted: &mut BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<bool> {
         use crate::internal::wire::sync_v2::{SyncLaneDeltaSectionV3, SyncLaneEventV3, SyncLaneV3};
@@ -1853,6 +1857,7 @@ where
                 .push(format!("sync.lane.{}.missing", lane.as_str()));
             blocked_lanes.insert(*lane);
         }
+        let mut recovery_requested = BTreeSet::new();
         let mut any_has_more = false;
         for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
             let Some(section) = sections.get(&lane) else {
@@ -1872,25 +1877,15 @@ where
                     blocked_lanes.insert(lane);
                 }
                 SyncLaneDeltaSectionV3::Error(error) => {
-                    result
-                        .warnings
-                        .push(format!("sync.lane.{}.{}", lane.as_str(), error.anp_code));
-                    if lane == SyncLaneV3::P5Device
-                        && error.anp_code == "p5_device_recovery_required"
-                        && !*p5_lane_recovery_attempted
-                    {
-                        *p5_lane_recovery_attempted = true;
-                        match self.refresh_lane_bootstrap(db, binding).await {
-                            Ok(refreshed) => {
-                                *lane_states = refreshed;
-                                return Ok(true);
-                            }
-                            Err(_) => result
-                                .warnings
-                                .push("sync.lane.p5_device.recovery_deferred".to_owned()),
-                        }
+                    let recoverable = matches!((lane, error.anp_code.as_str()),
+                        (SyncLaneV3::P5Device, "p5_device_recovery_required")
+                        | (SyncLaneV3::P6Group, "p6_group_recovery_required"));
+                    if recoverable && lane_recovery_attempted.insert(lane) {
+                        recovery_requested.insert(lane);
+                    } else {
+                        result.warnings.push(format!("sync.lane.{}.{}", lane.as_str(), error.anp_code));
+                        blocked_lanes.insert(lane);
                     }
-                    blocked_lanes.insert(lane);
                 }
                 SyncLaneDeltaSectionV3::Page {
                     events,
@@ -2015,6 +2010,22 @@ where
                 }
             }
         }
+        // Commit every valid lane in this page before re-negotiating a failed
+        // epoch. A recovery in P5 must not discard this page's valid P6 input.
+        if !recovery_requested.is_empty() {
+            match self.refresh_lane_bootstrap(db, binding).await {
+                Ok(refreshed) => {
+                    *lane_states = refreshed;
+                    any_has_more = true;
+                }
+                Err(_) => {
+                    for lane in recovery_requested {
+                        result.warnings.push(format!("sync.lane.{}.recovery_deferred", lane.as_str()));
+                        blocked_lanes.insert(lane);
+                    }
+                }
+            }
+        }
         Ok(any_has_more)
     }
 
@@ -2048,6 +2059,25 @@ where
             warnings,
         )
         .await
+    }
+
+    async fn process_read_outbox(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        limit: u32,
+    ) -> crate::ImResult<()> {
+        if let Some(error) = self.drain_read_outbox(db, binding, limit).await? {
+            if !is_device_epoch_rejection(&error) {
+                return Err(error);
+            }
+            self.refresh_session_and_lane_epoch().await?;
+            let refreshed_binding = self.client.active_sync_account_binding().await?;
+            if let Some(error) = self.drain_read_outbox(db, &refreshed_binding, limit).await? {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     async fn drain_read_outbox(
@@ -2793,7 +2823,20 @@ where
             "lane bootstrap does not match the active account device",
         ));
     }
-    let states = lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap);
+    let mut states = lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap);
+    // Bootstrap may only know the checkpoint ACK sent before the current page.
+    // Keep newer durable reception within the same epoch; a new epoch starts
+    // from the service's cursor while old inbox inputs retain their ownership.
+    let received = db.load_lane_sync_states(binding.owner_identity_id.clone()).await?;
+    for state in &mut states {
+        if let Some(current) = received.iter().find(|current| current.lane == state.lane
+            && current.stream_epoch == state.stream_epoch) {
+            if crate::internal::local_state::sync_v2::compare_decimal(&current.scan_seq, &state.scan_seq)?
+                == std::cmp::Ordering::Greater {
+                *state = current.clone();
+            }
+        }
+    }
     reconcile_explicit_lane_negotiation(
         db,
         binding,
@@ -4231,10 +4274,7 @@ pub(super) async fn process_one_read_outbox_mutation(
         crate::internal::transport::CoreHttpTransport::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     );
-    if let Some(error) = runtime.drain_read_outbox(&db, &binding, 1).await? {
-        return Err(error);
-    }
-    Ok(())
+    runtime.process_read_outbox(&db, &binding, 1).await
 }
 
 pub(super) async fn resolve_unresolved_peers<R: AsyncRpcTransport>(

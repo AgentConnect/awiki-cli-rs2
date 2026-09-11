@@ -259,3 +259,57 @@ async fn timed_out_task_keeps_its_slot_until_it_ends_and_cannot_commit_a_late_re
     updates.close();
     until(|| !dispatcher.running_for_test()).await;
 }
+
+#[tokio::test]
+async fn foreground_wait_after_notification_lag_still_waits_for_retained_inputs() {
+    let fixture = SyncSnapshotFixture::new("dispatcher-lag-wait");
+    let client = fixture.client();
+    seed_dispatch_inputs(&client, 1).await;
+    let dispatcher = crate::internal::message_runtime::sync_dispatcher::for_client(&client);
+    let (release, gate) = tokio::sync::oneshot::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    dispatcher.set_executor_for_test(
+        Arc::new(move |client, claim| {
+            let gate = gate.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                let _ = gate.await;
+                commit_test_input(&client, &claim).await
+            })
+        }),
+        StdDuration::from_secs(10),
+    );
+    let mut session = client.messages().watch_processing_updates().unwrap();
+    let removed = (0..600)
+        .map(|index| sync_inbox::RemovedInput {
+            input_id: format!("discard-{index}"),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            event_id: format!("discard-{index}"),
+        })
+        .collect::<Vec<_>>();
+    crate::internal::message_runtime::sync_dispatcher::publish_removed(&client, &removed);
+    tokio::spawn(async move {
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        let _ = release.send(());
+    });
+    let outcome = session
+        .wait_async(&client)
+        .await
+        .expect("notification lag must not abort durable processing wait");
+    assert_eq!(outcome.pending_count, 0);
+    assert_eq!(
+        sqlite_count(
+            &fixture.sqlite_path(),
+            "SELECT COUNT(*) FROM sync_applied_events WHERE event_id='event-000'"
+        ),
+        1
+    );
+    assert!(
+        !outcome.complete,
+        "lost discard notifications cannot claim complete observation"
+    );
+    assert_eq!(
+        outcome.error_code.as_deref(),
+        Some("sync.processing_updates_lagged")
+    );
+    session.close();
+}

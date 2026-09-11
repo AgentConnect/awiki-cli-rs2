@@ -22,6 +22,11 @@ fn incomplete_business_processing_is_a_warning_for_available_cli_projection() {
     );
     outcome.discarded_count = 1;
     assert_eq!(processing_read_warnings(&outcome), ["sync.input_discarded"]);
+    outcome.error_code = Some("sync.processing_updates_lagged".into());
+    assert_eq!(
+        processing_read_warnings(&outcome),
+        ["sync.processing_updates_lagged"]
+    );
     outcome.complete = true;
     assert!(processing_read_warnings(&outcome).is_empty());
 }
@@ -74,6 +79,30 @@ fn foreground_budget_exhaustion_is_not_terminal_sync_success() {
             "an unfinished foreground sync must not authorize a complete local inbox result"
         );
     }
+}
+
+#[test]
+fn isolated_lane_failure_allows_foreground_read_of_valid_streams() {
+    let received = im_core::messages::MessageReceiveOutcome {
+        status: MessageSyncStatus::Changed,
+        complete: false,
+        events_received: 2,
+        pages_fetched: 1,
+        messages_hydrated: 1,
+        duplicates_skipped: 0,
+        older_history_excluded: false,
+        error_code: None,
+        warnings: vec!["sync.lane.p5_device.transport_invalid".to_owned()],
+    };
+    assert!(require_foreground_message_receive(&received).is_ok());
+    let mut incomplete = received.clone();
+    incomplete.warnings.push("sync.budget_exhausted".into());
+    assert!(require_foreground_message_receive(&incomplete).is_err());
+    incomplete.warnings.clear();
+    assert!(require_foreground_message_receive(&incomplete).is_err());
+    incomplete.status = MessageSyncStatus::RetryableFailure;
+    incomplete.error_code = Some("SYNC_INPUT_CONFLICT".into());
+    assert!(require_foreground_message_receive(&incomplete).is_err());
 }
 
 fn sync_outcome(status: MessageSyncStatus) -> MessageSyncOutcome {
@@ -444,4 +473,25 @@ fn send_retry_and_outgoing_read_errors_keep_actionable_classification() {
         }),
         MessageAdapterError::MessageNotFound
     ));
+}
+
+#[test]
+fn receive_budget_boundary_keeps_the_public_resumable_error() {
+    let received = im_core::messages::MessageReceiveOutcome {
+        status: MessageSyncStatus::Changed,
+        complete: false,
+        events_received: 100,
+        pages_fetched: 100,
+        messages_hydrated: 100,
+        duplicates_skipped: 0,
+        older_history_excluded: true,
+        error_code: None,
+        warnings: vec!["sync.budget_exhausted".into()],
+    };
+    let Err(MessageAdapterError::TransportUnavailable(message)) =
+        require_foreground_message_receive(&received)
+    else {
+        panic!("unfinished receive must request continuation")
+    };
+    assert!(message.contains("(sync.budget_exhausted)"), "{message}");
 }

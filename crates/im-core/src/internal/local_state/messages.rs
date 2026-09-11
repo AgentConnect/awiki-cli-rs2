@@ -547,6 +547,10 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
     }))
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "message_read_watermark_tests.rs"]
+mod read_watermark_tests;
+
 #[cfg(feature = "sqlite")]
 fn upsert_message_record(
     connection: &rusqlite::Connection,
@@ -864,6 +868,7 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     for legacy_id in &merged_legacy_ids {
         touched.insert((owner_identity_id.clone(), legacy_id.clone()));
     }
+    inherit_committed_read_watermark(connection, &owner_identity_id, &msg_id)?;
     let next_projection = super::conversation_summaries::message_projection_for_id(
         connection,
         &owner_identity_id,
@@ -897,6 +902,36 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     )?;
     touched.insert((owner_identity_id, committed_conversation_id.to_owned()));
     Ok(touched)
+}
+
+#[cfg(feature = "sqlite")]
+fn inherit_committed_read_watermark(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    message_id: &str,
+) -> crate::ImResult<()> {
+    // Baselines and bindings can commit a read watermark before the message is
+    // projected or hydrated. Use the merged durable row (including its retained
+    // sequence), and apply read truth before updating the conversation summary.
+    connection.execute(
+        r#"
+UPDATE messages
+SET is_read = 1
+WHERE owner_identity_id = ?1 AND msg_id = ?2
+  AND direction = 0 AND is_read = 0 AND hydration_state = 'hydrated'
+  AND wire_identity_resolution_state = 'resolved'
+  AND server_seq > 0
+  AND EXISTS (
+      SELECT 1 FROM thread_read_state AS state
+      WHERE state.owner_identity_id = messages.owner_identity_id
+        AND state.thread_scope = messages.wire_thread_kind
+        AND state.thread_id = messages.conversation_id
+        AND state.read_watermark_seq IS NOT NULL
+        AND messages.server_seq <= CAST(state.read_watermark_seq AS INTEGER)
+  )"#,
+        rusqlite::params![owner_identity_id, message_id],
+    ).map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]

@@ -569,6 +569,9 @@ fn processing_read_warnings(outcome: &im_core::messages::MessageProcessingOutcom
     if outcome.complete {
         return Vec::new();
     }
+    if outcome.error_code.as_deref() == Some("sync.processing_updates_lagged") {
+        return vec!["sync.processing_updates_lagged".to_owned()];
+    }
     vec![if outcome.discarded_count > 0 {
         "sync.input_discarded"
     } else if outcome.blocked_count > 0 {
@@ -615,6 +618,42 @@ pub(super) fn require_foreground_message_sync(
     }
 }
 
+pub(super) fn require_foreground_message_receive(
+    received: &im_core::messages::MessageReceiveOutcome,
+) -> Result<(), MessageAdapterError> {
+    let isolated_lane_failure = received.error_code.is_none()
+        && received
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("sync.lane."));
+    let status = if !received.complete
+        && !isolated_lane_failure
+        && !received
+            .warnings
+            .iter()
+            .any(|warning| warning == "sync.budget_exhausted")
+        && matches!(
+            received.status,
+            MessageSyncStatus::Idle | MessageSyncStatus::Changed
+        ) {
+        MessageSyncStatus::RetryableFailure
+    } else {
+        received.status
+    };
+    require_foreground_message_sync(&MessageSyncOutcome {
+        status,
+        events_applied: 0,
+        pages_fetched: received.pages_fetched,
+        messages_hydrated: received.messages_hydrated,
+        duplicates_skipped: received.duplicates_skipped,
+        older_history_excluded: received.older_history_excluded,
+        changed_conversation_ids: vec![],
+        committed_incoming_messages: vec![],
+        error_code: received.error_code.clone(),
+        warnings: received.warnings.clone(),
+    })
+}
+
 fn reconcile_foreground_message_sync(
     client: &im_core::ImClient,
 ) -> Result<Vec<String>, MessageAdapterError> {
@@ -644,35 +683,17 @@ pub async fn reconcile_foreground_message_sync_async(
         })
         .await
         .map_err(im_error_to_message_error)?;
-    let status = if !received.complete
-        && matches!(
-            received.status,
-            MessageSyncStatus::Idle | MessageSyncStatus::Changed
-        ) {
-        MessageSyncStatus::RetryableFailure
-    } else {
-        received.status
-    };
-    require_foreground_message_sync(&MessageSyncOutcome {
-        status,
-        events_applied: 0,
-        pages_fetched: received.pages_fetched,
-        messages_hydrated: received.messages_hydrated,
-        duplicates_skipped: received.duplicates_skipped,
-        older_history_excluded: received.older_history_excluded,
-        changed_conversation_ids: vec![],
-        committed_incoming_messages: vec![],
-        error_code: received.error_code,
-        warnings: received.warnings,
-    })?;
+    require_foreground_message_receive(&received)?;
     // A bounded freshness wait is separate from receive. One blocked event may
     // add a warning, but cannot hide other already committed messages from CLI.
     let outcome = processing.wait_async(client).await;
     processing.close();
-    Ok(match outcome {
+    let mut warnings = received.warnings;
+    warnings.extend(match outcome {
         Ok(outcome) => processing_read_warnings(&outcome),
         Err(_) => vec!["sync.processing_unavailable".to_owned()],
-    })
+    });
+    Ok(warnings)
 }
 
 fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {

@@ -118,19 +118,17 @@ fn insert_baseline_and_events(
             "baseline receive installation is no longer current",
         ));
     }
-    let payload = serde_json::to_value(baseline)
+    let mut payload = serde_json::to_value(baseline)
         .map_err(|_| sync_inbox::error("SYNC_INPUT_INVALID", "baseline cannot be encoded"))?;
+    payload["snapshot_scan_seq"] = serde_json::json!(anchor);
+    // Bootstrap and snapshot responses are fresh observations, not immutable
+    // stream events. Several can share an anchor while their state differs.
+    // Give each local receipt its own positive position; processing uses inbox
+    // receive order, and the remote anchor remains explicit in the payload.
+    let position = rand::random::<u128>().max(1).to_string();
     let marker = InboxEvent {
-        event_id: format!(
-            "local-sync-baseline:{}",
-            sync_inbox::payload_hash("baseline", &serde_json::json!([epoch, anchor]))?
-        ),
-        // The local baseline lane has one record per anchor; position is positive.
-        position: if anchor == "0" {
-            "1".into()
-        } else {
-            format!("{anchor}0")
-        },
+        event_id: format!("local-sync-baseline:{position}"),
+        position,
         event_type: "sync.baseline".into(),
         payload,
         processing_scope: "baseline".into(),
@@ -185,7 +183,11 @@ pub(crate) fn apply_claim(
         &tx,
         &claim.owner_identity_id,
         &claim.owner_did,
-        &claim.position,
+        claim
+            .payload
+            .get("snapshot_scan_seq")
+            .and_then(Value::as_str)
+            .unwrap_or(&claim.position),
         &[],
         &groups,
         &read_states,
@@ -225,3 +227,7 @@ pub(crate) fn apply_claim(
     invalidation.thread_ids.dedup();
     Ok(invalidation)
 }
+
+#[cfg(test)]
+#[path = "sync_baseline_tests.rs"]
+mod tests;

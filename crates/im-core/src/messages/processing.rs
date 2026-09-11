@@ -79,7 +79,15 @@ impl MessageProcessingSession {
                 Err(
                     broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
                 ) => return Ok(None),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => return Err(updates_lagged()),
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    return Ok(Some(super::MessageProcessingUpdate {
+                        event_id: String::new(),
+                        status: super::MessageProcessingStatus::ResyncRequired,
+                        changed_conversation_ids: vec![],
+                        committed_incoming_messages: vec![],
+                        error_code: Some("sync.processing_updates_lagged".into()),
+                    }))
+                }
             }
         }
     }
@@ -98,6 +106,7 @@ impl MessageProcessingSession {
         }
         self._dispatcher.wake_client(client.clone());
         let mut outcome = super::MessageProcessingOutcome::default();
+        let mut updates_lagged = false;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         let db = client.core_inner().local_state_db().await?;
         loop {
@@ -119,6 +128,11 @@ impl MessageProcessingSession {
                     super::MessageProcessingStatus::Discarded => {
                         outcome.discarded_count = outcome.discarded_count.saturating_add(1);
                         outcome.error_code = update.error_code;
+                    }
+                    super::MessageProcessingStatus::ResyncRequired => {
+                        // Broadcast delivery is an observation channel. Still wait
+                        // for retained work so the host can read committed facts.
+                        updates_lagged = true;
                     }
                     _ => {}
                 }
@@ -147,7 +161,7 @@ impl MessageProcessingSession {
                 {
                     continue;
                 }
-                outcome.complete = outcome.discarded_count == 0;
+                outcome.complete = outcome.discarded_count == 0 && !updates_lagged;
                 break;
             }
             if summary.blocked > 0 && summary.active == 0 && summary.pending == summary.blocked {
@@ -162,6 +176,9 @@ impl MessageProcessingSession {
         }
         outcome.changed_conversation_ids.sort();
         outcome.changed_conversation_ids.dedup();
+        if updates_lagged {
+            outcome.error_code = Some("sync.processing_updates_lagged".into());
+        }
         Ok(outcome)
     }
 
@@ -172,12 +189,6 @@ impl MessageProcessingSession {
             });
         }
         Ok(())
-    }
-}
-
-fn updates_lagged() -> crate::ImError {
-    crate::ImError::LocalProjectionUnavailable {
-        detail: "message processing updates lagged; repair the committed local view".into(),
     }
 }
 
