@@ -6,11 +6,13 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RELEASE_CONFIG="${SCRIPT_DIR}/release-config.json"
 SERVER_CONFIG="${SCRIPT_DIR}/publish-server.toml"
 CHANNEL=""
+REUSE_RUN_ID=""
 
-usage() { echo "Usage: $0 [--config FILE] beta|stable"; }
+usage() { echo "Usage: $0 [--config FILE] [--run-id ID] beta|stable"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) SERVER_CONFIG="${2:-}"; shift 2 ;;
+    --run-id) REUSE_RUN_ID="${2:-}"; [[ "$REUSE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Error: invalid run ID' >&2; exit 2; }; shift 2 ;;
     beta|stable) CHANNEL="$1"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown argument $1" >&2; usage >&2; exit 2 ;;
@@ -43,6 +45,7 @@ if [[ "$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/tags/${ta
   tag_commit="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/tags/${tag_commit}" --jq '.object.sha')"
 fi
 
+if [[ -z "$REUSE_RUN_ID" ]]; then
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Keep the workflow definition and the checked-out source on the same immutable release tag.
 GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO}" --ref "${TAG}" \
@@ -55,6 +58,11 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [[ -n "${run_id}" ]] || { echo "Error: could not locate workflow run for ${TAG}" >&2; exit 1; }
+else
+  run_id="$REUSE_RUN_ID"
+fi
+GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/actions/runs/${run_id}" |
+  python3 -c 'import json,sys; r=json.load(sys.stdin); sha,workflow,title=sys.argv[1:]; assert r["head_sha"]==sha and r["event"]=="workflow_dispatch" and r["path"].split("@")[0]==".github/workflows/"+workflow and r["display_title"]==title, "workflow run does not match this release"' "$tag_commit" "$WORKFLOW" "CLI ${CHANNEL} ${TAG}"
 GH_TOKEN="${GH_TOKEN_VALUE}" gh run watch "${run_id}" --repo "${GITHUB_REPO}" --exit-status
 
 tmp="$(mktemp -d /tmp/awiki-cli-publish.XXXXXX)"

@@ -35,6 +35,12 @@ Beta 和 Stable 是相互独立的发布通道，按实际需要选择其中一�
 3. 在目标服务器运行对应的 `publish-cli-release.sh beta` 或 `publish-cli-release.sh stable`。
 4. 验证本次所选通道的 Linux、macOS、Skill、Onboarding 和更新检查。
 
+需要并行构建、随后统一上线时，可先对不可变 CLI tag 调度原有 Actions，再使用
+`publish-cli-release.sh --run-id <ID> stable` 复用该次构建。入口检查 workflow、事件、
+tag commit 与通道名称，随后执行原有下载、产物校验和发布流程，不重复构建。
+Daemon 的独立入口也支持 `--run-id <ID>`，要求配置中的 `source_ref` 为精确 SHA，
+且 workflow controller 与产品源码属于该次相同提交；平台包和版本检查保持原样。
+
 只有 Stable 发布会更新 `/cli/onboarding.md` 和 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
 
 服务器脚本不会创建 commit 或 tag。任何失败都必须先修复并发布更高版本，不能移动 tag 或把旧归档重新提升为 latest。
