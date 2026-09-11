@@ -582,7 +582,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         let mut next_state = pre_state.clone();
         let plaintext =
             V2DirectE2eeSession::decrypt_follow_up(&mut next_state, binding, metadata, body)
-                .map_err(v2_error)?;
+                .map_err(|error| inbound_cipher_error(error, &next_state, body))?;
         let validated = validator(&plaintext, &pre_state, &next_state)?;
         match self.store.commit_inbound_with(
             &next_state,
@@ -650,7 +650,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             metadata,
             body,
         )
-        .map_err(v2_error)?;
+        .map_err(|error| inbound_cipher_error(error, &next_state, body))?;
         match self.store.commit_inbound(
             &next_state,
             &metadata.message_id,
@@ -747,7 +747,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             metadata,
             body,
         )
-        .map_err(v2_error)?;
+        .map_err(|error| inbound_cipher_error(error, &next_state, body))?;
         let validated = validator(&plaintext, &pre_state, &next_state)?;
         match self.store.commit_inbound_with(
             &next_state,
@@ -1188,6 +1188,31 @@ fn serialization_error(error: serde_json::Error) -> crate::ImError {
     }
 }
 
+fn inbound_cipher_error(
+    error: anp::direct_e2ee::DirectE2eeV2Error,
+    state: &V2DirectSessionState,
+    body: &V2DirectCipherBody,
+) -> crate::ImError {
+    // ANP validates state, metadata, session and suite before rejecting a
+    // non-first counter for a pending initiator. Such a Cipher has a real
+    // predecessor: the authenticated n=0 reply. Keep it queued without
+    // advancing the ratchet, and decrypt normally after that reply commits.
+    // Never make an invalid binding or a failed n=0 authentication retryable.
+    if error.runtime_kind() == Some(anp::direct_e2ee::DirectE2eeV2RuntimeErrorKind::BadInitMessage)
+        && state.status == anp::direct_e2ee::V2_SESSION_STATUS_PENDING_CONFIRMATION
+        && body.ratchet_header.pn == "0"
+        && body.ratchet_header.n.parse::<u32>().is_ok_and(|n| n > 0)
+    {
+        return crate::ImError::Service {
+            status_code: None,
+            code: Some("p5.session_pending".into()),
+            message: "P5 cipher awaits its authenticated first session reply".into(),
+            data: None,
+        };
+    }
+    v2_error(error)
+}
+
 fn v2_error(error: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
     if error.runtime_kind() == Some(anp::direct_e2ee::DirectE2eeV2RuntimeErrorKind::MaxSkipExceeded)
     {
@@ -1200,6 +1225,12 @@ fn v2_error(error: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
     }
     crate::ImError::PermissionDenied
 }
+
+#[cfg(test)]
+mod receive_concurrency_tests;
+
+#[cfg(test)]
+mod pending_reply_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1219,7 +1250,7 @@ mod tests {
     use rusqlite::Connection;
     use std::sync::Arc;
 
-    fn scope(identity_id: &str, did: &str, device_id: &str, key_id: &str) -> V2OwnerScope {
+    pub(super) fn scope(identity_id: &str, did: &str, device_id: &str, key_id: &str) -> V2OwnerScope {
         let did = crate::ids::Did::parse(did).unwrap();
         V2OwnerScope::from_identity_state(
             &crate::ids::IdentityId::parse(identity_id).unwrap(),
@@ -1246,7 +1277,7 @@ mod tests {
         .unwrap()
     }
 
-    fn vault(path: &std::path::Path, byte: u8) -> DirectSecretVault {
+    pub(super) fn vault(path: &std::path::Path, byte: u8) -> DirectSecretVault {
         Arc::new(FileSecretVault::new(
             DeviceVaultRootKey::from_bytes([byte; 32]),
             FileSecretVaultStore::new(path),
@@ -1260,7 +1291,7 @@ mod tests {
         .unwrap()
     }
 
-    fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
+    pub(super) fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
         let alice_ratchet = x25519_dalek::StaticSecret::from([7; 32]);
         let bob_ratchet = x25519_dalek::StaticSecret::from([8; 32]);
         let alice_public = x25519_dalek::PublicKey::from(&alice_ratchet).to_bytes();

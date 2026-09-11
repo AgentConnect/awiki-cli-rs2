@@ -2177,6 +2177,37 @@ WHERE owner_identity_id = ?5 AND owner_did = ?6 AND local_device_id = ?7
                 )
                 .map_err(crate::internal::local_state::local_state_unavailable)?;
             if updated != 1 {
+                // Another validated receive/send can advance this exact active
+                // session after decryption read its revision. Retry from the
+                // committed ratchet, rather than permanently rejecting valid
+                // ciphertext. Missing, disabled or differently bound sessions
+                // are still authorization failures.
+                let current_revision = transaction
+                    .query_row(
+                        "SELECT revision FROM direct_e2ee_v2_sessions
+                         WHERE owner_identity_id=?1 AND owner_did=?2 AND local_device_id=?3
+                           AND peer_did=?4 AND peer_device_id=?5 AND session_id=?6
+                           AND disabled=0",
+                        params![
+                            owner_identity_id,
+                            state.binding.local_did,
+                            state.binding.local_device_id,
+                            state.binding.peer_did,
+                            state.binding.peer_device_id,
+                            state.session_id
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()
+                    .map_err(crate::internal::local_state::local_state_unavailable)?;
+                if current_revision.is_some_and(|revision| revision > expected_revision) {
+                    return Err(crate::ImError::Service {
+                        status_code: None,
+                        code: Some("p5.session_revision_changed".to_owned()),
+                        message: "P5 session advanced before this operation committed".to_owned(),
+                        data: None,
+                    });
+                }
                 return Err(crate::ImError::PermissionDenied);
             }
             next_revision

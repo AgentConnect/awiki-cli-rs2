@@ -362,6 +362,7 @@ pub(crate) fn retry_at(error: &crate::ImError, attempts: i64) -> Option<i64> {
             | "state_locked"
             | "state_write_failed"
             | "p5.session_pending"
+            | "p5.session_revision_changed"
             | "anp.direct.e2ee.max_skip_exceeded"
             | "sync.processing_timeout"
     ))
