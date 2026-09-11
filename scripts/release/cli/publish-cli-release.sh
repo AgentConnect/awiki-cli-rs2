@@ -62,7 +62,7 @@ else
   run_id="$REUSE_RUN_ID"
 fi
 GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/actions/runs/${run_id}" |
-  python3 -c 'import json,sys; r=json.load(sys.stdin); sha,workflow,title=sys.argv[1:]; assert r["head_sha"]==sha and r["event"]=="workflow_dispatch" and r["path"].split("@")[0]==".github/workflows/"+workflow and r["name"]==title, "workflow run does not match this release"' "$tag_commit" "$WORKFLOW" "CLI ${CHANNEL} ${TAG}"
+  python3 -c 'import json,sys; r=json.load(sys.stdin); sha,workflow,title=sys.argv[1:]; assert r["head_sha"]==sha and r["event"]=="workflow_dispatch" and r["path"].split("@")[0]==".github/workflows/"+workflow and r["display_title"]==title, "workflow run does not match this release"' "$tag_commit" "$WORKFLOW" "CLI ${CHANNEL} ${TAG}"
 GH_TOKEN="${GH_TOKEN_VALUE}" gh run watch "${run_id}" --repo "${GITHUB_REPO}" --exit-status
 
 tmp="$(mktemp -d /tmp/awiki-cli-publish.XXXXXX)"
