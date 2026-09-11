@@ -241,6 +241,13 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             false,
         );
     }
+    if code == "identity.short_handle_invite_required" {
+        return SafeError::new(
+            "short_handle_invite_required",
+            "The requested short Handle requires an invitation.",
+            false,
+        );
+    }
     if matches!(
         code.as_str(),
         "handle_unavailable" | "handle_exists" | "user_path_conflict" | "did_conflict"
@@ -388,6 +395,27 @@ mod tests {
         });
         assert_eq!(error.code, "invalid_otp");
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn short_handle_invite_required_maps_by_exact_machine_code_only() {
+        let expected = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(400),
+            code: Some("identity.short_handle_invite_required".to_owned()),
+            message: "private service invitation detail".to_owned(),
+            data: Some(serde_json::json!({"retryable": false})),
+        });
+        assert_eq!(expected.code, "short_handle_invite_required");
+        assert!(!expected.retryable);
+        assert!(!expected.safe_message.contains("private"));
+
+        let wrong_code = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(400),
+            code: Some("identity.short_handle_invite_required_extra".to_owned()),
+            message: "A new short Handle requires an invitation.".to_owned(),
+            data: None,
+        });
+        assert_eq!(wrong_code.code, "service_error");
     }
 
     #[test]
