@@ -2,6 +2,126 @@ use super::*;
 use im_core::prelude::{Message, MessageMetadata, ThreadId};
 use serde_json::json;
 
+fn receive_outcome(status: MessageSyncStatus) -> im_core::messages::MessageReceiveOutcome {
+    im_core::messages::MessageReceiveOutcome {
+        status,
+        complete: status == MessageSyncStatus::Changed,
+        events_received: 1,
+        pages_fetched: 1,
+        messages_hydrated: 1,
+        duplicates_skipped: 0,
+        older_history_excluded: false,
+        error_code: None,
+        warnings: vec![],
+    }
+}
+
+#[tokio::test]
+async fn storage_retry_resumes_after_direct_and_reported_contention() {
+    let mut attempts = 0;
+    let received = receive_foreground_with_storage_retry(|| {
+        attempts += 1;
+        let outcome = match attempts {
+            1 => Err(im_core::ImError::LocalStateUnavailable {
+                detail: "database is locked".to_owned(),
+            }),
+            2 => {
+                let mut outcome = receive_outcome(MessageSyncStatus::RetryableFailure);
+                outcome.error_code = Some("SYNC_RETRYABLE_FAILURE".to_owned());
+                outcome.warnings = vec!["sync.retry.local_state.database_busy".to_owned()];
+                Ok(outcome)
+            }
+            _ => Ok(receive_outcome(MessageSyncStatus::Changed)),
+        };
+        std::future::ready(outcome)
+    })
+    .await
+    .unwrap();
+    assert_eq!(attempts, 3);
+    assert_eq!(received.status, MessageSyncStatus::Changed);
+    assert!(received.complete);
+}
+
+#[tokio::test]
+async fn storage_retry_is_bounded_and_preserves_failure() {
+    let mut attempts = 0;
+    let error = receive_foreground_with_storage_retry(|| {
+        attempts += 1;
+        std::future::ready(Err(im_core::ImError::LocalStateUnavailable {
+            detail: "database is locked".to_owned(),
+        }))
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(attempts, 3);
+    assert!(error.is_temporary_storage_contention());
+}
+
+#[tokio::test]
+async fn storage_retry_does_not_retry_other_failures() {
+    for error in [
+        im_core::ImError::PermissionDenied,
+        im_core::ImError::AuthRequired,
+        im_core::ImError::TransportUnavailable {
+            detail: "offline".to_owned(),
+        },
+        im_core::ImError::LocalStateUnavailable {
+            detail: "file is not a database".to_owned(),
+        },
+    ] {
+        let mut attempts = 0;
+        assert!(receive_foreground_with_storage_retry(|| {
+            attempts += 1;
+            std::future::ready(Err(error.clone()))
+        })
+        .await
+        .is_err());
+        assert_eq!(attempts, 1);
+    }
+}
+
+#[tokio::test]
+async fn storage_retry_does_not_mask_receive_budget_or_authorization_failure() {
+    for status in [
+        MessageSyncStatus::Changed,
+        MessageSyncStatus::AuthRevoked,
+        MessageSyncStatus::RetryableFailure,
+    ] {
+        let mut attempts = 0;
+        let mut outcome = receive_outcome(status);
+        outcome.complete = false;
+        outcome.error_code = Some("SYNC_RETRYABLE_FAILURE".to_owned());
+        outcome.warnings = vec![
+            "sync.budget_exhausted".to_owned(),
+            "sync.retry.local_state.database_busy".to_owned(),
+        ];
+        assert!(receive_foreground_with_storage_retry(|| {
+            attempts += 1;
+            std::future::ready(Ok(outcome.clone()))
+        })
+        .await
+        .is_err());
+        assert_eq!(attempts, 1);
+    }
+}
+
+#[test]
+fn local_storage_errors_keep_their_category() {
+    for detail in [
+        "database is locked",
+        "database table is locked",
+        "file is not a database",
+        "attempt to write a readonly database",
+    ] {
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::LocalStateUnavailable {
+                detail: detail.to_owned(),
+            }),
+            MessageAdapterError::LocalStateUnavailable(detail.to_owned()),
+        );
+    }
+}
+
 #[test]
 fn foreground_message_reads_use_standard_reconcile_reason() {
     assert_eq!(foreground_message_sync_reason(), "foreground_reconcile");

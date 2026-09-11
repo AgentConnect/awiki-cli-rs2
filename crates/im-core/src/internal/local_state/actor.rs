@@ -2447,8 +2447,11 @@ fn run_actor(
             }
             LocalStateCommand::UpsertIdentityAccountBinding { binding, reply } => {
                 let result = (|| {
+                    // Validate against the binding observed after acquiring the
+                    // writer lock. A deferred read snapshot cannot be upgraded
+                    // safely when a P5/other connection writes concurrently.
                     let transaction = connection
-                        .transaction()
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                         .map_err(super::local_state_unavailable)?;
                     super::sync_v2::upsert_identity_account_binding(&transaction, &binding)?;
                     transaction.commit().map_err(super::local_state_unavailable)

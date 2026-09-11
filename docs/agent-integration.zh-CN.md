@@ -148,6 +148,13 @@ awiki-cli runtime status --format json
 awiki-cli msg inbox --unread --limit 20 --format json
 ```
 
+前台消息查询遇到接收阶段明确的 SQLite 锁竞争时，会沿既有持久化游标最多尝试三次，
+两次等待分别为 25、50 毫秒；网络、认证、协议错误和同步预算耗尽不进入此重试。
+`msg inbox` 的暂时锁竞争仍未恢复时，返回 `local_state_unavailable`、退出码 5
+和 `retryable=true`；调用方可以在本地写入完成后有界重试这次查询。数据库损坏、
+只读文件或权限错误不标记为可重试。此规则只适用于收件查询，不能据此盲目重试发送
+等可能已经产生远端副作用的写操作。
+
 ## 8. OpenClaw Host Notification
 
 先在 OpenClaw 侧启用 hooks，再配置 CLI：

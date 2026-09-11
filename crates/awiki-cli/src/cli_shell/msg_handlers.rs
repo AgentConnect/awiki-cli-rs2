@@ -804,12 +804,7 @@ impl App {
             let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core(
                 &resolved, &client, query,
             )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Ensure the active identity is ready and the message service is reachable.",
-                )
-            })?;
+            .map_err(inbox_read_exit)?;
             return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
         self.render_msg_inbox_plan(command, &resolved)
@@ -844,12 +839,7 @@ impl App {
                     &client, &query,
                 )
                 .await
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Ensure the active identity is ready and the message service is reachable.",
-                    )
-                })?;
+                .map_err(inbox_read_exit)?;
             if refresh_after_hydration {
                 let selector = im_core::IdentitySelector::Did(client.did().clone());
                 client =
@@ -862,12 +852,7 @@ impl App {
                 secure_warnings,
             )
             .await
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Ensure the active identity is ready and the message service is reachable.",
-                )
-            })?;
+            .map_err(inbox_read_exit)?;
             return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
         self.render_msg_inbox_plan(command, &resolved)
@@ -1414,6 +1399,31 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .get(name)
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
+
+// Only read-only inbox requests can advertise an unconditional query retry.
+// Writes keep their existing reconciliation requirements and retry policy.
+fn inbox_read_exit(error: MessageAdapterError) -> ExitError {
+    let local_storage_error = matches!(&error, MessageAdapterError::LocalStateUnavailable(_));
+    let temporary_contention = error.is_temporary_storage_contention();
+    let mut exit = message_exit(
+        error,
+        "Ensure the active identity is ready and the message service is reachable.",
+    );
+    if local_storage_error {
+        exit.detail.retryable = temporary_contention;
+        exit.detail.hint = if temporary_contention {
+            "Retry the inbox query after the current local database write completes."
+        } else {
+            "Check the local database health and permissions before retrying."
+        }
+        .to_owned();
+    }
+    exit
+}
+
+#[cfg(test)]
+#[path = "msg_inbox_error_tests.rs"]
+mod inbox_error_tests;
 
 pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> ExitError {
     let err = err.into();

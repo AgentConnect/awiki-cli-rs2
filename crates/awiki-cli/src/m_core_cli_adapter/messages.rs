@@ -621,6 +621,21 @@ pub(super) fn require_foreground_message_sync(
 pub(super) fn require_foreground_message_receive(
     received: &im_core::messages::MessageReceiveOutcome,
 ) -> Result<(), MessageAdapterError> {
+    if received.status == MessageSyncStatus::RetryableFailure
+        && received.error_code.as_deref() == Some("SYNC_RETRYABLE_FAILURE")
+        && !received
+            .warnings
+            .iter()
+            .any(|warning| warning == "sync.budget_exhausted")
+        && received
+            .warnings
+            .iter()
+            .any(|warning| warning == "sync.retry.local_state.database_busy")
+    {
+        return Err(MessageAdapterError::LocalStateUnavailable(
+            "database is busy".to_owned(),
+        ));
+    }
     let isolated_lane_failure = received.error_code.is_none()
         && received
             .warnings
@@ -675,15 +690,16 @@ pub async fn reconcile_foreground_message_sync_async(
         .messages()
         .watch_processing_updates()
         .map_err(im_error_to_message_error)?;
-    let received = client
-        .messages()
-        .receive_now_async(MessageSyncRequest {
-            reason: foreground_message_sync_reason().to_owned(),
-            limit: Some(100),
-        })
-        .await
-        .map_err(im_error_to_message_error)?;
-    require_foreground_message_receive(&received)?;
+    let received = receive_foreground_with_storage_retry(|| async {
+        client
+            .messages()
+            .receive_now_async(MessageSyncRequest {
+                reason: foreground_message_sync_reason().to_owned(),
+                limit: Some(100),
+            })
+            .await
+    })
+    .await?;
     // A bounded freshness wait is separate from receive. One blocked event may
     // add a warning, but cannot hide other already committed messages from CLI.
     let outcome = processing.wait_async(client).await;
@@ -694,6 +710,37 @@ pub async fn reconcile_foreground_message_sync_async(
         Err(_) => vec!["sync.processing_unavailable".to_owned()],
     });
     Ok(warnings)
+}
+
+// Resume the existing durable receive cursor after transient local contention.
+// No send is repeated; all other receive/authorization failures stay terminal.
+async fn receive_foreground_with_storage_retry<F, Fut>(
+    mut receive: F,
+) -> Result<im_core::messages::MessageReceiveOutcome, MessageAdapterError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = im_core::ImResult<im_core::messages::MessageReceiveOutcome>>,
+{
+    let mut retries = 0;
+    loop {
+        let result = receive()
+            .await
+            .map_err(im_error_to_message_error)
+            .and_then(|received| {
+                require_foreground_message_receive(&received)?;
+                Ok(received)
+            });
+        if retries == 2
+            || !result
+                .as_ref()
+                .err()
+                .is_some_and(MessageAdapterError::is_temporary_storage_contention)
+        {
+            return result;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25 << retries)).await;
+        retries += 1;
+    }
 }
 
 fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {
@@ -2130,6 +2177,9 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         }
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
+        }
+        im_core::ImError::LocalStateUnavailable { detail } => {
+            MessageAdapterError::LocalStateUnavailable(detail)
         }
         im_core::ImError::PathUnavailable { path_kind, detail } => {
             MessageAdapterError::PathUnavailable(format!("{path_kind} path unavailable: {detail}"))

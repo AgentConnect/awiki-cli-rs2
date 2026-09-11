@@ -1,6 +1,93 @@
 use super::*;
 
 #[tokio::test]
+async fn account_binding_waits_for_concurrent_writer_before_validation() {
+    assert_binding_after_concurrent_write(false).await;
+}
+
+#[tokio::test]
+async fn account_binding_revalidates_generation_after_concurrent_writer() {
+    assert_binding_after_concurrent_write(true).await;
+}
+
+async fn assert_binding_after_concurrent_write(advance_generation: bool) {
+    use super::super::sync_v2::IdentityAccountBinding;
+    use std::time::Duration;
+
+    let fixture = Fixture::new();
+    let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
+    let binding = IdentityAccountBinding {
+        owner_identity_id: "alice-id".to_owned(),
+        account_id: "account-alice".to_owned(),
+        handle_scope: Some("alice.awiki.info".to_owned()),
+        current_did: "did:wba:awiki.info:user:alice".to_owned(),
+        protocol_device_id: "device-desktop".to_owned(),
+        identity_generation: "1".to_owned(),
+        device_auth_generation: "2".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+
+    let writer = super::super::open_writable(&fixture.sqlite_path()).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    writer
+        .execute(
+            "UPDATE identity_account_bindings SET device_auth_generation=?1, updated_at=2
+         WHERE owner_identity_id='alice-id'",
+            [if advance_generation { "3" } else { "2" }],
+        )
+        .unwrap();
+
+    // Enqueue the actual actor command while the other connection holds a
+    // write transaction. A DEFERRED transaction reads the old binding first
+    // and then fails immediately when upgrading that snapshot to a writer.
+    let (reply, mut receiver) = oneshot::channel();
+    let mut requested = binding.clone();
+    requested.updated_at = 3;
+    db.send(LocalStateCommand::UpsertIdentityAccountBinding {
+        binding: requested.clone(),
+        reply,
+    })
+    .await
+    .unwrap();
+    let early = tokio::time::timeout(Duration::from_millis(150), &mut receiver).await;
+    writer.execute_batch("COMMIT").unwrap();
+    let waited_for_writer = early.is_err();
+    let result = match early {
+        Ok(result) => result.unwrap(),
+        Err(_) => tokio::time::timeout(Duration::from_secs(5), receiver)
+            .await
+            .unwrap()
+            .unwrap(),
+    };
+    let stored = db
+        .load_identity_account_binding(&binding.owner_identity_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db.shutdown().await.unwrap();
+
+    assert!(
+        waited_for_writer,
+        "binding must wait before reading: {result:?}"
+    );
+    if advance_generation {
+        assert!(matches!(
+            result,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(stored.device_auth_generation, "3");
+        assert_eq!(stored.updated_at, 2);
+    } else {
+        result.unwrap();
+        assert_eq!(stored, requested);
+    }
+}
+
+#[tokio::test]
 async fn db_actor_initializes_schema_and_returns_version() {
     let fixture = Fixture::new();
     let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();

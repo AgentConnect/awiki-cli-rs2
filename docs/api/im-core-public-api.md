@@ -1389,6 +1389,9 @@ Reliable sync 补充：
   已提交投影；结果只代表 committed local view，不代表远端最新。写入一致性继续由 SQLite actor、
   原子事务、`run_generation` 与 P5/P6 peer/group scope fence 保证。要求 freshness 的入口仍等待
   single-flight 同步结果，并在同步失败时 fail closed。
+  SQLite actor 更新身份账号绑定时，在读取和校验旧绑定之前以 `BEGIN IMMEDIATE` 取得写锁，
+  避免与 P5/后台写入竞争时将旧读快照升级成写事务。等待后必须重新校验当前账号、设备和
+  identity/device authorization generation，不能覆盖其他连接已提交的较新绑定；事务内没有网络调用。
   Snapshot 仍在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
   CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed Schema 3，消息时间不得
   早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法；全部

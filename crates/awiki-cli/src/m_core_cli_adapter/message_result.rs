@@ -78,6 +78,12 @@ impl MessageAdapterError {
     pub fn transport_unavailable(detail: impl Into<String>) -> Self {
         Self::TransportUnavailable(detail.into())
     }
+
+    pub(crate) fn is_temporary_storage_contention(&self) -> bool {
+        matches!(self, Self::LocalStateUnavailable(detail)
+            if matches!(detail.as_str(),
+                "database is locked" | "database table is locked" | "database is busy"))
+    }
 }
 
 impl fmt::Display for ServiceError {
