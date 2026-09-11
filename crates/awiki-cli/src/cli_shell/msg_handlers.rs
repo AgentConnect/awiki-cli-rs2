@@ -1403,6 +1403,70 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
 // Only read-only inbox requests can advertise an unconditional query retry.
 // Writes keep their existing reconciliation requirements and retry policy.
 fn inbox_read_exit(error: MessageAdapterError) -> ExitError {
+    if let MessageAdapterError::ForegroundSyncPending {
+        budget_exhausted,
+        error_code,
+        warnings,
+    } = &error
+    {
+        // Retry only known read-side progress/transport states. Unknown service
+        // failures and permanent storage errors still require intervention.
+        let receive_pending = error_code.is_none() && warnings.is_empty();
+        let transient_transport = error_code.as_deref() == Some("SYNC_RETRYABLE_FAILURE")
+            && warnings.as_slice() == ["sync.retry.transport_unavailable"];
+        let retryable = *budget_exhausted || receive_pending || transient_transport;
+        let sync_reason = if *budget_exhausted {
+            "budget_exhausted"
+        } else if receive_pending {
+            "receive_pending"
+        } else {
+            "retryable_failure"
+        };
+        let safe_code = error_code.as_deref().filter(|code| {
+            !code.is_empty()
+                && code.len() <= 128
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        });
+        let safe_warnings = warnings
+            .iter()
+            .filter(|warning| {
+                matches!(
+                    warning.as_str(),
+                    "sync.budget_exhausted"
+                        | "sync.retry.transport_unavailable"
+                        | "sync.retry.service_unavailable"
+                        | "sync.retry.local_state_unavailable"
+                        | "sync.retry.local_state.actor_closed"
+                        | "sync.retry.local_state.database_busy"
+                        | "sync.retry.local_state.constraint_failed"
+                        | "sync.retry.local_state.schema_unavailable"
+                        | "sync.retry.local_state.storage_unavailable"
+                        | "sync.retry.local_state.codec_unavailable"
+                        | "sync.retry.local_state.other"
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut exit = ExitError::new(
+            "transport_unavailable",
+            1,
+            "Foreground inbox synchronization has not completed.",
+            if retryable {
+                "Retry the inbox query within a bounded wait to resume durable synchronization."
+            } else {
+                "Inspect the synchronization reason and resolve the failure before retrying."
+            },
+        );
+        exit.detail.retryable = retryable;
+        exit.detail.details = json!({
+            "phase": "inbox_reconciliation",
+            "sync_reason": sync_reason,
+            "sync_error_code": safe_code,
+            "sync_warnings": safe_warnings,
+        });
+        return exit;
+    }
     let local_storage_error = matches!(&error, MessageAdapterError::LocalStateUnavailable(_));
     let temporary_contention = error.is_temporary_storage_contention();
     let mut exit = message_exit(
@@ -1500,7 +1564,8 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             err.to_string(),
             "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow.",
         ),
-        MessageAdapterError::TransportUnavailable(_) => ExitError::new(
+        MessageAdapterError::TransportUnavailable(_)
+        | MessageAdapterError::ForegroundSyncPending { .. } => ExitError::new(
             "transport_unavailable",
             1,
             err.to_string(),

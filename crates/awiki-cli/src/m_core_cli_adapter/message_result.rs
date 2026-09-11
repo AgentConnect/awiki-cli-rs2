@@ -52,6 +52,11 @@ pub enum MessageAdapterError {
     AttachmentMessageInvalid,
     AttachmentSenderRequired,
     TransportUnavailable(String),
+    ForegroundSyncPending {
+        budget_exhausted: bool,
+        error_code: Option<String>,
+        warnings: Vec<String>,
+    },
     SecureNotSupported,
     SecureAttachmentNotSupported,
     AttachmentNotSupported,
@@ -152,6 +157,18 @@ impl fmt::Display for MessageAdapterError {
                         ERR_TRANSPORT_UNAVAILABLE_TEXT,
                         detail.trim()
                     )
+                }
+            }
+            Self::ForegroundSyncPending {
+                budget_exhausted,
+                error_code,
+                warnings,
+            } => {
+                if *budget_exhausted {
+                    write!(formatter, "{ERR_TRANSPORT_UNAVAILABLE_TEXT}: foreground message reconciliation is incomplete (sync.budget_exhausted); retry the query to resume durable synchronization")
+                } else {
+                    write!(formatter, "{ERR_TRANSPORT_UNAVAILABLE_TEXT}: foreground message reconciliation did not complete (error_code={}, warnings={})",
+                        error_code.as_deref().unwrap_or("none"), warnings.join(","))
                 }
             }
             Self::SecureNotSupported => {

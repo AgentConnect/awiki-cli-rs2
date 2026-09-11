@@ -54,3 +54,83 @@ fn write_contention_does_not_enable_blind_retries() {
     assert_eq!(error.detail.code, "local_state_unavailable");
     assert!(!error.detail.retryable);
 }
+
+#[test]
+fn foreground_inbox_pending_states_have_structured_bounded_retry_guidance() {
+    for (budget_exhausted, error_code, warnings, reason) in [
+        (
+            true,
+            None,
+            vec!["sync.budget_exhausted"],
+            "budget_exhausted",
+        ),
+        (false, None, vec![], "receive_pending"),
+        (
+            false,
+            Some("SYNC_RETRYABLE_FAILURE"),
+            vec!["sync.retry.transport_unavailable"],
+            "retryable_failure",
+        ),
+    ] {
+        let pending = MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted,
+            error_code: error_code.map(str::to_owned),
+            warnings: warnings
+                .iter()
+                .map(|warning| (*warning).to_owned())
+                .collect(),
+        };
+        let error = inbox_read_exit(pending.clone());
+        assert_eq!(error.detail.code, "transport_unavailable");
+        assert_eq!(error.exit_code, 1);
+        assert!(error.detail.retryable);
+        assert_eq!(error.detail.details["phase"], "inbox_reconciliation");
+        assert_eq!(error.detail.details["sync_reason"], reason);
+        assert_eq!(error.detail.details["sync_error_code"], json!(error_code));
+        assert_eq!(error.detail.details["sync_warnings"], json!(warnings));
+        assert!(
+            !message_exit(pending, "Reconcile the operation.")
+                .detail
+                .retryable
+        );
+    }
+}
+
+#[test]
+fn foreground_storage_and_unknown_failures_do_not_advertise_query_retries() {
+    for warning in [
+        "sync.retry.local_state.constraint_failed",
+        "sync.retry.local_state.schema_unavailable",
+        "sync.retry.local_state.storage_unavailable",
+        "sync.retry.local_state.codec_unavailable",
+        "sync.retry.local_state.other",
+        "sync.retry.service_unavailable",
+    ] {
+        let error = inbox_read_exit(MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: false,
+            error_code: Some("SYNC_RETRYABLE_FAILURE".into()),
+            warnings: vec![warning.into()],
+        });
+        assert!(!error.detail.retryable, "{warning}");
+        assert_eq!(error.detail.details["sync_warnings"], json!([warning]));
+    }
+    let error = inbox_read_exit(MessageAdapterError::TransportUnavailable("unknown".into()));
+    assert!(!error.detail.retryable);
+}
+
+#[test]
+fn pending_sync_json_does_not_expose_arbitrary_error_or_warning_details() {
+    let error = inbox_read_exit(MessageAdapterError::ForegroundSyncPending {
+        budget_exhausted: false,
+        error_code: Some("Bearer secret-value".into()),
+        warnings: vec![
+            "did:wba:private:fixture".into(),
+            "sync.retry.transport_unavailable".into(),
+        ],
+    });
+    let rendered = serde_json::to_string(&error.detail).unwrap();
+    assert!(!rendered.contains("secret-value"));
+    assert!(!rendered.contains("private:fixture"));
+    assert!(!error.detail.retryable);
+    assert!(error.detail.details["sync_error_code"].is_null());
+}

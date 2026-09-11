@@ -177,7 +177,7 @@ fn foreground_message_reads_projection_only_after_terminal_sync_success() {
     ));
     assert!(matches!(
         require_foreground_message_sync(&sync_outcome(MessageSyncStatus::RetryableFailure)),
-        Err(MessageAdapterError::TransportUnavailable(_))
+        Err(MessageAdapterError::ForegroundSyncPending { .. })
     ));
     assert!(matches!(
         require_foreground_message_sync(&sync_outcome(MessageSyncStatus::Blocked)),
@@ -608,10 +608,11 @@ fn receive_budget_boundary_keeps_the_public_resumable_error() {
         error_code: None,
         warnings: vec!["sync.budget_exhausted".into()],
     };
-    let Err(MessageAdapterError::TransportUnavailable(message)) =
+    let Err(error @ MessageAdapterError::ForegroundSyncPending { budget_exhausted: true, .. }) =
         require_foreground_message_receive(&received)
     else {
         panic!("unfinished receive must request continuation")
     };
+    let message = error.to_string();
     assert!(message.contains("(sync.budget_exhausted)"), "{message}");
 }

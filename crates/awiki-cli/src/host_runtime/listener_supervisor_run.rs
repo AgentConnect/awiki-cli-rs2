@@ -496,7 +496,8 @@ fn listener_local_inbox_secure_hydration_or_warning(
 
     match result {
         Ok(warnings) => Ok(warnings),
-        Err(MessageAdapterError::TransportUnavailable(_)) => {
+        Err(MessageAdapterError::TransportUnavailable(_))
+        | Err(MessageAdapterError::ForegroundSyncPending { .. }) => {
             Ok(vec!["sync.secure_inbox_hydration_deferred".to_owned()])
         }
         Err(MessageAdapterError::LocalStateUnavailable(_)) => Ok(vec![
@@ -514,7 +515,8 @@ fn listener_local_inbox_transport_or_warning(
         Ok(warnings) => Ok(warnings),
         Err(
             crate::m_core_cli_adapter::message_result::MessageAdapterError::TransportUnavailable(_),
-        ) => Ok(vec![warning.to_owned()]),
+        )
+        | Err(crate::m_core_cli_adapter::message_result::MessageAdapterError::ForegroundSyncPending { .. }) => Ok(vec![warning.to_owned()]),
         Err(error) => Err(error),
     }
 }
@@ -525,7 +527,8 @@ fn local_inbox_reconciliation_error_category(
     use crate::m_core_cli_adapter::message_result::MessageAdapterError;
 
     match error {
-        MessageAdapterError::TransportUnavailable(_) => "transport_unavailable",
+        MessageAdapterError::TransportUnavailable(_)
+        | MessageAdapterError::ForegroundSyncPending { .. } => "transport_unavailable",
         MessageAdapterError::LocalStateUnavailable(_) => "local_state_unavailable",
         MessageAdapterError::IdentityRequired(_) => "identity_required",
         MessageAdapterError::PermissionDenied => "permission_denied",
@@ -1322,6 +1325,17 @@ mod tests {
                 "sync.foreground_reconcile_deferred",
             )
             .unwrap(),
+            vec!["sync.foreground_reconcile_deferred"]
+        );
+        assert_eq!(
+            listener_local_inbox_transport_or_warning(
+                Err(MessageAdapterError::ForegroundSyncPending {
+                    budget_exhausted: true,
+                    error_code: None,
+                    warnings: vec!["sync.budget_exhausted".into()],
+                }),
+                "sync.foreground_reconcile_deferred",
+            ).unwrap(),
             vec!["sync.foreground_reconcile_deferred"]
         );
         assert!(matches!(

@@ -593,9 +593,11 @@ pub(super) fn require_foreground_message_sync(
         .iter()
         .any(|warning| warning == "sync.budget_exhausted")
     {
-        return Err(MessageAdapterError::TransportUnavailable(
-            "foreground message reconciliation is incomplete (sync.budget_exhausted); retry the query to resume durable synchronization".to_owned(),
-        ));
+        return Err(MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: true,
+            error_code: outcome.error_code.clone(),
+            warnings: outcome.warnings.clone(),
+        });
     }
     match outcome.status {
         MessageSyncStatus::Idle | MessageSyncStatus::Changed => Ok(()),
@@ -603,11 +605,11 @@ pub(super) fn require_foreground_message_sync(
             "foreground message recovery did not complete".to_owned(),
         )),
         MessageSyncStatus::RetryableFailure => {
-            Err(MessageAdapterError::TransportUnavailable(format!(
-                "foreground message reconciliation did not complete (error_code={}, warnings={})",
-                outcome.error_code.as_deref().unwrap_or("none"),
-                outcome.warnings.join(",")
-            )))
+            Err(MessageAdapterError::ForegroundSyncPending {
+                budget_exhausted: false,
+                error_code: outcome.error_code.clone(),
+                warnings: outcome.warnings.clone(),
+            })
         }
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),

@@ -155,6 +155,14 @@ awiki-cli msg inbox --unread --limit 20 --format json
 只读文件或权限错误不标记为可重试。此规则只适用于收件查询，不能据此盲目重试发送
 等可能已经产生远端副作用的写操作。
 
+`msg inbox` 的同步预算耗尽、接收尚未完成或明确的暂时传输故障仍返回
+`transport_unavailable` 和退出码 1，同时设置 `retryable=true`。
+`error.details.phase` 为 `inbox_reconciliation`，`sync_reason` 区分
+`budget_exhausted`、`receive_pending`、`retryable_failure`；`sync_error_code`
+和 `sync_warnings` 只输出安全的代码与已知分类。调用方可在原有总期限内重试
+这次查询，必须继续检查业务就绪条件，不能把同步未完成当成成功。未知网络/服务
+错误、认证或绑定失败、永久存储问题不因此自动重试；发送等写操作也不适用此标记。
+
 ## 8. OpenClaw Host Notification
 
 先在 OpenClaw 侧启用 hooks，再配置 CLI：
