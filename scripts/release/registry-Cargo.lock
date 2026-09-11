@@ -112,9 +112,9 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5badb57b9c4240bcec1c61e4f290232005cb0a04f1b481ccb2731c9a1eb61e1b"
+checksum = "20abaecdca529bea94da57e5b1fc67b95cd5d5d34bae1a1ba90dd245df004b37"
 dependencies = [
  "base64",
  "bs58",
@@ -152,9 +152,9 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e76945f16eece3d1d3057a52ae6df4cc2eadc46900b20f48b1a11cdaafa383f7"
+checksum = "1d3c4524c520777547a3673f2438011fa1471138ccd02beee55c73890eb34828"
 dependencies = [
  "anp",
  "base64",
@@ -412,9 +412,9 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17d5c91285493073a64f0b0c0178a97a2809cd62613c4f68fef999d41a0da334"
+checksum = "0768132f972fb1665128b20c059e91b8941d39afce2b35b12a3d22d0876130f6"
 dependencies = [
  "anp",
  "anp-identity",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anp",
  "async-trait",

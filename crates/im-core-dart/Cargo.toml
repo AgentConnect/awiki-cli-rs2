@@ -29,7 +29,7 @@ identity-native-anp = ["im-core/identity-native-anp"]
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-im-core = { package = "awiki-im-core", version = "=0.1.3", path = "../im-core", default-features = false }
+im-core = { package = "awiki-im-core", version = "=0.1.4", path = "../im-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 flutter_rust_bridge = "=2.12.0"

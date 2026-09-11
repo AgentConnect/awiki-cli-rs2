@@ -5,6 +5,12 @@
 - Map the exact User Service `identity.short_handle_invite_required` registration
   code to the secret-free, non-retryable `short_handle_invite_required` Node error.
 
+## 0.2.6
+
+- Use IM Core 0.1.4 with ANP 1.0.3 and Identity 0.2.3.
+- Include durable P5 reply recovery and notification hydration admission fixes.
+- Preserve native API version 14 and the five supported platform packages.
+
 ## 0.2.5
 
 - License the wrapper and all five native packages under Apache-2.0.
