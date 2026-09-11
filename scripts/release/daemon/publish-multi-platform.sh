@@ -6,7 +6,7 @@ set -euo pipefail
 # Usage:
 #   scripts/release/daemon/publish-multi-platform.sh
 #
-# This script accepts no arguments and does not require external environment
+# This script accepts an optional --run-id ID and does not require external environment
 # variables. Copy the sibling publish-multi-platform.toml.template to
 # publish-multi-platform.toml, fill in the GitHub token and release settings,
 # then run this script on the server that owns /var/www/awiki-web/daemon.
@@ -26,6 +26,11 @@ WORKFLOW_FILE="build-daemon-release.yml"
 # may select a reviewed workflow revision that already contains the build
 # contract needed by source_ref.
 DEFAULT_WORKFLOW_REF="main"
+REUSE_RUN_ID=""
+if [[ $# -gt 0 ]]; then
+  [[ $# -eq 2 && "$1" == "--run-id" && "$2" =~ ^[1-9][0-9]*$ ]] || { echo 'Usage: publish-multi-platform.sh [--run-id ID]' >&2; exit 2; }
+  REUSE_RUN_ID="$2"
+fi
 
 cd "${ROOT_DIR}"
 export COPYFILE_DISABLE=1
@@ -573,7 +578,14 @@ daemon release plan
   published_latest_source: ${PUBLISHED_VERSION_SOURCE}
 EOF
 
-trigger_workflow
+if [[ -n "$REUSE_RUN_ID" ]]; then
+  RUN_ID="$REUSE_RUN_ID"
+  [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] || die 'reusing a run requires an exact source SHA'
+  GH_TOKEN="$GITHUB_TOKEN_VALUE" gh api "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}" |
+    python3 -c 'import json,sys; r=json.load(sys.stdin); sha,workflow=sys.argv[1:]; assert r["head_sha"]==sha and r["event"]=="workflow_dispatch" and r["path"].split("@")[0]==".github/workflows/"+workflow, "workflow run does not match this release"' "$SOURCE_REF" "$WORKFLOW_FILE"
+else
+  trigger_workflow
+fi
 echo "github_actions_run: ${RUN_ID}"
 wait_for_workflow
 download_artifacts "${ARTIFACT_DIR}"
