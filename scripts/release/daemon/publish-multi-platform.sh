@@ -30,6 +30,7 @@ REUSE_RUN_ID=""
 if [[ $# -gt 0 ]]; then
   [[ $# -eq 2 && "$1" == "--run-id" && "$2" =~ ^[1-9][0-9]*$ ]] || { echo 'Usage: publish-multi-platform.sh [--run-id ID]' >&2; exit 2; }
   REUSE_RUN_ID="$2"
+  shift 2
 fi
 
 cd "${ROOT_DIR}"
