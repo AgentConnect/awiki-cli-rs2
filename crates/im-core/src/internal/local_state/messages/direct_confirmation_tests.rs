@@ -76,6 +76,95 @@ fn accepted_rebind_then_remote_echo_is_exactly_once() {
 }
 
 #[test]
+fn remote_echo_keeps_the_local_operation_distinct_from_wire_message_id() {
+    let mut db = Connection::open_in_memory().unwrap();
+    let (_, mut accepted) = fixture(&mut db, false);
+    let mut metadata: serde_json::Value = serde_json::from_str(&accepted.metadata).unwrap();
+    metadata["wire_created_at"] = json!("2026-09-11T05:00:00Z");
+    accepted.metadata = metadata.to_string();
+    messages::upsert_message(&db, &accepted).unwrap();
+    let remote = MessageRecord {
+        server_seq: Some(121),
+        metadata: json!({"operation_id":"message", "sync_event_id":"echo"}).to_string(),
+        ..accepted
+    };
+    for _ in 0..2 {
+        messages::upsert_message(&db, &remote).unwrap();
+        let operation: String = db.query_row(
+            "SELECT json_extract(metadata,'$.operation_id') FROM messages WHERE msg_id='message'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(operation, "operation");
+        assert_eq!(target(&db), (NEW.into(), NEW.into(), Some(121)));
+    }
+}
+
+#[test]
+fn wire_operation_echo_can_confirm_before_the_send_response() {
+    let mut db = Connection::open_in_memory().unwrap();
+    let (_, accepted) = fixture(&mut db, false);
+    db.execute(
+        "UPDATE messages SET metadata=json_set(metadata,'$.wire_created_at','2026-09-11T05:00:00Z')",
+        [],
+    ).unwrap();
+    let remote = MessageRecord {
+        server_seq: Some(121),
+        metadata: json!({"operation_id":"message", "sync_event_id":"echo"}).to_string(),
+        ..accepted.clone()
+    };
+    messages::upsert_message(&db, &remote).unwrap();
+    messages::upsert_message(&db, &accepted).unwrap();
+    assert_eq!(target(&db), (NEW.into(), NEW.into(), Some(121)));
+    let operation: String = db
+        .query_row(
+            "SELECT json_extract(metadata,'$.operation_id') FROM messages WHERE msg_id='message'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(operation, "operation");
+}
+
+#[test]
+fn wire_operation_alias_still_requires_the_exact_snapshot_and_persona() {
+    for failure in [
+        "missing_snapshot",
+        "untrusted_persona",
+        "different_body",
+        "different_operation",
+    ] {
+        let mut db = Connection::open_in_memory().unwrap();
+        let (_, accepted) = fixture(&mut db, false);
+        if failure != "missing_snapshot" {
+            db.execute(
+                "UPDATE messages SET metadata=json_set(metadata,'$.wire_created_at','2026-09-11T05:00:00Z')",
+                [],
+            ).unwrap();
+        }
+        if failure == "untrusted_persona" {
+            db.execute("UPDATE peer_identifiers SET source='untrusted'", [])
+                .unwrap();
+        }
+        let mut remote = MessageRecord {
+            server_seq: Some(121),
+            metadata: json!({"operation_id": if failure == "different_operation" { "other" } else { "message" }}).to_string(),
+            ..accepted
+        };
+        if failure == "different_body" {
+            remote.content = "another intent".into();
+        }
+        assert!(
+            matches!(
+                messages::upsert_message(&db, &remote),
+                Err(crate::ImError::MessageWireIdentityConflict { .. })
+            ),
+            "{failure}"
+        );
+        assert_eq!(target(&db).0, OLD, "{failure}");
+    }
+}
+
+#[test]
 fn remote_confirmation_can_arrive_before_the_send_response() {
     let mut db = Connection::open_in_memory().unwrap();
     let (_, accepted) = fixture(&mut db, false);

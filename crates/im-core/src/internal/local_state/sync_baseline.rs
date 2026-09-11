@@ -57,11 +57,11 @@ pub(crate) fn receive_snapshot(
 
 pub(crate) fn receive_bootstrap(
     db: &Connection,
-    input: sync_v2::BootstrapApplyInputV2,
+    mut input: sync_v2::BootstrapApplyInputV2,
     baseline: Baseline,
     expected_run_generation: i64,
     now: i64,
-) -> crate::ImResult<ReceiveOutcome> {
+) -> crate::ImResult<(ReceiveOutcome, sync_v2::MessageSyncState)> {
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .map_err(local_state_unavailable)?;
     sync_v2::require_message_sync_run_generation(
@@ -80,6 +80,8 @@ pub(crate) fn receive_bootstrap(
             "bootstrap receive header contains business projections",
         ));
     }
+    sync_v2::retain_bootstrap_receive_position(&tx, &mut input)?;
+    let state = input.state.clone();
     sync_v2::apply_bootstrap_in_transaction(&tx, input)?;
     let outcome = insert_baseline_and_events(
         &tx,
@@ -92,7 +94,7 @@ pub(crate) fn receive_bootstrap(
         now,
     )?;
     tx.commit().map_err(local_state_unavailable)?;
-    Ok(outcome)
+    Ok((outcome, state))
 }
 
 fn insert_baseline_and_events(

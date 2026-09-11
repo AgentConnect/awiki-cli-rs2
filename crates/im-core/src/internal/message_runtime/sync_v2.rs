@@ -1440,12 +1440,21 @@ where
             .await?;
         let binding = self.client.active_sync_account_binding().await?;
         let db = self.client.core_inner().local_state_db().await?;
+        let run_started = Instant::now();
+        let _receive_lock = tokio::time::timeout(
+            self.run_deadline,
+            super::sync_receive_lock::ReceiveLock::acquire(
+                &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+                &binding.owner_identity_id,
+            ),
+        )
+        .await
+        .map_err(|_| sync_error("SYNC_RECEIVE_BUSY", "another receiver still owns this account sync"))??;
         let run = db
             .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
             .await?;
         self.wake_processing();
-        let run_started = Instant::now();
-        let run_deadline = self.run_deadline;
+        let run_deadline = self.run_deadline.saturating_sub(run_started.elapsed());
         let final_result = match tokio::time::timeout(run_deadline, async {
             let mut device_epoch_refresh_attempted = false;
             loop {
@@ -2683,7 +2692,7 @@ where
             read_states: vec![],
             lane_states,
         };
-        let received = db
+        let (received, state) = db
             .run_local(move |connection| {
                 crate::internal::local_state::sync_baseline::receive_bootstrap(
                     connection,
@@ -4642,6 +4651,7 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    mod recovery_tests;
     mod dispatcher_tests {
         include!("sync_dispatcher_tests.rs");
     }

@@ -792,8 +792,8 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
          AND length(json_extract(messages.metadata, '$.wire_created_at')) > 0
         THEN json_set(COALESCE(NULLIF(excluded.metadata, ''), '{}'),
             '$.wire_created_at', json_extract(messages.metadata, '$.wire_created_at'),
-            '$.operation_id', COALESCE(json_extract(COALESCE(NULLIF(excluded.metadata, ''), '{}'), '$.operation_id'),
-                                      json_extract(messages.metadata, '$.operation_id')))
+            '$.operation_id', COALESCE(NULLIF(json_extract(messages.metadata, '$.operation_id'), ''),
+                                      json_extract(COALESCE(NULLIF(excluded.metadata, ''), '{}'), '$.operation_id')))
         WHEN excluded.content IS NULL
          AND messages.is_e2ee = 1
          AND json_valid(COALESCE(NULLIF(messages.metadata, ''), '{}')) = 1

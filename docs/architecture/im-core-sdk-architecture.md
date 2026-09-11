@@ -1215,6 +1215,10 @@ control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
 Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承诺完整输入已保存并与对应接收游标原子提交。普通事件、P5、P6 共用 `sync_lane_inbox`，必要正文 hydration 与账号/设备/来源校验先完成；业务归约、解密、Persona projection、通知和读状态回写不作为接收完成条件。旧 `sync_now` 保留显式兼容等待，使用同一接收表及 Core 处理器，等待发生在接收协调器之外；App、Listener 和 Daemon 主接收链路采用新入口。消息事实、逐条错误和处理后通知通过独立处理结果及现有本地投影机制交付。
 
+同一 SQLite 数据库、同一 owner 的 HTTP 接收轮次使用跨进程文件锁协调，锁等待计入原有接收时间预算；进程退出或任务取消时由操作系统释放。进程内请求仍由现有 coordinator 合并。后到的 CLI/Core 等待当前接收提交，再从持久游标继续；`run_generation` 和当前身份检查仍作为旧结果写入的最后一道校验。该锁只覆盖接收，不覆盖独立的逐条处理、Root completion 或 App 本地读取。
+
+设备授权代次变化仍要求使用新认证重新 bootstrap 并验证 exact account/device 与 lane 协商结果。同一 owner/account/device 的普通 stream epoch 未变时，重新协商保留已经接收的游标，再拉取其后的事件，不能把期间已经投递的 Join 通知当成尾部初始化前的历史而越过；lane 的同 epoch 本地接收位置也不能退回较早的服务端 ACK。新身份/设备的首次初始化、DID transition 清除旧接收状态和 stream epoch 变化继续走各自既有初始化或恢复路径。
+
 Core 原子领取并按类型有限并发分发，处理器只执行单条事件。 `sync_input_leases` 仅保存最多 8 个活动尝试的 token 与租期，不保存输入、身份或处理结果；即使接收载荷被淘汰，实际调用的占位仍延续到调用结束。它与独立维护共用活动上限，避免另一个 Core/连接因看不到已删除的输入而越过并发上限。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
 
 接收表每个本地数据库最多 16,384 条，覆盖最多 10,000 items 的完整 compact snapshot 及本地基线记录；加入新记录时按首次本地接收时间淘汰最老记录，腾位删除、新记录与游标一起提交。记录在首次接收 48 小时后过期，重试不续期，失败和处理中记录也适用。清理先提交则旧处理尝试不能再提交；业务先提交则清理只移除接收暂存，不删除已提交消息事实。过期/淘汰是放弃尚未完成的本地处理，不伪造业务成功、已读或 ACK。保留期内的 pending 数据在迁移、重启及 epoch/snapshot 切换后仍可恢复。
@@ -1440,6 +1444,7 @@ and continue to fail closed during replay.
 允许尚无 server sequence 的 `pending` / `stored_locally` 投影随 accepted 结果
 或先到达的精确远端消息一次性确认目标。
 发送回包丢失而标为 failed 的暂存消息，也只能由上述精确远端投影确认。
+本地 `operation_id` 可以不同于 ANP ordinary Direct 使用的消息 ID。已保存冻结 wire 创建时间的本地发送，收到同一消息的权威 echo 时保留本地 operation；先于 HTTP 回包到达的 echo 也允许用匹配 message ID 的 wire operation 完成关联，同时仍核对 owner、发送者、正文、canonical conversation 与权威 Persona。未知 operation、缺少本地冻结快照或 Persona 证据的目标变化仍拒绝。
 accepted 消息的本地重试不得把其确认状态降回暂存状态，重放始终使用已确认目标，
 不得在 stale 错误后向新 DID 再投递；已取得服务端序号的历史消息
 始终保持原 wire identity。修复旧版“accepted 元数据已记录新目标，但 receiver/wire

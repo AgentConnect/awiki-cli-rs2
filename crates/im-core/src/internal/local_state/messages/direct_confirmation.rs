@@ -59,12 +59,22 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2 AND owner_did = ?3
         return Ok(false);
     };
     let operation = previous.get("operation_id").and_then(Value::as_str);
+    let remote_confirmation = incoming.server_seq.is_some_and(|seq| seq > 0);
+    let wire_operation = next.get("operation_id").and_then(Value::as_str);
+    // ANP ordinary Direct echoes use the message ID as their wire operation.
+    // A local send intent may have a distinct operation ID. Its frozen wire
+    // creation marker plus the exact owner/message/body match above binds them.
+    let matches_wire_operation = remote_confirmation
+        && wire_operation == Some(message_id)
+        && previous
+            .get("wire_created_at")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
     if operation.is_none_or(|value| value.trim().is_empty())
-        || operation != next.get("operation_id").and_then(Value::as_str)
+        || (operation != wire_operation && !matches_wire_operation)
     {
         return Ok(false);
     }
-    let remote_confirmation = incoming.server_seq.is_some_and(|seq| seq > 0);
     // Exact legacy signature: a successful send already resolved this target,
     // but the old client persisted its original local echo as wire truth.
     let legacy_confirmation = remote_confirmation
