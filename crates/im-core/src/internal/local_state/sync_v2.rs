@@ -1630,9 +1630,14 @@ pub(crate) fn reconcile_sync_lane_capability_v1a(
     client_instance_id: &str,
     negotiated_capabilities_json: &str,
 ) -> crate::ImResult<()> {
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(super::local_state_unavailable)?;
+    // Acquire the writer lock before reading the account binding. Concurrent
+    // receivers can otherwise create a deferred read snapshot whose write
+    // upgrade fails with SQLITE_BUSY without honoring the busy timeout.
+    let transaction = rusqlite::Transaction::new_unchecked(
+        connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+    .map_err(super::local_state_unavailable)?;
     replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
     record_sync_lane_capability_negotiation_v1a(
         &transaction,
@@ -6852,6 +6857,10 @@ fn subtract_small_decimal(value: &str, amount: u32) -> crate::ImResult<Option<St
             .collect(),
     ))
 }
+
+#[cfg(test)]
+#[path = "sync_v2_concurrency_tests.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 mod tests {
