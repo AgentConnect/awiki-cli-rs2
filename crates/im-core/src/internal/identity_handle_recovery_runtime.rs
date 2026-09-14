@@ -217,7 +217,9 @@ pub(crate) async fn request_otp(
             identity,
         )?;
         pending.registration_candidate_cleanup =
-            crate::internal::identity_handle_recovery_registration_cleanup::capture(core, &pending)?;
+            crate::internal::identity_handle_recovery_registration_cleanup::capture(
+                core, &pending,
+            )?;
         store.create_v4(&pending)?;
         let now = format_timestamp(
             time::OffsetDateTime::now_utc()
@@ -437,12 +439,28 @@ pub(crate) fn list_pending_operations(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
     require_enabled(core)?;
-    crate::internal::identity_handle_recovery_operation::list_pending(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?
-    .into_iter()
-    .map(operation_summary)
-    .collect()
+    let sqlite = &core.inner().sdk_paths().local_state.sqlite_path;
+    let mut records = crate::internal::identity_handle_recovery_operation::list_pending(sqlite)?;
+    let applied = crate::internal::identity_handle_recovery_operation::list_applied(sqlite)?;
+    if !applied.is_empty() {
+        let store = PendingHandleRecoveryStore::from_core(core)?;
+        for record in applied {
+            if let Some((_, pending)) = store.load_v4(&record.operation_id)? {
+                if pending.phase == PendingRecoveryPhaseV4::Applied
+                    && pending.registration_candidate_cleanup.is_some()
+                {
+                    records.push(record);
+                }
+            }
+        }
+    }
+    records.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.operation_id.cmp(&left.operation_id))
+    });
+    records.into_iter().map(operation_summary).collect()
 }
 
 pub(crate) async fn list_operations(
@@ -1357,10 +1375,10 @@ async fn advance_v4(
             return Err(recovery_error(code));
         }
     }
-    // Applied recovery remains successful even when candidate cleanup needs a retry.
-    // The exact target stays durable until both custody and registration pending are gone.
     let _ = crate::internal::identity_handle_recovery_registration_cleanup::finish(
-        core, &store, &mut pending,
+        core,
+        &store,
+        &mut pending,
     )
     .await;
     progress_v4(core, &pending)

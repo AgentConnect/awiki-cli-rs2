@@ -185,6 +185,27 @@ async fn recovery_registration_cleanup_preserves_ambiguous_candidate_and_retries
             .unwrap()
             .retry_required
     );
+    let before_retry = store
+        .load_v4(&recovery.operation_id)
+        .unwrap()
+        .unwrap()
+        .1
+        .revision;
+    core.handle_recovery()
+        .resume_handle_recovery(HandleRecoveryResumeRequest {
+            operation_id: recovery.operation_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load_v4(&recovery.operation_id)
+            .unwrap()
+            .unwrap()
+            .1
+            .revision,
+        before_retry
+    );
     // Simulate a confirmed rejected-before-acceptance reconciliation, then restart Core.
     candidate.remote_attempted = false;
     registration_store.save(&candidate).unwrap();
@@ -194,8 +215,38 @@ async fn recovery_registration_cleanup_preserves_ambiguous_candidate_and_retries
     let core = recovery_test_core(root.path(), "https://example.invalid", [92; 32]);
     let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
     let (_, mut recovery) = store.load_v4(&recovery.operation_id).unwrap().unwrap();
-    cleanup::finish(&core, &store, &mut recovery).await.unwrap();
+    let operations = core
+        .handle_recovery()
+        .list_pending_handle_recovery_operations()
+        .unwrap();
+    assert!(operations
+        .iter()
+        .any(|op| op.operation_id == recovery.operation_id));
+    let status = core
+        .handle_recovery()
+        .handle_recovery_status(&recovery.operation_id)
+        .unwrap();
+    assert!(status
+        .allowed_actions
+        .contains(&crate::identity::HandleRecoveryAction::Resume));
+    let progress = core
+        .handle_recovery()
+        .resume_handle_recovery(HandleRecoveryResumeRequest {
+            operation_id: recovery.operation_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(progress.phase, HandleRecoveryPhase::Applied);
+    assert!(!progress
+        .allowed_actions
+        .contains(&crate::identity::HandleRecoveryAction::Resume));
     assert!(!exists(&core, &candidate));
+    assert!(core
+        .handle_recovery()
+        .list_pending_handle_recovery_operations()
+        .unwrap()
+        .is_empty());
+    recovery = store.load_v4(&recovery.operation_id).unwrap().unwrap().1;
     assert!(recovery.registration_candidate_cleanup.is_none());
 }
 
@@ -371,4 +422,86 @@ async fn recovery_registration_cleanup_request_otp_captures_candidate_once_and_p
         1
     );
     server.join().unwrap();
+}
+
+#[tokio::test]
+async fn recovery_registration_cleanup_public_resume_discovers_crash_before_first_finish() {
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), "https://example.invalid", [99; 32]);
+    let candidate = registration(&core);
+    let recovery = applied(&core);
+    assert!(
+        !recovery
+            .registration_candidate_cleanup
+            .as_ref()
+            .unwrap()
+            .retry_required
+    );
+    let operation_id = recovery.operation_id;
+    drop(core);
+    let core = recovery_test_core(root.path(), "https://example.invalid", [99; 32]);
+    let operations = core
+        .handle_recovery()
+        .list_pending_handle_recovery_operations()
+        .unwrap();
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0].operation_id, operation_id);
+    let progress = core
+        .handle_recovery()
+        .handle_recovery_status(&operation_id)
+        .unwrap();
+    assert_eq!(progress.phase, HandleRecoveryPhase::Applied);
+    assert!(progress
+        .allowed_actions
+        .contains(&crate::identity::HandleRecoveryAction::Resume));
+    core.handle_recovery()
+        .resume_handle_recovery(HandleRecoveryResumeRequest {
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(!exists(&core, &candidate));
+    assert!(core
+        .handle_recovery()
+        .list_pending_handle_recovery_operations()
+        .unwrap()
+        .is_empty());
+    core.handle_recovery()
+        .resume_handle_recovery(HandleRecoveryResumeRequest { operation_id })
+        .await
+        .unwrap();
+}
+
+#[test]
+fn recovery_registration_cleanup_capture_ignores_invalid_registration_record() {
+    use crate::internal::platform_secret::SecretBytes;
+    use crate::internal::secret_vault::policy::SecretAccessPolicy;
+    use crate::internal::secret_vault::record::SecretMetadata;
+    use crate::internal::secret_vault::SealSecretRequest;
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), "https://example.invalid", [100; 32]);
+    let candidate = registration(&core);
+    let (recovery, _) =
+        create_v4_awaiting_factor_operation(&core, "capture-corrupt", "owner-corrupt");
+    let store = PendingRegistrationStore::from_core(&core).unwrap();
+    let (reference, _) = store.load("alice", "awiki.test").unwrap().unwrap();
+    store.delete(&reference).unwrap();
+    let vault = core.inner().identity_vault().unwrap().vault();
+    vault
+        .seal(SealSecretRequest {
+            metadata: SecretMetadata {
+                workspace_id: reference.workspace_id,
+                device_id: reference.device_id,
+                identity_id: reference.identity_id,
+                did: reference.did,
+                kind: reference.kind,
+                key_id: reference.key_id,
+                key_version: reference.key_version,
+                policy: SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: SecretBytes::from_vec(b"{invalid registration".to_vec()),
+        })
+        .unwrap();
+    assert!(cleanup::capture(&core, &recovery).unwrap().is_none());
+    assert!(exists(&core, &candidate));
 }

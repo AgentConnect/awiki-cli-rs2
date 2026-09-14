@@ -32,10 +32,19 @@ pub(crate) fn capture(
     let handle =
         crate::internal::identity_wire::handle_recovery::canonical_handle(&recovery.full_handle)?;
     let store = PendingRegistrationStore::from_core(core)?;
-    let Some((_, registration)) = store.load(&handle.local_part, &handle.domain)? else {
+    let registration = match store.load(&handle.local_part, &handle.domain) {
+        Ok(registration) => registration,
+        Err(crate::ImError::PermissionDenied | crate::ImError::InvalidInput { .. }) => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    let Some((_, registration)) = registration else {
         return Ok(None);
     };
-    if !unpublished(&registration) || !unowned(core, recovery, &registration.identity)? {
+    if !unpublished(&registration)
+        || !unowned(core, recovery, &registration.identity).unwrap_or(false)
+    {
         return Ok(None);
     }
     Ok(Some(RegistrationCandidateCleanup {
@@ -88,21 +97,29 @@ pub(crate) async fn finish(
     }
     let result = cleanup(core, recovery).await;
     let revision = recovery.revision;
-    let mut updated = recovery.clone();
-    if result.is_ok() {
-        updated.registration_candidate_cleanup = None;
-    } else {
-        updated
+    if result.is_err()
+        && recovery
             .registration_candidate_cleanup
-            .as_mut()
-            .unwrap()
-            .retry_required = true;
+            .as_ref()
+            .is_some_and(|cleanup| cleanup.retry_required)
+    {
+        return result;
     }
-    updated.revision = revision
+    let next_revision = revision
         .checked_add(1)
         .ok_or(crate::ImError::PermissionDenied)?;
-    store.save_v4_cas(&updated, revision)?;
-    *recovery = updated;
+    let previous = recovery.registration_candidate_cleanup.take();
+    if result.is_err() {
+        let mut retry = previous.clone().ok_or(crate::ImError::PermissionDenied)?;
+        retry.retry_required = true;
+        recovery.registration_candidate_cleanup = Some(retry);
+    }
+    recovery.revision = next_revision;
+    if let Err(error) = store.save_v4_cas(recovery, revision) {
+        recovery.registration_candidate_cleanup = previous;
+        recovery.revision = revision;
+        return Err(error);
+    }
     result
 }
 
