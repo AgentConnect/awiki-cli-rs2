@@ -311,16 +311,21 @@ pub(crate) fn handle_anp_identity_create_spec(
 }
 
 pub(crate) fn web_device_profiles() -> Vec<String> {
-    VNEXT_SERVICE_PROFILES
-        .iter()
-        .map(|profile| {
-            if *profile == anp::authentication::PROFILE_GROUP_BASE_V1 {
-                anp::authentication::PROFILE_GROUP_BASE_V2.to_owned()
-            } else {
-                (*profile).to_owned()
-            }
-        })
-        .collect()
+    // The hosted Web registration and Join contracts freeze this ordered
+    // bundle. Replacing only P4 in the legacy WBA list changes that order.
+    [
+        anp::authentication::PROFILE_CORE_BINDING_V1,
+        anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+        anp::authentication::PROFILE_DIRECT_BASE_V1,
+        anp::authentication::PROFILE_GROUP_BASE_V2,
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+        anp::authentication::PROFILE_GROUP_E2EE_V2,
+        "anp.attachment.v1",
+        "anp.federation.relay.v1",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 /// Generates the exact three-method Manifest document required by Handle

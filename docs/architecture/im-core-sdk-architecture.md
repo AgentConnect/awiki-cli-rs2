@@ -233,6 +233,9 @@ result returns one access token; it does not return a device refresh token.
 There is no production `device_genesis`, Genesis grant, or multi-device
 registration rollout branch.
 
+Web 创建和 Join 的 Profile 顺序直接对照 `testdata/did_web_registration_v1.json` 的冻结合同；
+不从旧 WBA 列表替换单项推导，避免已提交文档被设备认证拒绝。
+
 普通 phone/email 注册可显式选择 `DidMethod::Web`；默认仍为 WBA。托管 Web
 使用独立 UUID 路径、一个 bootstrap device 的 signing/E2EE keys 与当前 Manifest
 Profile，不生成 DID RootControl 或 WBA 根 proof。Store 的加密根仍保留。身份
