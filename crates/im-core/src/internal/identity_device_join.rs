@@ -4433,7 +4433,7 @@ pub(crate) fn join_device_profiles(did: &str) -> Vec<String> {
     }
 }
 
-fn join_profiles_are_supported(did: &str, profiles: &[String]) -> bool {
+pub(crate) fn join_profiles_are_supported(did: &str, profiles: &[String]) -> bool {
     if did.starts_with("did:web:") {
         let current = join_device_profiles(did);
         profiles == current || profiles == &current[..6]

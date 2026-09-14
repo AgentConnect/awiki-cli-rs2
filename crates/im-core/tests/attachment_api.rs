@@ -1352,6 +1352,30 @@ fn attachment_discovery_selects_lowest_priority_compatible_service() {
 }
 
 #[test]
+fn attachment_discovery_keeps_actor_and_service_did_methods_independent() {
+    for actor in [
+        "did:wba:example.com:users:alice",
+        "did:web:identity.example:alice",
+    ] {
+        for service_did in ["did:wba:service.example", "did:web:service.example:message"] {
+            let document = json!({"id":actor, "service":[{
+                "id":format!("{actor}#message"), "type":"ANPMessageService",
+                "serviceDid":service_did, "serviceEndpoint":"https://service.example/im/rpc",
+                "profiles":["anp.attachment.v1"], "securityProfiles":["transport-protected"],
+            }]});
+            let selected =
+                awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
+                    actor, &document,
+                )
+                .unwrap();
+            assert_eq!(selected.sender_did, actor);
+            assert_eq!(selected.service_did, service_did);
+            assert_eq!(selected.rpc_endpoint, "https://service.example/im/rpc");
+        }
+    }
+}
+
+#[test]
 fn attachment_discovery_keeps_explicit_legacy_v1_compatibility() {
     let document = json!({
         "service": [{

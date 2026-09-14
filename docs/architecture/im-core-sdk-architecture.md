@@ -987,7 +987,7 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 
 `messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit user-open creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. Successful active Group create/join/get/add-member/refresh projection also idempotently ensures that same canonical Group DID registry row inside Core, so an empty Group conversation does not depend on an App navigation callback or first message to remain visible. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations represented by verified routes, Group projections, summaries, or preserved legacy rows and never invents an identity from display data.
 
-Every fresh Handle discovery path must receive an available authority status and a stable non-DID `user_id`/`subject_id` before it can build a Direct Persona. Both local directory lookup and public `/.well-known/handle/` discovery validate the same authority/subject/Handle contract, and public discovery additionally verifies that its `did:wba` provider domain matches the Handle authority; a missing or DID-shaped subject returns `identity_unresolved` instead of manufacturing a canonical Direct ID.
+Every fresh Handle discovery path must receive an active authority binding before it can build a Direct Persona. Local Directory retains the stable non-DID account subject; public `/.well-known/handle/` discovery uses the permanent normalized full Handle as its authority subject and ignores provider-private account IDs. Public WNS requires the exact Handle, current DID and canonical positive binding generation. WBA retains its matching DID/Provider domain requirement. Web uses the secure method resolver and requires the DID document to declare an `ANPHandleService` HTTPS endpoint on the real Handle Provider domain (default port, no credentials); its DID host may differ. Invalid document IDs or present proofs fail closed. A DID change alone never grants continuity or merges a Persona; local Directory/public WNS conflicts still fail closed.
 
 `ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
 
@@ -1659,12 +1659,17 @@ Core accepts only delivery rows/hints carrying the trusted server-side
 route. Exact-device routing is Message Service storage/delivery metadata and authenticated Inbox
 scope; it is not a P3 field and must not add `device_id`, `recipient_device_id`, or another
 device-targeting extension to P3 `meta`. P3 keeps the standard agent-DID target only. Full
-deliveries are verified against the target user's freshly resolved, root-bound DID
+deliveries are verified against the target user's freshly resolved, method-validated DID
 Document and its unique compatible `ANPMessageService.serviceDid`. That service DID anchors only
 the trusted Home Service domain. `meta.sender_did` must instead use the reserved independent
 `did:wba:<home-domain>:agents:system-notification:e1_*` Business Origin Agent path; Core resolves
 that exact DID, verifies its E1-bound DID Document proof, and verifies its RFC 9421 Origin Proof.
 Join Request self-proof and the closed type-specific payload are verified separately.
+Web recipient documents use the secure Web resolver without requiring an E1 root
+proof. Join notifications share the method-specific Join profile contract: Web
+uses the frozen vNext profiles, while WBA retains its existing compatibility sets.
+The independent system Origin Agent keeps its reserved WBA path and E1 proof;
+an arbitrary external Web service does not gain system notification authority.
 
 Schema version 29 stores an event receipt and one current reducer projection per
 `(owner_identity_id, owner_did, did, join_session_id)`. The reducer uses

@@ -157,7 +157,7 @@ fn did_document(did: &str, devices: &[DeviceSpec]) -> Value {
             "device_id": device.id,
             "signing_key_id": signing_key_id,
             "e2ee_key_id": e2ee_key_id,
-            "profiles": profiles(),
+            "profiles": if did.starts_with("did:web:") { crate::internal::identity_generation::web_device_profiles() } else { profiles() },
         }));
     }
     json!({
@@ -763,9 +763,20 @@ fn text_input(id: &str, target_did: &str, text: &str) -> V2DirectProductSendInpu
 
 #[tokio::test]
 async fn one_send_fans_out_exact_init_to_every_peer_and_sibling_device() {
+    exact_device_fanout("did:example:alice", "did:example:bob").await;
+}
+
+#[tokio::test]
+async fn mixed_did_methods_keep_p5_exact_device_fanout_and_decryption() {
+    for alice in ["did:wba:p5.example:users:alice", "did:web:p5.example:alice"] {
+        for bob in ["did:wba:p5.example:users:bob", "did:web:p5.example:bob"] {
+            exact_device_fanout(alice, bob).await;
+        }
+    }
+}
+
+async fn exact_device_fanout(alice_did: &str, bob_did: &str) {
     let root = tempfile::tempdir().unwrap();
-    let alice_did = "did:example:alice";
-    let bob_did = "did:example:bob";
     let a1 = DeviceSpec {
         id: "alice-a1",
         signing_seed: 1,

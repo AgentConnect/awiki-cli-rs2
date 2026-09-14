@@ -286,6 +286,10 @@ pub(crate) trait AsyncRawJsonTransport {
 pub(crate) trait RpcTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
 
+    fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
+
     fn directory_get_json_url(
         &mut self,
         _url: &str,
@@ -306,6 +310,10 @@ pub(crate) trait RpcTransport {
 
 pub(crate) trait AsyncRpcTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
+
+    async fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
 
     async fn directory_get_json_url(
         &mut self,
@@ -1920,6 +1928,10 @@ where
 }
 
 impl RpcTransport for CoreHttpTransport<'_> {
+    fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        RawJsonTransport::resolve_web_document(self, did)
+    }
+
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc(endpoint, method, params)
     }
@@ -1934,6 +1946,10 @@ impl RpcTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRpcTransport for CoreHttpTransport<'_> {
+    async fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        AsyncRawJsonTransport::resolve_web_document(self, did).await
+    }
+
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc_async(endpoint, method, params).await
     }

@@ -48,11 +48,7 @@ pub(crate) fn resolve_direct_handle(
         }
         HandleResolutionRoute::Public { full_handle, url } => {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
-                &mut transport,
-                url.as_str(),
-                BTreeMap::new(),
-            )?;
+            let raw = fetch_public_binding_document(&mut transport, &full_handle, url.as_str())?;
             resolution_from_public_document(full_handle.as_str(), raw)
         }
     }
@@ -72,12 +68,9 @@ pub(crate) async fn resolve_direct_handle_async(
         }
         HandleResolutionRoute::Public { full_handle, url } => {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-                &mut transport,
-                url.as_str(),
-                BTreeMap::new(),
-            )
-            .await?;
+            let raw =
+                fetch_public_binding_document_async(&mut transport, &full_handle, url.as_str())
+                    .await?;
             resolution_from_public_document(full_handle.as_str(), raw)
         }
     }
@@ -94,12 +87,8 @@ pub(crate) async fn resolve_authoritative_recovery_binding_async(
     let handle = normalize_handle_with_default_domain(raw_handle, config.did_domain.as_str())?;
     let url = authoritative_discovery_url(config, &handle);
     let mut transport = crate::internal::transport::CorePlainTransport::new(core);
-    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-        &mut transport,
-        &url,
-        BTreeMap::new(),
-    )
-    .await?;
+    let raw =
+        fetch_public_binding_document_async(&mut transport, &handle.full_handle, &url).await?;
     authoritative_lookup_from_public_document(&handle.full_handle, &raw)
 }
 
@@ -110,12 +99,8 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
     let normalized = normalize_handle_for_client(client, raw_handle)?;
     let url = authoritative_discovery_url_for_client(client, &normalized);
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-        &mut transport,
-        &url,
-        BTreeMap::new(),
-    )
-    .await?;
+    let raw =
+        fetch_public_binding_document_async(&mut transport, &normalized.full_handle, &url).await?;
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
@@ -134,22 +119,14 @@ pub(crate) async fn resolve_authoritative_direct_rebind_async(
             let normalized = normalize_handle(&full_handle)?;
             let url = authoritative_discovery_url_for_client(client, &normalized);
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-                &mut transport,
-                &url,
-                BTreeMap::new(),
-            )
-            .await?;
+            let raw =
+                fetch_public_binding_document_async(&mut transport, &full_handle, &url).await?;
             merge_local_directory_with_public_binding(&full_handle, lookup, &raw)
         }
         HandleResolutionRoute::Public { full_handle, url } => {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-                &mut transport,
-                &url,
-                BTreeMap::new(),
-            )
-            .await?;
+            let raw =
+                fetch_public_binding_document_async(&mut transport, &full_handle, &url).await?;
             authoritative_lookup_from_public_document(&full_handle, &raw)
         }
     }
@@ -162,11 +139,7 @@ pub(crate) fn resolve_authoritative_handle_binding(
     let normalized = normalize_handle_for_client(client, raw_handle)?;
     let url = authoritative_discovery_url_for_client(client, &normalized);
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let raw = crate::internal::transport::RawJsonTransport::get_json_url(
-        &mut transport,
-        &url,
-        BTreeMap::new(),
-    )?;
+    let raw = fetch_public_binding_document(&mut transport, &normalized.full_handle, &url)?;
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
@@ -184,23 +157,83 @@ pub(crate) fn resolve_authoritative_direct_rebind(
             let normalized = normalize_handle(&full_handle)?;
             let url = authoritative_discovery_url_for_client(client, &normalized);
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
-                &mut transport,
-                &url,
-                BTreeMap::new(),
-            )?;
+            let raw = fetch_public_binding_document(&mut transport, &full_handle, &url)?;
             merge_local_directory_with_public_binding(&full_handle, lookup, &raw)
         }
         HandleResolutionRoute::Public { full_handle, url } => {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
-                &mut transport,
-                &url,
-                BTreeMap::new(),
-            )?;
+            let raw = fetch_public_binding_document(&mut transport, &full_handle, &url)?;
             authoritative_lookup_from_public_document(&full_handle, &raw)
         }
     }
+}
+
+fn fetch_public_binding_document<T>(
+    transport: &mut T,
+    handle: &str,
+    url: &str,
+) -> crate::ImResult<Value>
+where
+    T: crate::internal::transport::RawJsonTransport,
+{
+    let raw = transport.get_json_url(url, BTreeMap::new())?;
+    let binding = public_handle_binding_from_value(handle, &raw)?;
+    if binding.did.as_str().starts_with("did:web:") {
+        let document = crate::internal::discovery::did_document::resolve_did_document(
+            transport,
+            binding.did.as_str(),
+        )?;
+        validate_web_handle_provider(&binding, &document)?;
+    }
+    Ok(raw)
+}
+
+async fn fetch_public_binding_document_async<T>(
+    transport: &mut T,
+    handle: &str,
+    url: &str,
+) -> crate::ImResult<Value>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
+    let raw = transport.get_json_url(url, BTreeMap::new()).await?;
+    let binding = public_handle_binding_from_value(handle, &raw)?;
+    if binding.did.as_str().starts_with("did:web:") {
+        let document = crate::internal::discovery::did_document::resolve_did_document_async(
+            transport,
+            binding.did.as_str(),
+        )
+        .await?;
+        validate_web_handle_provider(&binding, &document)?;
+    }
+    Ok(raw)
+}
+
+fn validate_web_handle_provider(
+    binding: &PublicHandleBinding,
+    document: &Value,
+) -> crate::ImResult<()> {
+    // The full Handle supplies continuity; its Provider can differ from the
+    // Web DID host. The DID must independently declare that same Provider.
+    let verified = anp::wns::extract_handle_service_from_did_document(document)
+        .iter()
+        .filter_map(|service| service.get("serviceEndpoint").and_then(Value::as_str))
+        .filter_map(|endpoint| reqwest::Url::parse(endpoint).ok())
+        .any(|endpoint| {
+            endpoint.scheme() == "https"
+                && endpoint
+                    .host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case(&binding.domain))
+                && endpoint.port_or_known_default() == Some(443)
+                && endpoint.username().is_empty()
+                && endpoint.password().is_none()
+        });
+    if !verified {
+        return Err(authority_conflict(
+            "Web DID document does not confirm the Handle Provider domain",
+        ));
+    }
+    Ok(())
 }
 
 fn merge_local_directory_with_public_binding(
@@ -369,10 +402,20 @@ fn validate_handle_match(expected: &str, actual: &str) -> crate::ImResult<()> {
 
 fn validate_did_matches_handle_domain(handle: &str, did: &str) -> crate::ImResult<()> {
     let normalized = normalize_handle(handle)?;
+    if did.starts_with("did:web:") {
+        anp::authentication::build_did_web_resolution_url(did).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("did".to_owned()),
+                "handle discovery returned an invalid Web DID",
+            )
+        })?;
+        // The network boundary additionally checks the reverse Provider declaration.
+        return Ok(());
+    }
     let Some(did_domain) = did_wba_domain(did) else {
         return Err(crate::ImError::InvalidInput {
             field: Some("did".to_owned()),
-            message: format!("handle discovery DID {did} is not did:wba"),
+            message: format!("handle discovery DID {did} uses an unsupported DID method"),
         });
     };
     if did_domain == normalized.domain {
@@ -1028,3 +1071,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "handle_discovery_web_tests.rs"]
+mod web_tests;

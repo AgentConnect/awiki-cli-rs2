@@ -136,7 +136,7 @@ impl CurrentRegistrationDocument {
             &self.document,
             &pending.identity.did,
             &crate::ids::Handle::parse(
-                &format!("{}.{}", pending.target_handle, pending.target_domain),
+                format!("{}.{}", pending.target_handle, pending.target_domain),
                 "",
             )?,
         )

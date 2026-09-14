@@ -259,12 +259,18 @@ to a Handle/user identity. The normal send path uses the resolved DID already
 stored for the conversation and does not perform a Handle lookup before every
 message. Same-domain AWiki resolution obtains the authority subject from the
 authenticated Directory `user_id`. Cross-domain Direct and target-first attachment
-resolution instead reads the Handle provider's public WNS document and validates only
+resolution instead reads the Handle provider's public WNS document and validates
 the ANP-04 binding fields `handle`, `did`, `status`, and `binding_generation`; the
 normalized permanent full Handle is the authority subject. Public `user_id` /
 `subject_id` fields are ignored whether absent, changed, or conflicting, and the
 canonical positive decimal generation is required without a fixed integer-width limit.
 The same local-part under different domains therefore produces different peer scopes.
+For Web, Core additionally resolves the exact DID through the secure method
+transport and verifies its `ANPHandleService` declaration against the Handle
+Provider HTTPS domain. The DID host may differ; non-default ports, credentials,
+missing declarations, mismatched document IDs and invalid present proofs fail
+closed. WBA retains its matching DID/Handle domain rule. Neither method turns a
+public provider-private identifier or an unproven DID change into account authority.
 
 If message-service rejects the send with JSON-RPC `1406` and
 `error.data.reason = "stale_did"`, `im-core` treats that as an authoritative

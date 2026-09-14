@@ -413,6 +413,11 @@ pub(crate) async fn registration_identity_is_remotely_retired<T>(
 where
     T: crate::internal::transport::AsyncRawJsonTransport,
 {
+    if did.starts_with("did:web:") {
+        // Web MVP has no remote DID recovery/transition tombstones. Keep the
+        // exact custody candidate; registration/Join confirms current facts.
+        return Ok(false);
+    }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
     let document = match transport
         .get_json_url(
