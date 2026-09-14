@@ -25,6 +25,12 @@ pub(crate) struct PreparedDeviceDocumentUpdate {
     pub(crate) authorizing_device_proof: DeviceProof,
 }
 
+pub(crate) struct UnsignedDeviceDocumentUpdate {
+    prepared: PreparedDeviceDocumentUpdate,
+    pub(crate) signing_key_id: String,
+    pub(crate) signing_input: Vec<u8>,
+}
+
 impl std::fmt::Debug for PreparedDeviceDocumentUpdate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedDeviceDocumentUpdate")
@@ -64,6 +70,29 @@ pub(crate) fn prepare_update(
     signer: &dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
     now: OffsetDateTime,
 ) -> crate::ImResult<PreparedDeviceDocumentUpdate> {
+    let unsigned = prepare_update_unsigned(
+        operation_id,
+        expected_checkpoint,
+        new_document,
+        authorizing_device_id,
+        authorizing_signing_key_id,
+        audience,
+        now,
+    )?;
+    let signature = signer(&unsigned.signing_key_id, &unsigned.signing_input)?;
+    complete_update(unsigned, &signature)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_update_unsigned(
+    operation_id: String,
+    expected_checkpoint: IdentityInternalCheckpoint,
+    new_document: Value,
+    authorizing_device_id: String,
+    authorizing_signing_key_id: &str,
+    audience: Option<&str>,
+    now: OffsetDateTime,
+) -> crate::ImResult<UnsignedDeviceDocumentUpdate> {
     required("operation_id", &operation_id)?;
     crate::ids::ProtocolDeviceId::parse(&authorizing_device_id)?;
     if expected_checkpoint.document_version == 0
@@ -86,7 +115,7 @@ pub(crate) fn prepare_update(
         .map_err(|_| crate::ImError::Internal {
             message: "generate device document update proof nonce failed".to_owned(),
         })?;
-    let mut proof = DeviceProof {
+    let proof = DeviceProof {
         proof_type: DEVICE_PROOF_TYPE.to_owned(),
         key_id: required("authorizing_signing_key_id", authorizing_signing_key_id)?,
         created_at,
@@ -110,14 +139,28 @@ pub(crate) fn prepare_update(
             detail: error.to_string(),
         }
     })?;
-    proof.signature = URL_SAFE_NO_PAD.encode(signer(&proof.key_id, &signing_input)?);
-    Ok(PreparedDeviceDocumentUpdate {
-        operation_id,
-        expected_checkpoint,
-        new_document,
-        authorizing_device_id,
-        authorizing_device_proof: proof,
+    Ok(UnsignedDeviceDocumentUpdate {
+        signing_key_id: proof.key_id.clone(),
+        signing_input,
+        prepared: PreparedDeviceDocumentUpdate {
+            operation_id,
+            expected_checkpoint,
+            new_document,
+            authorizing_device_id,
+            authorizing_device_proof: proof,
+        },
     })
+}
+
+pub(crate) fn complete_update(
+    mut unsigned: UnsignedDeviceDocumentUpdate,
+    signature: &[u8],
+) -> crate::ImResult<PreparedDeviceDocumentUpdate> {
+    if signature.len() != 64 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    unsigned.prepared.authorizing_device_proof.signature = URL_SAFE_NO_PAD.encode(signature);
+    Ok(unsigned.prepared)
 }
 
 pub(crate) fn build_update_call(

@@ -13,6 +13,33 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<String> identityDocument({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityDocument(
+  core: core,
+  selector: selector,
+);
+
+Future<bool> identityServicesUpdatePending({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityServicesUpdatePending(
+  core: core,
+  selector: selector,
+);
+
+/// None resumes the existing durable operation.
+Future<String> updateIdentityServices({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  String? servicesJson,
+}) => RustLib.instance.api.crateApiIdentityUpdateIdentityServices(
+  core: core,
+  selector: selector,
+  servicesJson: servicesJson,
+);
+
 Future<bool> hasPendingLocalIdentityRecovery({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

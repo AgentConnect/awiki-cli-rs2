@@ -23,6 +23,7 @@ mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
 mod identity_register_handlers;
+mod identity_services_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
         choose_default_identity_name, create_migration_identity,

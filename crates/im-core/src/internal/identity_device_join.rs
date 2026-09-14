@@ -4678,7 +4678,7 @@ pub(crate) async fn complete_provider_document_change(
         return Err(crate::ImError::PermissionDenied);
     }
     let provider_document_digest = candidate.candidate_digest;
-    let evidence = crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+    let mut evidence = crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
         document: document.clone(),
         evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
             document_version: checkpoint.document_version,
@@ -4692,6 +4692,10 @@ pub(crate) async fn complete_provider_document_change(
         .map_err(crate::internal::identity_provider::map_provider_error)?
         == crate::internal::identity_provider::ProviderDocumentChangePhase::PublicationUncertain
     {
+        // Reconciliation consumes a verified remote document, whose digest
+        // includes the canonical sha256: prefix. Candidate publication uses
+        // the provider's own opaque candidate digest above.
+        evidence.evidence.document_digest = expected_digest;
         change
             .reconcile(evidence)
             .await

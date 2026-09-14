@@ -2098,3 +2098,13 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
 不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
 CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。
+
+### 普通 DID 服务更新（2026-09-15）
+
+`IdentityRegistry::update_services_async(selector, Vec<DidDocumentService>)` 接收完整公开服务列表，通过原 `device_document_update` RPC 更新。`identity_document_async` 可读取列表；`services_update_pending_async` 读取本地是否存在该操作，`resume_services_update_async` 只续接原操作。返回当前已验证文档，不向公共 DTO 暴露检查点或内部 operation ID。
+
+只允许当前 Registry 中 Active、management-ready 的 admin；设备密钥与 Manifest 不变，Handle、ANPMessageService 归属和 AgentDescription 仍由各自原入口管理。本期提供 native/provider custody 的 WBA 与 Web 路径：WBA 保留根 proof，Web 不添加根 proof。
+
+Vault 在提交前保存业务操作与候选，重复相同列表续接原操作；不同列表在 pending 存在时拒绝。网络失败保留候选和原 operation ID，重试刷新设备 proof nonce。精确成功回执和当前文档/Registry 独立检查，后续合法更新不会被历史候选覆盖，已撤销的管理员不能借历史回执获得本地可用状态。SDK 已收口但业务文件尚未写完时，仍可从 Vault 继续。调用者取消/超时后应检查 pending，再调用 resume；不要重新创建身份。
+
+CLI：`id services show`、`id services update --file services.json`、`id services resume`。输入文件是公开服务 JSON 数组；更新结果显示当前服务与 pending 状态。Node（native API v17）和 Dart 提供 `identityDocument`、`identityServicesUpdatePending`、`updateIdentityServices`、`resumeIdentityServicesUpdate`。Dart Web 不支持 native Rust backend，继续明确拒绝这些调用；DSH 通过 Node Host 使用同一 Core 入口。

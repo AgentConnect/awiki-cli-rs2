@@ -203,4 +203,4 @@ Recovery progress includes Core-derived `allowedActions`. `resumeHandleRecovery`
 `refreshDisplayProfiles({ peers }, force = false)` 补齐展示资料，每批最多 100 个 DID。
 Core 拥有去重、并发上限、TTL、失败保留和 owner 隔离；调用不建立联系人、Direct 会话或身份绑定。
 成功但没有昵称的 `cacheHit: true` 结果应清除旧昵称并回退到 Handle/DID；失败保留缓存。
-本接口需要 native API v14，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。
+本接口需要 native API v17，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。

@@ -132,6 +132,9 @@ export interface NativeImCoreNodeClient {
   prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  identityDocument(): Promise<string>
+  identityServicesUpdatePending(): Promise<boolean>
+  updateIdentityServices(servicesJson?: string): Promise<string>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
   confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>

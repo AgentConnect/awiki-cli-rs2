@@ -1186,6 +1186,91 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn identity_document(&self) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                environment
+                    .core
+                    .identities()
+                    .identity_document_async(im_core::identity::IdentitySelector::Default)
+                    .await
+                    .map(|value| value.to_string())
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_services_update_pending(&self) -> napi::Result<bool> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                environment
+                    .core
+                    .identities()
+                    .services_update_pending_async(im_core::identity::IdentitySelector::Default)
+                    .await
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    /// None resumes the existing local intent; it never starts a new update.
+    #[napi(catch_unwind)]
+    pub async fn update_identity_services(
+        &self,
+        services_json: Option<String>,
+    ) -> napi::Result<String> {
+        napi_result(
+            async {
+                let services = services_json
+                    .map(|value| {
+                        serde_json::from_str::<Vec<im_core::identity::DidDocumentService>>(&value)
+                            .map_err(|_| invalid_input("The service list is invalid."))
+                    })
+                    .transpose()?;
+                let _mutation = self.inner.mutation.lock().await;
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                let registry = environment.core.identities();
+                let document = match services {
+                    Some(services) => {
+                        self.inner
+                            .wait_im(
+                                registry.update_services_async(
+                                    im_core::identity::IdentitySelector::Default,
+                                    services,
+                                ),
+                                self.inner.operation_timeout,
+                            )
+                            .await?
+                    }
+                    None => {
+                        self.inner
+                            .wait_im(
+                                registry.resume_services_update_async(
+                                    im_core::identity::IdentitySelector::Default,
+                                ),
+                                self.inner.operation_timeout,
+                            )
+                            .await?
+                    }
+                };
+                Ok(document.to_string())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn revoke_device(
         &self,
         input: NodeRevokeDeviceInput,

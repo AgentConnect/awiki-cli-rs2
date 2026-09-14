@@ -4,6 +4,44 @@ import 'dart:typed_data';
 import 'config.dart';
 import 'error.dart';
 
+/// Public DID service fields accepted by Core's ordinary update operation.
+class DidDocumentService {
+  const DidDocumentService({
+    required this.id,
+    required this.type,
+    required this.serviceEndpoint,
+    this.serviceDid,
+    this.profiles = const [],
+    this.securityProfiles = const [],
+  });
+  final String id;
+  final String type;
+  final String serviceEndpoint;
+  final String? serviceDid;
+  final List<String> profiles;
+  final List<String> securityProfiles;
+
+  factory DidDocumentService.fromJson(Map<String, Object?> value) =>
+      DidDocumentService(
+        id: value['id'] as String,
+        type: value['type'] as String,
+        serviceEndpoint: value['serviceEndpoint'] as String,
+        serviceDid: value['serviceDid'] as String?,
+        profiles: (value['profiles'] as List?)?.cast<String>() ?? const [],
+        securityProfiles:
+            (value['securityProfiles'] as List?)?.cast<String>() ?? const [],
+      );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'type': type,
+    'serviceEndpoint': serviceEndpoint,
+    if (serviceDid != null) 'serviceDid': serviceDid,
+    if (profiles.isNotEmpty) 'profiles': profiles,
+    if (securityProfiles.isNotEmpty) 'securityProfiles': securityProfiles,
+  };
+}
+
 /// Single-use, write-only account-verification grant for device Join.
 class DeviceJoinAccountVerificationGrant {
   factory DeviceJoinAccountVerificationGrant.fromToken(String token) {

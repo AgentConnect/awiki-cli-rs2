@@ -456,7 +456,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
-    if has_command_prefix(name, "id.device") {
+    if has_any_command_prefix(name, &["id.device", "id.services"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -607,7 +607,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "id.device") {
+    if has_any_command_prefix(name, &["id.device", "id.services"]) {
         return CommandAudience::AdvancedUser;
     }
     if is_one_of(
@@ -1317,6 +1317,10 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "tenant.use", use_: "use <name>", short: "Switch the active tenant", long: "Switch the product-level active tenant by name. The tenant must already exist; this command intentionally does not accept backend or DID host fields.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "tenant.reconfigure", use_: "reconfigure <name>", short: "Update an empty tenant's backend and DID host", long: "Update backend_base_url and did_host only for an empty tenant. If the tenant already has identities or local database data, create a new tenant instead.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.reconfigure", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("backend-base-url", "string", "New backend base URL", required), flag!("did-host", "string", "New bare DID host", required)] },
         CommandSpec { name: "id", use_: "id", short: "Identity lifecycle commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.services", use_: "services", short: "Public DID service management", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.services.show", use_: "show", short: "Show the selected identity service list and pending state", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.show", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.services.update", use_: "update", short: "Update public services using current administrator authority", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.update", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("file", "string", "JSON file containing the complete public service array", required)] },
+        CommandSpec { name: "id.services.resume", use_: "resume", short: "Resume the original pending service update", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.resume", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.status", use_: "status", short: "Show identity status", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.vault", use_: "vault", short: "Inspect or migrate identity secret vault state", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.vault.status", use_: "status", short: "Show identity SecretVault status", long: "Show the selected identity's SecretVault open options, root-key availability, selected backend, migration metadata status, and plaintext compatibility retention. This command never prints root key material, JWTs, private PEM, or full SecretRef values.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },

@@ -153,6 +153,22 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<Map<String, Object?>> identityDocument(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
+  Future<bool> identityServicesUpdatePending(IdentitySelector selector) async =>
+      throw _unsupported();
+
+  Future<Map<String, Object?>> updateIdentityServices(
+    IdentitySelector selector,
+    List<DidDocumentService> services,
+  ) async => throw _unsupported();
+
+  Future<Map<String, Object?>> resumeIdentityServicesUpdate(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,

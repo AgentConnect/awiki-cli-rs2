@@ -27,23 +27,23 @@ const WORKSPACE_ID: &str = "device-revoke-test-workspace";
 const VAULT_CONTEXT_DEVICE_ID: &str = "device-revoke-test-context";
 const VAULT_KEY: [u8; 32] = [63_u8; 32];
 
-struct Scenario {
+pub(crate) struct Scenario {
     _root: tempfile::TempDir,
     paths: crate::ImCorePaths,
-    did: crate::ids::Did,
-    document: Value,
-    registry: DeviceJoinRemoteRegistry,
-    authorizing: DeviceJoinRemoteDeviceSummary,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) document: Value,
+    pub(crate) registry: DeviceJoinRemoteRegistry,
+    pub(crate) authorizing: DeviceJoinRemoteDeviceSummary,
     target: DeviceJoinRemoteDeviceSummary,
     now: OffsetDateTime,
 }
 
 impl Scenario {
-    fn open_core(&self, enabled: bool) -> crate::ImCore {
+    pub(crate) fn open_core(&self, enabled: bool) -> crate::ImCore {
         open_core(self._root.path(), enabled)
     }
 
-    fn local_document(&self) -> Value {
+    pub(crate) fn local_document(&self) -> Value {
         let store = IdentityStore::new(&self.paths.identities);
         let dir_name = store.load_index().unwrap().credentials[LOCAL_ALIAS]
             .dir_name
@@ -873,7 +873,11 @@ async fn web_revoke_requires_exact_retry_and_adopts_the_current_document_after_r
     );
 }
 
-async fn web_scenario() -> Scenario {
+pub(crate) async fn web_scenario() -> Scenario {
+    provider_scenario(crate::identity::DidMethod::Web).await
+}
+
+pub(crate) async fn provider_scenario(did_method: crate::identity::DidMethod) -> Scenario {
     use crate::internal::identity_provider::*;
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
@@ -882,7 +886,7 @@ async fn web_scenario() -> Scenario {
         &core,
         "awiki.test",
         LOCAL_ALIAS,
-        crate::identity::DidMethod::Web,
+        did_method,
     )
     .unwrap();
     let signing = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
@@ -903,22 +907,34 @@ async fn web_scenario() -> Scenario {
         json!({"id":kid, "controller":generated.did.as_str(),
         "type":"Multikey", "publicKeyMultibase": public_key_multibase(&key)})
     };
-    let document = anp::authentication::add_device_to_web_did_document(
-        &generated.did_document,
-        &anp::authentication::DeviceManifestEntry {
-            device_id: TARGET_DEVICE_ID.into(),
-            signing_key_id: target.signing_key_id.clone(),
-            e2ee_key_id: target.e2ee_key_id.clone(),
-            profiles: crate::internal::identity_generation::web_device_profiles(),
-        },
-        &method(&target.signing_key_id, signing.public_key()),
-        &method(&target.e2ee_key_id, agreement.public_key()),
-        &[],
-    )
-    .unwrap();
+    let document = if did_method == crate::identity::DidMethod::Web {
+        anp::authentication::add_device_to_web_did_document(
+            &generated.did_document,
+            &anp::authentication::DeviceManifestEntry {
+                device_id: TARGET_DEVICE_ID.into(),
+                signing_key_id: target.signing_key_id.clone(),
+                e2ee_key_id: target.e2ee_key_id.clone(),
+                profiles: crate::internal::identity_generation::web_device_profiles(),
+            },
+            &method(&target.signing_key_id, signing.public_key()),
+            &method(&target.e2ee_key_id, agreement.public_key()),
+            &[],
+        )
+        .unwrap()
+    } else {
+        generated.did_document.clone()
+    };
     let checkpoint = IdentityInternalCheckpoint {
-        document_version: 2,
-        registry_version: 2,
+        document_version: if did_method == crate::identity::DidMethod::Web {
+            2
+        } else {
+            1
+        },
+        registry_version: if did_method == crate::identity::DidMethod::Web {
+            2
+        } else {
+            1
+        },
         document_hash: crate::internal::identity_wire::document::document_hash(&document).unwrap(),
     };
     let provider = crate::internal::identity_custody::controller_custody_provider(&core)
@@ -975,7 +991,8 @@ async fn web_scenario() -> Scenario {
                 jwt_token: token,
                 did_document: Some(document.clone()),
                 key_mode: SaveIdentityKeyMode::VNext {
-                    root_key_id: None,
+                    root_key_id: (did_method == crate::identity::DidMethod::Wba)
+                        .then(|| format!("{}#key-1", generated.did.as_str())),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -1011,7 +1028,11 @@ async fn web_scenario() -> Scenario {
     let registry = DeviceJoinRemoteRegistry {
         did: generated.did.clone(),
         checkpoint,
-        devices: vec![authorizing.clone(), target.clone()],
+        devices: if did_method == crate::identity::DidMethod::Web {
+            vec![authorizing.clone(), target.clone()]
+        } else {
+            vec![authorizing.clone()]
+        },
     };
     Scenario {
         _root: root,

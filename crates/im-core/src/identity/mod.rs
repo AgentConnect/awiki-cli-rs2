@@ -1,5 +1,6 @@
 mod creation;
 mod device_revoke;
+mod document;
 mod dto;
 mod handle_recovery;
 mod join;
@@ -12,6 +13,7 @@ pub use self::creation::IdentityCreationCapabilities;
 pub use self::device_revoke::{
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
 };
+pub use self::document::DidDocumentService;
 pub use self::dto::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingMethodKind,
     ContactBindingRequest, ContactBindingResult, ContactBindingState,

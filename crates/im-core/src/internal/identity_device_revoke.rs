@@ -662,7 +662,7 @@ async fn prepare_initial_intent(
     )
 }
 
-fn validate_manifest_device(
+pub(crate) fn validate_manifest_device(
     document: &Value,
     expected: &DeviceJoinRemoteDeviceSummary,
 ) -> crate::ImResult<()> {
@@ -743,7 +743,7 @@ async fn converge_local_state(
         )
 }
 
-fn write_document_atomic(path: &std::path::Path, document: &Value) -> crate::ImResult<()> {
+pub(crate) fn write_document_atomic(path: &std::path::Path, document: &Value) -> crate::ImResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| crate::ImError::PathUnavailable {
@@ -870,4 +870,4 @@ fn unknown_outcome(_error: crate::ImError) -> crate::ImError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

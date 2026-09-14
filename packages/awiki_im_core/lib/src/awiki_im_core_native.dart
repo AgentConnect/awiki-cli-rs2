@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
@@ -431,6 +432,57 @@ class AwikiImCore {
       ),
     );
     return result._toModel();
+  }
+
+  Future<Map<String, Object?>> identityDocument(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.identityDocument(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<bool> identityServicesUpdatePending(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.identityServicesUpdatePending(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+  }
+
+  Future<Map<String, Object?>> updateIdentityServices(
+    IdentitySelector selector,
+    List<DidDocumentService> services,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+        servicesJson: jsonEncode(services.map((s) => s.toJson()).toList()),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<Map<String, Object?>> resumeIdentityServicesUpdate(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
   }
 
   Future<DeviceRevokeResult> revokeDevice({

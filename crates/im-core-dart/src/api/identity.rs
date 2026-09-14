@@ -20,6 +20,61 @@ use crate::dto::{
     },
 };
 
+pub async fn identity_document(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<String, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .identity_document_async(selector.try_into()?)
+        .await
+        .map(|value| value.to_string())
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_services_update_pending(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<bool, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .services_update_pending_async(selector.try_into()?)
+        .await
+        .map_err(DartImError::from)
+}
+
+/// None resumes the existing durable operation.
+pub async fn update_identity_services(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    services_json: Option<String>,
+) -> Result<String, DartImError> {
+    let core = core.clone_inner()?;
+    let registry = core.identities();
+    let document = match services_json {
+        Some(value) => {
+            let services =
+                serde_json::from_str::<Vec<im_core::identity::DidDocumentService>>(&value)
+                    .map_err(|_| {
+                        DartImError::from(im_core::ImError::invalid_input(
+                            Some("services".into()),
+                            "The service list is invalid",
+                        ))
+                    })?;
+            registry
+                .update_services_async(selector.try_into()?, services)
+                .await
+        }
+        None => {
+            registry
+                .resume_services_update_async(selector.try_into()?)
+                .await
+        }
+    }
+    .map_err(DartImError::from)?;
+    Ok(document.to_string())
+}
+
 pub async fn has_pending_local_identity_recovery(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

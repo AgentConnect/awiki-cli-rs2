@@ -18,6 +18,7 @@ import {
   type DeviceJoinRequestNotice,
   type DeviceRegistrySnapshot,
   type DeviceRevokeResult,
+  type DidDocumentService,
   type DownloadAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
@@ -208,6 +209,22 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress> {
     return call(async () => ({ ...await this.native.rejectDeviceJoin(input) }))
+  }
+
+  public identityDocument(): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.identityDocument()) as Record<string, unknown>)
+  }
+
+  public identityServicesUpdatePending(): Promise<boolean> {
+    return call(() => this.native.identityServicesUpdatePending())
+  }
+
+  public updateIdentityServices(services: readonly DidDocumentService[]): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.updateIdentityServices(JSON.stringify(services))) as Record<string, unknown>)
+  }
+
+  public resumeIdentityServicesUpdate(): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.updateIdentityServices()) as Record<string, unknown>)
   }
 
   public revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult> {

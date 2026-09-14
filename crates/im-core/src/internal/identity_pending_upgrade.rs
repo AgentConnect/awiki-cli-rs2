@@ -640,6 +640,7 @@ fn pending_kind(kind: &SecretKind) -> bool {
             | SecretKind::IdentityRootImportPending
             | SecretKind::IdentityAuthCommitPending
             | SecretKind::IdentityDeviceRevokePending
+            | SecretKind::IdentityServicesUpdatePending
     )
 }
 

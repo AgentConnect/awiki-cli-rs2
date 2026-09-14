@@ -677,6 +677,33 @@ impl<'a> IdentityRegistry<'a> {
         })?
     }
 
+    /// Replace public services through the existing first-party document update
+    /// transaction. Repeating the same input resumes a durable pending update.
+    pub async fn update_services_async(
+        &self,
+        selector: super::IdentitySelector,
+        services: Vec<super::DidDocumentService>,
+    ) -> crate::ImResult<serde_json::Value> {
+        crate::internal::identity_services_update::update(self.core, selector, Some(services)).await
+    }
+
+    /// Resume the original operation without supplying a new service list.
+    pub async fn resume_services_update_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<serde_json::Value> {
+        crate::internal::identity_services_update::update(self.core, selector, None).await
+    }
+
+    pub async fn services_update_pending_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<bool> {
+        let registry = self.load_registry_async().await?;
+        let did = &registry.find_entry(selector)?.summary.did;
+        crate::internal::identity_services_update::has_pending(self.core, did)
+    }
+
     pub async fn authorize_daemon_subkey_async(
         &self,
         selector: super::IdentitySelector,

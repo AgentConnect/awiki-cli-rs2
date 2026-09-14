@@ -1017,6 +1017,15 @@ export class ImCoreNodeError extends Error {
 }
 
 /** Environment-scoped Promise API backed by one Rust ImCore/ImClient pair. */
+export interface DidDocumentService {
+  readonly id: string
+  readonly type: string
+  readonly serviceEndpoint: string
+  readonly serviceDid?: string
+  readonly profiles?: readonly string[]
+  readonly securityProfiles?: readonly string[]
+}
+
 export interface ImCoreNodeClient {
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
@@ -1039,6 +1048,10 @@ export interface ImCoreNodeClient {
   prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  identityDocument(): Promise<Readonly<Record<string, unknown>>>
+  identityServicesUpdatePending(): Promise<boolean>
+  updateIdentityServices(services: readonly DidDocumentService[]): Promise<Readonly<Record<string, unknown>>>
+  resumeIdentityServicesUpdate(): Promise<Readonly<Record<string, unknown>>>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
   confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>
