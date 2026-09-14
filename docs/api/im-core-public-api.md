@@ -698,6 +698,23 @@ Core 保留旧 custody 凭据，使用新临时候选进入现有 `register` / `
 不触发 Recovery、不替换远端身份。未发布的 404 候选仍可原样重试，网络或文档校验失败
 则保留状态并返回错误；已记录远端提交结果的 pending 继续原有提交收敛，不能被此路径替换。
 
+`identities().creation_capabilities_async()` 从部署的 Server Info 读取可新建的方法，
+与 Core 支持集合取交集；旧部署缺失该字段时只返回 WBA。该能力仅控制新建选择，
+不改变已存在身份的方法或设备权限。CLI `id register --did-method wba|web` 默认 WBA。
+
+Web 注册完成前通过同一候选设备认证后读取 `device_registry_get.registration_result`，
+验证持久化 operation/request hash、账号、Handle 和双 KID，再校验当前 Registry/文档。
+历史候选不变，当前文档及检查点另存并用于本地投影；缺失结果、当前撤销或权限变化保留
+pending。Web pending 不进入 WBA 退役候选替换或过期根 proof 刷新分支。
+
+`RegisterHandleRequest.did_method` 接受 `DidMethod::Wba`（序列化默认 `wba`）或
+`DidMethod::Web`（`web`）。Web 只用于普通 phone/email 注册，并要求配置
+`ImCoreOpenOptions::with_multi_device_audience`；Guest/trusted service 仍保留原有 WBA
+合同。方法选择只影响新候选，不改变已有 Handle 的权威 Join/登录结果。
+provider 的 `ProviderDidProfile::Web` 对应 rootless Web，`ProviderHostStatus` 和
+`ProviderEnrollmentProposal` 的 `root_key_fingerprint` 为 `Option<String>`；WBA 原字符串
+仍反序列化为 `Some`，Web 为 `None`。Host 不以根指纹是否存在推导产品管理权限。
+
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，

@@ -70,7 +70,7 @@ fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crat
                 jwt_token: "access-token".to_owned(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -235,6 +235,18 @@ fn open_external_provider_ready_admin_core(
     crate::ids::Did,
     crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) {
+    open_external_provider_ready_admin_core_for_method(root, crate::identity::DidMethod::Wba)
+}
+
+fn open_external_provider_ready_admin_core_for_method(
+    root: &Path,
+    method: crate::identity::DidMethod,
+) -> (
+    crate::ImCore,
+    serde_json::Value,
+    crate::ids::Did,
+    crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
         IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
@@ -242,40 +254,53 @@ fn open_external_provider_ready_admin_core(
     };
     let mut manager =
         anp_identity::IdentityManager::initialize(external_provider_manager_config(root)).unwrap();
-    let identity = manager
-        .create(anp_identity::CreateIdentityRequest {
-            profile: anp_identity::CreateIdentityProfile::E1,
-            domain: "awiki.test".to_owned(),
-            port: None,
-            path_segments: vec!["users".to_owned(), "external-admin".to_owned()],
-            capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
-            managed_keys: vec![
-                anp_identity::ManagedKeyInput {
-                    fragment: "root".to_owned(),
-                    role: anp_identity::ManagedKeyRole::RootControl,
-                },
-                anp_identity::ManagedKeyInput {
-                    fragment: "device".to_owned(),
-                    role: anp_identity::ManagedKeyRole::DeviceSigning,
-                },
-                anp_identity::ManagedKeyInput {
-                    fragment: "agreement".to_owned(),
-                    role: anp_identity::ManagedKeyRole::E2eeAgreement,
-                },
-            ],
-            external_keys: Vec::new(),
-            services: Vec::new(),
-            agent_description_url: None,
-            extensions: vec![anp_identity::CreateIdentityExtension::DeviceManifest {
-                devices: vec![anp_identity::DeviceManifestEntryInput {
-                    device_id: "device-admin".to_owned(),
-                    signing_key_id: "#device".to_owned(),
-                    e2ee_key_id: "#agreement".to_owned(),
-                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
-                }],
+    let mut create = anp_identity::CreateIdentityRequest {
+        profile: anp_identity::CreateIdentityProfile::E1,
+        domain: "awiki.test".to_owned(),
+        port: None,
+        path_segments: vec!["users".to_owned(), "external-admin".to_owned()],
+        capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
+        managed_keys: vec![
+            anp_identity::ManagedKeyInput {
+                fragment: "root".to_owned(),
+                role: anp_identity::ManagedKeyRole::RootControl,
+            },
+            anp_identity::ManagedKeyInput {
+                fragment: "device".to_owned(),
+                role: anp_identity::ManagedKeyRole::DeviceSigning,
+            },
+            anp_identity::ManagedKeyInput {
+                fragment: "agreement".to_owned(),
+                role: anp_identity::ManagedKeyRole::E2eeAgreement,
+            },
+        ],
+        external_keys: Vec::new(),
+        services: Vec::new(),
+        agent_description_url: None,
+        extensions: vec![anp_identity::CreateIdentityExtension::DeviceManifest {
+            devices: vec![anp_identity::DeviceManifestEntryInput {
+                device_id: "device-admin".to_owned(),
+                signing_key_id: "#device".to_owned(),
+                e2ee_key_id: "#agreement".to_owned(),
+                profiles: crate::internal::identity_generation::vnext_device_profiles(),
             }],
-        })
-        .unwrap();
+        }],
+    };
+    if method == crate::identity::DidMethod::Web {
+        create.profile = anp_identity::CreateIdentityProfile::Web;
+        create
+            .managed_keys
+            .retain(|key| key.role != anp_identity::ManagedKeyRole::RootControl);
+        create.extensions = vec![anp_identity::CreateIdentityExtension::DeviceManifest {
+            devices: vec![anp_identity::DeviceManifestEntryInput {
+                device_id: "device-admin".into(),
+                signing_key_id: "#device".into(),
+                e2ee_key_id: "#agreement".into(),
+                profiles: crate::internal::identity_generation::web_device_profiles(),
+            }],
+        }];
+    }
+    let identity = manager.create(create).unwrap();
     let public = identity.public_identity().unwrap();
     let reference = public.reference.clone();
     let key_for = |purpose| {
@@ -287,7 +312,8 @@ fn open_external_provider_ready_admin_core(
             .kid
             .clone()
     };
-    let root_kid = key_for(anp_identity::KeyPurpose::RootControl);
+    let root_kid = (method == crate::identity::DidMethod::Wba)
+        .then(|| key_for(anp_identity::KeyPurpose::RootControl));
     let signing_kid = key_for(anp_identity::KeyPurpose::DeviceAssertion);
     let agreement_kid = key_for(anp_identity::KeyPurpose::KeyAgreement);
     let document = public.document.into_value();
@@ -846,9 +872,15 @@ fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
     let mut hybrid = canonical.clone();
     hybrid[0] = anp::authentication::PROFILE_CORE_BINDING_V2.to_owned();
 
-    assert!(join_profiles_are_supported(&canonical));
-    assert!(join_profiles_are_supported(&legacy));
-    assert!(!join_profiles_are_supported(&hybrid));
+    assert!(join_profiles_are_supported(
+        "did:wba:example.test",
+        &canonical
+    ));
+    assert!(join_profiles_are_supported("did:wba:example.test", &legacy));
+    assert!(!join_profiles_are_supported(
+        "did:wba:example.test",
+        &hybrid
+    ));
 }
 
 #[tokio::test]
@@ -1202,8 +1234,21 @@ async fn prepare_external_provider_admin_join(
     admin_root: &Path,
     candidate_root: &Path,
 ) -> ExternalProviderAdminJoinFixture {
+    prepare_external_provider_admin_join_for_method(
+        admin_root,
+        candidate_root,
+        crate::identity::DidMethod::Wba,
+    )
+    .await
+}
+
+async fn prepare_external_provider_admin_join_for_method(
+    admin_root: &Path,
+    candidate_root: &Path,
+    method: crate::identity::DidMethod,
+) -> ExternalProviderAdminJoinFixture {
     let (admin, document, did, mut checkpoint) =
-        open_external_provider_ready_admin_core(admin_root);
+        open_external_provider_ready_admin_core_for_method(admin_root, method);
     // A sibling root promotion advances only the remote Registry, not this
     // admin's local provider checkpoint or the DID Document version.
     checkpoint.registry_version += 1;
@@ -1726,10 +1771,23 @@ async fn historical_completed_notification_cannot_roll_back_a_newer_provider_doc
 #[cfg(feature = "provider-traits")]
 #[tokio::test]
 async fn external_provider_completes_admin_join_signing_and_document_change() {
+    assert_provider_completes_admin_join_for_method(crate::identity::DidMethod::Wba).await;
+}
+
+#[tokio::test]
+async fn web_external_provider_completes_admin_join_and_device_removal_without_root() {
+    assert_provider_completes_admin_join_for_method(crate::identity::DidMethod::Web).await;
+}
+
+async fn assert_provider_completes_admin_join_for_method(method: crate::identity::DidMethod) {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
-    let fixture =
-        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let fixture = prepare_external_provider_admin_join_for_method(
+        admin_root.path(),
+        candidate_root.path(),
+        method,
+    )
+    .await;
     let admin = fixture.admin;
     let started = fixture.started;
     let prepared = fixture.prepared;

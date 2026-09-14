@@ -462,6 +462,7 @@ Future<DartHandleRegistrationResult> registerHandleWithPhone({
   String? inviteCode,
   required DartInitialProfile profile,
   required bool makeDefault,
+  String? didMethod,
 }) => RustLib.instance.api.crateApiIdentityRegisterHandleWithPhone(
   core: core,
   localAlias: localAlias,
@@ -471,6 +472,7 @@ Future<DartHandleRegistrationResult> registerHandleWithPhone({
   inviteCode: inviteCode,
   profile: profile,
   makeDefault: makeDefault,
+  didMethod: didMethod,
 );
 
 Future<DartHandleRegistrationResult> registerHandleWithEmail({
@@ -482,6 +484,7 @@ Future<DartHandleRegistrationResult> registerHandleWithEmail({
   String? inviteCode,
   required DartInitialProfile profile,
   required bool makeDefault,
+  String? didMethod,
 }) => RustLib.instance.api.crateApiIdentityRegisterHandleWithEmail(
   core: core,
   localAlias: localAlias,
@@ -491,6 +494,7 @@ Future<DartHandleRegistrationResult> registerHandleWithEmail({
   inviteCode: inviteCode,
   profile: profile,
   makeDefault: makeDefault,
+  didMethod: didMethod,
 );
 
 Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
@@ -509,3 +513,6 @@ Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
       profile: profile,
       makeDefault: makeDefault,
     );
+
+Future<List<String>> identityCreationMethods({required ArcDartImCore core}) =>
+    RustLib.instance.api.crateApiIdentityIdentityCreationMethods(core: core);

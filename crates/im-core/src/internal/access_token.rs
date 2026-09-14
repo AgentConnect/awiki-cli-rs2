@@ -173,6 +173,11 @@ fn validate_scopes(claims: &Value, expected: &ExpectedDeviceAccess<'_>) -> crate
         }
     }
     let expected_scopes = match (expected.role, expected.management_ready) {
+        (crate::internal::identity_device_state::DeviceAuthorizationRole::Member, false)
+            if expected.did.starts_with("did:web:") =>
+        {
+            BTreeSet::from(["device:read", "message:connect"])
+        }
         (crate::internal::identity_device_state::DeviceAuthorizationRole::Admin, true) => {
             BTreeSet::from(["device:manage", "device:read", "message:connect"])
         }
@@ -180,7 +185,7 @@ fn validate_scopes(claims: &Value, expected: &ExpectedDeviceAccess<'_>) -> crate
             crate::internal::identity_device_state::DeviceAuthorizationRole::Member
             | crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
             false,
-        ) => BTreeSet::from([
+        ) if !expected.did.starts_with("did:web:") => BTreeSet::from([
             "device:read",
             "device:root-import-complete",
             "message:connect",
@@ -269,6 +274,33 @@ mod tests {
     #[test]
     fn accepts_exact_v1_device_access_principal() {
         validate_device_access_token(&jwt(admin_claims()), &expected_admin()).unwrap();
+    }
+
+    #[test]
+    fn web_member_uses_message_and_read_scopes_without_root_import() {
+        let did = "did:web:example.test:user:alice";
+        let kid = format!("{did}#device-sign");
+        let mut expected = expected_admin();
+        expected.did = did;
+        expected.key_id = &kid;
+        expected.role = crate::internal::identity_device_state::DeviceAuthorizationRole::Member;
+        expected.management_ready = false;
+        let mut claims = admin_claims();
+        claims["sub"] = json!(did);
+        claims["did"] = json!(did);
+        claims["key_id"] = json!(kid);
+        claims["scopes"] = json!(["device:read", "message:connect"]);
+        validate_device_access_token(&jwt(claims.clone()), &expected).unwrap();
+        for extra in ["device:manage", "device:root-import-complete"] {
+            let mut extra_claims = claims.clone();
+            extra_claims["scopes"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(extra));
+            assert!(validate_device_access_token(&jwt(extra_claims), &expected).is_err());
+        }
+        expected.role = crate::internal::identity_device_state::DeviceAuthorizationRole::Admin;
+        assert!(validate_device_access_token(&jwt(claims), &expected).is_err());
     }
 
     #[test]

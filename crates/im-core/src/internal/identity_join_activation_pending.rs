@@ -268,6 +268,14 @@ impl PendingJoinActivationStore {
 }
 
 pub(crate) fn service_domain_from_did(did: &crate::ids::Did) -> crate::ImResult<String> {
+    if did.as_str().starts_with("did:web:") {
+        let url = anp::authentication::build_did_web_resolution_url(did.as_str())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        return reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .ok_or(crate::ImError::PermissionDenied);
+    }
     let domain = did
         .as_str()
         .strip_prefix("did:wba:")

@@ -139,6 +139,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.getDefaultIdentity())
   }
 
+  public identityCreationMethods(): Promise<readonly ('wba' | 'web')[]> {
+    return call(() => this.native.identityCreationMethods())
+  }
+
   public requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge> {
     return call(() => this.native.requestRegistrationOtp(input))
   }

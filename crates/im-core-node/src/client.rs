@@ -616,6 +616,32 @@ impl NativeImCoreNodeClient {
         napi_result(self.request_registration_otp_inner(input).await)
     }
 
+    #[napi(catch_unwind)]
+    pub async fn identity_creation_methods(&self) -> napi::Result<Vec<String>> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let capabilities = self
+                    .inner
+                    .wait_im(
+                        environment.core.identities().creation_capabilities_async(),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(capabilities
+                    .did_methods
+                    .into_iter()
+                    .map(|method| match method {
+                        im_core::identity::DidMethod::Wba => "wba".to_owned(),
+                        im_core::identity::DidMethod::Web => "web".to_owned(),
+                    })
+                    .collect())
+            }
+            .await,
+        )
+    }
+
     async fn request_registration_otp_inner(
         &self,
         input: NodeRegistrationInput,
@@ -624,7 +650,7 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, None)?;
+        let request = registration_request(input.handle, input.phone, None, input.did_method)?;
         let challenge = self
             .inner
             .wait_im(
@@ -689,7 +715,12 @@ impl NativeImCoreNodeClient {
         let mut operation = self.inner.write_operation().await?;
         let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, Some(otp.to_owned()))?;
+        let request = registration_request(
+            input.handle,
+            input.phone,
+            Some(otp.to_owned()),
+            input.did_method,
+        )?;
         let result = self
             .inner
             .wait_im(
@@ -3036,9 +3067,15 @@ fn registration_request(
     handle: String,
     phone: String,
     otp: Option<String>,
+    did_method: Option<String>,
 ) -> SafeResult<im_core::identity::RegisterHandleRequest> {
     let requested_handle = im_core::ids::Handle::parse(handle, "").map_err(SafeError::from_im)?;
     Ok(im_core::identity::RegisterHandleRequest {
+        did_method: did_method
+            .as_deref()
+            .unwrap_or("wba")
+            .parse()
+            .map_err(SafeError::from_im)?,
         local_alias: Some("default".to_owned()),
         requested_handle,
         verification: im_core::identity::VerificationInput::Phone { phone, otp },

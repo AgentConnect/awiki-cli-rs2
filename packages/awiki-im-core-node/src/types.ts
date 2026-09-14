@@ -106,7 +106,7 @@ export interface ImCoreIdentityProvider {
   publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
   hostStatus(reference: ImCoreIdentityReference): Promise<{
     readonly rootCapability: 'absent' | 'pending' | 'active'
-    readonly rootKeyFingerprint: string
+    readonly rootKeyFingerprint: string | null
     readonly checkpoint?: {
       readonly documentVersion: number
       readonly registryVersion: number
@@ -337,6 +337,7 @@ export interface UpdateProfileInput {
 
 /** First stage of phone registration. */
 export interface RegistrationInput {
+  readonly didMethod?: 'wba' | 'web'
   readonly handle: string
   readonly phone: string
 }
@@ -1019,6 +1020,7 @@ export class ImCoreNodeError extends Error {
 export interface ImCoreNodeClient {
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  identityCreationMethods(): Promise<readonly ('wba' | 'web')[]>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   /** Complete registration without collapsing an existing Handle into an error. */

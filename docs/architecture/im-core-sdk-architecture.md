@@ -233,6 +233,27 @@ result returns one access token; it does not return a device refresh token.
 There is no production `device_genesis`, Genesis grant, or multi-device
 registration rollout branch.
 
+普通 phone/email 注册可显式选择 `DidMethod::Web`；默认仍为 WBA。托管 Web
+使用独立 UUID 路径、一个 bootstrap device 的 signing/E2EE keys 与当前 Manifest
+Profile，不生成 DID RootControl 或 WBA 根 proof。Store 的加密根仍保留。身份
+provider 的根能力与根指纹分别返回 `Absent` 和空引用；这不决定产品管理员权限。
+首个 Web admin 的管理权限来自服务端 Registry，加入设备仍为 member。
+
+Web 注册沿用同一 `register` RPC，Core 在首次请求前把方法、注册操作 UUID、完整
+候选和稳定业务摘要保存到既有加密 pending。设备 bootstrap proof 绑定部署 audience、
+操作 ID 与完整业务投影，每次重试生成新鲜 nonce；OTP 和 proof 不进入稳定摘要。
+schema 2 的 WBA pending 保持可读，未知版本或方法/根引用不一致时拒绝继续。
+该能力不包括 Web 控制权丢失恢复、Root Import 或全设备换钥。
+
+Web 注册结果确认同时需要精确注册操作的权威业务事实和当前设备资格；公开文档或
+历史成功不单独授权本地激活。原候选保留作幂等绑定，当前文档观察与检查点另存，
+并在本地提交前再次取得 exact-device Token 和当前 Registry。Identity Store 只接受
+仍包含原公钥的单调文档观察；后续合法设备/非设备更新不能被原注册候选覆盖。
+Web 管理 DeviceProof 增加受控 audience，保留完整 params 中的业务文档；WBA 字节不变。
+Web member 的合法消息 Token 仅需要 `device:read` 与 `message:connect`，不能包含管理
+或 Root Import scope。Core readiness 区分方法是否需要根能力，不把 Web root absent
+解释为管理员需要 Root Import。
+
 A local encrypted pending-registration record may preserve generated key
 material and the exact operation across an ambiguous network result. It is only
 a crash-recovery mechanism: it must not introduce a second remote registration

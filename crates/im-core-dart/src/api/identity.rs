@@ -751,11 +751,17 @@ pub async fn register_handle_with_phone(
     invite_code: Option<String>,
     profile: DartInitialProfile,
     make_default: bool,
+    did_method: Option<String>,
 ) -> Result<DartHandleRegistrationResult, DartImError> {
     let inner = core.clone_inner()?;
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -778,11 +784,17 @@ pub async fn register_handle_with_email(
     invite_code: Option<String>,
     profile: DartInitialProfile,
     make_default: bool,
+    did_method: Option<String>,
 ) -> Result<DartHandleRegistrationResult, DartImError> {
     let inner = core.clone_inner()?;
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -811,6 +823,7 @@ pub async fn register_handle_without_contact_verification(
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: im_core::identity::DidMethod::Wba,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -822,6 +835,25 @@ pub async fn register_handle_without_contact_verification(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+pub async fn identity_creation_methods(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<String>, DartImError> {
+    let capabilities = core
+        .clone_inner()?
+        .identities()
+        .creation_capabilities_async()
+        .await
+        .map_err(DartImError::from)?;
+    Ok(capabilities
+        .did_methods
+        .into_iter()
+        .map(|method| match method {
+            im_core::identity::DidMethod::Wba => "wba".to_owned(),
+            im_core::identity::DidMethod::Web => "web".to_owned(),
+        })
+        .collect())
 }
 
 impl From<DartInitialProfile> for im_core::identity::InitialProfile {

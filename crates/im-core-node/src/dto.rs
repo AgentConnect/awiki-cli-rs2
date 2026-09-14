@@ -710,12 +710,14 @@ pub struct NodeUpdateProfileInput {
 
 #[napi(object)]
 pub struct NodeRegistrationInput {
+    pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
 }
 
 #[napi(object)]
 pub struct NodeRegistrationWithOtp {
+    pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
     pub otp: String,

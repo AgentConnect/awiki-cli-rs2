@@ -5865,7 +5865,7 @@ mod group_e2ee_public_send_tests {
                     jwt_token: "test-token".to_owned(),
                     did_document: Some(generated.did_document),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id,
+                        root_key_id: Some(generated.root_key_id),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },

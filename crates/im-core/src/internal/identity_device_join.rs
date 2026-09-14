@@ -469,10 +469,7 @@ pub(crate) async fn start(
         signing_public_key: signing_method,
         e2ee_public_key: e2ee_method,
         pairing_public_key,
-        profiles: DEVICE_JOIN_VNEXT_PROFILES
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        profiles: join_device_profiles(request.did.as_str()),
         requested_role: "member".to_owned(),
         issued_at: format_time(now)?,
         expires_at: format_time(expires_at)?,
@@ -1477,30 +1474,39 @@ pub(crate) fn prepare_admin_approval(
             "join_request.e2ee_public_key",
         )?
         .to_owned(),
-        profiles: DEVICE_JOIN_VNEXT_PROFILES
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        profiles: stored.join_request.profiles.clone(),
     };
-    let mut new_document = anp::authentication::add_device_to_did_document(
-        &current_document,
-        &root_key_id,
-        &device,
-        &stored.join_request.signing_public_key,
-        &stored.join_request.e2ee_public_key,
-        &[],
-    )
+    let mut new_document = if stored.join_request.did.starts_with("did:web:") {
+        anp::authentication::add_device_to_web_did_document(
+            &current_document,
+            &device,
+            &stored.join_request.signing_public_key,
+            &stored.join_request.e2ee_public_key,
+            &[],
+        )
+    } else {
+        anp::authentication::add_device_to_did_document(
+            &current_document,
+            &root_key_id,
+            &device,
+            &stored.join_request.signing_public_key,
+            &stored.join_request.e2ee_public_key,
+            &[],
+        )
+    }
     .map_err(|error| {
         crate::ImError::invalid_input(
             Some("new_document".to_owned()),
             format!("cannot add Join device to DID Document: {error}"),
         )
     })?;
-    crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-        &mut new_document,
-        &crate::ids::Did::parse(&stored.join_request.did)?,
-        client.runtime().key_provider.as_ref(),
-    )?;
+    if !stored.join_request.did.starts_with("did:web:") {
+        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
+            &mut new_document,
+            &crate::ids::Did::parse(&stored.join_request.did)?,
+            client.runtime().key_provider.as_ref(),
+        )?;
+    }
     validate_authorized_document(&stored.join_request, &new_document)?;
     let response = stored
         .response
@@ -1669,7 +1675,7 @@ pub(crate) async fn prepare_admin_approval_async(
                         "kid": agreement_key_id,
                         "publicKeyMultibase": agreement_public_key,
                     },
-                    "profiles": DEVICE_JOIN_VNEXT_PROFILES,
+                    "profiles": snapshot.join_request.profiles,
                 },
             }],
         }),
@@ -2837,22 +2843,25 @@ fn promote_join_identity_local(
         return Err(crate::ImError::PermissionDenied);
     }
 
-    let root_key_id = format!("{}#key-1", did.as_str());
-    let root_method = pending
-        .resolved_document
-        .get("verificationMethod")
-        .and_then(Value::as_array)
-        .and_then(|methods| {
-            methods.iter().find(|method| {
-                method.get("id").and_then(Value::as_str) == Some(root_key_id.as_str())
+    let root_key_id =
+        (!did.as_str().starts_with("did:web:")).then(|| format!("{}#key-1", did.as_str()));
+    if let Some(root_key_id) = root_key_id.as_ref() {
+        let root_method = pending
+            .resolved_document
+            .get("verificationMethod")
+            .and_then(Value::as_array)
+            .and_then(|methods| {
+                methods.iter().find(|method| {
+                    method.get("id").and_then(Value::as_str) == Some(root_key_id.as_str())
+                })
             })
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if !matches!(
-        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?,
-        anp::PublicKeyMaterial::Ed25519(_)
-    ) {
-        return Err(crate::ImError::PermissionDenied);
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if !matches!(
+            crate::internal::identity_wire::document::extract_identity_public_key(root_method)?,
+            anp::PublicKeyMaterial::Ed25519(_)
+        ) {
+            return Err(crate::ImError::PermissionDenied);
+        }
     }
     let projection_storage =
         crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
@@ -3147,7 +3156,7 @@ fn promote_retired_registration_join_identity(
     identity_store: &crate::internal::identity_store::IdentityStore<'_>,
     index: &crate::internal::identity_store::IndexPayload,
     projection_storage: crate::internal::identity_store::AnpIdentityProjectionStorage,
-    root_key_id: String,
+    root_key_id: Option<String>,
     rollover: crate::internal::identity_registration_retired_join::RetiredJoinRollover,
 ) -> crate::ImResult<()> {
     if rollover.join_session_id != stored.join_request.join_session_id
@@ -3965,7 +3974,7 @@ fn validate_authorized_document(
     did_document: &Value,
 ) -> crate::ImResult<()> {
     if did_document.get("id").and_then(Value::as_str) != Some(join_request.did.as_str())
-        || !anp::authentication::validate_did_document_binding(did_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(did_document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -3987,11 +3996,7 @@ fn validate_authorized_document(
         .ok_or(crate::ImError::PermissionDenied)?;
     if entry.signing_key_id != signing_key_id
         || entry.e2ee_key_id != e2ee_key_id
-        || entry.profiles
-            != DEVICE_JOIN_VNEXT_PROFILES
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect::<Vec<_>>()
+        || entry.profiles != join_request.profiles
         || !document_method_matches_request(
             did_document,
             signing_key_id,
@@ -4307,7 +4312,7 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
             "new devices must request member role",
         ));
     }
-    if !join_profiles_are_supported(&request.profiles) {
+    if !join_profiles_are_supported(request.did.as_str(), &request.profiles) {
         return Err(crate::ImError::invalid_input(
             Some("join_request.profiles".to_owned()),
             "Join Request must use the complete AWiki vNext device Profile closure",
@@ -4374,8 +4379,24 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
         .map_err(|_| crate::ImError::PermissionDenied)
 }
 
-fn join_profiles_are_supported(profiles: &[String]) -> bool {
-    profiles == DEVICE_JOIN_VNEXT_PROFILES || profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+pub(crate) fn join_device_profiles(did: &str) -> Vec<String> {
+    if did.starts_with("did:web:") {
+        crate::internal::identity_generation::web_device_profiles()
+    } else {
+        DEVICE_JOIN_VNEXT_PROFILES
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect()
+    }
+}
+
+fn join_profiles_are_supported(did: &str, profiles: &[String]) -> bool {
+    if did.starts_with("did:web:") {
+        let current = join_device_profiles(did);
+        profiles == current || profiles == &current[..6]
+    } else {
+        profiles == DEVICE_JOIN_VNEXT_PROFILES || profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+    }
 }
 
 fn validate_method_binding(
@@ -4719,7 +4740,7 @@ fn validate_current_document(
 ) -> crate::ImResult<()> {
     if did_document.get("id").and_then(Value::as_str) != Some(did)
         || canonical_hash(did_document)? != expected_hash
-        || !anp::authentication::validate_did_document_binding(did_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(did_document)
     {
         return Err(crate::ImError::PermissionDenied);
     }

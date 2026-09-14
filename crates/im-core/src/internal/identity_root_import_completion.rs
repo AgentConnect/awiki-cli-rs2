@@ -2386,7 +2386,8 @@ async fn complete_wrapped_root_import(
         .host_status()
         .await
         .map_err(crate::internal::identity_provider::map_provider_error)?
-        .root_key_fingerprint;
+        .root_key_fingerprint
+        .ok_or(crate::ImError::PermissionDenied)?;
     if plan.root_fingerprint.trim().is_empty() {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -3101,7 +3102,7 @@ mod tests {
                     jwt_token: "member-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },

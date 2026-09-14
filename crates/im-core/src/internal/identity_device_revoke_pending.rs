@@ -110,7 +110,9 @@ impl PendingDeviceRevoke {
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 != Some(self.did.as_str())
-            || !anp::authentication::validate_did_document_binding(&self.new_document, true)
+            || !crate::internal::identity_wire::document::validate_control_document_method(
+                &self.new_document,
+            )
         {
             return Err(crate::ImError::PermissionDenied);
         }

@@ -59,7 +59,7 @@ pub(crate) struct SaveIdentityInput {
 pub(crate) enum SaveIdentityKeyMode {
     LegacyKey1,
     VNext {
-        root_key_id: String,
+        root_key_id: Option<String>,
         device_signing_key_id: String,
         device_e2ee_key_id: String,
     },
@@ -2984,7 +2984,7 @@ fn seal_identity_input_to_vault(
 
     let (root_key_id, device_signing_key_id, device_e2ee_key_id, is_vnext) = match &input.key_mode {
         SaveIdentityKeyMode::LegacyKey1 => (
-            "key-1".to_owned(),
+            Some("key-1".to_owned()),
             "key-2".to_owned(),
             "key-3".to_owned(),
             false,
@@ -2995,7 +2995,6 @@ fn seal_identity_input_to_vault(
             device_e2ee_key_id,
         } => {
             for (field, value) in [
-                ("root_key_id", root_key_id),
                 ("device_signing_key_id", device_signing_key_id),
                 ("device_e2ee_key_id", device_e2ee_key_id),
             ] {
@@ -3005,6 +3004,12 @@ fn seal_identity_input_to_vault(
                         format!("{field} is required for vNext identity storage"),
                     ));
                 }
+            }
+            if (input.did.as_str().starts_with("did:web:") && root_key_id.is_some())
+                || (!input.did.as_str().starts_with("did:web:")
+                    && root_key_id.as_ref().is_none_or(|id| id.trim().is_empty()))
+            {
+                return Err(crate::ImError::PermissionDenied);
             }
             if input.e2ee_signing_private_pem.trim().is_empty() {
                 return Err(crate::ImError::invalid_input(
@@ -3038,7 +3043,9 @@ fn seal_identity_input_to_vault(
                 identity_id,
                 did,
                 crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate,
-                &root_key_id,
+                root_key_id
+                    .as_deref()
+                    .ok_or(crate::ImError::PermissionDenied)?,
             ),
             &input.key1_private_pem,
         )?)
@@ -4094,7 +4101,7 @@ mod tests {
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: root_key_id.clone(),
+                        root_key_id: Some(root_key_id.clone()),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id.clone(),
                     },
@@ -4185,7 +4192,7 @@ mod tests {
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: format!("{}#key-1", did.as_str()),
+                        root_key_id: Some(format!("{}#key-1", did.as_str())),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id,
                     },
@@ -4424,11 +4431,11 @@ mod tests {
                     jwt_token: "member-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: format!(
+                        root_key_id: Some(format!(
                             "{}#{}",
                             did.as_str(),
                             anp::authentication::VM_KEY_AUTH
-                        ),
+                        )),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id.clone(),
                     },
@@ -5381,7 +5388,7 @@ mod tests {
             jwt_token: "projection-token".to_string(),
             did_document: Some(json!({"id": did})),
             key_mode: SaveIdentityKeyMode::VNext {
-                root_key_id: format!("{did}#root"),
+                root_key_id: Some(format!("{did}#root")),
                 device_signing_key_id: format!("{did}#device"),
                 device_e2ee_key_id: format!("{did}#agreement"),
             },

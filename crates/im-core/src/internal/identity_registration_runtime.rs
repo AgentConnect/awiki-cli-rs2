@@ -9,8 +9,7 @@
 //! local state and are reported as non-fatal completion warnings after that
 //! commit boundary.
 
-#[cfg(feature = "group-e2ee")]
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
 #[cfg(feature = "group-e2ee")]
 use sha2::{Digest as _, Sha256};
@@ -79,6 +78,26 @@ struct RegistrationTarget {
 }
 
 impl<'a, T> IdentityRegistrationRuntime<'a, T> {
+    fn validate_method(
+        &self,
+        request: &crate::identity::RegisterHandleRequest,
+    ) -> crate::ImResult<()> {
+        if request.did_method == crate::identity::DidMethod::Web
+            && (self.provision_operation_id.is_some()
+                || self.core.inner().multi_device_audience().is_none()
+                || !matches!(
+                    request.verification,
+                    crate::identity::VerificationInput::Phone { .. }
+                        | crate::identity::VerificationInput::Email { .. }
+                ))
+        {
+            return Err(crate::ImError::invalid_input(
+                Some("did_method".to_owned()),
+                "Web requires ordinary phone/email registration and the configured device audience",
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn new(core: &'a crate::core::ImCore, transport: T) -> Self {
         Self {
             core,
@@ -138,6 +157,7 @@ where
         &mut self,
         request: &crate::identity::RegisterHandleRequest,
     ) -> crate::ImResult<crate::identity::TrustedServiceRegistrationPreparation> {
+        self.validate_method(request)?;
         if !matches!(
             request.verification,
             crate::identity::VerificationInput::AlreadyVerified
@@ -181,6 +201,7 @@ where
         mut self,
         request: crate::identity::RegisterHandleRequest,
     ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
+        self.validate_method(&request)?;
         let target = registration_target(
             request.requested_handle.as_str(),
             &self.core.inner().sdk_config().did_domain,
@@ -271,6 +292,7 @@ where
         let (pending_ref, mut pending) =
             load_or_create_pending_registration(self.core, &store, &request, &target)?;
         verify_pending_matches_request(&pending, &request, &target)?;
+        verify_web_registration_request(self.core, &pending, &request)?;
         if let Some(join_required) = ensure_remote_registration(
             self.core,
             &mut self.transport,
@@ -288,6 +310,11 @@ where
                 },
             )?;
             return join_required_result(&request, target.full_handle, preparation);
+        }
+        if pending.did_method == crate::identity::DidMethod::Web {
+            let current = self.transport.reconcile_pending_registration(&pending)?;
+            apply_registration_reconciliation(&mut pending, current)?;
+            store.save(&pending)?;
         }
         let mut result = commit_pending_registration(
             self.core,
@@ -349,6 +376,7 @@ where
         mut self,
         request: crate::identity::RegisterHandleRequest,
     ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
+        self.validate_method(&request)?;
         let target = registration_target(
             request.requested_handle.as_str(),
             &self.core.inner().sdk_config().did_domain,
@@ -455,6 +483,7 @@ where
                 .map_err(|error| registration_stage_error(error, "pending_prepare"))?;
         verify_pending_matches_request(&pending, &request, &target)
             .map_err(|error| registration_stage_error(error, "pending_binding"))?;
+        verify_web_registration_request(self.core, &pending, &request)?;
         if pending.remote_result.is_none() && pending.remote_attempted {
             match self
                 .transport
@@ -489,6 +518,10 @@ where
         if pending.remote_result.is_none() {
             let mut refreshed_expired_proof = false;
             loop {
+                let call =
+                    register_call(&pending, &request, self.provision_operation_id.as_deref())
+                        .map_err(|error| registration_stage_error(error, "request_build"))?;
+                let call = sign_web_register_call_async(self.core, &mut pending, call).await?;
                 crate::internal::identity_custody::begin_registration_publication_async(
                     self.core,
                     &pending.identity,
@@ -499,9 +532,6 @@ where
                 store
                     .save(&pending)
                     .map_err(|error| registration_stage_error(error, "pending_save"))?;
-                let call =
-                    register_call(&pending, &request, self.provision_operation_id.as_deref())
-                        .map_err(|error| registration_stage_error(error, "request_build"))?;
                 match self
                     .transport
                     .rpc(call.endpoint, call.method, call.params.clone())
@@ -570,7 +600,9 @@ where
                         }
                     }
                     Err(error)
-                        if !refreshed_expired_proof && registration_proof_expired(&error) =>
+                        if pending.did_method == crate::identity::DidMethod::Wba
+                            && !refreshed_expired_proof
+                            && registration_proof_expired(&error) =>
                     {
                         crate::internal::identity_custody::reconcile_registration_publication_async(
                             self.core,
@@ -594,6 +626,14 @@ where
                 store.save(&pending)?;
                 break;
             }
+        }
+        if pending.did_method == crate::identity::DidMethod::Web {
+            let current = self
+                .transport
+                .reconcile_pending_registration(&pending)
+                .await?;
+            apply_registration_reconciliation(&mut pending, current)?;
+            store.save(&pending)?;
         }
         let mut result = commit_pending_registration_async(
             self.core,
@@ -701,10 +741,11 @@ fn load_or_create_pending_registration(
     if let Some(existing) = store.load(&target.local_part, &target.effective_domain)? {
         return Ok(existing);
     }
-    let identity = crate::internal::identity_custody::provision_registration_identity(
+    let identity = crate::internal::identity_custody::provision_registration_identity_for_method(
         core,
         &target.effective_domain,
         &target.local_part,
+        request.did_method,
     )?;
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         target.local_part.clone(),
@@ -766,7 +807,8 @@ where
         let external_custody = core.inner().identity_custody_provider().is_some();
         #[cfg(not(feature = "provider-traits"))]
         let external_custody = false;
-        if !external_custody
+        if existing.1.did_method == crate::identity::DidMethod::Web
+            || !external_custody
             || existing.1.remote_result.is_some()
             || !crate::internal::identity_custody::registration_identity_is_remotely_retired(
                 transport,
@@ -781,10 +823,11 @@ where
         retired_pending_ref = Some(existing.0);
     }
     let identity =
-        crate::internal::identity_custody::provision_registration_identity_with_transport(
+        crate::internal::identity_custody::provision_registration_identity_for_method_with_transport(
             core,
             &target.effective_domain,
             &target.local_part,
+            request.did_method,
             transport,
         )
         .await
@@ -820,7 +863,8 @@ fn verify_pending_matches_request(
     target: &RegistrationTarget,
 ) -> crate::ImResult<()> {
     pending.validate()?;
-    if pending.local_alias != local_alias(request, target)
+    if pending.did_method != request.did_method
+        || pending.local_alias != local_alias(request, target)
         || pending.make_default != request.make_default
         || pending.display_name
             != request
@@ -846,6 +890,32 @@ fn pending_verification_kind(verification: &crate::identity::VerificationInput) 
     }
 }
 
+fn verify_web_registration_request(
+    core: &crate::ImCore,
+    pending: &crate::internal::identity_registration_pending::PendingRegistration,
+    request: &crate::identity::RegisterHandleRequest,
+) -> crate::ImResult<()> {
+    if pending.did_method != crate::identity::DidMethod::Web {
+        return Ok(());
+    }
+    let Some(expected_hash) = pending.registration_request_hash.as_deref() else {
+        return Ok(());
+    };
+    let call = register_call(pending, request, None)?;
+    let projection = crate::internal::identity_wire::web_registration::business_projection(
+        &call.params,
+        core.inner()
+            .multi_device_audience()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        &format!("{}.{}", pending.target_handle, pending.target_domain),
+    )?;
+    if crate::internal::identity_wire::web_registration::request_hash(&projection)? != expected_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
 fn pending_verification_target(
     verification: &crate::identity::VerificationInput,
 ) -> Option<String> {
@@ -866,18 +936,124 @@ fn register_call(
     request: &crate::identity::RegisterHandleRequest,
     provision_operation_id: Option<&str>,
 ) -> crate::ImResult<crate::internal::identity_wire::RpcCall> {
-    crate::internal::identity_wire::registration::build_register_rpc_call(
+    let is_web = pending.did_method == crate::identity::DidMethod::Web;
+    if is_web
+        && (provision_operation_id.is_some()
+            || !matches!(
+                request.verification,
+                crate::identity::VerificationInput::Phone { .. }
+                    | crate::identity::VerificationInput::Email { .. }
+            ))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut call = crate::internal::identity_wire::registration::build_register_rpc_call(
         crate::internal::identity_wire::RegisterRpcParams {
             did_document: pending.identity.did_document.clone(),
             handle: pending.target_handle.clone(),
-            name: provision_operation_id.and_then(|_| request.profile.display_name.clone()),
+            name: (is_web || provision_operation_id.is_some())
+                .then(|| request.profile.display_name.clone())
+                .flatten(),
             phone: registration_phone(&request.verification),
             otp_code: registration_otp(&request.verification),
             email: registration_email(&request.verification),
             invite_code: request.invite_code.clone().unwrap_or_default(),
             provision_operation_id: provision_operation_id.map(str::to_owned),
         },
-    )
+    )?;
+    if is_web {
+        call.params["registration_operation_id"] =
+            serde_json::to_value(&pending.registration_operation_id)
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+        if let Some(avatar) = &request.profile.avatar_url {
+            call.params["avatar"] = serde_json::json!(avatar);
+        }
+    }
+    Ok(call)
+}
+
+async fn sign_web_register_call_async(
+    core: &crate::core::ImCore,
+    pending: &mut crate::internal::identity_registration_pending::PendingRegistration,
+    mut call: crate::internal::identity_wire::RpcCall,
+) -> crate::ImResult<crate::internal::identity_wire::RpcCall> {
+    if pending.did_method != crate::identity::DidMethod::Web {
+        return Ok(call);
+    }
+    let audience = core
+        .inner()
+        .multi_device_audience()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let (mut proof, bytes) =
+        crate::internal::identity_wire::web_registration::prepare(pending, &call.params, audience)?;
+    let provider = crate::internal::identity_custody::controller_custody_provider(core).await?;
+    let session = provider
+        .open_identity(&crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: pending.identity.controller_store_id.clone(),
+            identity_id: pending.identity.controller_identity_id.clone(),
+            did: pending.identity.did.as_str().to_owned(),
+        })
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = session
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.document != pending.identity.did_document
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let signature = session
+        .sign(crate::internal::identity_provider::ProviderSignRequest {
+            purpose: crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+            key: crate::internal::identity_provider::ProviderKeySelector::Kid(proof.key_id.clone()),
+            payload: bytes,
+        })
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if signature.kid != proof.key_id
+        || signature.algorithm != crate::internal::identity_provider::ProviderKeyAlgorithm::Ed25519
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    proof.signature = URL_SAFE_NO_PAD.encode(signature.bytes);
+    call.params["bootstrap_proof"] =
+        serde_json::to_value(proof).map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(call)
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn sign_web_register_call(
+    core: &crate::core::ImCore,
+    pending: &mut crate::internal::identity_registration_pending::PendingRegistration,
+    mut call: crate::internal::identity_wire::RpcCall,
+) -> crate::ImResult<crate::internal::identity_wire::RpcCall> {
+    if pending.did_method != crate::identity::DidMethod::Web {
+        return Ok(call);
+    }
+    let audience = core
+        .inner()
+        .multi_device_audience()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let (mut proof, bytes) =
+        crate::internal::identity_wire::web_registration::prepare(pending, &call.params, audience)?;
+    let controller =
+        crate::internal::identity_custody::registration_controller_signing_managed_identity(
+            core,
+            &pending.identity,
+        )?;
+    let signature = controller
+        .sign(anp_identity::SignRequest {
+            purpose: anp_identity::SigningPurpose::DeviceAssertion,
+            key: anp_identity::KeySelector::Kid(proof.key_id.clone()),
+            payload: bytes,
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    proof.signature = URL_SAFE_NO_PAD.encode(signature.bytes);
+    call.params["bootstrap_proof"] =
+        serde_json::to_value(proof).map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(call)
 }
 
 #[cfg(feature = "identity-native-anp")]
@@ -922,13 +1098,14 @@ where
 
     let mut refreshed_expired_proof = false;
     loop {
+        let call = register_call(pending, request, provision_operation_id)?;
+        let call = sign_web_register_call(core, pending, call)?;
         // Persist before the first byte is sent. A process crash or lost response
         // must enter signed reconciliation on restart and must never blindly
         // replay register.
         crate::internal::identity_custody::begin_registration_publication(core, &pending.identity)?;
         pending.remote_attempted = true;
         persist(pending)?;
-        let call = register_call(pending, request, provision_operation_id)?;
         match transport.rpc(call.endpoint, call.method, call.params) {
             Ok(raw) => match parse_register_outcome(pending, raw)? {
                 RegistrationRemoteOutcome::Registered(result) => {
@@ -971,7 +1148,11 @@ where
                     }
                 }
             }
-            Err(error) if !refreshed_expired_proof && registration_proof_expired(&error) => {
+            Err(error)
+                if pending.did_method == crate::identity::DidMethod::Wba
+                    && !refreshed_expired_proof
+                    && registration_proof_expired(&error) =>
+            {
                 crate::internal::identity_custody::reconcile_registration_publication(
                     core,
                     &pending.identity,
@@ -1183,6 +1364,7 @@ fn parse_register_outcome(
     )?;
     Ok(RegistrationRemoteOutcome::Registered(
         crate::internal::identity_registration_pending::PendingRegistrationRemoteResult {
+            current: None,
             did,
             user_id,
             handle,
@@ -1487,6 +1669,7 @@ fn apply_registration_reconciliation(
     reconciliation: crate::internal::transport::PendingRegistrationReconciliation,
 ) -> crate::ImResult<()> {
     let crate::internal::transport::PendingRegistrationReconciliation::Committed {
+        current,
         user_id,
         binding_generation,
         access_token,
@@ -1494,6 +1677,9 @@ fn apply_registration_reconciliation(
     else {
         return Err(crate::ImError::PermissionDenied);
     };
+    if pending.did_method == crate::identity::DidMethod::Web && current.is_none() {
+        return Err(crate::ImError::PermissionDenied);
+    }
     crate::internal::access_token::validate_device_access_token(
         &access_token,
         &crate::internal::access_token::ExpectedDeviceAccess {
@@ -1508,6 +1694,7 @@ fn apply_registration_reconciliation(
     )?;
     pending.remote_result = Some(
         crate::internal::identity_registration_pending::PendingRegistrationRemoteResult {
+            current,
             did: pending.identity.did.as_str().to_owned(),
             user_id,
             handle: pending.target_handle.clone(),
@@ -1531,6 +1718,18 @@ fn commit_pending_registration(
         .remote_result
         .as_ref()
         .ok_or(crate::ImError::PermissionDenied)?;
+    #[cfg(feature = "identity-native-anp")]
+    if let Some(current) = &remote.current {
+        current.validate(pending)?;
+        crate::internal::identity_custody::adopt_controller_document(
+            core,
+            &pending.identity.did,
+            &pending.identity.controller_store_id,
+            &pending.identity.controller_identity_id,
+            &current.document,
+            &current.checkpoint,
+        )?;
+    }
     let storage = crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
         core,
         pending.identity.controller_store_id.clone(),
@@ -1557,6 +1756,12 @@ async fn commit_pending_registration_async(
         .remote_result
         .as_ref()
         .ok_or(crate::ImError::PermissionDenied)?;
+    if let Some(current) = &remote.current {
+        crate::internal::identity_custody::adopt_registered_web_document_async(
+            core, pending, current,
+        )
+        .await?;
+    }
     let core = core.clone();
     let identity = pending.identity.clone();
     let input = registration_save_input(pending, remote)?;
@@ -1580,7 +1785,7 @@ fn registration_save_input(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
     remote: &crate::internal::identity_registration_pending::PendingRegistrationRemoteResult,
 ) -> crate::ImResult<crate::internal::identity_store::SaveIdentityInput> {
-    anp_vnext_bootstrap_save_input(AnpVNextBootstrapSaveInput {
+    let mut input = anp_vnext_bootstrap_save_input(AnpVNextBootstrapSaveInput {
         identity: &pending.identity,
         document_hash: &pending.document_hash,
         local_alias: &pending.local_alias,
@@ -1591,7 +1796,17 @@ fn registration_save_input(
         binding_generation: &remote.binding_generation,
         access_token: &remote.access_token,
         make_default: pending.make_default,
-    })
+    })?;
+    if let Some(current) = &remote.current {
+        current.validate(pending)?;
+        input.did_document = Some(current.document.clone());
+        input
+            .device_state
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?
+            .checkpoint = Some(current.checkpoint.clone());
+    }
+    Ok(input)
 }
 
 pub(crate) fn anp_vnext_bootstrap_save_input(
@@ -1741,7 +1956,7 @@ pub(crate) fn vnext_bootstrap_save_input(
         jwt_token: input.access_token.to_owned(),
         did_document: Some(generated.did_document.clone()),
         key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-            root_key_id: generated.root_key_id.clone(),
+            root_key_id: Some(generated.root_key_id.clone()),
             device_signing_key_id: generated.device_signing_key_id.clone(),
             device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
         },
@@ -2109,9 +2324,12 @@ pub(crate) fn email_verified(value: &Value) -> bool {
 }
 
 #[cfg(test)]
+mod web_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use time::OffsetDateTime;
 
     #[test]
@@ -2216,6 +2434,7 @@ mod tests {
                         };
                     Ok(
                         crate::internal::transport::PendingRegistrationReconciliation::Committed {
+                            current: None,
                             user_id: "user-1".to_owned(),
                             binding_generation: "1".to_owned(),
                             access_token: access_token(pending, &key_id),
@@ -2588,6 +2807,7 @@ mod tests {
         apply_registration_reconciliation(
             &mut pending,
             crate::internal::transport::PendingRegistrationReconciliation::Committed {
+                current: None,
                 user_id: "user-1".to_owned(),
                 binding_generation: "1".to_owned(),
                 access_token: token,
@@ -2659,6 +2879,7 @@ mod tests {
         apply_registration_reconciliation(
             &mut pending,
             crate::internal::transport::PendingRegistrationReconciliation::Committed {
+                current: None,
                 user_id: "user-1".to_owned(),
                 binding_generation: "1".to_owned(),
                 access_token: token,
@@ -2803,6 +3024,7 @@ mod tests {
 
     fn request() -> crate::identity::RegisterHandleRequest {
         crate::identity::RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("alice".to_owned()),
             requested_handle: crate::ids::Handle::parse("alice.example.test", "").unwrap(),
             verification: crate::identity::VerificationInput::AlreadyVerified,
@@ -2847,7 +3069,7 @@ mod tests {
         (root, core, pending)
     }
 
-    fn test_config() -> crate::ImCoreConfig {
+    pub(super) fn test_config() -> crate::ImCoreConfig {
         crate::ImCoreConfig {
             service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
             did_domain: "example.test".to_owned(),
@@ -2862,7 +3084,7 @@ mod tests {
         }
     }
 
-    fn test_paths(root: &std::path::Path) -> crate::ImCorePaths {
+    pub(super) fn test_paths(root: &std::path::Path) -> crate::ImCorePaths {
         crate::ImCorePaths {
             identities: crate::IdentityRegistryPaths {
                 identity_root_dir: root.join("identities"),
@@ -2879,7 +3101,7 @@ mod tests {
         }
     }
 
-    fn access_token(
+    pub(super) fn access_token(
         pending: &crate::internal::identity_registration_pending::PendingRegistration,
         key_id: &str,
     ) -> String {

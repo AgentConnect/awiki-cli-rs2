@@ -60,6 +60,7 @@ pub(crate) fn prepare_update(
     new_document: Value,
     authorizing_device_id: String,
     authorizing_signing_key_id: &str,
+    audience: Option<&str>,
     signer: &dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
     now: OffsetDateTime,
 ) -> crate::ImResult<PreparedDeviceDocumentUpdate> {
@@ -93,7 +94,7 @@ pub(crate) fn prepare_update(
         nonce: URL_SAFE_NO_PAD.encode(nonce),
         signature: String::new(),
     };
-    let signing_object = json!({
+    let mut signing_object = json!({
         "type": proof.proof_type,
         "purpose": DEVICE_DOCUMENT_UPDATE_PURPOSE,
         "method": DEVICE_DOCUMENT_UPDATE_METHOD,
@@ -103,6 +104,7 @@ pub(crate) fn prepare_update(
         "nonce": proof.nonce,
         "params": params,
     });
+    super::bind_device_proof_audience(&mut signing_object, &proof.key_id, audience)?;
     let signing_input = serde_json_canonicalizer::to_vec(&signing_object).map_err(|error| {
         crate::ImError::Serialization {
             detail: error.to_string(),
@@ -259,6 +261,7 @@ mod tests {
             }),
             "dev-admin".to_owned(),
             "did:wba:awiki.test:user:alice:e1_test#dev-admin-sign",
+            None,
             &|_, message| {
                 private
                     .sign_message(message)

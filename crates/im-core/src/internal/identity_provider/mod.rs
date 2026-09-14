@@ -273,6 +273,7 @@ pub struct ProviderCreateIdentityRequest {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDidProfile {
     E1,
+    Web,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,7 +468,7 @@ pub struct ProviderDocumentCheckpoint {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderHostStatus {
     pub root_capability: ProviderRootCapability,
-    pub root_key_fingerprint: String,
+    pub root_key_fingerprint: Option<String>,
     pub checkpoint: Option<ProviderDocumentCheckpoint>,
 }
 
@@ -530,7 +531,7 @@ pub struct ProviderEnrollmentProposal {
     pub enrollment_id: String,
     pub identity: ProviderIdentityRef,
     pub kind: ProviderEnrollmentProposalKind,
-    pub root_key_fingerprint: String,
+    pub root_key_fingerprint: Option<String>,
     pub checkpoint: ProviderDocumentCheckpoint,
 }
 

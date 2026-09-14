@@ -793,7 +793,7 @@ fn scenario(
                 jwt_token: "device-token".to_owned(),
                 did_document: Some(document.clone()),
                 key_mode: SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },

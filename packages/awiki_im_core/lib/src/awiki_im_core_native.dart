@@ -820,7 +820,18 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<List<DidMethod>> identityCreationMethods() async {
+    _ensureNotDisposed();
+    final methods = await _mapNativeErrors(
+      () => gen_identity_api.identityCreationMethods(core: _inner),
+    );
+    return methods
+        .map((method) => DidMethod.values.byName(method))
+        .toList(growable: false);
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String phone,
@@ -833,6 +844,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithPhone(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         phone: phone,
@@ -846,6 +858,7 @@ class AwikiImCore {
   }
 
   Future<HandleRegistrationResult> registerHandleWithEmail({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String email,
@@ -858,6 +871,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithEmail(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         email: email,

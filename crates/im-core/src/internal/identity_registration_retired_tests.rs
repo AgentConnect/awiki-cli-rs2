@@ -142,6 +142,7 @@ impl crate::internal::transport::AsyncRawJsonTransport for Directory {
 }
 fn request() -> crate::identity::RegisterHandleRequest {
     crate::identity::RegisterHandleRequest {
+        did_method: Default::default(),
         local_alias: Some("alice".into()),
         requested_handle: crate::ids::Handle::parse("alice.example.test", "").unwrap(),
         verification: crate::identity::VerificationInput::AlreadyVerified,
@@ -421,6 +422,7 @@ async fn known_committed_pending_is_preserved_without_a_directory_lookup() {
     committed.remote_attempted = true;
     committed.phase = PendingRegistrationPhase::RemoteCommitted;
     committed.remote_result = Some(PendingRegistrationRemoteResult {
+        current: None,
         did: committed.identity.did.as_str().into(),
         user_id: "test-user".into(),
         handle: "alice".into(),

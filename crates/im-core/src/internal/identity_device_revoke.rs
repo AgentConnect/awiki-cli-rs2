@@ -226,7 +226,7 @@ fn recover_remote_result_from_authority(
         || registry.checkpoint.document_hash
             != crate::internal::identity_wire::document::document_hash(document)?
         || document.get("id").and_then(Value::as_str) != Some(pending.did.as_str())
-        || !anp::authentication::validate_did_document_binding(document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -491,6 +491,7 @@ async fn prepare_revoke_async(
         new_document,
         authorizing_device_id,
         authorizing_signing_key_id,
+        client.core_inner().multi_device_audience(),
         now,
     )?;
     let signature = match client.runtime().identity_session.as_ref() {
@@ -535,7 +536,7 @@ async fn prepare_initial_intent(
         || registry.checkpoint.document_hash
             != crate::internal::identity_wire::document::document_hash(&document)?
         || document.get("id").and_then(Value::as_str) != Some(did.as_str())
-        || !anp::authentication::validate_did_document_binding(&document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(&document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -604,17 +605,23 @@ async fn prepare_initial_intent(
         .document
     } else {
         let root_key_id = format!("{}#key-1", did.as_str());
-        let mut new_document = anp::authentication::remove_device_from_did_document(
-            &document,
-            &root_key_id,
-            target_device_id,
-        )
+        let mut new_document = if did.as_str().starts_with("did:web:") {
+            anp::authentication::remove_device_from_web_did_document(&document, target_device_id)
+        } else {
+            anp::authentication::remove_device_from_did_document(
+                &document,
+                &root_key_id,
+                target_device_id,
+            )
+        }
         .map_err(|_| crate::ImError::PermissionDenied)?;
-        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-            &mut new_document,
-            did,
-            client.runtime().key_provider.as_ref(),
-        )?;
+        if !did.as_str().starts_with("did:web:") {
+            crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
+                &mut new_document,
+                did,
+                client.runtime().key_provider.as_ref(),
+            )?;
+        }
         new_document
     };
     validate_manifest_device(&new_document, &authorizing)?;

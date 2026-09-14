@@ -266,7 +266,7 @@ async fn upgrade_registration(
         did: generated.did,
         did_document: generated.did_document,
         protocol_device_id: generated.protocol_device_id,
-        root_key_id: generated.root_key_id,
+        root_key_id: Some(generated.root_key_id),
         device_signing_key_id: generated.device_signing_key_id,
         device_e2ee_key_id: generated.device_e2ee_key_id,
         legacy_daemon_authorization: true,

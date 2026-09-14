@@ -52,6 +52,7 @@
 | `secret_storage.mode` | `config.yaml` | 密钥存储 | 空 → `vault_required` |
 | `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` | 环境变量 | im-core vault 根密钥 | vault 模式必填 |
 | `AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED` | 环境变量 | 设备吊销 | 未设 = **开**；`0` 紧急关 |
+| `AWIKI_MULTI_DEVICE_AUDIENCE` | 环境变量 | Web 注册及设备管理签名 audience | 使用选定部署的准确配置；不从 DID 或 Handle 推导 |
 | `AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED` | 环境变量 | Direct E2EE 能力 | 未设 = **开**；`0` 紧急关 |
 | `AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` | 环境变量 | Group E2EE 能力 | 未设 = **开**；`0` 紧急关 |
 | `AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED` | 环境变量 | DID transition 客户端路径 | 未设 = **开**；`0` 紧急关 |

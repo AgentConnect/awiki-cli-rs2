@@ -96,6 +96,15 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
+Phone/email registration accepts `didMethod: DidMethod.wba` (default) or
+`DidMethod.web`. `identityCreationMethods()` returns the intersection of Server Info
+creation capabilities and Core support; older deployments default to WBA.
+Web requires the deployment's exact `multiDeviceAudience` in open options. It has
+device keys but no DID root key, recovery or Root Import. A Web bootstrap admin
+can be management-ready without a root key; members remain unable to manage.
+The method selector is for new identities. Existing Handle admission, durable
+registration retries and current device qualification remain owned by Core.
+
 A successful registered result exposes `HandleRegistrationResult.accountId`,
 which is the canonical User Service account ID persisted by Core. A
 `join_required` result leaves `accountId` null; Flutter/App code must not decode

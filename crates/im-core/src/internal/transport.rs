@@ -312,6 +312,9 @@ pub(crate) trait AsyncRpcTransport {
 pub(crate) enum PendingRegistrationReconciliation {
     Absent,
     Committed {
+        current: Option<
+            crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        >,
         user_id: String,
         binding_generation: String,
         access_token: String,
@@ -2325,7 +2328,7 @@ fn reconcile_pending_registration(
         }
         Err(error) => return Err(error),
     };
-    validate_pending_registration_registry(&mut transport, pending)?;
+    let observation = validate_pending_registration_registry(&mut transport, pending)?;
     let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding(
         &client,
         &format!("{}.{}", pending.target_handle, pending.target_domain),
@@ -2336,7 +2339,14 @@ fn reconcile_pending_registration(
     let binding_generation = lookup
         .binding_generation
         .ok_or(crate::ImError::PermissionDenied)?;
+    if observation
+        .as_ref()
+        .is_some_and(|(_, generation)| generation != &binding_generation)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     Ok(PendingRegistrationReconciliation::Committed {
+        current: observation.map(|(current, _)| current),
         user_id: transport.pending_device_user_id()?,
         binding_generation,
         access_token,
@@ -2356,7 +2366,7 @@ async fn reconcile_pending_registration_async(
         }
         Err(error) => return Err(error),
     };
-    validate_pending_registration_registry_async(&mut transport, pending).await?;
+    let observation = validate_pending_registration_registry_async(&mut transport, pending).await?;
     let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
         &client,
         &format!("{}.{}", pending.target_handle, pending.target_domain),
@@ -2368,7 +2378,14 @@ async fn reconcile_pending_registration_async(
     let binding_generation = lookup
         .binding_generation
         .ok_or(crate::ImError::PermissionDenied)?;
+    if observation
+        .as_ref()
+        .is_some_and(|(_, generation)| generation != &binding_generation)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     Ok(PendingRegistrationReconciliation::Committed {
+        current: observation.map(|(current, _)| current),
         user_id: transport.pending_device_user_id()?,
         binding_generation,
         access_token,
@@ -2455,42 +2472,109 @@ fn pending_registration_transport<'a>(
 fn validate_pending_registration_registry(
     transport: &mut CoreHttpTransport<'_>,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
-) -> crate::ImResult<()> {
-    let call = crate::internal::identity_wire::device_join::build_registry_call(
+) -> crate::ImResult<
+    Option<(
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        String,
+    )>,
+> {
+    let mut call = crate::internal::identity_wire::device_join::build_registry_call(
         &pending.identity.did,
         false,
     );
-    let raw = AuthenticatedRpcTransport::authenticated_rpc(
+    if pending.did_method == crate::identity::DidMethod::Web {
+        call.params["registration_result"] =
+            crate::internal::identity_wire::web_registration_result::query(pending)?;
+    }
+    let mut raw = AuthenticatedRpcTransport::authenticated_rpc(
         transport,
         call.endpoint,
         call.method,
         call.params,
     )?;
-    validate_pending_registration_registry_value(pending, raw)
+    let historical_generation = if pending.did_method == crate::identity::DidMethod::Web {
+        Some(
+            crate::internal::identity_wire::web_registration_result::take_result(
+                pending,
+                &mut raw,
+                &transport.pending_device_user_id()?,
+            )?,
+        )
+    } else {
+        None
+    };
+    let registry = validate_pending_registration_registry_value(pending, raw)?;
+    let Some(generation) = historical_generation else {
+        return Ok(None);
+    };
+    let current =
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument {
+            document: crate::internal::discovery::did_document::resolve_did_document(
+                transport,
+                pending.identity.did.as_str(),
+            )?,
+            checkpoint: registry.checkpoint,
+        };
+    current.validate(pending)?;
+    Ok(Some((current, generation)))
 }
 
 async fn validate_pending_registration_registry_async(
     transport: &mut CoreHttpTransport<'_>,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
-) -> crate::ImResult<()> {
-    let call = crate::internal::identity_wire::device_join::build_registry_call(
+) -> crate::ImResult<
+    Option<(
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        String,
+    )>,
+> {
+    let mut call = crate::internal::identity_wire::device_join::build_registry_call(
         &pending.identity.did,
         false,
     );
-    let raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+    if pending.did_method == crate::identity::DidMethod::Web {
+        call.params["registration_result"] =
+            crate::internal::identity_wire::web_registration_result::query(pending)?;
+    }
+    let mut raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
         transport,
         call.endpoint,
         call.method,
         call.params,
     )
     .await?;
-    validate_pending_registration_registry_value(pending, raw)
+    let historical_generation = if pending.did_method == crate::identity::DidMethod::Web {
+        Some(
+            crate::internal::identity_wire::web_registration_result::take_result(
+                pending,
+                &mut raw,
+                &transport.pending_device_user_id()?,
+            )?,
+        )
+    } else {
+        None
+    };
+    let registry = validate_pending_registration_registry_value(pending, raw)?;
+    let Some(generation) = historical_generation else {
+        return Ok(None);
+    };
+    let current =
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument {
+            document: crate::internal::discovery::did_document::resolve_did_document_async(
+                transport,
+                pending.identity.did.as_str(),
+            )
+            .await?,
+            checkpoint: registry.checkpoint,
+        };
+    current.validate(pending)?;
+    Ok(Some((current, generation)))
 }
 
 fn validate_pending_registration_registry_value(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
     raw: Value,
-) -> crate::ImResult<()> {
+) -> crate::ImResult<crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry> {
     let registry = crate::internal::identity_wire::device_join::parse_registry_result(
         raw,
         &pending.identity.did,
@@ -2501,7 +2585,9 @@ fn validate_pending_registration_registry_value(
         .iter()
         .find(|device| device.device_id == pending.identity.protocol_device_id.as_str())
         .filter(|device| {
-            device.signing_key_id == pending.identity.device_signing_key_id
+            device.status
+                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+                && device.signing_key_id == pending.identity.device_signing_key_id
                 && device.e2ee_key_id == pending.identity.device_e2ee_key_id
                 && device.role
                     == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
@@ -2510,14 +2596,15 @@ fn validate_pending_registration_registry_value(
         })
         .ok_or(crate::ImError::PermissionDenied)?;
     let _ = device;
-    if registry.devices.len() != 1
-        || registry.checkpoint.document_version != 1
-        || registry.checkpoint.registry_version != 1
-        || registry.checkpoint.document_hash != pending.document_hash
+    if pending.did_method == crate::identity::DidMethod::Wba
+        && (registry.devices.len() != 1
+            || registry.checkpoint.document_version != 1
+            || registry.checkpoint.registry_version != 1
+            || registry.checkpoint.document_hash != pending.document_hash)
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    Ok(registry)
 }
 
 fn registration_is_explicitly_absent(error: &crate::ImError) -> bool {

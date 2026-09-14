@@ -523,6 +523,8 @@ class IdentityVaultVerificationReport {
   final List<String> warnings;
 }
 
+enum DidMethod { wba, web }
+
 class InitialProfile {
   const InitialProfile({this.displayName, this.avatarUrl});
 

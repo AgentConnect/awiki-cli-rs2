@@ -7105,7 +7105,7 @@ impl VNextCacheFixture {
                     jwt_token: "test-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },
