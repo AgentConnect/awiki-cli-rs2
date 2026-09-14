@@ -1,6 +1,6 @@
 # `@awiki/im-core-node` 原生制品
 
-当前发布版本为 `0.2.6`，native API 为 `14`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+当前候选版本为 `0.2.7-rc.1`，native API 为 `15`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
 `workflow_dispatch` 可显式选择 `build_only=true`，仅构建和打包，不执行安装测试；全部构建成功后仍聚合完整六包候选，默认 CI 仍保留安装测试。
 
 ## 第一版发行决策
@@ -69,6 +69,9 @@ root wrapper 是纯 ESM 包，只包含编译后的 JS、类型声明和合规�
 构建工作区，使用 `scripts/release/registry-dependencies.json` 和 `registry-Cargo.lock`
 锁定已发布的 ANP、Identity、IM Core。二进制输出仍进入原 checkout 的 target 目录，
 原 checkout 用于对应源码定位和打包审核。普通本地源码构建流程保持可用。
+精确 `-rc.N` 版本使用同一提交的完整源码工作树和 Cargo.lock，包含本次 IM Core，
+ANP 与 Identity 仍由 workflow 中的固定提交提供；正式版保持 registry 构建路径。
+不能使用旧 registry Core 构建包含新 Core 修复的候选。
 Cargo 的精确约束（例如 `=1.0.1`）在 provenance 中记为实际版本 `1.0.1`。
 
 
