@@ -267,6 +267,12 @@ HTTPS URL、公共地址检查及 DNS 固定、禁止重定向、TLS 验证和�
 Web 不使用 Core 的普通 JSON GET 作为生产解析器；测试仍保留明确的方法 transport
 替身。该公共解析路径不继承 Host 的私有 CA 或测试 base URL override。
 
+Web `device_revoke` 的 Vault 意图继续由既有撤销模块持有。未知结果必须重试精确
+operation，不从当前移除状态推定结果，也不因单次版本冲突删除恢复点。历史成功与
+当前资格分别校验：先确认原候选在原 checkpoint 提交，再单调采用当前文档和 Registry。
+本机管理员双 KID、公钥及 generation 必须保持有效；先完成 custody 后本地写入失败
+仍保留意图，重启不能将当前文档回退至撤销时的版本。WBA 保持原有恢复语义。
+
 A local encrypted pending-registration record may preserve generated key
 material and the exact operation across an ambiguous network result. It is only
 a crash-recovery mechanism: it must not introduce a second remote registration

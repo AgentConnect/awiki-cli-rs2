@@ -29,6 +29,8 @@ use crate::internal::identity_wire::device_revoke::{
 };
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport};
 
+mod web;
+
 const USER_PRESENCE_MAX_AGE_SECONDS: i64 = 120;
 const USER_PRESENCE_FUTURE_SKEW_SECONDS: i64 = 30;
 
@@ -110,6 +112,9 @@ where
     R: DeviceRevokeRemote,
     D: DeviceRevokeDocumentResolver,
 {
+    if client.did().as_str().starts_with("did:web:") {
+        return web::recover(core, client, store, remote, resolver).await;
+    }
     let (completed, pending_records) =
         converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
             .await?;
@@ -133,6 +138,12 @@ async fn recover_pending_locked<D>(
 where
     D: DeviceRevokeDocumentResolver,
 {
+    if client.did().as_str().starts_with("did:web:") {
+        let mut remote = DeviceRevokeHttpAdapter::new(
+            crate::internal::transport::CoreHttpTransport::new(client),
+        );
+        return web::recover(core, client, store, &mut remote, resolver).await;
+    }
     let (completed, pending_records) =
         converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
             .await?;
@@ -435,7 +446,7 @@ where
         {
             Ok(result) => result,
             Err(error) => {
-                if stale_intent_error(&error) {
+                if !did.as_str().starts_with("did:web:") && stale_intent_error(&error) {
                     store
                         .delete(&secret_ref)
                         .map_err(|_| unknown_outcome(crate::ImError::PermissionDenied))?;
@@ -460,9 +471,15 @@ where
         .remote_result
         .as_ref()
         .ok_or_else(|| unknown_outcome(crate::ImError::PermissionDenied))?;
-    converge_local_state(core, client, &pending, remote_result)
-        .await
-        .map_err(unknown_outcome)?;
+    if did.as_str().starts_with("did:web:") {
+        web::converge_current(core, client, &pending, remote_result, remote, resolver)
+            .await
+            .map_err(unknown_outcome)?;
+    } else {
+        converge_local_state(core, client, &pending, remote_result)
+            .await
+            .map_err(unknown_outcome)?;
+    }
     let target_device_id =
         crate::ids::ProtocolDeviceId::parse(&pending.target_device_id).map_err(unknown_outcome)?;
     store.delete(&secret_ref).map_err(unknown_outcome)?;

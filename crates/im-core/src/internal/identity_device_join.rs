@@ -5125,7 +5125,7 @@ fn public_key_bytes(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<Vec<
     }
 }
 
-fn document_public_key_bytes(document: &Value, kid: &str) -> crate::ImResult<Vec<u8>> {
+pub(crate) fn document_public_key_bytes(document: &Value, kid: &str) -> crate::ImResult<Vec<u8>> {
     let mut matches = document
         .get("verificationMethod")
         .and_then(Value::as_array)

@@ -714,6 +714,12 @@ Core 可用本次 enrollment 的精确设备键查询已 consumed 的会话，�
 新设备的 full Handle 和 binding generation 来自当前权威绑定，支持与 Web DID
 路径独立的 Handle 域。历史已保存的过期 Token 可读取以恢复，不能用于完成业务激活。
 
+Web 设备撤销的未决结果使用持久化的原 operation、目标、候选文档和旧 checkpoint
+重试 `device_revoke`，每次重新签发管理员 proof。当前文档中目标已消失不能单独证明
+本操作成功；无法确认的结果保留 pending。确认原操作提交后，还必须读取当前 Registry
+和文档，检查本机管理员仍有效、目标仍撤销，再以当前版本更新本地状态。后续合法更新
+不会被历史撤销候选覆盖；已保存的成功结果可免去重复撤销，但不能跳过当前资格检查。
+
 `RegisterHandleRequest.did_method` 接受 `DidMethod::Wba`（序列化默认 `wba`）或
 `DidMethod::Web`（`web`）。Web 只用于普通 phone/email 注册，并要求配置
 `ImCoreOpenOptions::with_multi_device_audience`；Guest/trusted service 仍保留原有 WBA
