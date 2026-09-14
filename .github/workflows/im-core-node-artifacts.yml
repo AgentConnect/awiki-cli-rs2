@@ -157,12 +157,8 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: |
-          if node -e "process.exit(/^\d+\.\d+\.\d+-rc\.\d+$/.test(require('./packages/awiki-im-core-node/package.json').version) ? 0 : 1)"; then
-            git worktree add --detach ../awiki-cli-registry HEAD
-            python3 scripts/release/node-sdk/verify-source-core.py ../awiki-cli-registry
-          else
-            python3 scripts/release/registry-build.py --prepare ../awiki-cli-registry
-          fi
+          git worktree add --detach ../awiki-cli-registry HEAD
+          python3 scripts/release/node-sdk/verify-source-core.py ../awiki-cli-registry
 
       - name: Build release addon on non-Linux targets
         if: matrix.linux_gnu == false

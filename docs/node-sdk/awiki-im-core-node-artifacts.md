@@ -65,13 +65,10 @@ root wrapper 是纯 ESM 包，只包含编译后的 JS、类型声明和合规�
 
 ## Apache-2.0 artifact 构建
 
-自 2026-09-07 起，CI 通过 `scripts/release/registry-build.py --prepare` 创建独立的 registry
-构建工作区，使用 `scripts/release/registry-dependencies.json` 和 `registry-Cargo.lock`
-锁定已发布的 ANP、Identity、IM Core。二进制输出仍进入原 checkout 的 target 目录，
-原 checkout 用于对应源码定位和打包审核。普通本地源码构建流程保持可用。
-精确 `-rc.N` 版本使用同一提交的完整源码工作树和 Cargo.lock，包含本次 IM Core，
-ANP 与 Identity 仍由 workflow 中的固定提交提供；正式版保持 registry 构建路径。
-不能使用旧 registry Core 构建包含新 Core 修复的候选。
+自 0.2.7 起，Node 制品的 RC 与正式版均使用同一提交的完整源码工作树和 Cargo.lock，
+包含当前 IM Core；ANP 与 Identity 仍由 workflow 中的固定提交提供。
+`verify-source-core.py` 校验 cargo metadata，要求 Core 精确指向该工作树的源码。
+不能使用旧 registry Core 构建包含新 Core 修复的制品。
 Cargo 的精确约束（例如 `=1.0.1`）在 provenance 中记为实际版本 `1.0.1`。
 
 
