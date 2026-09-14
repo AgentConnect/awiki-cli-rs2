@@ -617,6 +617,60 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn resolve_handle_for_device_join(&self, handle: String) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let did = self
+                    .inner
+                    .wait_im(
+                        environment
+                            .core
+                            .identities()
+                            .resolve_handle_for_device_join_async(&handle),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(did.as_str().to_owned())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_method_capabilities(&self, did: String) -> napi::Result<String> {
+        napi_result(
+            async {
+                let _operation = self.inner.operation().await?;
+                im_core::identity::identity_method_capabilities(&did)
+                    .map(|value| serde_json::json!(value).to_string())
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn pending_identity_registrations(&self) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let pending = self
+                    .inner
+                    .wait_im(
+                        environment.core.identities().pending_registrations_async(),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(serde_json::json!(pending).to_string())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn identity_creation_methods(&self) -> napi::Result<Vec<String>> {
         napi_result(
             async {

@@ -2326,6 +2326,10 @@ pub(crate) fn email_verified(value: &Value) -> bool {
 #[cfg(test)]
 mod web_tests;
 
+#[cfg(all(test, feature = "identity-native-anp"))]
+#[path = "identity_registration_projection_tests.rs"]
+mod projection_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

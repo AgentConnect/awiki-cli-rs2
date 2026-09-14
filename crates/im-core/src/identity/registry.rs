@@ -648,6 +648,37 @@ impl<'a> IdentityRegistry<'a> {
         crate::internal::identity_custody_migration::migrate_async(self.core).await
     }
 
+    /// Resolve the current public Handle binding before any local identity exists.
+    /// This is discovery only; the Join grant and device proofs still authorize enrollment.
+    pub async fn resolve_handle_for_device_join_async(
+        &self,
+        handle: &str,
+    ) -> crate::ImResult<crate::ids::Did> {
+        let lookup =
+            crate::internal::handle_discovery::resolve_authoritative_recovery_binding_async(
+                self.core, handle,
+            )
+            .await?;
+        Ok(lookup.did)
+    }
+
+    /// Read durable registration hints without exposing secret continuation data.
+    pub async fn pending_registrations_async(
+        &self,
+    ) -> crate::ImResult<Vec<super::PendingIdentityRegistration>> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_registration_pending::PendingRegistrationStore::from_core(
+                &core,
+            )?
+            .summaries(&core.inner().sdk_config().did_domain)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
     pub fn identity_document(
         &self,
         selector: super::IdentitySelector,

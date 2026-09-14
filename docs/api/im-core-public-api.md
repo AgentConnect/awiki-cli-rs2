@@ -2107,4 +2107,30 @@ CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Cor
 
 Vault 在提交前保存业务操作与候选，重复相同列表续接原操作；不同列表在 pending 存在时拒绝。网络失败保留候选和原 operation ID，重试刷新设备 proof nonce。精确成功回执和当前文档/Registry 独立检查，后续合法更新不会被历史候选覆盖，已撤销的管理员不能借历史回执获得本地可用状态。SDK 已收口但业务文件尚未写完时，仍可从 Vault 继续。调用者取消/超时后应检查 pending，再调用 resume；不要重新创建身份。
 
-CLI：`id services show`、`id services update --file services.json`、`id services resume`。输入文件是公开服务 JSON 数组；更新结果显示当前服务与 pending 状态。Node（native API v17）和 Dart 提供 `identityDocument`、`identityServicesUpdatePending`、`updateIdentityServices`、`resumeIdentityServicesUpdate`。Dart Web 不支持 native Rust backend，继续明确拒绝这些调用；DSH 通过 Node Host 使用同一 Core 入口。
+CLI：`id services show`、`id services update --file services.json`、`id services resume`。输入文件是公开服务 JSON 数组；更新结果显示当前服务与 pending 状态。Node（native API v18）和 Dart 提供 `identityDocument`、`identityServicesUpdatePending`、`updateIdentityServices`、`resumeIdentityServicesUpdate`。Dart Web 不支持 native Rust backend，继续明确拒绝这些调用；DSH 通过 Node Host 使用同一 Core 入口。
+
+
+### 产品 DID 方法能力与注册续接提示
+
+`identity::identity_method_capabilities(did)` 返回 `IdentityMethodCapabilities`：
+`method`、`handleRecovery`、`rootImport`、`rootTransfer` 和 `servicesUpdate`。
+它只描述方法支持，不证明账号存在、DID 文档有效或当前设备可管理。
+WBA 保留已有恢复/根导入/根转移入口；Web MVP 只开放普通服务更新，
+实际写入继续要求当前账号、Registry admin 和本地 custody 资格。
+Web DID 输入由 ANP 的严格 HTTPS 路径构造器检查；未知方法不产生能力。
+
+`IdentityRegistry::pending_registrations_async()` 只读取当前 Vault workspace/device
+及配置 DID 域的注册记录，返回 `PendingIdentityRegistration` 的公开字段：
+`did`、`fullHandle`、`method`、`displayName`、`verificationKind`、`phase`。
+摘要不返回联系方式、OTP、Token、操作 ID、摘要签名或 custody 引用，也不清理记录。
+产品重开后可以展示继续入口；继续仍调用既有注册入口，Core 核验原业务输入并复用原候选。
+新建能力关闭不应把已有 pending 入口隐藏。记录存储故障不等同于无 pending。
+
+Node（native API v18）和 Dart facade 提供 `identityMethodCapabilities(did)`、
+`pendingIdentityRegistrations()`，仅 Host/native 读取 Core，Browser 消费安全投影。
+Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
+
+`IdentityRegistry::resolve_handle_for_device_join_async(handle)` 复用 Core 的公开 Handle
+绑定验证，可在没有本地身份时解析 Join 目标；Node/Dart 同名 facade 为
+`resolveHandleForDeviceJoin(handle)`。它验证公开发现结果，不授权 Join，也不从
+个人资料 JSON 推断身份。后续账号验证 grant、当前 Registry 和设备证明仍由原流程核验。

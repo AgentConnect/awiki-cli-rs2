@@ -1029,6 +1029,9 @@ export interface DidDocumentService {
 export interface ImCoreNodeClient {
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  resolveHandleForDeviceJoin(handle: string): Promise<string>
+  pendingIdentityRegistrations(): Promise<readonly PendingIdentityRegistration[]>
+  identityMethodCapabilities(did: string): Promise<IdentityMethodCapabilities>
   identityCreationMethods(): Promise<readonly ('wba' | 'web')[]>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
@@ -1105,4 +1108,23 @@ export interface ImCoreNodeClient {
   clearLocalData(): Promise<{ readonly cleared: boolean; readonly clearedIdentityDids?: readonly string[] }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */
   close(): Promise<void>
+}
+
+/** Method support only; current device authorization is checked by Core on every write. */
+export interface IdentityMethodCapabilities {
+  readonly method: 'wba' | 'web'
+  readonly handleRecovery: boolean
+  readonly rootImport: boolean
+  readonly rootTransfer: boolean
+  readonly servicesUpdate: boolean
+}
+
+/** Public resume hints from the current tenant's durable Core registration store. */
+export interface PendingIdentityRegistration {
+  readonly did: string
+  readonly fullHandle: string
+  readonly method: 'wba' | 'web'
+  readonly displayName: string
+  readonly verificationKind: string
+  readonly phase: 'prepared' | 'remote_committed' | 'local_committed'
 }

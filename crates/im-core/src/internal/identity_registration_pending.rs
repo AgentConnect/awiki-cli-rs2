@@ -378,6 +378,49 @@ impl PendingRegistrationStore {
         Ok(Some((secret_ref, pending)))
     }
 
+    pub(crate) fn summaries(
+        &self,
+        domain: &str,
+    ) -> crate::ImResult<Vec<crate::identity::PendingIdentityRegistration>> {
+        let mut results = std::collections::BTreeMap::new();
+        for reference in self.vault.list()?.into_iter().filter(|reference| {
+            reference.workspace_id == self.workspace_id
+                && reference.device_id == self.device_id
+                && reference.kind == SecretKind::IdentityRegistrationPending
+        }) {
+            let plaintext = self.vault.open(&reference)?;
+            let pending: PendingRegistration = serde_json::from_slice(plaintext.expose_secret())
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            pending.validate()?;
+            if reference.key_id != pending_key_id(&pending.target_handle, &pending.target_domain) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if pending.target_domain != domain {
+                continue;
+            }
+            let summary = crate::identity::PendingIdentityRegistration {
+                did: pending.identity.did.as_str().to_owned(),
+                full_handle: format!("{}.{}", pending.target_handle, pending.target_domain),
+                method: pending.did_method,
+                display_name: pending.display_name,
+                verification_kind: pending.verification_kind,
+                phase: match pending.phase {
+                    PendingRegistrationPhase::Prepared => "prepared",
+                    PendingRegistrationPhase::RemoteCommitted => "remote_committed",
+                    PendingRegistrationPhase::LocalCommitted => "local_committed",
+                }
+                .to_owned(),
+            };
+            if results
+                .insert(summary.full_handle.clone(), summary)
+                .is_some()
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        Ok(results.into_values().collect())
+    }
+
     pub(crate) fn save(&self, pending: &PendingRegistration) -> crate::ImResult<SecretRef> {
         pending.validate()?;
         let plaintext =

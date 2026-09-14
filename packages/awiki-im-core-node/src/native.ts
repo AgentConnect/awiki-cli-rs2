@@ -116,6 +116,9 @@ export interface NativeImCoreNodeClient {
     },
   ): Promise<NativeExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  resolveHandleForDeviceJoin(handle: string): Promise<string>
+  pendingIdentityRegistrations(): Promise<string>
+  identityMethodCapabilities(did: string): Promise<string>
   identityCreationMethods(): Promise<readonly ('wba' | 'web')[]>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>

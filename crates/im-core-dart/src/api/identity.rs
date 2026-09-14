@@ -868,6 +868,7 @@ pub async fn register_handle_with_email(
 
 pub async fn register_handle_without_contact_verification(
     core: &Arc<crate::api::core::DartImCore>,
+    did_method: Option<String>,
     local_alias: Option<String>,
     requested_handle: String,
     invite_code: Option<String>,
@@ -878,7 +879,11 @@ pub async fn register_handle_without_contact_verification(
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
-            did_method: im_core::identity::DidMethod::Wba,
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -890,6 +895,37 @@ pub async fn register_handle_without_contact_verification(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+pub async fn identity_method_capabilities(did: String) -> Result<String, DartImError> {
+    let capabilities =
+        im_core::identity::identity_method_capabilities(&did).map_err(DartImError::from)?;
+    // This public projection contains no authority or local key material.
+    Ok(serde_json::json!(capabilities).to_string())
+}
+
+pub async fn resolve_handle_for_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    handle: String,
+) -> Result<String, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .resolve_handle_for_device_join_async(&handle)
+        .await
+        .map(|did| did.as_str().to_owned())
+        .map_err(DartImError::from)
+}
+
+pub async fn pending_identity_registrations(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<String, DartImError> {
+    let pending = core
+        .clone_inner()?
+        .identities()
+        .pending_registrations_async()
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(pending).to_string())
 }
 
 pub async fn identity_creation_methods(

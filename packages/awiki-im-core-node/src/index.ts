@@ -19,6 +19,8 @@ import {
   type DeviceRegistrySnapshot,
   type DeviceRevokeResult,
   type DidDocumentService,
+  type IdentityMethodCapabilities,
+  type PendingIdentityRegistration,
   type DownloadAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
@@ -138,6 +140,18 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public getDefaultIdentity(): Promise<NodeIdentity | null> {
     return call(() => this.native.getDefaultIdentity())
+  }
+
+  public resolveHandleForDeviceJoin(handle: string): Promise<string> {
+    return call(() => this.native.resolveHandleForDeviceJoin(handle))
+  }
+
+  public pendingIdentityRegistrations(): Promise<readonly PendingIdentityRegistration[]> {
+    return call(async () => JSON.parse(await this.native.pendingIdentityRegistrations()) as readonly PendingIdentityRegistration[])
+  }
+
+  public identityMethodCapabilities(did: string): Promise<IdentityMethodCapabilities> {
+    return call(async () => JSON.parse(await this.native.identityMethodCapabilities(did)) as IdentityMethodCapabilities)
   }
 
   public identityCreationMethods(): Promise<readonly ('wba' | 'web')[]> {

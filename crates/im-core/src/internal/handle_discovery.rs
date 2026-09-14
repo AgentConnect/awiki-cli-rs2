@@ -76,7 +76,7 @@ pub(crate) async fn resolve_direct_handle_async(
     }
 }
 
-/// Recovery can inspect the public binding before its committed identity has
+/// Recovery and device Join can inspect the public binding before an identity has
 /// been projected locally. This uses the same WNS authority and validation as
 /// an existing client, without requiring an authenticated local credential.
 pub(crate) async fn resolve_authoritative_recovery_binding_async(

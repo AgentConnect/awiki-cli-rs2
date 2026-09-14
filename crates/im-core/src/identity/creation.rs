@@ -9,6 +9,19 @@ pub struct IdentityCreationCapabilities {
     pub did_methods: Vec<DidMethod>,
 }
 
+/// Public continuation hint. Contact values, grants, Vault references and
+/// operation records remain inside Core; retry the same registration entrypoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingIdentityRegistration {
+    pub did: String,
+    pub full_handle: String,
+    pub method: DidMethod,
+    pub display_name: String,
+    pub verification_kind: String,
+    pub phase: String,
+}
+
 impl IdentityCreationCapabilities {
     pub(crate) fn from_server_info(value: &serde_json::Value) -> crate::ImResult<Self> {
         let methods = match value.pointer("/identity/did_methods") {

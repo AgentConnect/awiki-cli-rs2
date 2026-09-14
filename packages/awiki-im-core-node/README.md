@@ -203,4 +203,22 @@ Recovery progress includes Core-derived `allowedActions`. `resumeHandleRecovery`
 `refreshDisplayProfiles({ peers }, force = false)` 补齐展示资料，每批最多 100 个 DID。
 Core 拥有去重、并发上限、TTL、失败保留和 owner 隔离；调用不建立联系人、Direct 会话或身份绑定。
 成功但没有昵称的 `cacheHit: true` 结果应清除旧昵称并回退到 Handle/DID；失败保留缓存。
-本接口需要 native API v17，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。
+本接口需要 native API v18，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。
+
+
+### DID 方法与未完成注册
+
+`identityCreationMethods()` 返回服务与 Core 支持的新建方法交集；默认 WBA。
+`identityMethodCapabilities(did)` 返回 `method`、`handleRecovery`、`rootImport`、
+`rootTransfer`、`servicesUpdate`，产品不自行解析 DID 前缀决定操作权限。
+该结果描述方法能力，管理写入仍由 Core 的当前设备授权校验。
+
+`pendingIdentityRegistrations()` 返回当前租户的公开续接提示，包括 DID、完整 Handle、
+方法、显示名、验证种类和阶段；不含联系方式、Token、操作 ID 或 custody 引用。
+Browser 只展示这些公开提示，通过原注册入口续接；Host 保管状态与密钥。
+普通服务更新复用 `identityDocument()`、`identityServicesUpdatePending()`、
+`updateIdentityServices(services)`、`resumeIdentityServicesUpdate()`。
+pending 时先继续原操作，不提交另一份文档；Web member 不展示管理写入入口。
+
+`resolveHandleForDeviceJoin(handle)` 在未登录时复用 Core 的公开 Handle 绑定验证；
+Web 的 DID 域可以与 Provider 域不同。该公开解析不授予账号准入或设备权限。

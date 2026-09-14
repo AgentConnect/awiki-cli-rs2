@@ -36,6 +36,19 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<String> resolveHandleForDeviceJoin(String handle) async =>
+      throw _unsupported();
+
+  Future<List<PendingIdentityRegistration>>
+  pendingIdentityRegistrations() async => throw _unsupported();
+
+  Future<IdentityMethodCapabilities> identityMethodCapabilities(
+    String did,
+  ) async => throw _unsupported();
+
+  Future<List<DidMethod>> identityCreationMethods() async =>
+      throw _unsupported();
+
   Future<List<IdentitySummary>> listIdentities() async {
     throw _unsupported();
   }
