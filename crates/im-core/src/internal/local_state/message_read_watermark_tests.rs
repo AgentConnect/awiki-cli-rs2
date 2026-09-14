@@ -109,12 +109,10 @@ fn hydration_uses_the_durable_sequence_even_if_the_later_record_omits_it() {
     message.hydration_state = MessageHydrationState::Discovered;
     message.content.clear();
     upsert_message(&db, &message).unwrap();
-    assert_eq!(
-        db.query_row("SELECT is_read FROM messages", [], |row| row
+    assert!(!db
+        .query_row("SELECT is_read FROM messages", [], |row| row
             .get::<_, bool>(0))
-            .unwrap(),
-        false
-    );
+        .unwrap());
     message.hydration_state = MessageHydrationState::Hydrated;
     message.content = "hydrated".into();
     message.server_seq = None;

@@ -1449,7 +1449,12 @@ where
             ),
         )
         .await
-        .map_err(|_| sync_error("SYNC_RECEIVE_BUSY", "another receiver still owns this account sync"))??;
+        .map_err(|_| {
+            sync_error(
+                "SYNC_RECEIVE_BUSY",
+                "another receiver still owns this account sync",
+            )
+        })??;
         let run = db
             .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
             .await?;
@@ -1751,9 +1756,16 @@ where
                 hydrated
             };
 
-            for event in page.events.iter().filter(|event| event.event_type == "system.notification") {
+            for event in page
+                .events
+                .iter()
+                .filter(|event| event.event_type == "system.notification")
+            {
                 let projection = hydrated.get(&event.event_id).ok_or_else(|| {
-                    sync_error("SYNC_HYDRATION_INCOMPLETE", "system notification hydration is missing")
+                    sync_error(
+                        "SYNC_HYDRATION_INCOMPLETE",
+                        "system notification hydration is missing",
+                    )
                 })?;
                 validate_system_notification_hydration(&binding, event, projection)?;
             }
@@ -1893,13 +1905,19 @@ where
                     blocked_lanes.insert(lane);
                 }
                 SyncLaneDeltaSectionV3::Error(error) => {
-                    let recoverable = matches!((lane, error.anp_code.as_str()),
+                    let recoverable = matches!(
+                        (lane, error.anp_code.as_str()),
                         (SyncLaneV3::P5Device, "p5_device_recovery_required")
-                        | (SyncLaneV3::P6Group, "p6_group_recovery_required"));
+                            | (SyncLaneV3::P6Group, "p6_group_recovery_required")
+                    );
                     if recoverable && lane_recovery_attempted.insert(lane) {
                         recovery_requested.insert(lane);
                     } else {
-                        result.warnings.push(format!("sync.lane.{}.{}", lane.as_str(), error.anp_code));
+                        result.warnings.push(format!(
+                            "sync.lane.{}.{}",
+                            lane.as_str(),
+                            error.anp_code
+                        ));
                         blocked_lanes.insert(lane);
                     }
                 }
@@ -2036,7 +2054,9 @@ where
                 }
                 Err(_) => {
                     for lane in recovery_requested {
-                        result.warnings.push(format!("sync.lane.{}.recovery_deferred", lane.as_str()));
+                        result
+                            .warnings
+                            .push(format!("sync.lane.{}.recovery_deferred", lane.as_str()));
                         blocked_lanes.insert(lane);
                     }
                 }
@@ -2089,7 +2109,10 @@ where
             }
             self.refresh_session_and_lane_epoch().await?;
             let refreshed_binding = self.client.active_sync_account_binding().await?;
-            if let Some(error) = self.drain_read_outbox(db, &refreshed_binding, limit).await? {
+            if let Some(error) = self
+                .drain_read_outbox(db, &refreshed_binding, limit)
+                .await?
+            {
                 return Err(error);
             }
         }
@@ -2844,12 +2867,18 @@ where
     // Bootstrap may only know the checkpoint ACK sent before the current page.
     // Keep newer durable reception within the same epoch; a new epoch starts
     // from the service's cursor while old inbox inputs retain their ownership.
-    let received = db.load_lane_sync_states(binding.owner_identity_id.clone()).await?;
+    let received = db
+        .load_lane_sync_states(binding.owner_identity_id.clone())
+        .await?;
     for state in &mut states {
-        if let Some(current) = received.iter().find(|current| current.lane == state.lane
-            && current.stream_epoch == state.stream_epoch) {
-            if crate::internal::local_state::sync_v2::compare_decimal(&current.scan_seq, &state.scan_seq)?
-                == std::cmp::Ordering::Greater {
+        if let Some(current) = received.iter().find(|current| {
+            current.lane == state.lane && current.stream_epoch == state.stream_epoch
+        }) {
+            if crate::internal::local_state::sync_v2::compare_decimal(
+                &current.scan_seq,
+                &state.scan_seq,
+            )? == std::cmp::Ordering::Greater
+            {
                 *state = current.clone();
             }
         }

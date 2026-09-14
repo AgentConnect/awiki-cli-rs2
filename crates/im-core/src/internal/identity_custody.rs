@@ -3512,7 +3512,7 @@ fn reserved_registration_identity(
         .map(|(_, pending)| pending.identity.controller_identity_id))
 }
 
-fn historical_handle_dids(
+pub(crate) fn historical_handle_dids(
     core: &crate::core::ImCore,
     full_handle: &str,
 ) -> crate::ImResult<std::collections::BTreeSet<String>> {

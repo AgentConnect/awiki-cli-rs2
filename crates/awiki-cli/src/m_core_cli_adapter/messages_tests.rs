@@ -608,8 +608,12 @@ fn receive_budget_boundary_keeps_the_public_resumable_error() {
         error_code: None,
         warnings: vec!["sync.budget_exhausted".into()],
     };
-    let Err(error @ MessageAdapterError::ForegroundSyncPending { budget_exhausted: true, .. }) =
-        require_foreground_message_receive(&received)
+    let Err(
+        error @ MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: true,
+            ..
+        },
+    ) = require_foreground_message_receive(&received)
     else {
         panic!("unfinished receive must request continuation")
     };

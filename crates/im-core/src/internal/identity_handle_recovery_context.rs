@@ -45,6 +45,12 @@ pub(crate) fn operation_actions(
             },
         );
     }
+    if record.lifecycle_class == Lifecycle::Applied
+        && pending.phase == Phase::Applied
+        && pending.registration_candidate_cleanup.is_some()
+    {
+        return Ok(vec![Action::Resume]);
+    }
     if !is_actionable(record.lifecycle_class) {
         return Ok(vec![]);
     }

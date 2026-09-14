@@ -1382,10 +1382,13 @@ pub(super) fn retain_bootstrap_receive_position(
     connection: &Connection,
     input: &mut BootstrapApplyInputV2,
 ) -> crate::ImResult<()> {
-    let Some(binding) = load_identity_account_binding(connection, &input.binding.owner_identity_id)? else {
+    let Some(binding) =
+        load_identity_account_binding(connection, &input.binding.owner_identity_id)?
+    else {
         return Ok(());
     };
-    let Some(previous) = load_message_sync_state_row(connection, &input.binding.owner_identity_id)? else {
+    let Some(previous) = load_message_sync_state_row(connection, &input.binding.owner_identity_id)?
+    else {
         return Ok(());
     };
     if binding.account_id != input.binding.account_id
@@ -1394,8 +1397,10 @@ pub(super) fn retain_bootstrap_receive_position(
         || binding.identity_generation != input.binding.identity_generation
         || previous.account_id != input.binding.account_id
         || previous.protocol_device_id != input.binding.protocol_device_id
-        || compare_decimal(&previous.device_auth_generation, &input.binding.device_auth_generation)?
-            != std::cmp::Ordering::Less
+        || compare_decimal(
+            &previous.device_auth_generation,
+            &input.binding.device_auth_generation,
+        )? != std::cmp::Ordering::Less
     {
         return Ok(());
     }
@@ -1406,8 +1411,10 @@ pub(super) fn retain_bootstrap_receive_position(
     // reception already committed locally must not move back to the last ACK.
     let received = load_lane_sync_states(connection, &input.binding.owner_identity_id)?;
     for lane in &mut input.lane_states {
-        if let Some(current) = received.iter().find(|current| current.lane == lane.lane
-            && current.stream_epoch == lane.stream_epoch) {
+        if let Some(current) = received
+            .iter()
+            .find(|current| current.lane == lane.lane && current.stream_epoch == lane.stream_epoch)
+        {
             if compare_decimal(&current.scan_seq, &lane.scan_seq)? == std::cmp::Ordering::Greater {
                 *lane = current.clone();
             }
@@ -1633,11 +1640,9 @@ pub(crate) fn reconcile_sync_lane_capability_v1a(
     // Acquire the writer lock before reading the account binding. Concurrent
     // receivers can otherwise create a deferred read snapshot whose write
     // upgrade fails with SQLITE_BUSY without honoring the busy timeout.
-    let transaction = rusqlite::Transaction::new_unchecked(
-        connection,
-        rusqlite::TransactionBehavior::Immediate,
-    )
-    .map_err(super::local_state_unavailable)?;
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(super::local_state_unavailable)?;
     replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
     record_sync_lane_capability_negotiation_v1a(
         &transaction,
@@ -3606,7 +3611,7 @@ pub(super) fn apply_delta_events_in_transaction(
     for mut event in events {
         let event_id = event.event_id.clone();
         let inserted = record_applied_event(
-            &transaction,
+            transaction,
             &AppliedEventReceipt {
                 owner_identity_id: input.owner_identity_id.clone(),
                 event_id: event.event_id.clone(),
@@ -3626,7 +3631,7 @@ pub(super) fn apply_delta_events_in_transaction(
             validate_message_owner(&event.messages[0], &input.owner_identity_id)?;
             message_event_thread_binding(&event, &input.owner_identity_id)?;
             if message_has_sync_event_id(
-                &transaction,
+                transaction,
                 &input.owner_identity_id,
                 &event.messages[0].msg_id,
                 &event.event_id,
@@ -3650,7 +3655,7 @@ pub(super) fn apply_delta_events_in_transaction(
             if let crate::internal::system_notification::store::SystemNotificationApplyOutcome::Applied(
                 snapshot,
             ) = crate::internal::system_notification::store::apply_transaction(
-                &transaction,
+                transaction,
                 &notification,
             )? {
                 committed_system_notifications.push(snapshot);
@@ -3664,7 +3669,7 @@ pub(super) fn apply_delta_events_in_transaction(
         for message in event.messages {
             validate_message_owner(&message, &input.owner_identity_id)?;
             match super::inbound_resolution_backlog::canonicalize_inbound_message(
-                &transaction,
+                transaction,
                 message.clone(),
             ) {
                 Ok(message) => {
@@ -3674,7 +3679,7 @@ pub(super) fn apply_delta_events_in_transaction(
                 }
                 Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
                     super::inbound_resolution_backlog::store_with_thread_binding(
-                        &transaction,
+                        transaction,
                         super::inbound_resolution_backlog::BacklogSource {
                             event_id: &event.event_id,
                             event_seq: &event.event_seq,
@@ -3697,7 +3702,7 @@ pub(super) fn apply_delta_events_in_transaction(
         )?;
         for group in event.groups {
             validate_group_owner(&group, &input.owner_identity_id)?;
-            if group_state_is_stale(&transaction, &group)? {
+            if group_state_is_stale(transaction, &group)? {
                 continue;
             }
             groups.push(group);
@@ -3713,10 +3718,10 @@ pub(super) fn apply_delta_events_in_transaction(
     }
 
     for binding in thread_bindings {
-        upsert_sync_thread_binding(&transaction, &binding)?;
+        upsert_sync_thread_binding(transaction, &binding)?;
     }
     let mut invalidation = v2_invalidation(
-        &transaction,
+        transaction,
         &input.owner_identity_id,
         &input.owner_did,
         &input.next_scan_seq,
@@ -3725,7 +3730,7 @@ pub(super) fn apply_delta_events_in_transaction(
         &read_states,
     )?;
     if !messages.is_empty() {
-        let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
+        let touched = super::messages::upsert_messages_with_touched(transaction, &messages)?;
         let mut conversation_ids = invalidation
             .conversation_ids
             .into_iter()
@@ -3741,11 +3746,11 @@ pub(super) fn apply_delta_events_in_transaction(
         invalidation.thread_ids = thread_ids.into_iter().collect();
     }
     for group in groups {
-        super::groups::upsert_group(&transaction, group)?;
+        super::groups::upsert_group(transaction, group)?;
     }
     for read_state in read_states {
         apply_remote_read_state(
-            &transaction,
+            transaction,
             &input.owner_identity_id,
             &input.owner_did,
             &read_state,

@@ -38,6 +38,7 @@ pub(crate) mod identity_handle_recovery_metrics;
 #[cfg(feature = "sqlite")]
 pub(crate) mod identity_handle_recovery_operation;
 pub(crate) mod identity_handle_recovery_pending;
+pub(crate) mod identity_handle_recovery_registration_cleanup;
 pub(crate) mod identity_handle_recovery_runtime;
 pub(crate) mod identity_join_activation_pending;
 pub(crate) mod identity_legacy_upgrade;

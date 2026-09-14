@@ -244,8 +244,7 @@ fn non_racing_or_ineligible_session_cas_failures_remain_terminal() {
                 V2SessionExpectation::Revision(expected_revision),
                 "2026-09-11T00:00:01Z",
             )
-            .err()
-            .expect("invalid state must not commit");
+            .expect_err("invalid state must not commit");
         assert!(
             matches!(rejected, crate::ImError::PermissionDenied),
             "{case}"

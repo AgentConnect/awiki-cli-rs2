@@ -913,8 +913,9 @@ fn inherit_committed_read_watermark(
     // Baselines and bindings can commit a read watermark before the message is
     // projected or hydrated. Use the merged durable row (including its retained
     // sequence), and apply read truth before updating the conversation summary.
-    connection.execute(
-        r#"
+    connection
+        .execute(
+            r#"
 UPDATE messages
 SET is_read = 1
 WHERE owner_identity_id = ?1 AND msg_id = ?2
@@ -929,8 +930,9 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
         AND state.read_watermark_seq IS NOT NULL
         AND messages.server_seq <= CAST(state.read_watermark_seq AS INTEGER)
   )"#,
-        rusqlite::params![owner_identity_id, message_id],
-    ).map_err(super::local_state_unavailable)?;
+            rusqlite::params![owner_identity_id, message_id],
+        )
+        .map_err(super::local_state_unavailable)?;
     Ok(())
 }
 

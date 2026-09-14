@@ -918,8 +918,10 @@ impl IdentityService<'_> {
 ```
 
 `list_pending_handle_recovery_operations()` 在当前 Core state root 内发现未完成的恢复，
+也包括仍有关联注册候选待收尾的 Applied 操作。此类操作的 allowed_actions 包含 Resume，
+宿主可重试本地收尾；结果仍为 Applied，完成收尾后移出 pending 列表。
 包括尚未写入公共身份列表的 fresh owner；保留默认关闭的能力门禁。
-返回既有非秘密 operation summary，排除 applied、discarded、superseded 与 terminal 历史。
+返回既有非秘密 operation summary，排除无待收尾候选的 applied、discarded、superseded 与 terminal 历史。
 查询不访问远端，不提交、续跑或丢弃恢复，也不改变身份绑定。Host 只投影当前租户的
 operation ID 和完整 Handle；多个操作须让用户显式选择，再查询该操作的进度。
 浏览器保存的 operation ID 仅是选中提示，不能替代 Core 的发现与校验。
