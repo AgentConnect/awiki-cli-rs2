@@ -431,7 +431,7 @@ fn member_access_token(did: &str, device_id: &str, signing_key_id: &str) -> Stri
         "device_id": device_id,
         "key_id": signing_key_id,
         "auth_generation": 1,
-        "scopes": ["device:read", "device:root-import-complete", "message:connect"],
+        "scopes": if did.starts_with("did:web:") { vec!["device:read", "message:connect"] } else { vec!["device:read", "device:root-import-complete", "message:connect"] },
         "iat": now,
         "nbf": now,
         "exp": now + 300,
@@ -1779,6 +1779,302 @@ async fn web_external_provider_completes_admin_join_and_device_removal_without_r
     assert_provider_completes_admin_join_for_method(crate::identity::DidMethod::Web).await;
 }
 
+#[tokio::test]
+async fn web_join_current_authorization_survives_expiry_and_crash_before_projection() {
+    use crate::internal::identity_device_join_runtime::*;
+    use crate::internal::identity_provider::*;
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture = prepare_external_provider_admin_join_for_method(
+        admin_root.path(),
+        candidate_root.path(),
+        crate::identity::DidMethod::Web,
+    )
+    .await;
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let id = &fixture.started.session.join_session_id;
+    let state_store = JoinStateStore::new(&candidate);
+    let mut stored = state_store
+        .load(id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    stored.challenge.as_mut().unwrap().challenge_expires_at = "2000-01-01T00:00:00Z".to_owned();
+    state_store.save(&stored).unwrap();
+    assert!(matches!(
+        ensure_not_expired(&stored),
+        Err(crate::ImError::SessionExpired)
+    ));
+
+    let did = fixture.started.session.did.clone();
+    let mut document = fixture.prepared.new_document.clone();
+    document["service"] = json!([{
+        "id": format!("{}#handle", did.as_str()), "type": "ANPHandleService",
+        "serviceEndpoint": "https://names.test/.well-known/handle/alice",
+    }]);
+    // A later service update must not invalidate the historical Join receipt.
+    let mut registry = DeviceJoinRemoteRegistry {
+        did: did.clone(),
+        checkpoint: fixture.authorization.checkpoint.clone(),
+        devices: vec![fixture.authorization.device.clone()],
+    };
+    registry.checkpoint.document_version += 1;
+    registry.checkpoint.registry_version += 1;
+    registry.checkpoint.document_hash = canonical_hash(&document).unwrap();
+    let status = DeviceJoinRemoteNewDeviceStatus {
+        join_session_id: id.to_owned(),
+        state: DeviceJoinRemoteState::Consumed,
+        session_revision: 4,
+        expires_at: stored.join_request.expires_at.clone(),
+        challenge: None,
+        authorization: Some(fixture.authorization.clone()),
+    };
+    let access = DeviceJoinAccessResult {
+        user_id: "user-1".to_owned(),
+        access_token: member_access_token(
+            did.as_str(),
+            &fixture.authorization.device.device_id,
+            &fixture.authorization.device.signing_key_id,
+        ),
+        handle_binding: Some(DeviceJoinHandleBinding {
+            full_handle: "alice.names.test".to_owned(),
+            binding_generation: "3".to_owned(),
+        }),
+    };
+    let observation = |status: DeviceJoinRemoteNewDeviceStatus,
+                       registry: DeviceJoinRemoteRegistry,
+                       doc: Value| {
+        web_activation::WebJoinObservation::from_test_parts(status, registry, doc, access.clone())
+    };
+    let custody = stored.join_custody.clone().unwrap();
+    let provider = crate::internal::identity_custody::controller_custody_provider(&candidate)
+        .await
+        .unwrap();
+    let reference = ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    let identity = provider.open_identity(&reference).await.unwrap();
+    assert_eq!(
+        identity.public_identity().await.unwrap().state,
+        ProviderIdentityState::Enrolling
+    );
+    assert!(identity
+        .sign(ProviderSignRequest {
+            purpose: ProviderSigningPurpose::Authentication,
+            key: ProviderKeySelector::Kid(fixture.authorization.device.signing_key_id.clone()),
+            payload: vec![1]
+        })
+        .await
+        .is_err());
+    let enrollment = provider
+        .resume_enrollment(&reference)
+        .await
+        .unwrap()
+        .unwrap();
+    let proposal = enrollment.proposal().await.unwrap();
+    let restricted = std::sync::Arc::new(
+        crate::internal::key_provider::ProviderEnrollmentIdentitySigner::new(
+            &proposal,
+            enrollment,
+            document.clone(),
+            fixture.authorization.device.signing_key_id.clone(),
+            fixture.authorization.device.e2ee_key_id.clone(),
+        )
+        .unwrap(),
+    );
+    let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
+        restricted,
+        anp::authentication::AuthMode::HttpSignatures,
+    );
+    let auth_url = "https://awiki.test/user-service/did-auth/rpc";
+    let body = br#"{"jsonrpc":"2.0","id":1,"method":"get_me","params":{}}"#;
+    let headers = auth
+        .get_auth_header_async(auth_url, true, "POST", None, Some(body))
+        .await
+        .unwrap();
+    let verified = anp::authentication::verify_http_message_signature(
+        &document,
+        "POST",
+        auth_url,
+        &headers,
+        Some(body),
+    )
+    .unwrap();
+    assert_eq!(verified.keyid, fixture.authorization.device.signing_key_id);
+    assert!(anp::authentication::verify_http_message_signature(
+        &document,
+        "POST",
+        "https://other.test/rpc",
+        &headers,
+        Some(body)
+    )
+    .is_err());
+    assert!(anp::authentication::verify_http_message_signature(
+        &document,
+        "POST",
+        auth_url,
+        &headers,
+        Some(b"{}")
+    )
+    .is_err());
+    assert_eq!(
+        identity.public_identity().await.unwrap().state,
+        ProviderIdentityState::Enrolling
+    );
+    let mut revoked = registry.clone();
+    revoked.devices[0].status =
+        crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked;
+    assert!(web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), revoked, document.clone())
+    )
+    .await
+    .is_err());
+    let mut substituted = document.clone();
+    substituted["verificationMethod"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|method| method["id"] != fixture.authorization.device.signing_key_id);
+    assert!(web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), registry.clone(), substituted)
+    )
+    .await
+    .is_err());
+    let mut wrong_session = status.clone();
+    wrong_session.join_session_id.push_str("-other");
+    assert!(web_activation::prepare(
+        &candidate,
+        id,
+        observation(wrong_session, registry.clone(), document.clone())
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        identity.public_identity().await.unwrap().state,
+        ProviderIdentityState::Enrolling
+    );
+    assert!(load_pending_new_device_activation(&candidate, id)
+        .unwrap()
+        .is_none());
+
+    web_activation::FAIL_AFTER_CUSTODY_ADOPTION.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        matches!(web_activation::prepare(&candidate, id, observation(status.clone(), registry.clone(), document.clone())).await,
+        Err(crate::ImError::Internal { message }) if message == "injected crash after Web Join custody adoption")
+    );
+    assert_eq!(
+        provider
+            .open_identity(&reference)
+            .await
+            .unwrap()
+            .public_identity()
+            .await
+            .unwrap()
+            .state,
+        ProviderIdentityState::Active
+    );
+    assert!(load_pending_new_device_activation(&candidate, id)
+        .unwrap()
+        .is_none());
+    assert!(crate::internal::identity_store::IdentityStore::new(
+        &test_paths(candidate_root.path()).identities
+    )
+    .load_index()
+    .unwrap()
+    .credentials
+    .is_empty());
+    drop(identity);
+    drop(provider);
+    drop(candidate);
+
+    let candidate = open_empty_vault_core(candidate_root.path());
+    // After custody activation, an intervening revoke still prevents the
+    // unfinished business projection from being committed on restart.
+    let mut revoked = registry.clone();
+    revoked.devices.clear();
+    assert!(web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), revoked, document.clone())
+    )
+    .await
+    .is_err());
+    let first = web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), registry.clone(), document.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.authorization.checkpoint, registry.checkpoint);
+    // An expired cached Token must remain readable as a recovery record; it
+    // cannot authorize the unfinished projection without a fresh observation.
+    let mut stale = first.clone();
+    let mut claims =
+        crate::internal::auth::state::decode_jwt_payload(&access.access_token).unwrap();
+    claims["iat"] = json!(1);
+    claims["nbf"] = json!(1);
+    claims["exp"] = json!(2);
+    stale.access_result.as_mut().unwrap().access_token = format!(
+        "e30.{}.signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+        &candidate,
+    )
+    .unwrap()
+    .save(&stale)
+    .unwrap();
+    assert!(load_pending_new_device_activation(&candidate, id)
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        finalize_new_device_activation_async(&candidate, id).await,
+        Err(crate::ImError::SessionExpired)
+    ));
+    document["alsoKnownAs"] = json!(["https://example.test/profile"]);
+    registry.checkpoint.document_version += 1;
+    registry.checkpoint.registry_version += 1;
+    registry.checkpoint.document_hash = canonical_hash(&document).unwrap();
+    let pending = web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), registry.clone(), document.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending.resolved_document, document);
+    let mut rollback = registry.clone();
+    rollback.checkpoint = first.authorization.checkpoint;
+    assert!(web_activation::prepare(
+        &candidate,
+        id,
+        observation(status, rollback, first.resolved_document)
+    )
+    .await
+    .is_err());
+    let activated = finalize_new_device_activation_async(&candidate, id)
+        .await
+        .unwrap();
+    assert_eq!(activated.phase, DeviceJoinLocalPhase::Authorized);
+    let index = crate::internal::identity_store::IdentityStore::new(
+        &test_paths(candidate_root.path()).identities,
+    )
+    .load_index()
+    .unwrap();
+    let entry = index.credentials.get("alice").unwrap();
+    assert_eq!(entry.did, did.as_str());
+    assert_eq!(entry.full_handle, "alice.names.test");
+    assert_eq!(entry.binding_generation.as_deref(), Some("3"));
+    assert!(load_pending_new_device_activation(&candidate, id)
+        .unwrap()
+        .is_none());
+}
+
 async fn assert_provider_completes_admin_join_for_method(method: crate::identity::DidMethod) {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
@@ -2637,6 +2933,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
         &candidate,
         &started.session.join_session_id,
         crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+            handle_binding: None,
             user_id: "user-1".to_owned(),
             access_token: member_access_token(
                 current_did.as_str(),
@@ -3115,6 +3412,7 @@ async fn retired_registration_join_recovers_fault_after_registry_save_before_bin
         &candidate,
         &started.session.join_session_id,
         crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+            handle_binding: None,
             user_id: "user-1".to_owned(),
             access_token: member_access_token(
                 current_did.as_str(),

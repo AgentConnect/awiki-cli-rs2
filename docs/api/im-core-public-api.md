@@ -707,6 +707,13 @@ Web 注册完成前通过同一候选设备认证后读取 `device_registry_get.
 历史候选不变，当前文档及检查点另存并用于本地投影；缺失结果、当前撤销或权限变化保留
 pending。Web pending 不进入 WBA 退役候选替换或过期根 proof 刷新分支。
 
+Web Join 仍通过现有 `device_join().advance` 推进。Join Token 过期或响应丢失后，
+Core 可用本次 enrollment 的精确设备键查询已 consumed 的会话，但只在当前设备仍
+有效时激活本地身份。失败保留 pending，不向 Host 暴露任意未激活身份的 HTTP 签名。
+恢复会接受批准后的合法文档更新，并在 custody 激活后的崩溃恢复中重新校验 Registry。
+新设备的 full Handle 和 binding generation 来自当前权威绑定，支持与 Web DID
+路径独立的 Handle 域。历史已保存的过期 Token 可读取以恢复，不能用于完成业务激活。
+
 `RegisterHandleRequest.did_method` 接受 `DidMethod::Wba`（序列化默认 `wba`）或
 `DidMethod::Web`（`web`）。Web 只用于普通 phone/email 注册，并要求配置
 `ImCoreOpenOptions::with_multi_device_audience`；Guest/trusted service 仍保留原有 WBA

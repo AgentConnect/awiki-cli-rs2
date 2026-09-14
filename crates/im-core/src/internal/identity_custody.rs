@@ -1875,6 +1875,20 @@ pub(crate) async fn adopt_join_identity_async(
         return Err(crate::ImError::PermissionDenied);
     }
     if public.state == ProviderIdentityState::Active {
+        if did.as_str().starts_with("did:web:") {
+            identity
+                .adopt_verified_document(provider_verified_document(document, checkpoint))
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            let current = identity
+                .public_identity()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if current.reference != reference {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return validate_adopted_provider_identity(&current, document);
+        }
         return validate_adopted_provider_identity(&public, document);
     }
     if public.state != ProviderIdentityState::Enrolling

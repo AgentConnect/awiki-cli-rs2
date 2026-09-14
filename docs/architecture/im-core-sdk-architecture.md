@@ -254,6 +254,19 @@ Web member 的合法消息 Token 仅需要 `device:read` 与 `message:connect`�
 或 Root Import scope。Core readiness 区分方法是否需要根能力，不把 Web root absent
 解释为管理员需要 Root Import。
 
+Web 新设备在本地业务激活前，用精确 enrollment 的设备键完成固定的 `get_me`、
+`device_join_status(join_session_id)` 和 `device_registry_get` 读取。该 signer 只存在于
+Core 的恢复调用链，pending 身份的普通签名仍被 Identity Store 拒绝；这些认证请求
+禁止重定向。会话的 consumed 授权证明历史提交，当前 Registry、Manifest 和本地双
+公钥另行证明当前资格。后续合法文档更新允许继续，撤销、换键、回退或无法查询则保留
+恢复点。即使 custody 已激活但本地业务提交中断，重启也重新查询，不复用过期 Token
+作为激活权限。Handle 来自当前文档声明和权威 WNS 绑定，不从 Web DID 的路径推导。
+
+Core 的 HTTP feature 启用 SDK 的 network resolver，Web 的实际解析统一采用严格
+HTTPS URL、公共地址检查及 DNS 固定、禁止重定向、TLS 验证和文档大小/时间限制。
+Web 不使用 Core 的普通 JSON GET 作为生产解析器；测试仍保留明确的方法 transport
+替身。该公共解析路径不继承 Host 的私有 CA 或测试 base URL override。
+
 A local encrypted pending-registration record may preserve generated key
 material and the exact operation across an ambiguous network result. It is only
 a crash-recovery mechanism: it must not introduce a second remote registration

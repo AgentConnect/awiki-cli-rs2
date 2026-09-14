@@ -6,26 +6,16 @@ pub(crate) fn resolve_did_document<T>(transport: &mut T, did: &str) -> crate::Im
 where
     T: crate::internal::transport::RawJsonTransport,
 {
-    let url = did_document_url(did)?;
-    let document = transport.get_json_url(
-        &url,
-        BTreeMap::from([("Accept".to_string(), "application/json".to_string())]),
-    )?;
-    if document.get("id").and_then(Value::as_str) != Some(did) {
-        return Err(crate::ImError::invalid_input(
-            Some("did_document".to_string()),
-            "resolved DID document id does not match requested DID",
-        ));
-    }
-    if did.starts_with("did:wba:")
-        && !anp::authentication::validate_did_document_binding(&document, true)
-    {
-        return Err(crate::ImError::invalid_input(
-            Some("did_document".to_string()),
-            "resolved DID document binding is invalid",
-        ));
-    }
-    Ok(document)
+    let document = if did.starts_with("did:web:") {
+        transport.resolve_web_document(did)?
+    } else {
+        let url = did_document_url(did)?;
+        transport.get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+        )?
+    };
+    validate_resolved_did_document(did, document)
 }
 
 pub(crate) async fn resolve_did_document_async<T>(
@@ -35,13 +25,17 @@ pub(crate) async fn resolve_did_document_async<T>(
 where
     T: crate::internal::transport::AsyncRawJsonTransport,
 {
-    let url = did_document_url(did)?;
-    let document = transport
-        .get_json_url(
-            &url,
-            BTreeMap::from([("Accept".to_string(), "application/json".to_string())]),
-        )
-        .await?;
+    let document = if did.starts_with("did:web:") {
+        transport.resolve_web_document(did).await?
+    } else {
+        let url = did_document_url(did)?;
+        transport
+            .get_json_url(
+                &url,
+                BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+            )
+            .await?
+    };
     validate_resolved_did_document(did, document)
 }
 
@@ -52,9 +46,7 @@ pub(crate) fn validate_resolved_did_document(did: &str, document: Value) -> crat
             "resolved DID document id does not match requested DID",
         ));
     }
-    if did.starts_with("did:wba:")
-        && !anp::authentication::validate_did_document_binding(&document, true)
-    {
+    if !anp::authentication::validate_did_document_method(&document, true) {
         return Err(crate::ImError::invalid_input(
             Some("did_document".to_string()),
             "resolved DID document binding is invalid",
@@ -64,6 +56,10 @@ pub(crate) fn validate_resolved_did_document(did: &str, document: Value) -> crat
 }
 
 pub(crate) fn did_document_url(did: &str) -> crate::ImResult<String> {
+    if did.starts_with("did:web:") {
+        return anp::authentication::build_did_web_resolution_url(did)
+            .map_err(|_| invalid_did("invalid Web DID resolution URL"));
+    }
     let (scheme, rest) = did
         .split_once(':')
         .ok_or_else(|| invalid_did("invalid DID format"))?;
@@ -81,7 +77,7 @@ pub(crate) fn did_document_url(did: &str) -> crate::ImResult<String> {
     let domain = percent_decode_lossy(domain);
     let path_segments = parts.map(percent_decode_lossy).collect::<Vec<String>>();
     match method {
-        "wba" | "web" => {
+        "wba" => {
             if path_segments.is_empty() {
                 Ok(format!("https://{domain}/.well-known/did.json"))
             } else {
@@ -156,5 +152,51 @@ mod tests {
             "https://example.com/user name/e1_abc/did.json"
         );
         assert!(did_document_url("did:key:z6mk").is_err());
+    }
+
+    #[test]
+    fn web_url_rejects_ambiguous_and_private_authorities_before_transport() {
+        for did in [
+            "did:web:127.0.0.1",
+            "did:web:localhost",
+            "did:web:example.test:a%2Fb",
+            "did:web:example.test:%2e%2e",
+            "did:web:example.test:bad%",
+            "did:web:example.test:user?secret",
+            "did:web:example.test:user#key",
+        ] {
+            assert!(did_document_url(did).is_err(), "{did}");
+        }
+        assert_eq!(
+            did_document_url("did:web:example.test%3A8443:awiki:web:abc").unwrap(),
+            "https://example.test:8443/awiki/web/abc/did.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_resolution_dispatches_through_the_method_transport_and_checks_exact_id() {
+        struct MethodTransport;
+        impl crate::internal::transport::AsyncRawJsonTransport for MethodTransport {
+            async fn get_json_url(
+                &mut self,
+                _: &str,
+                _: BTreeMap<String, String>,
+            ) -> crate::ImResult<Value> {
+                panic!("Web resolution must use the method transport policy")
+            }
+            async fn resolve_web_document(&mut self, _: &str) -> crate::ImResult<Value> {
+                Ok(serde_json::json!({"id":"did:web:example.test:alice"}))
+            }
+        }
+        assert!(
+            resolve_did_document_async(&mut MethodTransport, "did:web:example.test:alice")
+                .await
+                .is_ok()
+        );
+        assert!(
+            resolve_did_document_async(&mut MethodTransport, "did:web:example.test:bob")
+                .await
+                .is_err()
+        );
     }
 }

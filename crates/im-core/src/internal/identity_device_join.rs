@@ -41,6 +41,8 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
+pub(crate) mod web_activation;
+
 const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
@@ -2801,6 +2803,20 @@ fn promote_join_identity_local(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    if pending.did.as_str().starts_with("did:web:") {
+        crate::internal::access_token::validate_device_access_token(
+            &access.access_token,
+            &crate::internal::access_token::ExpectedDeviceAccess {
+                did: pending.did.as_str(),
+                user_id: &access.user_id,
+                device_id: &pending.authorization.device.device_id,
+                key_id: &pending.authorization.device.signing_key_id,
+                auth_generation: pending.authorization.device.auth_generation,
+                role: pending.authorization.device.role,
+                management_ready: false,
+            },
+        )?;
+    }
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
         IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
@@ -3084,8 +3100,12 @@ fn promote_join_identity_local(
             &pending.authorization,
         );
     }
-    let (local_alias, handle, full_handle, make_default) =
-        join_local_identity_projection(&did, &stored.join_request.device_id, &index)?;
+    let (local_alias, handle, full_handle, make_default) = join_local_identity_projection(
+        &did,
+        &stored.join_request.device_id,
+        &index,
+        access.handle_binding.as_ref(),
+    )?;
     ensure_existing_join_identity_is_rootless(&index, &local_alias, &did, &pending.authorization)?;
     let unique_id =
         crate::internal::identity_join_activation_pending::identity_suffix(&pending.did);
@@ -3098,7 +3118,10 @@ fn promote_join_identity_local(
             display_name: handle.clone(),
             handle,
             full_handle,
-            binding_generation: None,
+            binding_generation: access
+                .handle_binding
+                .as_ref()
+                .map(|binding| binding.binding_generation.clone()),
             jwt_token: access.access_token.clone(),
             did_document: Some(pending.resolved_document.clone()),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
@@ -3198,8 +3221,12 @@ fn promote_retired_registration_join_identity(
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        let (local_alias, handle, full_handle, make_default) =
-            join_local_identity_projection(&pending.did, &stored.join_request.device_id, index)?;
+        let (local_alias, handle, full_handle, make_default) = join_local_identity_projection(
+            &pending.did,
+            &stored.join_request.device_id,
+            index,
+            None,
+        )?;
         if full_handle != rollover.handle {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -3298,6 +3325,7 @@ fn join_local_identity_projection(
     did: &crate::ids::Did,
     device_id: &str,
     index: &crate::internal::identity_store::IndexPayload,
+    web_binding: Option<&crate::internal::identity_device_join_runtime::DeviceJoinHandleBinding>,
 ) -> crate::ImResult<(String, String, String, bool)> {
     let existing = index
         .credentials
@@ -3307,21 +3335,36 @@ fn join_local_identity_projection(
     if existing.len() > 1 {
         return Err(crate::ImError::PermissionDenied);
     }
-    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
-    let rest = did
-        .as_str()
-        .strip_prefix(&format!("did:wba:{domain}:"))
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let components = rest.split(':').collect::<Vec<_>>();
-    if components.len() != 3
-        || components[0] != "user"
-        || components[1].trim().is_empty()
-        || !components[2].starts_with("e1_")
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let handle = components[1].to_ascii_lowercase();
-    let full_handle = format!("{handle}.{domain}");
+    let (handle, full_handle) = if did.as_str().starts_with("did:web:") {
+        let binding = web_binding.ok_or(crate::ImError::PermissionDenied)?;
+        let handle = crate::ids::Handle::parse(&binding.full_handle, "")?;
+        let (local, _) = handle
+            .as_str()
+            .split_once('.')
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if binding.binding_generation.trim().is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        (local.to_owned(), handle.as_str().to_owned())
+    } else {
+        let domain =
+            crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+        let rest = did
+            .as_str()
+            .strip_prefix(&format!("did:wba:{domain}:"))
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let components = rest.split(':').collect::<Vec<_>>();
+        if components.len() != 3
+            || components[0] != "user"
+            || components[1].trim().is_empty()
+            || !components[2].starts_with("e1_")
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let handle = components[1].to_ascii_lowercase();
+        let full_handle = format!("{handle}.{domain}");
+        (handle, full_handle)
+    };
     if let Some((alias, _)) = existing.first() {
         return Ok(((*alias).clone(), handle, full_handle, false));
     }

@@ -251,6 +251,14 @@ impl From<AttachmentObjectResponse> for AsyncAttachmentObjectResponse {
 }
 
 pub(crate) trait RawJsonTransport {
+    fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        let url = crate::internal::discovery::did_document::did_document_url(did)?;
+        self.get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+        )
+    }
+
     fn get_json_url(
         &mut self,
         url: &str,
@@ -259,6 +267,15 @@ pub(crate) trait RawJsonTransport {
 }
 
 pub(crate) trait AsyncRawJsonTransport {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        let url = crate::internal::discovery::did_document::did_document_url(did)?;
+        self.get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+        )
+        .await
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,
@@ -536,7 +553,9 @@ impl<'a> CoreHttpTransport<'a> {
     ) -> Self {
         Self {
             client,
-            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
+            http: crate::internal::http::HttpClient::from_config_no_redirect(
+                client.core_inner().sdk_config(),
+            ),
             auth: crate::internal::key_provider::ProviderBackedDidAuth::new(
                 provider,
                 anp::authentication::AuthMode::HttpSignatures,
@@ -1771,6 +1790,14 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
 }
 
 impl RawJsonTransport for CoreHttpTransport<'_> {
+    fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        anp::authentication::resolve_did_document_sync(did, true).map_err(|_| {
+            crate::ImError::TransportUnavailable {
+                detail: "secure Web DID resolution failed".to_owned(),
+            }
+        })
+    }
+
     fn get_json_url(
         &mut self,
         url: &str,
@@ -1795,6 +1822,14 @@ impl RawJsonTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        anp::authentication::resolve_did_document(did, true)
+            .await
+            .map_err(|_| crate::ImError::TransportUnavailable {
+                detail: "secure Web DID resolution failed".to_owned(),
+            })
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,
@@ -1822,6 +1857,14 @@ impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRawJsonTransport for CorePlainTransport<'_> {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        anp::authentication::resolve_did_document(did, true)
+            .await
+            .map_err(|_| crate::ImError::TransportUnavailable {
+                detail: "secure Web DID resolution failed".to_owned(),
+            })
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,

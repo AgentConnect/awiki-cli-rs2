@@ -91,6 +91,16 @@ pub(crate) fn build_new_status_call(
     ))
 }
 
+pub(crate) fn build_current_device_status_call(
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinWireCall> {
+    Ok(call(
+        DEVICE_JOIN_STATUS_METHOD,
+        json!({"join_session_id": required("join_session_id", join_session_id)?}),
+        false,
+    ))
+}
+
 pub(crate) fn build_submit_challenge_call(
     challenge: &DeviceJoinChallenge,
 ) -> crate::ImResult<DeviceJoinWireCall> {

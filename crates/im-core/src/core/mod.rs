@@ -508,6 +508,21 @@ impl ImCore {
         protocol_device_id: &crate::ids::ProtocolDeviceId,
     ) -> crate::ImResult<ImClient> {
         let did = crate::ids::Did::parse(&public.reference.did)?;
+        let provider = std::sync::Arc::new(
+            crate::internal::key_provider::ProviderIdentitySigner::new_ephemeral(public, session)?,
+        );
+        self.client_with_pending_signer(did, provider, handle, display_name, protocol_device_id)
+    }
+
+    #[cfg(feature = "provider-traits")]
+    pub(crate) fn client_with_pending_signer(
+        &self,
+        did: crate::ids::Did,
+        provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner>,
+        handle: Option<&str>,
+        display_name: &str,
+        protocol_device_id: &crate::ids::ProtocolDeviceId,
+    ) -> crate::ImResult<ImClient> {
         let identity_id = crate::ids::IdentityId::parse(
             did.as_str()
                 .rsplit(':')
@@ -518,12 +533,6 @@ impl ImCore {
         let handle = handle
             .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
             .transpose()?;
-        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
-            std::sync::Arc::new(
-                crate::internal::key_provider::ProviderIdentitySigner::new_ephemeral(
-                    public, session,
-                )?,
-            );
         let identity_session = provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {

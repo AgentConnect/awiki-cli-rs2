@@ -123,7 +123,23 @@ impl PendingJoinActivation {
             if result.user_id.trim().is_empty() || result.access_token.trim().is_empty() {
                 return Err(crate::ImError::PermissionDenied);
             }
-            crate::internal::access_token::validate_device_access_token(
+            if self.did.as_str().starts_with("did:web:") {
+                let binding = result
+                    .handle_binding
+                    .as_ref()
+                    .ok_or(crate::ImError::PermissionDenied)?;
+                if binding.binding_generation.trim().is_empty()
+                    || crate::internal::identity_device_join::web_activation::declared_handle(
+                        &self.resolved_document,
+                        &self.did,
+                    )?
+                    .as_str()
+                        != binding.full_handle
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+            }
+            let freshness = crate::internal::access_token::validate_device_access_token_binding(
                 &result.access_token,
                 &crate::internal::access_token::ExpectedDeviceAccess {
                     did: self.did.as_str(),
@@ -135,6 +151,11 @@ impl PendingJoinActivation {
                     management_ready: false,
                 },
             )?;
+            if !self.did.as_str().starts_with("did:web:")
+                && freshness == crate::internal::access_token::DeviceAccessTokenFreshness::Expired
+            {
+                return Err(crate::ImError::SessionExpired);
+            }
         }
         Ok(())
     }
@@ -428,6 +449,7 @@ mod tests {
                     crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
                         user_id: "user-1".to_owned(),
                         access_token: "access-token-secret".to_owned(),
+                        handle_binding: None,
                     },
                 ),
             }
