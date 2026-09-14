@@ -205,7 +205,7 @@ pub(crate) async fn request_otp(
                 .await?
             }
         };
-        let pending = PendingHandleRecoveryV4::new_pre_otp(
+        let mut pending = PendingHandleRecoveryV4::new_pre_otp(
             operation_id.clone(),
             context.owner_identity_id.clone(),
             context.local_alias.clone(),
@@ -216,6 +216,8 @@ pub(crate) async fn request_otp(
             context.local_previous_did.clone(),
             identity,
         )?;
+        pending.registration_candidate_cleanup =
+            crate::internal::identity_handle_recovery_registration_cleanup::capture(core, &pending)?;
         store.create_v4(&pending)?;
         let now = format_timestamp(
             time::OffsetDateTime::now_utc()
@@ -1355,6 +1357,12 @@ async fn advance_v4(
             return Err(recovery_error(code));
         }
     }
+    // Applied recovery remains successful even when candidate cleanup needs a retry.
+    // The exact target stays durable until both custody and registration pending are gone.
+    let _ = crate::internal::identity_handle_recovery_registration_cleanup::finish(
+        core, &store, &mut pending,
+    )
+    .await;
     progress_v4(core, &pending)
 }
 
@@ -3206,6 +3214,7 @@ fn canonical_generation(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod registration_cleanup;
     use super::*;
     mod postcommit_authority;
     mod retirement;

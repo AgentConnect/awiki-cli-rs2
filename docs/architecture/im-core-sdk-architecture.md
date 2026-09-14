@@ -118,6 +118,14 @@ Recovery 或未索引恢复材料时返回 `recovery_in_progress`。Recovery 不
 registration pending 占用的 custody。异步注册、恢复 prepare/advance 与既有删除路径
 使用相同 Handle→owner 锁序，避免 owner 冻结期间的进程内跨流程竞争。
 
+Recovery 首次创建操作时，在同 Handle 锁内记录可安全收尾的 registration 候选精确引用。
+只有 registration 仍为 Prepared、没有远端尝试/成功结果且未被本地身份或历史迁移占用，
+才关联该候选。恢复达到 Applied 且本地完成凭据一致后，再核对同 Vault scope、同 Handle
+及完整候选引用，先删除候选 custody，再删除 registration pending。结果未知、候选引用
+变化、已被其他身份/恢复占用时保留材料。清理失败保留持久化重试标记，后续 resume
+重试，不撤销已经成功的恢复。旧版恢复记录缺少关联引用时不推断清理对象；该流程仅
+收尾未发布的注册候选，不定义业务身份失效状态，也不删除恢复前驱身份。
+
 Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完成的
 `identity_transition_pending` 中的前驱/后继，以及 exact completed retirement binding，
 都不能作为“未投影的新身份”复用。该排除依据是删除凭证后仍保留的非秘密 Core 记录，
