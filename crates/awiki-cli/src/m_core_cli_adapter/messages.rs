@@ -604,13 +604,11 @@ pub(super) fn require_foreground_message_sync(
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message recovery did not complete".to_owned(),
         )),
-        MessageSyncStatus::RetryableFailure => {
-            Err(MessageAdapterError::ForegroundSyncPending {
-                budget_exhausted: false,
-                error_code: outcome.error_code.clone(),
-                warnings: outcome.warnings.clone(),
-            })
-        }
+        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: false,
+            error_code: outcome.error_code.clone(),
+            warnings: outcome.warnings.clone(),
+        }),
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),
         )),
