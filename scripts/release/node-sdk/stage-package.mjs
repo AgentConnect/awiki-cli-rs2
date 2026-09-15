@@ -8,6 +8,7 @@ import { spawnSyncPortable } from './spawn-command.mjs'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '../../..')
 const stagingRoot = resolve(repositoryRoot, 'dist/node-sdk')
+const localCandidate = process.argv.includes('--local-candidate')
 
 function fail(message) {
   throw new Error(message)
@@ -70,8 +71,7 @@ function sourceRevision() {
   }
 }
 
-function cargoSbom(manifest) {
-  const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
+function cargoSbom(manifest, metadata) {
   const cargoComponents = metadata.packages
     .map(pkg => ({
       type: 'library',
@@ -111,15 +111,33 @@ function cargoSbom(manifest) {
 
 async function writeCommonFiles(output, manifest, target, binary) {
   const source = sourceRevision()
+  const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
+  const localDependencies = localCandidate ? ['anp', 'anp-identity'].map(name => {
+    const packages = metadata.packages.filter(pkg => pkg.name === name)
+    if (packages.length !== 1 || packages[0].source !== null) {
+      fail(`local candidate must resolve one local ${name} dependency`)
+    }
+    const pkg = packages[0]
+    return {
+      name,
+      version: pkg.version,
+      commit: run('git', ['-C', dirname(pkg.manifest_path), 'rev-parse', 'HEAD']),
+      dirty: run('git', ['-C', dirname(pkg.manifest_path), 'status', '--short']).length > 0,
+    }
+  }) : undefined
   const binaryDigest = binary ? await sha256(binary) : undefined
   const releaseConfig = await json(join(repositoryRoot, 'scripts/release/cli/release-config.json'))
   const imCoreVersion = packageVersion(join(repositoryRoot, 'crates/im-core/Cargo.toml'))
   const nativeBridgeVersion = packageVersion(join(repositoryRoot, 'crates/im-core-node/Cargo.toml'))
+  const anpCommit = localCandidate ? localDependencies.find(pkg => pkg.name === 'anp').commit : releaseConfig.anp_commit
+  const nativeSource = await readFile(join(repositoryRoot, 'crates/im-core-node/src/lib.rs'), 'utf8')
+  const nativeApiVersion = Number(nativeSource.match(/pub fn native_api_version\(\) -> u32\s*\{\s*(\d+)\s*\}/)?.[1])
+  if (!Number.isSafeInteger(nativeApiVersion) || nativeApiVersion < 1) fail('native API version is missing')
   const provenance = {
     schemaVersion: 1,
     package: { name: manifest.name, version: manifest.version },
     target: target || 'platform-independent-wrapper',
-    nativeApiVersion: 14,
+    nativeApiVersion,
     source: {
       repository: 'https://github.com/AgentConnect/awiki-cli-rs2',
       commit: source.commit,
@@ -130,7 +148,7 @@ async function writeCommonFiles(output, manifest, target, binary) {
       imCoreVersion,
       nativeBridgeVersion,
       anpRustVersion: workspaceDependencyVersion('anp'),
-      anpCommit: releaseConfig.anp_commit,
+      anpCommit,
     },
     toolchain: {
       rustc: run('rustc', ['--version']),
@@ -139,8 +157,13 @@ async function writeCommonFiles(output, manifest, target, binary) {
     },
     ...(binaryDigest ? { binarySha256: binaryDigest } : {}),
     distributionPolicy: 'apache-2.0',
+    ...(localCandidate ? {
+      localCandidate: true,
+      dependencyResolution: { mode: 'local-candidate', packages: localDependencies },
+      cargoLockSha256: await sha256(join(repositoryRoot, 'Cargo.lock')),
+    } : {}),
   }
-  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nANP commit: ${releaseConfig.anp_commit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
+  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nANP commit: ${anpCommit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
   const notice = `# Notices\n\nThis package is AWiki CLI S2 software distributed under Apache-2.0. Corresponding source and build provenance are identified in SOURCE.md and provenance.json. Third-party components and their declared licenses are enumerated in sbom.cdx.json. The verified GitHub Actions artifact is the approved test channel; npm publication is a separate release action.\n`
 
   await copyFile(join(repositoryRoot, 'LICENSE'), join(output, 'LICENSE'))
@@ -150,7 +173,7 @@ async function writeCommonFiles(output, manifest, target, binary) {
   await writeFile(join(output, 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`)
   await writeFile(
     join(output, 'sbom.cdx.json'),
-    `${JSON.stringify(cargoSbom(manifest), null, 2)}\n`,
+    `${JSON.stringify(cargoSbom(manifest, metadata), null, 2)}\n`,
   )
 }
 
@@ -188,6 +211,7 @@ async function stage() {
   await rm(output, { recursive: true, force: true })
   await mkdir(output, { recursive: true })
   const stagedManifest = structuredClone(manifest)
+  if (localCandidate) stagedManifest.private = true
   if (kind === 'wrapper') {
     for (const [name, version] of Object.entries(stagedManifest.optionalDependencies || {})) {
       if (typeof version !== 'string' || !version.startsWith('workspace:')) {
