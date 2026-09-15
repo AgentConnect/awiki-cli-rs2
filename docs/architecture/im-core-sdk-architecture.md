@@ -1739,3 +1739,6 @@ Conversation-level read state is separate from reliable sync checkpoints:
 普通 Group 附件下载缓存保留 P4 history 的 `message_id` 作为授权 wire ID，公共时间线仍使用
 `group_did:group_event_seq`。若有显式 `raw_message_id` 则优先保留；P5 与 P6 的已有授权 ID
 规则不变。不能因缓存投影只留下时间线 ID，向服务端请求不存在的普通附件 grant。
+普通 P4 history 没有安全档位字段时，缓存采用 `transport-protected`；仅凭 `group_did`
+不能推断 P6。显式档位、已验证的加密消息标记及完整加密对象仍保留现有安全档位，公开投影
+缺少对象密钥时继续禁止覆盖内部下载缓存。

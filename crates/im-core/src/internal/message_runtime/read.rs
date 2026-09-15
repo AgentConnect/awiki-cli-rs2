@@ -5617,7 +5617,7 @@ pub(crate) fn attachment_manifest_cache_record(
             message_id,
             wire_message_id,
             sender_did: string_value(object.get("sender_did")),
-            message_security_profile: secure_message_security_profile(object),
+            message_security_profile: attachment_cache_security_profile(object, &content),
             content: serde_json::to_string(&content).ok()?,
             stored_at: first_non_empty_owned([
                 string_value(object.get("stored_at")),
@@ -5629,6 +5629,36 @@ pub(crate) fn attachment_manifest_cache_record(
             .to_owned(),
         },
     )
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_cache_security_profile(
+    object: &serde_json::Map<String, Value>,
+    content: &Value,
+) -> String {
+    let explicit_profile = ["message_security_profile", "security_profile", "security"]
+        .iter()
+        .any(|key| {
+            object.get(*key).and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        });
+    let encrypted_object = content.get("attachments").and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                attachment.pointer("/encryption_info/mode").and_then(Value::as_str)
+                    == Some(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE)
+            })
+        });
+    if explicit_profile
+        || object.get("secure").and_then(Value::as_bool) == Some(true)
+        || encrypted_object
+    {
+        secure_message_security_profile(object)
+    } else {
+        // Plain P4 history has no security profile; group membership alone does
+        // not make an attachment an encrypted P6 message.
+        "transport-protected".to_owned()
+    }
 }
 
 #[cfg(feature = "sqlite")]
