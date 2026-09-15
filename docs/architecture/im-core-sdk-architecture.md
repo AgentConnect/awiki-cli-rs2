@@ -233,6 +233,9 @@ result returns one access token; it does not return a device refresh token.
 There is no production `device_genesis`, Genesis grant, or multi-device
 registration rollout branch.
 
+P6 同步文档读取进入 Web 网络解析时，在已有 Tokio 上下文外执行 SDK 同步解析，
+避免异步注册/消息流程嵌套运行时；仍使用 SDK 的严格 TLS、解析目标和资源限制。
+
 Web 创建和 Join 的 Profile 顺序直接对照 `testdata/did_web_registration_v1.json` 的冻结合同；
 不从旧 WBA 列表替换单项推导，避免已提交文档被设备认证拒绝。
 

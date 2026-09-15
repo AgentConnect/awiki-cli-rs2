@@ -1799,11 +1799,7 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
 
 impl RawJsonTransport for CoreHttpTransport<'_> {
     fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
-        anp::authentication::resolve_did_document_sync(did, true).map_err(|_| {
-            crate::ImError::TransportUnavailable {
-                detail: "secure Web DID resolution failed".to_owned(),
-            }
-        })
+        resolve_web_document_blocking(did)
     }
 
     fn get_json_url(
@@ -1826,6 +1822,30 @@ impl RawJsonTransport for CoreHttpTransport<'_> {
         serde_json::from_slice(&response.body).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })
+    }
+}
+
+fn resolve_web_document_blocking(did: &str) -> crate::ImResult<Value> {
+    // P6's synchronous document read is also used by async registration and
+    // messaging. The SDK sync resolver owns a Tokio runtime; run that boundary
+    // on a scoped worker so it cannot nest inside the caller's runtime.
+    let unavailable = || crate::ImError::TransportUnavailable {
+        detail: "secure Web DID resolution failed".to_owned(),
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("im-core-web-resolution".to_owned())
+                .spawn_scoped(scope, || {
+                    anp::authentication::resolve_did_document_sync(did, true)
+                })
+                .map_err(|_| unavailable())?
+                .join()
+                .map_err(|_| unavailable())?
+                .map_err(|_| unavailable())
+        })
+    } else {
+        anp::authentication::resolve_did_document_sync(did, true).map_err(|_| unavailable())
     }
 }
 

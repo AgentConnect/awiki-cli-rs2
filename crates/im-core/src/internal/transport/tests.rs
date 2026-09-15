@@ -1171,3 +1171,19 @@ fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
         other => panic!("expected service error, got {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn web_sync_resolution_inside_current_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_sync_resolution_inside_multi_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+}
