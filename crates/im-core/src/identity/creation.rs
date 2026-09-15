@@ -29,8 +29,32 @@ impl IdentityCreationCapabilities {
             Some(value) => {
                 let methods = value.as_array().ok_or(crate::ImError::PermissionDenied)?;
                 let mut supported = Vec::new();
+                let legacy = methods.iter().all(serde_json::Value::is_string);
+                let mut seen = std::collections::BTreeSet::new();
                 for method in methods {
-                    match method.as_str().ok_or(crate::ImError::PermissionDenied)? {
+                    let (id, create) = if legacy {
+                        (
+                            method.as_str().ok_or(crate::ImError::PermissionDenied)?,
+                            true,
+                        )
+                    } else {
+                        let id = method
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or(crate::ImError::PermissionDenied)?;
+                        let create = method
+                            .get("create")
+                            .and_then(serde_json::Value::as_bool)
+                            .ok_or(crate::ImError::PermissionDenied)?;
+                        if !seen.insert(id) {
+                            return Err(crate::ImError::PermissionDenied);
+                        }
+                        (id, create)
+                    };
+                    if !create {
+                        continue;
+                    }
+                    match id {
                         "wba" => supported.push(DidMethod::Wba),
                         "web" => supported.push(DidMethod::Web),
                         _ => {}
@@ -82,5 +106,25 @@ mod tests {
             &json!({"identity":{"did_methods":null}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn creation_capabilities_require_explicit_create_and_reject_ambiguous_entries() {
+        let capabilities = IdentityCreationCapabilities::from_server_info(&json!({
+            "identity": {"did_methods": [{"id":"wba","create":true},{"id":"web","create":false}]}
+        }))
+        .unwrap();
+        assert_eq!(capabilities.did_methods, [DidMethod::Wba]);
+        for methods in [
+            json!([{"id":"web"}]),
+            json!([{"id":"web","create":"true"}]),
+            json!([{"id":"web","create":true},{"id":"web","create":false}]),
+            json!(["web",{"id":"web","create":false}]),
+        ] {
+            assert!(IdentityCreationCapabilities::from_server_info(
+                &json!({"identity":{"did_methods":methods}})
+            )
+            .is_err());
+        }
     }
 }

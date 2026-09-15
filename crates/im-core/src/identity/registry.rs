@@ -1733,7 +1733,7 @@ impl<'a> IdentityRegistry<'a> {
         let result = crate::internal::transport::CorePlainTransport::new(self.core)
             .rest_get(
                 "/user-service/v1/server-info",
-                "server_info",
+                "GET",
                 &std::collections::BTreeMap::new(),
             )
             .await;
