@@ -49,7 +49,7 @@ pub(crate) fn resolve_direct_handle(
         HandleResolutionRoute::Public { full_handle, url } => {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
             let raw = fetch_public_binding_document(&mut transport, &full_handle, url.as_str())?;
-            resolution_from_public_document(full_handle.as_str(), raw)
+            finish_public_direct_resolution(client, full_handle.as_str(), raw)
         }
     }
 }
@@ -71,9 +71,33 @@ pub(crate) async fn resolve_direct_handle_async(
             let raw =
                 fetch_public_binding_document_async(&mut transport, &full_handle, url.as_str())
                     .await?;
-            resolution_from_public_document(full_handle.as_str(), raw)
+            finish_public_direct_resolution_async(client, full_handle.as_str(), raw).await
         }
     }
+}
+
+fn finish_public_direct_resolution(
+    _client: &crate::core::ImClient,
+    full_handle: &str,
+    raw: Value,
+) -> crate::ImResult<DirectHandleResolution> {
+    let lookup = authoritative_lookup_from_public_document(full_handle, &raw)?;
+    let resolved = resolution_from_lookup(full_handle, lookup.clone())?;
+    #[cfg(feature = "sqlite")]
+    crate::directory::project_handle_lookup(_client, &lookup)?;
+    Ok(resolved)
+}
+
+async fn finish_public_direct_resolution_async(
+    _client: &crate::core::ImClient,
+    full_handle: &str,
+    raw: Value,
+) -> crate::ImResult<DirectHandleResolution> {
+    let lookup = authoritative_lookup_from_public_document(full_handle, &raw)?;
+    let resolved = resolution_from_lookup(full_handle, lookup.clone())?;
+    #[cfg(feature = "sqlite")]
+    crate::directory::project_handle_lookup_async(_client, &lookup).await?;
+    Ok(resolved)
 }
 
 /// Recovery and device Join can inspect the public binding before an identity has
@@ -295,6 +319,7 @@ fn resolution_from_lookup(
     })
 }
 
+#[cfg(test)]
 fn resolution_from_public_document(
     expected_handle: &str,
     raw: Value,
@@ -996,12 +1021,12 @@ mod tests {
         ));
     }
 
-    struct Fixture {
-        root: PathBuf,
+    pub(super) struct Fixture {
+        pub(super) root: PathBuf,
     }
 
     impl Fixture {
-        fn new(prefix: &str) -> Self {
+        pub(super) fn new(prefix: &str) -> Self {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1033,7 +1058,7 @@ mod tests {
             Self { root }
         }
 
-        fn client(&self) -> crate::core::ImClient {
+        pub(super) fn client(&self) -> crate::core::ImClient {
             crate::core::ImCore::new(
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
@@ -1075,3 +1100,7 @@ mod tests {
 #[cfg(test)]
 #[path = "handle_discovery_web_tests.rs"]
 mod web_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "handle_discovery_projection_tests.rs"]
+mod projection_tests;
