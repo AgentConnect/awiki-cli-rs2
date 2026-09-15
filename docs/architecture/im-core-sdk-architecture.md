@@ -740,6 +740,14 @@ is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
 
+本 workspace 对 OpenMLS 0.8 单独设置 dev/test `debug-assertions = false`：该依赖在
+合法检测到 AEAD tag 错误后含无条件 debug assertion，开启时会先 panic，无法返回原有
+`AeadError`。此设置保留实际解密、签名和 AAD 校验，让恶意密文正常拒绝；其他依赖及
+Core 的 debug assertions 不受影响，release 行为不变。直接消费 Rust crate 的其他
+workspace 需在自身构建根采用相同设置，Cargo 不继承依赖仓库的 profile。
+WBA/Web 现有 P5/P6 产品测试覆盖 AAD、密文篡改拒绝及随后原报文仍能成功解密；P6
+负例重新签署外层 origin proof，确保实际进入 MLS 校验。
+
 P6 的本地 MLS OwnerScope 每次都从 identity index 中当前 `active` 的 vNext
 device authorization 读取 `ProtocolDeviceId`。重启或重建 `ImClient` 后仍使用同一
 权威设备标识；不得依赖进程内 `IdentitySummary.device_id`，也不得为 legacy、缺失授权

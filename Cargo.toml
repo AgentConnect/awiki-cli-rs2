@@ -53,3 +53,8 @@ webpki-roots = "0.26"
 futures-util = "0.3"
 time = { version = "=0.3.36", features = ["formatting", "parsing"] }
 uuid = "1"
+
+# OpenMLS 0.8 asserts on an expected AEAD rejection in debug builds. Preserve
+# its returned authentication error for untrusted input in dev and test too.
+[profile.dev.package.openmls]
+debug-assertions = false

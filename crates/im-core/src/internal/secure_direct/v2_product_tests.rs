@@ -884,6 +884,30 @@ async fn exact_device_fanout(alice_did: &str, bob_did: &str) {
         let mut receiver_host = FakeHost::default();
         receiver_host.add_document(alice_did, alice_document.clone());
         receiver_host.add_document(bob_did, bob_document.clone());
+        for tamper_aad in [true, false] {
+            let mut metadata = prepared.metadata.clone();
+            let mut body = prepared.body.clone();
+            if tamper_aad {
+                metadata.message_id.push_str("-tampered");
+                metadata.operation_id = metadata.message_id.clone();
+            } else {
+                let V2DirectBody::Init(init) = &mut body else {
+                    panic!("fresh recipient must receive init");
+                };
+                let mut ciphertext = URL_SAFE_NO_PAD.decode(&init.ciphertext_b64u).unwrap();
+                ciphertext[0] ^= 1;
+                init.ciphertext_b64u = URL_SAFE_NO_PAD.encode(&ciphertext);
+            }
+            let error = receive_with_host(&recipient, &mut receiver_host, metadata, body)
+                .await
+                .expect_err("modified P5 AAD/ciphertext must not produce plaintext");
+            assert!(
+                matches!(error, crate::ImError::PermissionDenied),
+                "{error:?}"
+            );
+            assert!(receiver_host.post_attempts.is_empty());
+        }
+        // Reusing the original packet also proves rejection did not consume the OPK.
         let outcome = receive_with_host(
             &recipient,
             &mut receiver_host,

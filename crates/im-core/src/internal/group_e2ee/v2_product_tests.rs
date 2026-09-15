@@ -22,6 +22,7 @@ use anp::proof::{
     generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
     PROOF_TYPE_DATA_INTEGRITY,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
 use super::*;
@@ -477,6 +478,37 @@ async fn p6_product_lifecycle(fixture: DidFixture) {
         .await
         .expect("submit exact prepared MLS ciphertext");
     assert_eq!(sent.message_id, send.meta.message_id);
+    for tamper_aad in [true, false] {
+        let mut modified = send.clone();
+        if tamper_aad {
+            modified.meta.message_id.push_str("-tampered");
+            modified.meta.operation_id = modified.meta.message_id.clone();
+        } else {
+            let mut ciphertext = URL_SAFE_NO_PAD
+                .decode(&modified.cipher.private_message_b64u)
+                .unwrap();
+            let last = ciphertext.len() - 1;
+            ciphertext[last] ^= 1;
+            modified.cipher.private_message_b64u = URL_SAFE_NO_PAD.encode(&ciphertext);
+        }
+        // Re-sign the outer proof so rejection exercises MLS authentication itself.
+        let error = a2_product
+            .decrypt_incoming_application(incoming_input(
+                &fixture,
+                a1,
+                a2,
+                &modified,
+                "req-reject-modified-a2",
+            ))
+            .expect_err("modified P6 AAD/ciphertext must not produce plaintext");
+        assert!(
+            error
+                .to_string()
+                .contains("group.e2ee.private_message_invalid"),
+            "{error:?}"
+        );
+    }
+    // The valid packet must still decrypt after both rejected inputs.
     let decrypted = a2_product
         .decrypt_incoming_application(incoming_input(&fixture, a1, a2, &send, "req-decrypt-a2"))
         .expect("A2 decrypts application delivery");
