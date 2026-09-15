@@ -1735,3 +1735,7 @@ Conversation-level read state is separate from reliable sync checkpoints:
 本地投影/后续 JWT/PreKey 前重新核对权威绑定；网络错误、相同/倒退代次、单次 401/403 都不授权关闭。可重试失败仍保留原操作，已证明旧绑定失效返回稳定 `local_transition_superseded`，不再执行旧本地写入。后续用户可从已有 Join 入口加入当前身份，或按 Core 允许的显式新 Recovery/删除流程操作；不把旧完成记录当作可登录凭证。相同 DID 的单设备撤权分支只在 exact-device 授权拒绝后进行一次有界对账，当前 root-verified E1 文档必须证明已移除本次初始 bootstrap key。原始签名文档、当前签名文档或绑定不闭合时保持 pending。该分支已具备 Core 单元证据，真实多设备撤权验收仍须单独取得，不能用更高 WNS 代次的通过冒充。
 
 已解析并按冻结 intent 校验的 Commit/Result Get 成功结果，必须先落 Vault committed journal 和 operation index，再在本地 transition 阶段确认 custody publication。WNS 代次检查位于该 custody 确认及本地迁移之前。`record_nonterminal_error` 接受四种活跃 lifecycle（含 remote_committed/local_transition_pending），不把本地可重试失败二次覆盖为索引 PermissionDenied；终态仍不允许写入普通重试错误。
+
+普通 Group 附件下载缓存保留 P4 history 的 `message_id` 作为授权 wire ID，公共时间线仍使用
+`group_did:group_event_seq`。若有显式 `raw_message_id` 则优先保留；P5 与 P6 的已有授权 ID
+规则不变。不能因缓存投影只留下时间线 ID，向服务端请求不存在的普通附件 grant。

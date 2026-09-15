@@ -5597,6 +5597,17 @@ pub(crate) fn attachment_manifest_cache_record(
         ("direct", peer_did)
     };
     let message_id = attachment_manifest_cache_message_id(object, &thread_id)?;
+    let wire_message_id = first_non_empty_owned([
+        string_value(object.get("raw_message_id")),
+        if thread_kind == "group" {
+            // P4 history carries its logical grant id in message_id, alongside
+            // the canonical timeline id. Preserve it before cache projection.
+            string_value(object.get("message_id"))
+        } else {
+            String::new()
+        },
+    ])
+    .unwrap_or_default();
     Some(
         crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -5604,7 +5615,7 @@ pub(crate) fn attachment_manifest_cache_record(
             thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
-            wire_message_id: string_value(object.get("raw_message_id")),
+            wire_message_id,
             sender_did: string_value(object.get("sender_did")),
             message_security_profile: secure_message_security_profile(object),
             content: serde_json::to_string(&content).ok()?,

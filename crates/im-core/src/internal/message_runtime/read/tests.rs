@@ -7700,3 +7700,34 @@ fn unique_temp_root() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[test]
+fn plain_group_attachment_cache_preserves_wire_id_for_download() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group = "did:example:group:plain";
+    let canonical = "did:example:group:plain:9";
+    let mut message = json!({
+        "id": canonical,
+        "message_id": "logical-plain-group-message",
+        "group_did": group,
+        "sender_did": "did:example:sender",
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "message_security_profile": "transport-protected",
+        "content": {"attachments":[{"attachment_id":"att-plain-group", "access_info":{"object_uri":"https://objects.example/att-plain"}, "encryption_info":{"mode":"none"}}]}
+    });
+    for expected in ["logical-plain-group-message", "explicit-wire-message"] {
+        if expected == "explicit-wire-message" { message["raw_message_id"] = json!(expected); }
+        let record = attachment_manifest_cache_record(&client, &message).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(&db, &record).unwrap();
+        let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &db, client.current_identity().id.as_str(), "group", group, canonical,
+        ).unwrap().unwrap();
+        let selected = crate::attachments::selection::find_internal_attachment_selection(
+            &[cached], canonical, "att-plain-group",
+        ).unwrap();
+        assert_eq!(selected.public.message_id, canonical);
+        assert_eq!(selected.authorization_message_id, expected);
+    }
+}
