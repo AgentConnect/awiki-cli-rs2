@@ -420,6 +420,14 @@ where
         }
     };
 
+    if pending.rejected {
+        web::finish_rejected(core, client, &pending, remote, resolver)
+            .await
+            .map_err(unknown_outcome)?;
+        store.delete(&secret_ref).map_err(unknown_outcome)?;
+        return Err(rejected_before_commit(web::rejected_error()));
+    }
+
     if pending.remote_result.is_none() {
         let prepared = prepare_revoke_async(
             client,
@@ -446,6 +454,17 @@ where
         {
             Ok(result) => result,
             Err(error) => {
+                if did.as_str().starts_with("did:web:")
+                    && crate::internal::identity_services_update::checkpoint_conflict(&error)
+                {
+                    pending.rejected = true;
+                    store.save(&pending).map_err(unknown_outcome)?;
+                    web::finish_rejected(core, client, &pending, remote, resolver)
+                        .await
+                        .map_err(unknown_outcome)?;
+                    store.delete(&secret_ref).map_err(unknown_outcome)?;
+                    return Err(rejected_before_commit(redact_remote_error(error)));
+                }
                 if !did.as_str().starts_with("did:web:") && stale_intent_error(&error) {
                     store
                         .delete(&secret_ref)
@@ -743,7 +762,10 @@ async fn converge_local_state(
         )
 }
 
-pub(crate) fn write_document_atomic(path: &std::path::Path, document: &Value) -> crate::ImResult<()> {
+pub(crate) fn write_document_atomic(
+    path: &std::path::Path,
+    document: &Value,
+) -> crate::ImResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| crate::ImError::PathUnavailable {

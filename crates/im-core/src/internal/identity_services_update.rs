@@ -14,7 +14,9 @@ use crate::internal::transport::{AsyncAuthenticatedRpcTransport, CoreHttpTranspo
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod conflict;
 mod pending;
+pub(crate) use conflict::{checkpoint_conflict, reconcile_rejected};
 use pending::Store;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -30,6 +32,8 @@ struct Pending {
     candidate: Option<Value>,
     provider_operation_id: Option<String>,
     committed: bool,
+    #[serde(default)]
+    rejected: bool,
 }
 
 impl Pending {
@@ -47,6 +51,7 @@ impl Pending {
             || self.authorizer.auth_generation == 0
             || self.candidate.is_some() != self.provider_operation_id.is_some()
             || (self.committed && self.candidate.is_none())
+            || (self.rejected && (self.committed || self.candidate.is_none()))
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -222,6 +227,7 @@ async fn execute<R: Remote>(
                 candidate: None,
                 provider_operation_id: None,
                 committed: false,
+                rejected: false,
             };
             store.save(&pending)?;
             pending
@@ -235,6 +241,11 @@ async fn execute<R: Remote>(
         return Err(crate::ImError::PermissionDenied);
     }
 
+    if pending.rejected {
+        finish_rejected(core, client, &pending, remote).await?;
+        store.delete(client.did())?;
+        return Err(rejected_error());
+    }
     if !pending.committed {
         let change = match identity
             .resume_document_change()
@@ -333,7 +344,14 @@ async fn execute<R: Remote>(
                     .await
                     .map_err(map_provider_error)?;
             }
-            return Err(response.err().unwrap_or(crate::ImError::PermissionDenied));
+            let error = response.err().unwrap_or(crate::ImError::PermissionDenied);
+            if client.did().as_str().starts_with("did:web:") && checkpoint_conflict(&error) {
+                pending.rejected = true;
+                store.save(&pending)?;
+                finish_rejected(core, client, &pending, remote).await?;
+                store.delete(client.did())?;
+            }
+            return Err(error);
         }
         // Seal the exact result before custody can retire its original candidate.
         pending.committed = true;
@@ -379,6 +397,46 @@ async fn execute<R: Remote>(
         .await?;
     }
     adopt(identity.as_ref(), &registry, &current).await?;
+    persist_current(core, client, &registry, &current, authorizer)?;
+    store.delete(client.did())?;
+    Ok(current)
+}
+
+fn rejected_error() -> crate::ImError {
+    crate::ImError::invalid_input(Some("services".into()),
+        "The previous service update was rejected by a checkpoint conflict; current state was refreshed. Submit a new update")
+}
+
+async fn finish_rejected<R: Remote>(
+    core: &crate::ImCore,
+    client: &crate::core::ImClient,
+    pending: &Pending,
+    remote: &mut R,
+) -> crate::ImResult<()> {
+    let (registry, current) = remote.current(client.did()).await?;
+    reconcile_rejected(
+        core,
+        client,
+        &pending.checkpoint,
+        &pending.authorizer,
+        pending
+            .candidate
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        pending.provider_operation_id.as_deref(),
+        &registry,
+        &current,
+    )
+    .await
+}
+
+fn persist_current(
+    core: &crate::ImCore,
+    client: &crate::core::ImClient,
+    registry: &DeviceJoinRemoteRegistry,
+    current: &Value,
+    authorizer: DeviceJoinRemoteDeviceSummary,
+) -> crate::ImResult<()> {
     crate::internal::identity_device_revoke::write_document_atomic(
         &client.runtime().did_document_path,
         &current,
@@ -403,11 +461,10 @@ async fn execute<R: Remote>(
                     management_ready: authorizer.management_ready,
                     auth_generation: authorizer.auth_generation,
                 }),
-                checkpoint: Some(registry.checkpoint),
+                checkpoint: Some(registry.checkpoint.clone()),
             },
         )?;
-    store.delete(client.did())?;
-    Ok(current)
+    Ok(())
 }
 
 async fn adopt(

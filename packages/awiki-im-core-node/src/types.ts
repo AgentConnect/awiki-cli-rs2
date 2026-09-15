@@ -286,6 +286,8 @@ export interface ImCoreProviderDocumentChangeSession {
   beginPublication(): Promise<unknown>
   complete(attempt: unknown, result: unknown): Promise<unknown>
   reconcile(observation: unknown): Promise<unknown>
+  reconcileRejected(observation: unknown): Promise<unknown>
+
 }
 
 /** Host-only DID transition workflow retained inside the provider bridge. */

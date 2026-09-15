@@ -718,7 +718,7 @@ Web 设备撤销的未决结果使用持久化的原 operation、目标、候选
 重试 `device_revoke`，每次重新签发管理员 proof。当前文档中目标已消失不能单独证明
 本操作成功；无法确认的结果保留 pending。确认原操作提交后，还必须读取当前 Registry
 和文档，检查本机管理员仍有效、目标仍撤销，再以当前版本更新本地状态。后续合法更新
-不会被历史撤销候选覆盖；已保存的成功结果可免去重复撤销，但不能跳过当前资格检查。
+不会被历史撤销候选覆盖；已保存的成功结果可免去重复撤销，但不能跳过当前资格检查。明确的文档版本、哈希或 Registry 版本冲突走独立的拒绝收敛：先持久化原请求的冲突结果，再核对当前管理员、密钥和单调前进的检查点，经 custody reconcile 清理旧候选并采用当前状态。旧撤销不计为成功；调用方可重新提交新操作。超时、解析失败、`device.inactive` 或仅观察到目标消失均不能触发此清理。
 
 `RegisterHandleRequest.did_method` 接受 `DidMethod::Wba`（序列化默认 `wba`）或
 `DidMethod::Web`（`web`）。Web 只用于普通 phone/email 注册，并要求配置
@@ -2105,7 +2105,7 @@ CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Cor
 
 只允许当前 Registry 中 Active、management-ready 的 admin；设备密钥与 Manifest 不变，Handle、ANPMessageService 归属和 AgentDescription 仍由各自原入口管理。本期提供 native/provider custody 的 WBA 与 Web 路径：WBA 保留根 proof，Web 不添加根 proof。
 
-Vault 在提交前保存业务操作与候选，重复相同列表续接原操作；不同列表在 pending 存在时拒绝。网络失败保留候选和原 operation ID，重试刷新设备 proof nonce。精确成功回执和当前文档/Registry 独立检查，后续合法更新不会被历史候选覆盖，已撤销的管理员不能借历史回执获得本地可用状态。SDK 已收口但业务文件尚未写完时，仍可从 Vault 继续。调用者取消/超时后应检查 pending，再调用 resume；不要重新创建身份。
+Vault 在提交前保存业务操作与候选，重复相同列表续接原操作；不同列表在 pending 存在时拒绝。网络失败保留候选和原 operation ID，重试刷新设备 proof nonce。精确成功回执和当前文档/Registry 独立检查，后续合法更新不会被历史候选覆盖，已撤销的管理员不能借历史回执获得本地可用状态。SDK 已收口但业务文件尚未写完时，仍可从 Vault 继续。调用者取消/超时后应检查 pending，再调用 resume；不要重新创建身份。 Web 原请求收到明确 checkpoint conflict 后，先保存拒绝结果，再核对当前文档/Registry、原管理员及密钥、前进的检查点。通过后结束 custody 与 Vault 中的旧候选并刷新当前状态，返回冲突；后续更新创建新 operation ID。清理中断可在重开后 resume，不再重发已确认拒绝的请求；无法核对当前资格时保留 pending。
 
 CLI：`id services show`、`id services update --file services.json`、`id services resume`。输入文件是公开服务 JSON 数组；更新结果显示当前服务与 pending 状态。Node（native API v18）和 Dart 提供 `identityDocument`、`identityServicesUpdatePending`、`updateIdentityServices`、`resumeIdentityServicesUpdate`。Dart Web 不支持 native Rust backend，继续明确拒绝这些调用；DSH 通过 Node Host 使用同一 Core 入口。
 

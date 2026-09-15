@@ -1031,6 +1031,22 @@ impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
         })
         .await
     }
+
+    async fn reconcile_rejected(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .reconcile_rejected(observation.into())
+                .map(Into::into)
+                .map_err(map_identity_error)
+        })
+        .await
+    }
 }
 
 #[async_trait]

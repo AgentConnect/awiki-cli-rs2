@@ -569,6 +569,11 @@ pub trait ProviderDocumentChangeSession: Send + Sync {
         &self,
         observation: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<ProviderDocumentChangeOutcome>;
+    /// Requires a durable terminal rejection of the original operation and verified current authority.
+    async fn reconcile_rejected(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

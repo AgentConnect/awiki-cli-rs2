@@ -1288,3 +1288,135 @@ fn manifest_contains(document: &Value, device_id: &str) -> bool {
         .iter()
         .any(|device| device.device_id == device_id)
 }
+
+#[tokio::test]
+async fn web_revoke_checkpoint_conflict_reconciles_after_reopen_and_allows_new_intent() {
+    let scenario = web_scenario().await;
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let mut remote = MockRemote::new(
+        scenario.registry.clone(),
+        [RevokeAction::Error(crate::ImError::Service {
+            status_code: None,
+            code: Some("device.registry_version_conflict".into()),
+            message: "conflict".into(),
+            data: None,
+        })],
+    );
+    let mut resolver = MockResolver {
+        document: scenario.document.clone(),
+        calls: 0,
+    };
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert!(
+        store
+            .load(&scenario.did, TARGET_DEVICE_ID)
+            .unwrap()
+            .unwrap()
+            .1
+            .rejected
+    );
+    let original_id = remote.revoke_calls[0].operation_id.clone();
+    drop(client);
+    drop(core);
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    // A Registry-only concurrent change still makes the old CAS impossible.
+    remote.registry.checkpoint.registry_version += 1;
+    remote
+        .registry
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == scenario.authorizing.device_id)
+        .unwrap()
+        .management_ready = false;
+    assert!(recover_pending_for_client_with_runtime(
+        &core,
+        &client,
+        &store,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_some());
+    remote
+        .registry
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == scenario.authorizing.device_id)
+        .unwrap()
+        .management_ready = true;
+    assert_eq!(
+        recover_pending_for_client_with_runtime(&core, &client, &store, &mut remote, &mut resolver)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(remote.revoke_calls.len(), 1);
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_none());
+    assert!(client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .resume_document_change()
+        .await
+        .unwrap()
+        .is_none());
+    // The target is still active; a new intent gets a new operation ID and checkpoint.
+    remote
+        .actions
+        .push_back(RevokeAction::Error(crate::ImError::TransportUnavailable {
+            detail: "new submission".into(),
+        }));
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    let next = store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_ne!(next.operation_id, original_id);
+    assert_eq!(next.expected_checkpoint, remote.registry.checkpoint);
+    assert!(!next.rejected);
+}

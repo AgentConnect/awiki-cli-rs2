@@ -7,6 +7,7 @@ struct TestRemote {
     calls: Vec<wire::PreparedDeviceDocumentUpdate>,
     lose_response: bool,
     reject: bool,
+    conflict: bool,
     original_result: Option<IdentityInternalCheckpoint>,
 }
 
@@ -24,6 +25,14 @@ impl Remote for TestRemote {
         expected: &IdentityInternalCheckpoint,
     ) -> crate::ImResult<IdentityInternalCheckpoint> {
         self.calls.push(request.clone());
+        if self.conflict {
+            return Err(crate::ImError::Service {
+                status_code: None,
+                code: Some("device.document_version_conflict".into()),
+                message: "conflict".into(),
+                data: None,
+            });
+        }
         if self.reject {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -62,6 +71,7 @@ async fn web_service_update_recovers_same_operation_after_response_loss_and_late
         calls: vec![],
         lose_response: true,
         reject: false,
+        conflict: false,
         original_result: None,
     };
     assert!(execute(&core, &client, Some(desired.clone()), &mut remote)
@@ -191,6 +201,7 @@ async fn wba_service_update_preserves_root_and_device_authority() {
         calls: vec![],
         lose_response: false,
         reject: false,
+        conflict: false,
         original_result: None,
     };
     let current = execute(&core, &client, Some(desired), &mut remote)
@@ -222,6 +233,7 @@ async fn service_update_member_or_protected_service_change_does_not_prepare_an_o
         calls: vec![],
         lose_response: false,
         reject: false,
+        conflict: false,
         original_result: None,
     };
     remote
@@ -259,4 +271,70 @@ async fn service_update_member_or_protected_service_change_does_not_prepare_an_o
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn web_service_conflict_survives_reopen_then_releases_both_pending_records() {
+    let scenario = web_scenario().await;
+    let core = scenario.open_core(false);
+    let client = core.client_async(IdentitySelector::Default).await.unwrap();
+    let desired = services(&scenario.document, &scenario.did).unwrap();
+    let mut remote = TestRemote {
+        registry: scenario.registry.clone(),
+        document: scenario.document.clone(),
+        calls: vec![],
+        lose_response: false,
+        reject: false,
+        conflict: true,
+        original_result: None,
+    };
+    // A conflict without a forward current checkpoint cannot discard custody.
+    assert!(execute(&core, &client, Some(desired.clone()), &mut remote)
+        .await
+        .is_err());
+    let pending = Store::new(&core)
+        .unwrap()
+        .load(&scenario.did)
+        .unwrap()
+        .unwrap();
+    assert!(pending.rejected);
+    assert!(client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .resume_document_change()
+        .await
+        .unwrap()
+        .is_some());
+    drop(client);
+    drop(core);
+    let core = scenario.open_core(false);
+    let client = core.client_async(IdentitySelector::Default).await.unwrap();
+    remote.document["alsoKnownAs"] = json!(["https://example.test/winner"]);
+    remote.registry.checkpoint.document_version += 1;
+    remote.registry.checkpoint.document_hash = document::document_hash(&remote.document).unwrap();
+    // The persisted terminal result skips the old RPC even after restart.
+    assert!(execute(&core, &client, None, &mut remote).await.is_err());
+    assert_eq!(remote.calls.len(), 1);
+    assert!(!has_pending(&core, &scenario.did).unwrap());
+    assert!(client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .resume_document_change()
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(scenario.local_document(), remote.document);
+    remote.conflict = false;
+    execute(&core, &client, Some(desired), &mut remote)
+        .await
+        .unwrap();
+    assert_ne!(remote.calls[0].operation_id, remote.calls[1].operation_id);
+    assert_eq!(
+        remote.calls[1].expected_checkpoint.document_version,
+        remote.calls[0].expected_checkpoint.document_version + 1
+    );
 }

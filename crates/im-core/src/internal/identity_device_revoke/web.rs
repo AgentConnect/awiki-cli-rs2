@@ -19,6 +19,11 @@ pub(super) async fn recover<R: DeviceRevokeRemote, D: DeviceRevokeDocumentResolv
         validate_local_authorizer(client, &pending)?;
         // The current document alone cannot identify the operation that removed
         // the target. An unknown outcome must retry the original private RPC.
+        if pending.rejected {
+            finish_rejected(core, client, &pending, remote, resolver).await?;
+            store.delete(&reference)?;
+            continue;
+        }
         if pending.remote_result.is_none() {
             let prepared = prepare_revoke_async(
                 client,
@@ -36,10 +41,21 @@ pub(super) async fn recover<R: DeviceRevokeRemote, D: DeviceRevokeDocumentResolv
                 .target_auth_generation
                 .checked_add(1)
                 .ok_or(crate::ImError::PermissionDenied)?;
-            let result = remote
-                .revoke(&prepared, generation, &checkpoint)
-                .await
-                .map_err(redact_remote_error)?;
+            let result = match remote.revoke(&prepared, generation, &checkpoint).await {
+                Ok(result) => result,
+                Err(error)
+                    if crate::internal::identity_services_update::checkpoint_conflict(&error) =>
+                {
+                    pending.rejected = true;
+                    if store.save(&pending)? != reference {
+                        return Err(crate::ImError::PermissionDenied);
+                    }
+                    finish_rejected(core, client, &pending, remote, resolver).await?;
+                    store.delete(&reference)?;
+                    continue;
+                }
+                Err(error) => return Err(redact_remote_error(error)),
+            };
             pending.remote_result = Some(result);
             pending.validate()?;
             if store.save(&pending)? != reference {
@@ -227,4 +243,33 @@ fn validate_local_authorizer(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+pub(super) fn rejected_error() -> crate::ImError {
+    crate::ImError::invalid_input(Some("device_id".into()),
+        "The previous device revocation was rejected by a checkpoint conflict; current state was refreshed. Submit a new revocation")
+}
+
+pub(super) async fn finish_rejected<R: DeviceRevokeRemote, D: DeviceRevokeDocumentResolver>(
+    core: &crate::ImCore,
+    client: &crate::core::ImClient,
+    pending: &PendingDeviceRevoke,
+    remote: &mut R,
+    resolver: &mut D,
+) -> crate::ImResult<()> {
+    pending.validate()?;
+    validate_local_authorizer(client, pending)?;
+    let registry = remote.registry(client.did()).await?;
+    let current = resolver.resolve(client.did()).await?;
+    crate::internal::identity_services_update::reconcile_rejected(
+        core,
+        client,
+        &pending.expected_checkpoint,
+        &pending.authorizing_device,
+        &pending.new_document,
+        None,
+        &registry,
+        &current,
+    )
+    .await
 }

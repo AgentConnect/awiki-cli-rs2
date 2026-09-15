@@ -35,6 +35,8 @@ pub(crate) struct PendingDeviceRevoke {
     pub(crate) authorizing_device:
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary,
     pub(crate) remote_result: Option<DeviceRevokeRemoteResult>,
+    #[serde(default)]
+    pub(crate) rejected: bool,
 }
 
 impl std::fmt::Debug for PendingDeviceRevoke {
@@ -73,6 +75,7 @@ impl PendingDeviceRevoke {
             new_document,
             authorizing_device,
             remote_result: None,
+            rejected: false,
         };
         record.validate()?;
         Ok(record)
@@ -97,7 +100,8 @@ impl PendingDeviceRevoke {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
-        if self.schema_version != SCHEMA_VERSION
+        if (self.rejected && self.remote_result.is_some())
+            || self.schema_version != SCHEMA_VERSION
             || self.operation_id.trim().is_empty()
             || self.target_auth_generation == 0
             || self.target_device_id == self.authorizing_device.device_id
