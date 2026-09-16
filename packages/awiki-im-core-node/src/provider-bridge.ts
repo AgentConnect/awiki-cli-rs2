@@ -246,6 +246,12 @@ export function createIdentityProviderDispatch(
           transitionSessions.set(sessionId, session)
           return success({ sessionId, candidate: await session.candidate() })
         }
+        case 'adoptVerifiedSiblingDocument':
+          if (typeof provider.adoptVerifiedSiblingDocument !== 'function') throw incompatible()
+          return success(await provider.adoptVerifiedSiblingDocument(
+            reference(payload.identity),
+            object(payload.remote),
+          ))
         case 'adoptVerifiedDocument':
           return success(await provider.adoptVerifiedDocument(
             reference(payload.identity),

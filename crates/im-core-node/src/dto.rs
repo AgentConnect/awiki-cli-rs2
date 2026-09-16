@@ -2459,3 +2459,11 @@ mod tests {
         assert_eq!(buffer.to_vec(), expected);
     }
 }
+
+#[napi(object)]
+pub struct NodeDeviceJoinManagementStatus {
+    pub join_session_id: String,
+    pub recipient_device_id: String,
+    pub phase: String,
+    pub attempts: u32,
+}

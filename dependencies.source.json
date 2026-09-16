@@ -8,7 +8,7 @@
     },
     "anp-identity": {
       "repository": "https://github.com/agent-network-protocol/anp-identity.git",
-      "commit": "83bd3a35a89c427b037593aba11f778e36c9debd",
+      "commit": "453238f7ed8e564337eddd677f82308b0877d1b4",
       "pull_request": "https://github.com/agent-network-protocol/anp-identity/pull/11"
     }
   }

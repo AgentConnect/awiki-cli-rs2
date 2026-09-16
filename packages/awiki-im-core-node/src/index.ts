@@ -202,6 +202,18 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(async () => ({ ...await this.native.confirmDeviceJoinApproval(input) }))
   }
 
+  public deviceJoinManagementStatus() {
+    return call(() => this.native.deviceJoinManagementStatus())
+  }
+
+  public retryDeviceJoinManagement(input: { readonly joinSessionId: string }): Promise<void> {
+    return call(() => this.native.retryDeviceJoinManagement(input))
+  }
+
+  public confirmDeviceJoinWithManagement(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.confirmDeviceJoinWithManagement(input) }))
+  }
+
   public rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress> {
     return call(async () => ({ ...await this.native.rejectDeviceJoin(input) }))
   }
