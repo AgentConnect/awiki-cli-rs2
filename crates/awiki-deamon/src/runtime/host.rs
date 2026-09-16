@@ -293,6 +293,16 @@ where
         anyhow::bail!("run_id must not be empty");
     }
 
+    if profile.runtime_plugin_id == crate::acp::PLUGIN_ID {
+        return crate::acp::host::run(
+            state,
+            profile,
+            outbox,
+            task,
+            run_id,
+            local_socket_path.as_deref(),
+        );
+    }
     let run = RuntimeRun {
         run_id,
         task_id: task.task_id.clone(),
@@ -1609,7 +1619,7 @@ fn mark_runtime_final_delivered(
     Ok(())
 }
 
-fn runtime_final_outbox_record(
+pub(crate) fn runtime_final_outbox_record(
     profile: &RuntimeAgentProfile,
     controller_did: &str,
     recipient_did: &str,
@@ -2411,6 +2421,36 @@ fn runtime_allowed_methods(authority: RuntimeInvocationAuthority) -> Vec<RpcMeth
         methods.push(RpcMethod::SendAttachment);
     }
     methods
+}
+
+pub(crate) fn issue_acp_runtime_token(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &str,
+) -> Result<crate::security::runtime_token::IssuedRuntimeToken> {
+    let policy = runtime_recipient_policy(
+        state,
+        profile,
+        &task.reply_recipient_did,
+        task.invocation_authority,
+    )?;
+    let mut methods = vec![RpcMethod::RpcPing];
+    if task.invocation_authority.can_send_outbound() {
+        methods.extend([RpcMethod::MsgSend, RpcMethod::SendAttachment]);
+    }
+    let mut scope = RuntimeTokenScope::new(
+        profile.agent_did.clone(),
+        profile.runtime_profile_id.clone(),
+        run.to_owned(),
+        methods,
+        Some(policy.allowed_recipients),
+        Duration::from_secs(30 * 60),
+    )?;
+    scope.allowed_message_security = Some(policy.allowed_message_security);
+    let issued = issue_runtime_token(scope)?;
+    state.store_runtime_token(&issued)?;
+    Ok(issued)
 }
 
 fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Result<()> {

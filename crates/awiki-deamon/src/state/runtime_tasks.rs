@@ -601,6 +601,14 @@ WHERE retry_id = ?2
         &self,
         record: &RuntimeFinalOutboxRecord,
     ) -> Result<()> {
+        let connection = self.connection()?;
+        Self::upsert_runtime_final_outbox_pending_in(&connection, record)
+    }
+
+    pub(crate) fn upsert_runtime_final_outbox_pending_in(
+        connection: &Connection,
+        record: &RuntimeFinalOutboxRecord,
+    ) -> Result<()> {
         record.validate()?;
         if record.status != "pending" {
             bail!("runtime final outbox upsert requires pending status");
@@ -609,7 +617,6 @@ WHERE retry_id = ?2
             bail!("runtime final outbox upsert requires final_body_hash");
         }
         let now = current_time_millis()?;
-        let connection = self.connection()?;
         connection.execute(
             r#"
 INSERT INTO runtime_final_outbox (

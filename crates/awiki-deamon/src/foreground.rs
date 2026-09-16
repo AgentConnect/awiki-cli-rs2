@@ -66,6 +66,7 @@ use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
+mod acp_control;
 mod attachments;
 mod group_context;
 mod lifecycle_support;
@@ -354,6 +355,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             }),
         )?;
     }
+    crate::acp::store::recover(&state)?;
     let recovered_cli_route_queue =
         state.recover_stale_cli_route_message_queue_running(startup_recovery_cutoff)?;
     let recovered_cli_route_sessions =
@@ -597,6 +599,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         }
     };
     realtime_supervisor.stop().await;
+    crate::acp::store::request_shutdown(&state)?;
     runtime_routes.shutdown().await;
     rpc_worker.stop();
     queue_scheduler.stop().await;
@@ -1391,8 +1394,10 @@ fn should_dispatch_runtime_execution(
             Ok(
                 is_attachment_manifest_message(message, &content_type, payload)
                     || (is_awiki_agent_command_payload(payload)
-                        && payload.get("command").and_then(Value::as_str)
-                            == Some("runtime.task.submit")),
+                        && matches!(
+                            payload.get("command").and_then(Value::as_str),
+                            Some("runtime.task.submit" | "runtime.acp.control")
+                        )),
             )
         }
         MessageBodyView::Unsupported { .. } => Ok(false),
@@ -1807,7 +1812,7 @@ fn run_runtime_retry(
                 run_id.clone(),
             )?;
         }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
+        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID => {
             let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);
             run_existing_runtime_task_with_config(
@@ -2069,6 +2074,20 @@ async fn route_message(
                 content_type: content_type.clone(),
                 payload: payload.clone(),
             };
+            if is_awiki_agent_command_payload(payload)
+                && payload["command"] == "runtime.acp.control"
+            {
+                acp_control::handle(
+                    config,
+                    state,
+                    im_core,
+                    registration,
+                    target_agent_did,
+                    &sender_did,
+                    payload,
+                )?;
+                return Ok(true);
+            }
             if is_app_control_payload(payload) {
                 let readiness = ImCoreRuntimeAgentMessageReadiness::new(config, state, im_core);
                 handle_app_control_payload_with_readiness(
@@ -2098,6 +2117,7 @@ async fn route_message(
                 let profile = state.load_runtime_agent_profile(target_agent_did)?;
                 let task_text = attachment_runtime_prompt_text(
                     config,
+                    state,
                     target_client,
                     target_agent_did,
                     &profile.preferred_language,
@@ -2330,6 +2350,7 @@ where
 
     let task_text = group_agent_mention_content_text(
         config,
+        state,
         target_client,
         target_agent_did,
         &profile.preferred_language,
@@ -2620,6 +2641,7 @@ fn mention_surface_from_payload(text: &str, mention: &MessageMention) -> String 
 
 async fn group_agent_mention_content_text(
     config: &DaemonConfig,
+    state: &DaemonState,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     preferred_language: &str,
@@ -2636,6 +2658,7 @@ async fn group_agent_mention_content_text(
     if is_attachment_manifest_message(message, &content_type, raw_payload) {
         return attachment_runtime_prompt_text(
             config,
+            state,
             target_client,
             target_agent_did,
             preferred_language,
@@ -3439,7 +3462,7 @@ where
                 )
             }
         }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
+        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID => {
             let cli_profile =
                 state.load_cli_runtime_profile(&current_profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);
@@ -3568,7 +3591,7 @@ fn run_runtime_task_command(
                 task_message,
             )?;
         }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
+        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID => {
             let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);
             run_controller_text_task_with_config(

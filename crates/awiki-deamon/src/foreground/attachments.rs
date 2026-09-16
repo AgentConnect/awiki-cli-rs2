@@ -16,6 +16,7 @@ pub(super) struct RuntimeInboundAttachment {
 
 pub(super) async fn attachment_runtime_prompt_text(
     config: &DaemonConfig,
+    state: &DaemonState,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     preferred_language: &str,
@@ -38,6 +39,39 @@ pub(super) async fn attachment_runtime_prompt_text(
             )
             .await,
         );
+    }
+    if state
+        .load_runtime_agent_profile(target_agent_did)?
+        .runtime_plugin_id
+        == crate::acp::PLUGIN_ID
+    {
+        let items = resolved
+            .iter()
+            .map(|item| {
+                let path = item
+                    .local_path
+                    .clone()
+                    .context("attachment_download_failed")?;
+                crate::acp::attachments::AuthorizedAttachment::from_download(
+                    path,
+                    item.filename.clone(),
+                    item.mime_type.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>>>();
+        match items {
+            Ok(items) => crate::acp::attachments::remember(
+                state,
+                target_agent_did,
+                message.id.as_str(),
+                &items,
+            )?,
+            Err(_) => crate::acp::attachments::remember_failure(
+                state,
+                target_agent_did,
+                message.id.as_str(),
+            )?,
+        }
     }
     Ok(render_attachment_runtime_prompt(
         preferred_language,

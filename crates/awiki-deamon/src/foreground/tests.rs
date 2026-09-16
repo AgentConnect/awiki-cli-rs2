@@ -3345,6 +3345,18 @@ fn runtime_execution_dispatch_excludes_management_payloads() {
         }),
     };
     assert!(!should_dispatch_runtime_execution(&state, &created.agent_did, &management).unwrap());
+    for command in ["runtime.task.submit", "runtime.acp.control"] {
+        management.body = TestMessageBodyView::Payload {
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command": command,
+                "args": {"action": "stop"},
+            }),
+        };
+        assert!(
+            should_dispatch_runtime_execution(&state, &created.agent_did, &management).unwrap()
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

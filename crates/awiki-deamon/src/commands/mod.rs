@@ -916,7 +916,21 @@ where
     let resolution = validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = resolution.runtime_plugin_id.clone();
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
-    let is_generic_cli = plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID;
+    let is_generic_cli = matches!(
+        plugin_id.as_str(),
+        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID
+    );
+    if plugin_id == crate::acp::PLUGIN_ID {
+        let cli = CliRuntimeProfileRecord::for_driver(
+            &profile_id,
+            resolution
+                .driver_id
+                .as_deref()
+                .context("acp_driver_required")?,
+        )?;
+        let report = crate::acp::host::inspect_sync(&cli)?;
+        state.connection()?.execute("INSERT INTO acp_probes(profile_id,report,checked_at_ms) VALUES(?1,?2,?3) ON CONFLICT(profile_id) DO UPDATE SET report=excluded.report,checked_at_ms=excluded.checked_at_ms",rusqlite::params![profile_id,serde_json::to_string(&report)?,crate::security::runtime_token::current_time_millis()?])?;
+    }
     let workspace_mode = runtime_create_workspace_mode(&payload.args, is_generic_cli)?;
     let workspace_root = if is_generic_cli {
         Some(
@@ -1012,7 +1026,10 @@ where
         &verified_sender.controller_scope_key,
         &verified_sender.controller_did,
     )?;
-    if profile.runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
+    if matches!(
+        profile.runtime_plugin_id.as_str(),
+        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID
+    ) {
         let driver_id = resolution
             .driver_id
             .clone()

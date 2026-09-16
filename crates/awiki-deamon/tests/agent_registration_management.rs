@@ -1892,16 +1892,10 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
 }
 
 #[test]
-fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() {
+fn runtime_agent_create_preserves_codex_generic_cli_aliases() {
     for (runtime, expected_driver_id, expected_profile_id) in [
         ("codex", "codex", "profile_codex_alice_codex"),
         ("codex-cli", "codex", "profile_codex_cli_alice_codex_cli"),
-        ("gemini", "gemini", "profile_gemini_alice_gemini"),
-        (
-            "gemini-cli",
-            "gemini",
-            "profile_gemini_cli_alice_gemini_cli",
-        ),
     ] {
         let (_root, config, state) = fixture();
         let registration = MockRegistrationClient::default();

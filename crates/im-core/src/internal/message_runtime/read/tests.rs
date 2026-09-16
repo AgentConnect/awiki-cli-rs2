@@ -2557,6 +2557,40 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
 }
 
 #[test]
+fn plain_attachment_history_without_profile_keeps_transport_download_grant() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    for secure in [None, Some(false)] {
+        for group in [false, true] {
+            let mut message = json!({
+                "id": "plain-file",
+                "sender_did": "did:example:alice",
+                "receiver_did": client.did().as_str(),
+                "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                "content": {"attachments": [{"attachment_id": "att-plain", "access_info": {"object_uri": "https://objects.example/plain"}}]}
+            });
+            if let Some(secure) = secure {
+                message["secure"] = json!(secure);
+            }
+            if group {
+                message["group_did"] = json!("did:example:group");
+            }
+            let record = attachment_manifest_cache_record(&client, &message).unwrap();
+            assert_eq!(record.message_security_profile, "transport-protected");
+            // Explicit secure metadata remains authoritative even on views
+            // that do not carry the convenience `secure` flag.
+            message["message_security_profile"] =
+                json!(if group { "group-e2ee" } else { "direct-e2ee" });
+            let record = attachment_manifest_cache_record(&client, &message).unwrap();
+            assert_eq!(
+                record.message_security_profile,
+                message["message_security_profile"].as_str().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn transport_attachment_manifest_cache_preserves_historical_direct_target() {
     let fixture = Fixture::new();
     let client = fixture.client();

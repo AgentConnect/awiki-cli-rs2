@@ -5606,7 +5606,18 @@ pub(crate) fn attachment_manifest_cache_record(
             message_id,
             wire_message_id: string_value(object.get("raw_message_id")),
             sender_did: string_value(object.get("sender_did")),
-            message_security_profile: secure_message_security_profile(object),
+            // Ordinary history/Sync projections may omit the profile. Only
+            // secure messages can use the secure lane's inferred default;
+            // otherwise the download ticket must match the plain send grant.
+            message_security_profile: if object.get("secure").and_then(Value::as_bool) == Some(true)
+                || ["message_security_profile", "security_profile", "security"]
+                    .iter()
+                    .any(|key| !string_value(object.get(*key)).trim().is_empty())
+            {
+                secure_message_security_profile(object)
+            } else {
+                "transport-protected".to_owned()
+            },
             content: serde_json::to_string(&content).ok()?,
             stored_at: first_non_empty_owned([
                 string_value(object.get("stored_at")),

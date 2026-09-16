@@ -535,7 +535,7 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
             &self.recipient_did,
             json!({
                 "schema": "awiki.agent.status.v1",
-                "event_id": format!("evt_{}", crate::security::runtime_token::current_time_millis().unwrap_or(0)),
+                "event_id": metadata.and_then(|m|m.get("acp_event_id")).and_then(Value::as_str).map(str::to_string).unwrap_or_else(||format!("evt_{}", crate::security::runtime_token::current_time_millis().unwrap_or(0))),
                 "sent_at": sent_at,
                 "daemon_agent_did": self.daemon_agent_did.clone(),
                 "status_scope": "run",
