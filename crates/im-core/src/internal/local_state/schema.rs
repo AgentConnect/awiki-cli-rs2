@@ -135,6 +135,18 @@ const SYNC_V1B_DURABLE_LANE_INDEXES: &[&str] = &[
     "idx_sync_p6_input_outcomes_due",
 ];
 
+pub(crate) const ROOT_IMPORT_V2_PLAN_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS identity_root_import_plan_v2 (
+    owner_identity_id TEXT NOT NULL,
+    owner_did TEXT NOT NULL,
+    local_device_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    handoff INTEGER NOT NULL DEFAULT 0 CHECK(handoff IN (0, 1)),
+    PRIMARY KEY(owner_identity_id, local_device_id, message_id)
+);
+"#;
+
 pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
     owner_identity_id       TEXT NOT NULL,
@@ -1102,6 +1114,8 @@ pub(crate) struct OwnerInvariantViolation {
 
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     ensure_schema_version(connection)?;
+    connection.execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
+        .map_err(super::local_state_unavailable)?;
     // Legacy P6 lane rows are intentionally migrated after the versioned DDL
     // transaction commits. The row migrator is idempotent and may create
     // per-row transactions, so it must not be nested inside a schema
@@ -2141,6 +2155,8 @@ pub(super) fn create_schema(
     crate::internal::system_notification::store::create_schema(connection)?;
     connection
         .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection.execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
         .map_err(super::local_state_unavailable)?;
     ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
     ensure_column(

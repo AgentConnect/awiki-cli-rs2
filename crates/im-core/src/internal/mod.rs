@@ -40,6 +40,7 @@ pub(crate) mod identity_handle_recovery_operation;
 pub(crate) mod identity_handle_recovery_pending;
 pub(crate) mod identity_handle_recovery_runtime;
 pub(crate) mod identity_join_activation_pending;
+pub(crate) mod identity_join_management;
 pub(crate) mod identity_legacy_upgrade;
 pub(crate) mod identity_legacy_upgrade_pending;
 pub(crate) mod identity_legacy_upgrade_runtime;

@@ -41,6 +41,9 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
+pub(crate) mod management;
+pub(crate) mod document_convergence;
+
 const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
@@ -138,6 +141,10 @@ struct DecryptedJoinChallenge {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct StoredAdminApproval {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    management_task: Option<crate::internal::identity_join_management::ManagementTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    management_proof: Option<DeviceJoinObjectProof>,
     operation_id: String,
     input_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +162,7 @@ struct StoredAdminApproval {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedAdminApproval {
+    pub(crate) configure_management: bool,
     pub(crate) operation_id: String,
     pub(crate) join_session_id: String,
     pub(crate) expected_checkpoint:
@@ -1532,6 +1540,8 @@ pub(crate) fn prepare_admin_approval(
         &created_at,
     )?;
     let approval = StoredAdminApproval {
+        management_task: None,
+        management_proof: None,
         operation_id,
         input_hash,
         provider_document_change_operation_id: None,
@@ -1555,6 +1565,27 @@ pub(crate) async fn prepare_admin_approval_async(
     expected_checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
     user_presence_at: &str,
     sas_confirmed: bool,
+) -> crate::ImResult<PreparedAdminApproval> {
+    prepare_admin_approval_with_management_async(
+        core,
+        operation_id,
+        join_session_id,
+        expected_checkpoint,
+        user_presence_at,
+        sas_confirmed,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn prepare_admin_approval_with_management_async(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+    join_session_id: &str,
+    expected_checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    user_presence_at: &str,
+    sas_confirmed: bool,
+    configure_management: bool,
 ) -> crate::ImResult<PreparedAdminApproval> {
     let operation_id = required("operation_id", operation_id)?;
     let join_session_id = required("join_session_id", join_session_id)?;
@@ -1601,7 +1632,10 @@ pub(crate) async fn prepare_admin_approval_async(
                 .approval
                 .as_ref()
                 .ok_or_else(|| invalid_state("prepared approval missing"))?;
-            if approval.operation_id != operation_id || approval.input_hash != input_hash {
+            if approval.operation_id != operation_id
+                || approval.input_hash != input_hash
+                || approval.management_task.is_some() != configure_management
+            {
                 return Err(idempotency_conflict("prepare_admin_approval"));
             }
             return prepared_approval_result(&stored, approval);
@@ -1705,7 +1739,10 @@ pub(crate) async fn prepare_admin_approval_async(
         &format_time(OffsetDateTime::now_utc())?,
     )
     .await?;
-    let approval = StoredAdminApproval {
+    let mut approval = StoredAdminApproval {
+        management_task: configure_management
+            .then(crate::internal::identity_join_management::ManagementTask::authorized),
+        management_proof: None,
         operation_id,
         input_hash,
         provider_document_change_operation_id: Some(provider_document_change_operation_id),
@@ -1716,6 +1753,17 @@ pub(crate) async fn prepare_admin_approval_async(
         authorizing_device_id: admin_device_id,
         proof,
     };
+    if configure_management {
+        approval.management_proof = Some(
+            sign_object_proof_async(
+                &client,
+                &admin_signing_key_id,
+                &management::authorization_payload(&snapshot, &approval)?,
+                &approval.pairing_confirmation.user_presence_at,
+            )
+            .await?,
+        );
+    }
     let _guard = lock_join_state(core)?;
     let store = JoinStateStore::new(core);
     let mut stored = store
@@ -3859,6 +3907,7 @@ fn prepared_approval_result(
     approval: &StoredAdminApproval,
 ) -> crate::ImResult<PreparedAdminApproval> {
     Ok(PreparedAdminApproval {
+        configure_management: approval.management_task.is_some(),
         operation_id: approval.operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
         expected_checkpoint: approval.expected_checkpoint.clone(),
@@ -5551,6 +5600,7 @@ impl<'a> JoinStateStore<'a> {
                 }
             }
         }
+        management::validate_authority(&stored)?;
         Ok(stored)
     }
 

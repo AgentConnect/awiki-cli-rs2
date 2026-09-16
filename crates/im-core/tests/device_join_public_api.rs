@@ -148,3 +148,18 @@ fn low_level_join_state_machine_is_not_a_public_rollout_bypass() {
         );
     }
 }
+
+
+#[test]
+fn management_status_is_a_closed_secret_free_progress_projection() {
+    let status = awiki_im_core::identity::DeviceJoinManagementStatus {
+        join_session_id: "join-one".to_owned(),
+        recipient_device_id: "device-two".to_owned(),
+        phase: awiki_im_core::identity::DeviceJoinManagementPhase::WaitingForRecipient,
+        attempts: 3,
+        next_attempt_at_ms: 0,
+        failure_code: None,
+    };
+    let value = serde_json::to_value(status).unwrap();
+    assert_eq!(value, serde_json::json!({"join_session_id":"join-one", "recipient_device_id":"device-two", "phase":"waiting_for_recipient", "attempts":3, "next_attempt_at_ms":0, "failure_code":null}));
+}

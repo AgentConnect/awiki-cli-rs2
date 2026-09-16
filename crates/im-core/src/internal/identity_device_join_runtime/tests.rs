@@ -1612,3 +1612,100 @@ async fn check_join_binding_materialization(changed_did: bool) {
         ));
     }
 }
+
+#[tokio::test]
+async fn orphan_terminal_notice_does_not_block_new_join_requests() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_ready_admin_core(admin_root.path());
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let started = candidate.device_join().start(
+        crate::identity::DeviceJoinStartRequest {
+            operation_id: "start-orphan-terminal-test".into(), did, ttl_seconds: 300,
+        }, &document,
+    ).await.unwrap();
+    let client = core.client(crate::identity::IdentitySelector::Default).unwrap();
+    let issued_at = chrono::Utc::now();
+    let expires_at = issued_at + chrono::Duration::minutes(5);
+    for (event_id, session, kind, state, payload) in [
+        ("event-orphan-expired", "join-expired-history".to_owned(),
+            "awiki.device.join-expired.v1", "expired", json!({"state":"expired","reason":"expired"})),
+        ("event-new-request", started.session.join_session_id.clone(),
+            "awiki.device.join-requested.v1", "pending", json!({"join_request":started.join_request})),
+    ] {
+        let notification_value = json!({
+            "type":kind,"event_id":event_id,"did":client.did().as_str(),
+            "join_session_id":session,"state":state,"session_revision": if state == "pending" {1} else {2},
+            "issued_at":issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs,true),
+            "expires_at":expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs,true),
+            "payload":payload,
+        });
+    let notification = crate::internal::system_notification::wire::parse_verified_notification(
+        notification_value.clone(),
+    )
+    .unwrap();
+    let meta = crate::internal::system_notification::wire::DirectMeta {
+        anp_version: Some("2.0".to_owned()),
+        profile: crate::internal::system_notification::wire::DIRECT_PROFILE.to_owned(),
+        security_profile: crate::internal::system_notification::wire::TRANSPORT_SECURITY.to_owned(),
+        sender_did: "did:wba:example.test:service".to_owned(),
+        target: crate::internal::system_notification::wire::DirectTarget {
+            kind: "did".to_owned(),
+            did: client.did().as_str().to_owned(),
+        },
+        operation_id: event_id.to_owned(),
+        message_id: event_id.to_owned(),
+        created_at: issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        content_type: crate::internal::system_notification::wire::JSON_CONTENT_TYPE.to_owned(),
+    };
+    let body = crate::internal::system_notification::wire::DirectBody {
+        payload: notification_value,
+    };
+    let verified = crate::internal::system_notification::verify::VerifiedSystemNotification {
+        envelope: crate::internal::system_notification::wire::SystemNotificationEnvelope {
+            signed_meta: serde_json::to_value(&meta).unwrap(),
+            signed_body: serde_json::to_value(&body).unwrap(),
+            meta,
+            auth: crate::internal::system_notification::wire::DirectAuth {
+                scheme: "rfc9421-origin-proof".to_owned(),
+                origin_proof: anp::proof::Rfc9421OriginProof {
+                    content_digest: "sha-256=:test:".to_owned(),
+                    signature_input: "sig1=()".to_owned(),
+                    signature: "sig1=:test:".to_owned(),
+                },
+            },
+            body,
+            notification,
+        },
+        payload_hash: format!("sha256:{event_id}"),
+        proof_hash: "sha256:runtime-response-proof".to_owned(),
+    };
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .apply_system_notification(
+            crate::internal::system_notification::store::SystemNotificationApplyInput {
+                owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                owner_did: client.did().as_str().to_owned(),
+                protocol_device_id: client.exact_protocol_device_id().unwrap(),
+                verified,
+                received_at: issued_at,
+            },
+        )
+        .await
+        .unwrap();
+
+    }
+    for _ in 0..2 {
+        let mut runtime = DeviceJoinAdminRuntime::production(&core, &client);
+        let notices = runtime.local_device_join_requests().await.unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].join_session_id, started.session.join_session_id);
+        assert!(notices[0].can_start_verification);
+        assert_eq!(notices[0].state, crate::identity::DeviceJoinRemoteState::Pending);
+    }
+    let stored = client.list_verified_device_join_notifications(true).await.unwrap();
+    assert_eq!(stored.len(), 2, "historical terminal evidence remains stored");
+}

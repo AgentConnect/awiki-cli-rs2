@@ -303,6 +303,16 @@ Future<DartDeviceJoinProgress> confirmDeviceJoinApproval({
   userPresenceConfirmed: userPresenceConfirmed,
 );
 
+Future<DartDeviceJoinProgress> confirmDeviceJoinWithManagement({
+  required ArcDartImCore core,
+  required String approvalHandle,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityConfirmDeviceJoinWithManagement(
+  core: core,
+  approvalHandle: approvalHandle,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
 Future<DartDeviceJoinProgress> rejectDeviceJoin({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
@@ -509,3 +519,22 @@ Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
       profile: profile,
       makeDefault: makeDefault,
     );
+
+/// Secret-free automatic management configuration projection.
+Future<List<DartDeviceJoinManagementStatus>> deviceJoinManagementStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityDeviceJoinManagementStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<void> retryDeviceJoinManagement({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityRetryDeviceJoinManagement(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+);

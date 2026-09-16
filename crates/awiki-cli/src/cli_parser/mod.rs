@@ -170,6 +170,9 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         | "id.device.join.poll"
         | "id.device.join.verify"
         | "id.device.join.approve"
+        | "id.device.join.management-status"
+        | "id.device.join.management-resume"
+        | "id.device.join.management-retry"
         | "id.device.join.reject"
         | "id.device.join.cancel"
         | "id.device.revoke" => Err(async_only_error(&command.name)),
@@ -317,6 +320,13 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.poll" => app.run_id_device_join_poll_async(command).await,
         "id.device.join.verify" => app.run_id_device_join_verify_async(command).await,
         "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
+        "id.device.join.management-status" => {
+            app.run_id_device_join_management_async(command).await
+        }
+        "id.device.join.management-resume" => {
+            app.run_id_device_join_management_async(command).await
+        }
+        "id.device.join.management-retry" => app.run_id_device_join_management_async(command).await,
         "id.device.join.reject" => app.run_id_device_join_reject_async(command).await,
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "id.device.revoke" => app.run_id_device_revoke_async(command).await,

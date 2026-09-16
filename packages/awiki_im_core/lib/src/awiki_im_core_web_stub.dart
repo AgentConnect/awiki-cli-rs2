@@ -237,7 +237,23 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<DeviceJoinManagementStatus>> deviceJoinManagementStatus(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
+  Future<void> retryDeviceJoinManagement({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async => throw _unsupported();
+
   Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinWithManagement({
     required String approvalHandle,
     required bool userPresenceConfirmed,
   }) async {

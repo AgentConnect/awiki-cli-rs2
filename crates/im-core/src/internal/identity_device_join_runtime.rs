@@ -1487,6 +1487,10 @@ where
                     &notification,
                 )
                 .await?;
+            #[cfg(feature = "sqlite")]
+            if locally_completed {
+                crate::internal::identity_join_management::start_worker(&client);
+            }
             let local = local_admin_session(self.core, &notification.join_session_id)?;
             let claimed_by = match &notification.payload {
                 crate::internal::system_notification::wire::JoinPayload::Claimed(payload) => {
@@ -1546,6 +1550,17 @@ where
                 crate::ids::ProtocolDeviceId::parse(&request.device_id)?
             } else if let Some(local) = local.as_ref() {
                 local.protocol_device_id.clone()
+            } else if matches!(
+                notification.state,
+                crate::system_notifications::SystemNotificationState::Consumed
+                    | crate::system_notifications::SystemNotificationState::Cancelled
+                    | crate::system_notifications::SystemNotificationState::Rejected
+                    | crate::system_notifications::SystemNotificationState::Expired
+            ) {
+                // Catch-up may receive a terminal event after the initial request
+                // expired, or on a sibling that never handled that Join. Preserve
+                // the verified event in storage, but it is not an actionable request.
+                continue;
             } else {
                 return Err(crate::ImError::LocalStateUnavailable {
                     detail: "verified device Join notification has no request binding".to_owned(),
@@ -1608,6 +1623,20 @@ where
                 detail: error.to_string(),
             })?;
         let registry = self.registry().await?;
+        if crate::internal::identity_device_join::document_convergence::needs_refresh(
+            self.core, &client, &registry.checkpoint,
+        )? {
+            let mut resolver = crate::internal::transport::CoreHttpTransport::new(&client);
+            let document = crate::internal::discovery::did_document::resolve_did_document_async(
+                &mut resolver,
+                client.did().as_str(),
+            )
+            .await?;
+            crate::internal::identity_device_join::document_convergence::refresh_admin_document(
+                self.core, &client, &document, &registry,
+            )
+            .await?;
+        }
         let prepared = crate::internal::identity_device_join::prepare_admin_challenge_async(
             self.core,
             crate::identity::DeviceJoinAdminPrepareRequest {
@@ -1640,12 +1669,31 @@ where
         user_presence_at: &str,
         sas_confirmed: bool,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.approve_with_management(
+            join_session_id,
+            operation_id,
+            user_presence_at,
+            sas_confirmed,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn approve_with_management(
+        &mut self,
+        join_session_id: &str,
+        operation_id: &str,
+        user_presence_at: &str,
+        sas_confirmed: bool,
+        configure_management: bool,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
         let prepared = match crate::internal::identity_device_join::load_prepared_admin_approval(
             self.core,
             join_session_id,
         )? {
             Some(value) => {
-                if value.operation_id != operation_id
+                if value.configure_management != configure_management
+                    || value.operation_id != operation_id
                     || value.pairing_confirmation.user_presence_at != user_presence_at
                     || value.pairing_confirmation.sas_confirmed != sas_confirmed
                 {
@@ -1664,13 +1712,14 @@ where
                     .did()
                     .clone();
                 let registry = self.remote.registry(&did, false).await?;
-                crate::internal::identity_device_join::prepare_admin_approval_async(
+                crate::internal::identity_device_join::prepare_admin_approval_with_management_async(
                     self.core,
                     operation_id,
                     join_session_id,
                     &registry.checkpoint,
                     user_presence_at,
                     sas_confirmed,
+                    configure_management,
                 )
                 .await?
             }

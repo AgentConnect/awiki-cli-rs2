@@ -953,6 +953,16 @@ pub trait IdentitySession: Send + Sync {
         remote: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<ProviderPublicIdentity>;
 
+    /// Adopt a sibling publication atomically with pinned-root/local-key and
+    /// no-pending-document-or-identity-transition checks. Older providers must
+    /// explicitly implement this stronger capability before Core can use it.
+    async fn adopt_verified_sibling_document(
+        &self,
+        _remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity> {
+        Err(IdentityProviderError::new(IdentityProviderErrorCode::CapabilityUnavailable, false))
+    }
+
     async fn derive_shared_secret(
         &self,
         request: ProviderKeyAgreementRequest,

@@ -26,6 +26,7 @@ const ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS: u64 = 10;
 const ROOT_TRANSFER_HANDLE_TTL_SECONDS: i64 = 60;
 const ROOT_TRANSFER_ENVELOPE_TTL_SECONDS: i64 = 600;
 const ROOT_KEY_ENVELOPE_V1: &str = "awiki.device.root-key-envelope.v1";
+const ROOT_COMPLETION_V2: &str = "awiki.device.root-key-import-complete.v2";
 pub(crate) const ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX: &str = "msg-root-key-";
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
@@ -60,6 +61,7 @@ pub(crate) struct RootKeyTransferAuthorizationState {
     sender: DeviceJoinRemoteDeviceSummary,
     recipient: DeviceJoinRemoteDeviceSummary,
     checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    document: Value,
     root_key_id: String,
     root_public_key_fingerprint: String,
     delivery: PreparedRootDelivery,
@@ -143,6 +145,8 @@ impl RootKeyTransferAuthorizationStore {
 #[derive(Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 struct RootKeyEnvelopeV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_contract: Option<String>,
     system_type: String,
     message_id: String,
     did: String,
@@ -163,6 +167,17 @@ struct RootKeyEnvelopeV1 {
 pub(crate) async fn prepare_root_key_transfer(
     client: &crate::core::ImClient,
     request: crate::identity::RootKeyTransferPrepareRequest,
+) -> RootTransferResult<crate::identity::RootKeyTransferPreparation> {
+    prepare_root_key_transfer_with_retry(client, request, true, None).await
+}
+
+async fn prepare_root_key_transfer_with_retry(
+    client: &crate::core::ImClient,
+    request: crate::identity::RootKeyTransferPrepareRequest,
+    immediate_prekey_retry: bool,
+    join_authority: Option<
+        &crate::internal::identity_device_join::management::AuthorizedManagementJoin,
+    >,
 ) -> RootTransferResult<crate::identity::RootKeyTransferPreparation> {
     let core = client.core_handle();
     let local_entry = local_device_entry(&core, client)
@@ -210,8 +225,17 @@ pub(crate) async fn prepare_root_key_transfer(
             )
             .await
             .map_err(map_prepare_remote_error)?;
+            if let Some(join) = join_authority {
+                if local_state.checkpoint.as_ref() != Some(&registry.checkpoint) {
+                    crate::internal::identity_device_join::management::refresh_confirmed_registry_checkpoint(
+                        &core, client, join, &document, &registry,
+                    ).await.map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+                }
+            }
+            let current_entry = local_device_entry(&core, client).map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+            let current_state = current_entry.device_state.as_ref().ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
             let (sender, recipient) = validate_v1_transfer_route(
-                &local_entry,
+                &current_entry,
                 client.did(),
                 &document,
                 &registry,
@@ -222,11 +246,17 @@ pub(crate) async fn prepare_root_key_transfer(
                 .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
             let fingerprint = validate_root_public(&document, client.did(), &root_key_id)
                 .map_err(|_| root_error(RootTransferErrorCode::SenderNotEligible))?;
+            if let Some(join) = join_authority {
+                validate_join_key_binding(&join.approved_document, &document, client.did(), sender, recipient)?;
+                if validate_root_public(&join.approved_document, client.did(), &root_key_id).ok().as_deref() != Some(fingerprint.as_str()) {
+                    return Err(root_error(RootTransferErrorCode::StateChanged));
+                }
+            }
             let binding = same_did_binding(client.did().as_str(), sender, recipient);
             let scope = V2OwnerScope::from_identity_state(
                 &client.current_identity().id,
                 client.did(),
-                local_state,
+                current_state,
             )
             .map_err(|_| root_error(RootTransferErrorCode::SenderNotEligible))?;
             let delivery = match &existing_delivery {
@@ -260,12 +290,13 @@ pub(crate) async fn prepare_root_key_transfer(
                             return Err(root_error(RootTransferErrorCode::PrekeyInvalid));
                         }
                         V2ExactSessionPreflight::Absent => {
-                            let prekey = crate::internal::secure_direct::v2_prekey_runtime::fetch_verified_prekey(
+                            let prekey = crate::internal::secure_direct::v2_prekey_runtime::fetch_verified_prekey_with_transport_retry(
                                 client,
                                 client.did().as_str(),
                                 &recipient.device_id,
                                 &document,
                                 message_id.as_str(),
+                                immediate_prekey_retry,
                             )
                             .await
                             .map_err(map_preflight_error)?;
@@ -285,13 +316,14 @@ pub(crate) async fn prepare_root_key_transfer(
                 fingerprint,
                 delivery,
                 registry,
+                document,
             ))
         },
     )
     .await
     .map_err(|_| root_error(RootTransferErrorCode::PrekeyUnavailable))??;
 
-    let (sender, recipient, root_key_id, root_public_key_fingerprint, delivery, registry) =
+    let (sender, recipient, root_key_id, root_public_key_fingerprint, delivery, registry, document) =
         preflight;
     if authorization.protocol_device_id.as_str() != sender.device_id {
         return Err(root_error(RootTransferErrorCode::SenderNotEligible));
@@ -311,6 +343,7 @@ pub(crate) async fn prepare_root_key_transfer(
         sender: sender.clone(),
         recipient: recipient.clone(),
         checkpoint: registry.checkpoint.clone(),
+        document,
         root_key_id,
         root_public_key_fingerprint,
         delivery,
@@ -332,6 +365,173 @@ pub(crate) async fn prepare_root_key_transfer(
         expires_at: format_time(expires_at)
             .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
     })
+}
+
+/// This authority is loaded from the exact locally confirmed Join, never from a
+/// public root-transfer handle or a forged user-presence boolean.
+pub(crate) async fn send_for_authorized_join(
+    client: &crate::core::ImClient,
+    join: &crate::internal::identity_device_join::management::AuthorizedManagementJoin,
+) -> RootTransferResult<crate::identity::RootKeyTransferSendResult> {
+    if !join.join_authorized
+        || join.authorizing_device_id
+            != client
+                .exact_protocol_device_id()
+                .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?
+                .as_str()
+    {
+        return Err(root_error(RootTransferErrorCode::AuthorizationInvalid));
+    }
+    let preparation = prepare_root_key_transfer_with_retry(
+        client,
+        crate::identity::RootKeyTransferPrepareRequest {
+            recipient_device_id: crate::ids::ProtocolDeviceId::parse(&join.recipient_device_id)
+                .map_err(|_| root_error(RootTransferErrorCode::InvalidRequest))?,
+        },
+        false,
+        Some(join),
+    )
+    .await?;
+    let RootKeyTransferAuthorizationClaim::Claimed(state) = client
+        .core_inner()
+        .root_key_transfer_authorizations
+        .claim(&preparation.authorization_handle, OffsetDateTime::now_utc())?
+    else {
+        return Err(root_error(RootTransferErrorCode::AuthorizationInvalid));
+    };
+    validate_join_key_binding(
+        &join.approved_document,
+        &state.document,
+        client.did(),
+        &state.sender,
+        &state.recipient,
+    )?;
+    if validate_root_public(&join.approved_document, client.did(), &state.root_key_id)
+        .ok()
+        .as_deref()
+        != Some(state.root_public_key_fingerprint.as_str())
+    {
+        return Err(root_error(RootTransferErrorCode::StateChanged));
+    }
+    // The persistent task owns all automatic retries; the independent manual
+    // transfer keeps its existing same-message immediate recovery behavior.
+    send_authorized_root_key_transfer(client, state, false, Some(ROOT_COMPLETION_V2)).await
+}
+
+pub(crate) fn validate_join_key_binding(
+    approved: &Value,
+    current: &Value,
+    did: &crate::ids::Did,
+    sender: &DeviceJoinRemoteDeviceSummary,
+    recipient: &DeviceJoinRemoteDeviceSummary,
+) -> RootTransferResult<()> {
+    if approved.get("id").and_then(Value::as_str) != Some(did.as_str()) {
+        return Err(root_error(RootTransferErrorCode::StateChanged));
+    }
+    for device in [sender, recipient] {
+        let original = anp::authentication::find_eligible_device(
+            approved,
+            &device.device_id,
+            anp::authentication::PROFILE_DIRECT_E2EE_V2,
+        )
+        .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?
+        .ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
+        if original.signing_key_id != device.signing_key_id
+            || original.e2ee_key_id != device.e2ee_key_id
+        {
+            return Err(root_error(RootTransferErrorCode::StateChanged));
+        }
+        for key in [&device.signing_key_id, &device.e2ee_key_id] {
+            let method = |doc: &Value| -> Option<Value> {
+                let methods = doc.get("verificationMethod")?.as_array()?;
+                let matches: Vec<_> = methods
+                    .iter()
+                    .filter(|m| m.get("id").and_then(Value::as_str) == Some(key.as_str()))
+                    .collect();
+                (matches.len() == 1).then(|| matches[0].clone())
+            };
+            let before =
+                method(approved).ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
+            let after =
+                method(current).ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
+            let before =
+                crate::internal::identity_wire::document::extract_identity_public_key(&before)
+                    .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+            let after =
+                crate::internal::identity_wire::document::extract_identity_public_key(&after)
+                    .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+            let same_key = match (&before, &after) {
+                (anp::PublicKeyMaterial::Ed25519(a), anp::PublicKeyMaterial::Ed25519(b)) => {
+                    a.to_bytes() == b.to_bytes()
+                }
+                (anp::PublicKeyMaterial::X25519(a), anp::PublicKeyMaterial::X25519(b)) => a == b,
+                _ => false,
+            };
+            if !same_key {
+                return Err(root_error(RootTransferErrorCode::StateChanged));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn join_delivery_accepted(
+    client: &crate::core::ImClient,
+    recipient: &str,
+) -> crate::ImResult<bool> {
+    Ok(matches!(
+        sender_delivery_for_recipient(&client.core_handle(), client, recipient)?,
+        Some(SenderDeliveryState::Sent)
+    ))
+}
+
+pub(crate) async fn join_management_registered(
+    client: &crate::core::ImClient,
+    join: &crate::internal::identity_device_join::management::AuthorizedManagementJoin,
+) -> RootTransferResult<bool> {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus,
+    };
+    let mut remote = DeviceJoinAdminHttpAdapter::production(client);
+    let registry = remote
+        .registry(client.did(), false)
+        .await
+        .map_err(map_prepare_remote_error)?;
+    let mut resolver = crate::internal::transport::CoreHttpTransport::new(client);
+    let document = crate::internal::discovery::did_document::resolve_did_document_async(
+        &mut resolver,
+        client.did().as_str(),
+    )
+    .await
+    .map_err(map_prepare_remote_error)?;
+    if registry.did != *client.did()
+        || crate::internal::identity_wire::document::document_hash(&document)
+            .ok()
+            .as_ref()
+            != Some(&registry.checkpoint.document_hash)
+        || !anp::authentication::validate_did_document_binding(&document, true)
+    {
+        return Err(root_error(RootTransferErrorCode::StateChanged));
+    }
+    let sender = registry_device(&registry.devices, &join.authorizing_device_id)
+        .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+    let recipient = registry_device(&registry.devices, &join.recipient_device_id)
+        .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+    validate_join_key_binding(
+        &join.approved_document,
+        &document,
+        client.did(),
+        sender,
+        recipient,
+    )?;
+    if sender.status != DeviceAuthorizationStatus::Active
+        || recipient.status != DeviceAuthorizationStatus::Active
+        || sender.role != DeviceAuthorizationRole::Admin
+        || !sender.management_ready
+    {
+        return Err(root_error(RootTransferErrorCode::StateChanged));
+    }
+    Ok(recipient.role == DeviceAuthorizationRole::Admin && recipient.management_ready)
 }
 
 fn generate_root_key_transfer_message_id() -> String {
@@ -378,11 +578,36 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     if !request.user_presence_confirmed {
         return Err(root_error(RootTransferErrorCode::UserPresenceDenied));
     }
+    send_authorized_root_key_transfer(client, state, true, None).await
+}
+
+async fn send_authorized_root_key_transfer(
+    client: &crate::core::ImClient,
+    state: RootKeyTransferAuthorizationState,
+    immediate_transport_retry: bool,
+    completion_contract: Option<&str>,
+) -> RootTransferResult<crate::identity::RootKeyTransferSendResult> {
     if state.identity_id != client.current_identity().id || state.did != *client.did() {
         return Err(root_error(RootTransferErrorCode::AuthorizationInvalid));
     }
 
     let core = client.core_handle();
+    let _delivery_lock = root_delivery_lock(client, &state.recipient.device_id)?;
+    let existing = sender_delivery_for_recipient(&core, client, &state.recipient.device_id)
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    let state_message_id = match &state.delivery {
+        PreparedRootDelivery::New { message_id, .. }
+        | PreparedRootDelivery::ResumePending { message_id } => message_id.as_str(),
+    };
+    match existing {
+        Some(SenderDeliveryState::Sent) => {
+            return Err(root_error(RootTransferErrorCode::RecipientNotEligible))
+        }
+        Some(SenderDeliveryState::Pending(pending)) if pending.message_id != state_message_id => {
+            return Err(root_error(RootTransferErrorCode::StateChanged))
+        }
+        _ => {}
+    }
     let local_entry = local_device_entry(&core, client)
         .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     if local_entry.credential_name != state.local_alias {
@@ -432,9 +657,15 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         })
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?
         .ok_or_else(|| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
-        let accepted =
-            post_and_mark_root_key_transfer(client, &core, &scope, &prepared, message_id.as_str())
-                .await?;
+        let accepted = post_and_mark_root_key_transfer(
+            client,
+            &core,
+            &scope,
+            &prepared,
+            message_id.as_str(),
+            immediate_transport_retry,
+        )
+        .await?;
         return root_key_transfer_send_result(state.did, &sender.device_id, accepted);
     }
     let (message_id, transport) = match state.delivery.clone() {
@@ -516,6 +747,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(exported_root.as_pkcs8_der()));
     let envelope = zeroize::Zeroizing::new(RootKeyEnvelopeV1 {
         system_type: ROOT_KEY_ENVELOPE_V1.to_owned(),
+        completion_contract: completion_contract.map(str::to_owned),
         message_id: message_id.as_str().to_owned(),
         did: state.did.as_str().to_owned(),
         root_key_id: state.root_key_id,
@@ -615,10 +847,56 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         }
     })
     .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
-    let accepted =
-        post_and_mark_root_key_transfer(client, &core, &scope, &prepared, message_id.as_str())
-            .await?;
+    let accepted = post_and_mark_root_key_transfer(
+        client,
+        &core,
+        &scope,
+        &prepared,
+        message_id.as_str(),
+        immediate_transport_retry,
+    )
+    .await?;
     root_key_transfer_send_result(state.did, &sender.device_id, accepted)
+}
+
+// Manual and Join-bound senders share the same exact-recipient exclusion.
+// A second prepared handle must reconcile the sender ledger after acquiring it.
+fn root_delivery_lock(
+    client: &crate::core::ImClient,
+    recipient: &str,
+) -> RootTransferResult<std::fs::File> {
+    use sha2::{Digest, Sha256};
+    let key = format!(
+        "{}:{}:{}",
+        client.current_identity().id.as_str(),
+        client
+            .exact_protocol_device_id()
+            .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?
+            .as_str(),
+        recipient
+    );
+    let path = client
+        .core_inner()
+        .sdk_paths()
+        .identities
+        .identity_root_dir
+        .join(format!(
+            ".root-delivery-{:x}.lock",
+            Sha256::digest(key.as_bytes())
+        ));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    Ok(file)
 }
 
 async fn post_and_mark_root_key_transfer(
@@ -627,14 +905,18 @@ async fn post_and_mark_root_key_transfer(
     scope: &V2OwnerScope,
     prepared: &PreparedV2Outbound,
     message_id: &str,
+    immediate_transport_retry: bool,
 ) -> RootTransferResult<anp::direct_e2ee::V2DirectSendResult> {
-    let accepted = match crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(
-        client, prepared,
+    let accepted = match crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct_with_auth_retry(
+        client, prepared, immediate_transport_retry,
     )
     .await
     {
         Ok(accepted) => accepted,
         Err(error) if is_retryable_transport_error(&error) => {
+            if !immediate_transport_retry {
+                return Err(root_error(RootTransferErrorCode::TransportPending));
+            }
             // The P5 pending record and sender ledger were committed together.
             // One response-loss retry therefore reuses the exact same
             // operation/message ID and ciphertext.

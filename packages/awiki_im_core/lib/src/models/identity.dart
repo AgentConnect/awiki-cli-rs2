@@ -909,3 +909,21 @@ class DeviceRevokeResult {
   final String targetDeviceId;
   final DeviceRevokeStatus status;
 }
+
+/// Core-owned progress; registration is not evidence of recipient-local activation.
+class DeviceJoinManagementStatus {
+  const DeviceJoinManagementStatus({
+    required this.joinSessionId,
+    required this.recipientDeviceId,
+    required this.phase,
+    required this.attempts,
+    required this.nextAttemptAtMs,
+    this.failureCode,
+  });
+  final String joinSessionId;
+  final String recipientDeviceId;
+  final String phase;
+  final int attempts;
+  final int nextAttemptAtMs;
+  final String? failureCode;
+}

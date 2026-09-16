@@ -1,5 +1,20 @@
 # im-core SDK Architecture
 
+## 一次 Join 授权自动配置管理权限（2026-09-15）
+
+App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。
+
+Core 在发送批准请求前，将自动任务随该 Join 的既有持久化批准记录保存，绑定 owner、DID、Join、目标设备和签名/E2EE 公钥、源管理设备及已批准文档。服务端批准响应丢失时，只能由已验证批准结果/通知恢复任务。自动尝试状态归 Core，发送原消息/密文仍复用既有 sender ledger 与 P5 pending outbound，不复制密码学实现。
+
+首次立即尝试，包括 PreKey 未就绪在内最多三次；每次可重试失败结束后持久化五秒后的下次时间。尝试先记账后发网，崩溃不返还预算；恢复中的未完成尝试先对账，并保守等待五秒。跨进程文件锁覆盖整个推进轮次，防止实时线程、同步与恢复重叠。网络操作有独立超时，不把五秒作为整个操作超时。
+
+发送接受后停止发送重试，等待原接收端 pending root、完成证明、Registry 登记、本地 root 激活和认证更新链路。发送端只能报告服务端管理登记，不能据此声明接收端本地 root 已激活。三次耗尽显示“设备已加入，管理权限配置失败”；显式重试先对账接受/登记状态，才允许新一轮预算。撤销、设备/密钥变化、身份/签名验证失败终止任务。进程退出保留状态，不承诺退出后仍发网；长期离线保持等待，无任意失败期限。
+
+无秘密投影只包含 Join/设备 ID、阶段、尝试次数、下次尝试时间、稳定错误码；不暴露 root、密文、proof 或自动授权 handle。真实四方向及第三台设备批准证据属于后续真实环境验收，不由本地测试代替。
+
+
+加入请求列表补收历史终态通知时，若初始请求已过期且本机没有该会话绑定，则保留已验证通知存储但不投影为可操作请求；缺少绑定的非终态通知仍报错。单条历史终态不得阻断其他有效加入请求。
+
 ## 1. Positioning
 
 `crates/im-core` is the reusable Rust IM SDK for awiki. It owns product capabilities that used to be spread through the CLI: identity, auth/session, directory, messages, groups, attachments, secure, realtime, email, content/site, and local state.
@@ -80,6 +95,10 @@ Rules:
 - CLI credential names map to `IdentitySelector::LocalAlias`.
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
+
+### 管理设备接续兄弟设备发布的文档
+
+新 Join 的 challenge 准备前，若本地 DID 文档落后于认证 Registry，Core 解析并验真远端文档，再以独立的 sibling convergence 权限同步 controller custody 和本地投影。必须保持 DID、根密钥、本机 signing/E2EE 密钥及 auth generation 不变，本机在 Registry 仍为 active/admin/management_ready，文档和 Registry checkpoint 均不可回退。Provider 必须没有 pending document change，并在原子 adoption 中执行根指纹、当前 generation 和本机密钥授权检查；不借用 Recovery 或已确认 Join 的 pending publication 权限。旧 custody 无此保证时失败关闭。成功后重新打开 client，仍按原有精确文档摘要检查准备 challenge；同步不发送根密钥，也不批准 Join。
 
 ### 4.2 Manifest Handle Recovery boundary
 
@@ -1679,3 +1698,17 @@ Conversation-level read state is separate from reliable sync checkpoints:
 本地投影/后续 JWT/PreKey 前重新核对权威绑定；网络错误、相同/倒退代次、单次 401/403 都不授权关闭。可重试失败仍保留原操作，已证明旧绑定失效返回稳定 `local_transition_superseded`，不再执行旧本地写入。后续用户可从已有 Join 入口加入当前身份，或按 Core 允许的显式新 Recovery/删除流程操作；不把旧完成记录当作可登录凭证。相同 DID 的单设备撤权分支只在 exact-device 授权拒绝后进行一次有界对账，当前 root-verified E1 文档必须证明已移除本次初始 bootstrap key。原始签名文档、当前签名文档或绑定不闭合时保持 pending。该分支已具备 Core 单元证据，真实多设备撤权验收仍须单独取得，不能用更高 WNS 代次的通过冒充。
 
 已解析并按冻结 intent 校验的 Commit/Result Get 成功结果，必须先落 Vault committed journal 和 operation index，再在本地 transition 阶段确认 custody publication。WNS 代次检查位于该 custody 确认及本地迁移之前。`record_nonterminal_error` 接受四种活跃 lifecycle（含 remote_committed/local_transition_pending），不把本地可重试失败二次覆盖为索引 PermissionDenied；终态仍不允许写入普通重试错误。
+
+### 自动管理授权的本地完整性与 Registry-only 收敛
+
+自动任务的授权意图使用源设备签名，绑定稳定 owner、DID、Join request hash、目标设备、源设备、批准 operation、pairing confirmation、预期 checkpoint 和完整批准文档摘要。任务标志本身不是授权；读取旧普通 Join 后伪造管理标志会被签名校验拒绝。可变尝试账本仍受既有原子文件存储与 worker 排他保护，不能声称抵抗拥有完整本地状态回滚权限的攻击者。
+
+发送前保留原有 checkpoint 精确相等校验。只有已经由本机确认的同一完整文档、相同文档版本/摘要、未回退的 Registry 版本，以及仍匹配本地源设备 key/auth generation 的 active admin 和 active 目标，才能复用既有 DeviceJoin custody adoption 同步 Registry-only 前移。不同文档、回退、缺失/不合格设备均失败关闭，不扩大到非本地 pending 文档的 adoption。
+
+## Root导入/完成V2时效与恢复
+
+新自动Join保留敏感envelope.v1分类，使用closed completion_contract字段显式选择root-key-import-complete.v2。旧V1/独立手动路径保持原时效；未知或null合同拒绝，不让Root进入普通JSON解析。已pending/accepted的原message与密文不重建。
+
+V2原消息仍须在600秒投递窗口内被接受；接收端可在原checkpoint/设备/密钥/权限仍完全一致时延迟导入。真实首次导入操作开始时间在provider调用前原子保存，provider内部seal时刻仍归provider日志。无秘密identity_root_import_plan_v2绑定owner/DID/device/message、加密输入/route摘要和全部原身份事实。provider后/handoff前崩溃复用原计划与evidence；handoff与计划阶段同事务，所有接收/恢复入口共享OS锁。
+
+completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；只有原请求重放明确返回expired后，才CAS保存同nonce/imported_at/原checkpoint的新证明。服务端稳定intent键与锁内时钟保证旧/新证明并发只晋升一次。发送接受不代表本地Root active；现有token/Registry/pending-to-active确认链保持。服务端接口见User Service docs/api/root-import-completion-v2.md。

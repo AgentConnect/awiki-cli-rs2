@@ -74,6 +74,10 @@ pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
         delete_owner_dids: true,
     },
     OwnerDeleteTable {
+        table: "identity_root_import_plan_v2",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
         table: "identity_root_import_completion_v1",
         delete_owner_dids: true,
     },

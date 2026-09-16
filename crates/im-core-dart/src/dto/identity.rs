@@ -597,3 +597,35 @@ pub struct DartHandleRegistrationJoinRequiredPreparation {
     pub expected_did: String,
     pub full_handle: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinManagementStatus {
+    pub join_session_id: String,
+    pub recipient_device_id: String,
+    pub phase: String,
+    pub attempts: u32,
+    pub next_attempt_at_ms: i64,
+    pub failure_code: Option<String>,
+}
+
+impl From<im_core::identity::DeviceJoinManagementStatus> for DartDeviceJoinManagementStatus {
+    fn from(value: im_core::identity::DeviceJoinManagementStatus) -> Self {
+        use im_core::identity::DeviceJoinManagementPhase::*;
+        Self {
+            join_session_id: value.join_session_id,
+            recipient_device_id: value.recipient_device_id,
+            phase: match value.phase {
+                AwaitingJoin => "awaiting_join",
+                Scheduled => "scheduled",
+                Attempting => "attempting",
+                WaitingForRecipient => "waiting_for_recipient",
+                ManagementRegistered => "management_registered",
+                Failed => "failed",
+            }
+            .to_owned(),
+            attempts: u32::from(value.attempts),
+            next_attempt_at_ms: value.next_attempt_at_ms,
+            failure_code: value.failure_code,
+        }
+    }
+}
