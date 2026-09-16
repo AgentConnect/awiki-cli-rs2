@@ -193,6 +193,8 @@ enum LocalStateCommand {
     LaneCapabilityNegotiationRequired {
         owner_identity_id: String,
         device_auth_generation: String,
+        desired_lanes:
+            Option<std::collections::BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>>,
         reply: oneshot::Sender<crate::ImResult<bool>>,
     },
     RecordSyncLaneCapabilityNegotiationV1a {
@@ -1193,10 +1195,27 @@ impl LocalStateDb {
         owner_identity_id: impl Into<String>,
         device_auth_generation: impl Into<String>,
     ) -> crate::ImResult<bool> {
+        self.lane_capability_negotiation_required_with_lanes(
+            owner_identity_id,
+            device_auth_generation,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn lane_capability_negotiation_required_with_lanes(
+        &self,
+        owner_identity_id: impl Into<String>,
+        device_auth_generation: impl Into<String>,
+        desired_lanes: Option<
+            std::collections::BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+        >,
+    ) -> crate::ImResult<bool> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::LaneCapabilityNegotiationRequired {
             owner_identity_id: owner_identity_id.into(),
             device_auth_generation: device_auth_generation.into(),
+            desired_lanes,
             reply,
         })
         .await?;
@@ -2774,12 +2793,14 @@ fn run_actor(
             LocalStateCommand::LaneCapabilityNegotiationRequired {
                 owner_identity_id,
                 device_auth_generation,
+                desired_lanes,
                 reply,
             } => {
-                let result = super::sync_v2::lane_capability_negotiation_required(
+                let result = super::sync_v2::lane_capability_negotiation_required_with_lanes(
                     &connection,
                     &owner_identity_id,
                     &device_auth_generation,
+                    desired_lanes.as_ref(),
                 );
                 let _ = reply.send(result);
             }

@@ -16,7 +16,8 @@ anp.workspace = true
 base64.workspace = true
 chrono.workspace = true
 fs2.workspace = true
-im-core = { package = "awiki-im-core", version = "=0.1.4", path = "../im-core", default-features = false, features = ["sqlite", "http", "identity-external-provider"] }
+# Joined Node devices must negotiate and consume P5 root-key deliveries.
+im-core = { package = "awiki-im-core", version = "=0.1.4", path = "../im-core", default-features = false, features = ["sqlite", "http", "identity-external-provider", "secure-direct"] }
 napi.workspace = true
 napi-derive.workspace = true
 rand.workspace = true
