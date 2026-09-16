@@ -960,7 +960,10 @@ pub trait IdentitySession: Send + Sync {
         &self,
         _remote: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<ProviderPublicIdentity> {
-        Err(IdentityProviderError::new(IdentityProviderErrorCode::CapabilityUnavailable, false))
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
     }
 
     async fn derive_shared_secret(

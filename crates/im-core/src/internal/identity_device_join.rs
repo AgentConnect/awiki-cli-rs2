@@ -41,8 +41,8 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
-pub(crate) mod management;
 pub(crate) mod document_convergence;
+pub(crate) mod management;
 
 const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;

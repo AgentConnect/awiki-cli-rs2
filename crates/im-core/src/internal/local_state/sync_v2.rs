@@ -1382,10 +1382,13 @@ pub(super) fn retain_bootstrap_receive_position(
     connection: &Connection,
     input: &mut BootstrapApplyInputV2,
 ) -> crate::ImResult<()> {
-    let Some(binding) = load_identity_account_binding(connection, &input.binding.owner_identity_id)? else {
+    let Some(binding) =
+        load_identity_account_binding(connection, &input.binding.owner_identity_id)?
+    else {
         return Ok(());
     };
-    let Some(previous) = load_message_sync_state_row(connection, &input.binding.owner_identity_id)? else {
+    let Some(previous) = load_message_sync_state_row(connection, &input.binding.owner_identity_id)?
+    else {
         return Ok(());
     };
     if binding.account_id != input.binding.account_id
@@ -1394,8 +1397,10 @@ pub(super) fn retain_bootstrap_receive_position(
         || binding.identity_generation != input.binding.identity_generation
         || previous.account_id != input.binding.account_id
         || previous.protocol_device_id != input.binding.protocol_device_id
-        || compare_decimal(&previous.device_auth_generation, &input.binding.device_auth_generation)?
-            != std::cmp::Ordering::Less
+        || compare_decimal(
+            &previous.device_auth_generation,
+            &input.binding.device_auth_generation,
+        )? != std::cmp::Ordering::Less
     {
         return Ok(());
     }
@@ -1406,8 +1411,10 @@ pub(super) fn retain_bootstrap_receive_position(
     // reception already committed locally must not move back to the last ACK.
     let received = load_lane_sync_states(connection, &input.binding.owner_identity_id)?;
     for lane in &mut input.lane_states {
-        if let Some(current) = received.iter().find(|current| current.lane == lane.lane
-            && current.stream_epoch == lane.stream_epoch) {
+        if let Some(current) = received
+            .iter()
+            .find(|current| current.lane == lane.lane && current.stream_epoch == lane.stream_epoch)
+        {
             if compare_decimal(&current.scan_seq, &lane.scan_seq)? == std::cmp::Ordering::Greater {
                 *lane = current.clone();
             }

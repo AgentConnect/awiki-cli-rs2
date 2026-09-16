@@ -3582,8 +3582,12 @@ async fn management_retry_waits_for_status_worker_before_checking_authority() {
 }
 
 #[cfg(feature = "identity-native-anp")]
-fn sibling_document_fixture(root: &Path, keep_pending: bool) -> (
-    crate::ImCore, Value,
+fn sibling_document_fixture(
+    root: &Path,
+    keep_pending: bool,
+) -> (
+    crate::ImCore,
+    Value,
     crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry,
 ) {
     let (core, projected) = open_anp_ready_admin_core(root);
@@ -3632,13 +3636,13 @@ fn sibling_document_fixture(root: &Path, keep_pending: bool) -> (
         .unwrap();
     let updated_document = change.candidate().candidate_document.clone().into_value();
     if !keep_pending {
-    let attempt = change.begin_publication().unwrap();
-    change
-        .complete(
-            attempt,
-            anp_identity::PublicationResult::RejectedBeforeAcceptance,
-        )
-        .unwrap();
+        let attempt = change.begin_publication().unwrap();
+        change
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::RejectedBeforeAcceptance,
+            )
+            .unwrap();
     }
     drop(change);
     drop(identity);
@@ -3648,18 +3652,25 @@ fn sibling_document_fixture(root: &Path, keep_pending: bool) -> (
         document_hash: canonical_hash(&updated_document).unwrap(),
         registry_version: current.registry_version + 1,
     };
-    let client = core.client(crate::identity::IdentitySelector::Default).unwrap();
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
     let context = prepare_admin_projection_context_for_client(&core, &client, &checkpoint).unwrap();
     let auth = context.state.authorization.unwrap();
     let registry = crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry {
         did: projected.did,
         checkpoint,
-        devices: vec![crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
-            device_id: auth.protocol_device_id.as_str().to_owned(),
-            signing_key_id: auth.signing_key_id, e2ee_key_id: auth.e2ee_key_id,
-            status: auth.status, role: auth.role, management_ready: auth.management_ready,
-            auth_generation: auth.auth_generation,
-        }],
+        devices: vec![
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: auth.protocol_device_id.as_str().to_owned(),
+                signing_key_id: auth.signing_key_id,
+                e2ee_key_id: auth.e2ee_key_id,
+                status: auth.status,
+                role: auth.role,
+                management_ready: auth.management_ready,
+                auth_generation: auth.auth_generation,
+            },
+        ],
     };
     (core, updated_document, registry)
 }
@@ -3669,58 +3680,128 @@ fn sibling_document_fixture(root: &Path, keep_pending: bool) -> (
 async fn sibling_document_convergence_allows_next_join_and_repairs_projection_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let (core, document, registry) = sibling_document_fixture(root.path(), false);
-    let client = core.client_async(crate::identity::IdentitySelector::Default).await.unwrap();
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
     let old_document = client.runtime().key_provider.did_document().unwrap();
     let old_index = fs::read(core.inner().sdk_paths().identities.registry_path.clone()).unwrap();
     assert_ne!(old_document, document);
-    document_convergence::refresh_admin_document(&core, &client, &document, &registry).await.unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
     // Simulate the provider commit surviving while the Core projection did not.
-    write_private_atomic(&client.runtime().did_document_path, &serde_json::to_vec(&old_document).unwrap()).unwrap();
-    write_private_atomic(&core.inner().sdk_paths().identities.registry_path.clone(), &old_index).unwrap();
+    write_private_atomic(
+        &client.runtime().did_document_path,
+        &serde_json::to_vec(&old_document).unwrap(),
+    )
+    .unwrap();
+    write_private_atomic(
+        &core.inner().sdk_paths().identities.registry_path.clone(),
+        &old_index,
+    )
+    .unwrap();
     drop(client);
     drop(core);
     let core = open_empty_vault_core(root.path());
-    let client = core.client_async(crate::identity::IdentitySelector::Default).await.unwrap();
-    document_convergence::refresh_admin_document(&core, &client, &document, &registry).await.unwrap();
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
     // A second crash window leaves only the index old, while document and
     // provider already match. Runtime must still schedule projection repair.
-    write_private_atomic(&core.inner().sdk_paths().identities.registry_path, &old_index).unwrap();
+    write_private_atomic(
+        &core.inner().sdk_paths().identities.registry_path,
+        &old_index,
+    )
+    .unwrap();
     assert!(document_convergence::needs_refresh(&core, &client, &registry.checkpoint).unwrap());
-    document_convergence::refresh_admin_document(&core, &client, &document, &registry).await.unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
     assert!(!document_convergence::needs_refresh(&core, &client, &registry.checkpoint).unwrap());
     let candidate_root = tempfile::tempdir().unwrap();
     let candidate = open_empty_vault_core(candidate_root.path());
-    let started = candidate.device_join().start(DeviceJoinStartRequest {
-        operation_id: "sibling-next-start".to_owned(), did: registry.did.clone(), ttl_seconds: 300,
-    }, &document).await.unwrap();
-    let challenged = prepare_admin_challenge_async(&core, DeviceJoinAdminPrepareRequest {
-        admin_identity: crate::identity::IdentitySelector::Default,
-        operation_id: "sibling-next-challenge".to_owned(), join_request: started.join_request,
-        challenge_ttl_seconds: 180, document_version: registry.checkpoint.document_version,
-        document_hash: registry.checkpoint.document_hash,
-    }).await.unwrap();
-    assert_eq!(challenged.session.phase, DeviceJoinLocalPhase::ChallengePrepared);
+    let started = candidate
+        .device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "sibling-next-start".to_owned(),
+                did: registry.did.clone(),
+                ttl_seconds: 300,
+            },
+            &document,
+        )
+        .await
+        .unwrap();
+    let challenged = prepare_admin_challenge_async(
+        &core,
+        DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "sibling-next-challenge".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: registry.checkpoint.document_version,
+            document_hash: registry.checkpoint.document_hash,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        challenged.session.phase,
+        DeviceJoinLocalPhase::ChallengePrepared
+    );
 }
 
 #[cfg(feature = "identity-native-anp")]
 #[tokio::test]
 async fn sibling_document_convergence_rejects_pending_and_invalid_remote_authority() {
-    for case in ["pending", "hash", "generation", "demoted", "revoked", "key", "rollback"] {
+    for case in [
+        "pending",
+        "hash",
+        "generation",
+        "demoted",
+        "revoked",
+        "key",
+        "rollback",
+    ] {
         let root = tempfile::tempdir().unwrap();
-        let (core, document, mut registry) = sibling_document_fixture(root.path(), case == "pending");
-        let client = core.client_async(crate::identity::IdentitySelector::Default).await.unwrap();
+        let (core, document, mut registry) =
+            sibling_document_fixture(root.path(), case == "pending");
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Default)
+            .await
+            .unwrap();
         let before = fs::read(&client.runtime().did_document_path).unwrap();
         match case {
             "hash" => registry.checkpoint.document_hash = "sha256:wrong".to_owned(),
             "generation" => registry.devices[0].auth_generation += 1,
-            "demoted" => registry.devices[0].role = crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
-            "revoked" => registry.devices[0].status = crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked,
+            "demoted" => {
+                registry.devices[0].role =
+                    crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+            }
+            "revoked" => {
+                registry.devices[0].status =
+                    crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked
+            }
             "key" => registry.devices[0].signing_key_id.push_str("-other"),
             "rollback" => registry.checkpoint.registry_version = 0,
-            _ => {},
+            _ => {}
         }
-        assert!(document_convergence::refresh_admin_document(&core, &client, &document, &registry).await.is_err(), "{case}");
-        assert_eq!(fs::read(&client.runtime().did_document_path).unwrap(), before, "{case}");
+        assert!(
+            document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+                .await
+                .is_err(),
+            "{case}"
+        );
+        assert_eq!(
+            fs::read(&client.runtime().did_document_path).unwrap(),
+            before,
+            "{case}"
+        );
     }
 }
 
@@ -3729,18 +3810,33 @@ async fn sibling_document_convergence_rejects_pending_and_invalid_remote_authori
 async fn sibling_document_convergence_cas_preserves_concurrent_revocation() {
     let root = tempfile::tempdir().unwrap();
     let (core, document, registry) = sibling_document_fixture(root.path(), false);
-    let client = core.client_async(crate::identity::IdentitySelector::Default).await.unwrap();
-    let store = crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
     let alias = client.current_identity().local_alias.as_ref().unwrap();
     let expected = store.load_index().unwrap().credentials[alias].clone();
     let mut converged = expected.device_state.clone().unwrap();
     converged.checkpoint = Some(registry.checkpoint);
     let mut revoked = expected.device_state.clone().unwrap();
-    revoked.authorization.as_mut().unwrap().status = crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked;
+    revoked.authorization.as_mut().unwrap().status =
+        crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked;
     revoked.authorization.as_mut().unwrap().management_ready = false;
     store.save_device_state(alias, revoked.clone()).unwrap();
     let before = fs::read(&client.runtime().did_document_path).unwrap();
-    assert!(store.commit_converged_admin_document(alias, &expected, converged, &document).is_err());
-    assert_eq!(store.load_index().unwrap().credentials[alias].device_state.as_ref(), Some(&revoked));
-    assert_eq!(fs::read(&client.runtime().did_document_path).unwrap(), before);
+    assert!(store
+        .commit_converged_admin_document(alias, &expected, converged, &document)
+        .is_err());
+    assert_eq!(
+        store.load_index().unwrap().credentials[alias]
+            .device_state
+            .as_ref(),
+        Some(&revoked)
+    );
+    assert_eq!(
+        fs::read(&client.runtime().did_document_path).unwrap(),
+        before
+    );
 }

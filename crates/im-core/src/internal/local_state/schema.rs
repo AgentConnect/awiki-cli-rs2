@@ -1114,7 +1114,8 @@ pub(crate) struct OwnerInvariantViolation {
 
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     ensure_schema_version(connection)?;
-    connection.execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
+    connection
+        .execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
         .map_err(super::local_state_unavailable)?;
     // Legacy P6 lane rows are intentionally migrated after the versioned DDL
     // transaction commits. The row migrator is idempotent and may create
@@ -2156,7 +2157,8 @@ pub(super) fn create_schema(
     connection
         .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
         .map_err(super::local_state_unavailable)?;
-    connection.execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
+    connection
+        .execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
         .map_err(super::local_state_unavailable)?;
     ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
     ensure_column(

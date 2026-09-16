@@ -1250,7 +1250,12 @@ pub(crate) mod tests {
     use rusqlite::Connection;
     use std::sync::Arc;
 
-    pub(super) fn scope(identity_id: &str, did: &str, device_id: &str, key_id: &str) -> V2OwnerScope {
+    pub(super) fn scope(
+        identity_id: &str,
+        did: &str,
+        device_id: &str,
+        key_id: &str,
+    ) -> V2OwnerScope {
         let did = crate::ids::Did::parse(did).unwrap();
         V2OwnerScope::from_identity_state(
             &crate::ids::IdentityId::parse(identity_id).unwrap(),

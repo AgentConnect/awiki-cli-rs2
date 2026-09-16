@@ -1900,22 +1900,39 @@ impl<'a> IdentityStore<'a> {
     ) -> crate::ImResult<()> {
         let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
-        let entry = index.credentials.get_mut(local_alias).ok_or(crate::ImError::PermissionDenied)?;
-        let serialize = |entry: &IndexEntry| serde_json::to_value(entry)
-            .map_err(|error| crate::ImError::Serialization { detail: error.to_string() });
+        let entry = index
+            .credentials
+            .get_mut(local_alias)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let serialize = |entry: &IndexEntry| {
+            serde_json::to_value(entry).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })
+        };
         if serialize(entry)? != serialize(expected)? {
             return Err(crate::ImError::PermissionDenied);
         }
         let did = crate::ids::Did::parse(&entry.did)?;
         state.validate_for_did(&did)?;
-        let checkpoint = state.checkpoint.as_ref().ok_or(crate::ImError::PermissionDenied)?;
+        let checkpoint = state
+            .checkpoint
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
         if document.get("id").and_then(Value::as_str) != Some(did.as_str())
-            || crate::internal::identity_wire::document::document_hash(document)? != checkpoint.document_hash
+            || crate::internal::identity_wire::document::document_hash(document)?
+                != checkpoint.document_hash
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        let path = self.paths.identity_root_dir.join(&entry.dir_name).join(DID_DOCUMENT_FILE_NAME);
-        let raw = serde_json::to_vec_pretty(document).map_err(|error| crate::ImError::Serialization { detail: error.to_string() })?;
+        let path = self
+            .paths
+            .identity_root_dir
+            .join(&entry.dir_name)
+            .join(DID_DOCUMENT_FILE_NAME);
+        let raw =
+            serde_json::to_vec_pretty(document).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })?;
         write_secure_bytes_atomic(&path, &raw)?;
         entry.device_state = Some(state);
         refresh_index_schema(&mut index);

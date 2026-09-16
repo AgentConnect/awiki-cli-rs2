@@ -2167,36 +2167,61 @@ pub(crate) async fn adopt_sibling_controller_document_async(
     use crate::internal::identity_provider::*;
     if document.get("id").and_then(serde_json::Value::as_str) != Some(did.as_str())
         || !anp::authentication::validate_did_document_binding(document, true)
-        || crate::internal::identity_wire::document::document_hash(document)? != checkpoint.document_hash
-        || checkpoint.document_version == 0 || checkpoint.registry_version == 0
+        || crate::internal::identity_wire::document::document_hash(document)?
+            != checkpoint.document_hash
+        || checkpoint.document_version == 0
+        || checkpoint.registry_version == 0
     {
         return Err(crate::ImError::PermissionDenied);
     }
     let provider = controller_custody_provider(core).await?;
     let reference = ProviderIdentityRef {
-        store_id: store_id.to_owned(), identity_id: identity_id.to_owned(), did: did.as_str().to_owned(),
+        store_id: store_id.to_owned(),
+        identity_id: identity_id.to_owned(),
+        did: did.as_str().to_owned(),
     };
-    if provider.resume_identity_transition(did.as_str()).await.map_err(map_provider_error)?.is_some() {
+    if provider
+        .resume_identity_transition(did.as_str())
+        .await
+        .map_err(map_provider_error)?
+        .is_some()
+    {
         return Err(crate::ImError::PermissionDenied);
     }
-    let identity = provider.open_identity(&reference).await.map_err(map_provider_error)?;
-    let before = identity.public_identity().await.map_err(map_provider_error)?;
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(map_provider_error)?;
+    let before = identity
+        .public_identity()
+        .await
+        .map_err(map_provider_error)?;
     let status = identity.host_status().await.map_err(map_provider_error)?;
-    let current = status.checkpoint.as_ref().ok_or(crate::ImError::PermissionDenied)?;
-    if before.reference != reference || before.state != ProviderIdentityState::Active
+    let current = status
+        .checkpoint
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if before.reference != reference
+        || before.state != ProviderIdentityState::Active
         || status.root_capability != ProviderRootCapability::Active
         || checkpoint.document_version < current.document_version
         || checkpoint.registry_version < current.registry_version
         || (checkpoint.document_version == current.document_version
             && checkpoint.document_hash != current.document_digest)
-        || identity.resume_document_change().await.map_err(map_provider_error)?.is_some()
+        || identity
+            .resume_document_change()
+            .await
+            .map_err(map_provider_error)?
+            .is_some()
     {
         return Err(crate::ImError::PermissionDenied);
     }
     // The provider atomically checks pending revisions, its durable generation,
     // the pinned root fingerprint, and local device-key authorization.
-    let adopted = identity.adopt_verified_sibling_document(provider_verified_document(document, checkpoint))
-        .await.map_err(map_provider_error)?;
+    let adopted = identity
+        .adopt_verified_sibling_document(provider_verified_document(document, checkpoint))
+        .await
+        .map_err(map_provider_error)?;
     if adopted.reference != reference {
         return Err(crate::ImError::PermissionDenied);
     }

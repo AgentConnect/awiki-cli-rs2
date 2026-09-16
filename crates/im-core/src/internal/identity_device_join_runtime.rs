@@ -1624,7 +1624,9 @@ where
             })?;
         let registry = self.registry().await?;
         if crate::internal::identity_device_join::document_convergence::needs_refresh(
-            self.core, &client, &registry.checkpoint,
+            self.core,
+            &client,
+            &registry.checkpoint,
         )? {
             let mut resolver = crate::internal::transport::CoreHttpTransport::new(&client);
             let document = crate::internal::discovery::did_document::resolve_did_document_async(
