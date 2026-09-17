@@ -6755,6 +6755,8 @@ mod tests {
         );
     }
 
+    // This cross-stream contract requires a negotiable P5 consumer.
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn v1a_v1b_cross_stream_malformed_lane_does_not_rollback_ordinary_delta() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -6817,7 +6819,7 @@ mod tests {
         assert_eq!(lane_states[0].scan_seq, "0");
     }
 
-    #[cfg(feature = "group-e2ee")]
+    #[cfg(all(feature = "secure-direct", feature = "group-e2ee"))]
     #[tokio::test]
     async fn v1b_cross_stream_ordinary_failure_keeps_p5_and_p6_handoffs_committed() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -6909,6 +6911,8 @@ mod tests {
         );
     }
 
+    // This cross-stream contract requires a negotiable P5 consumer.
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn v1b_cross_stream_shared_sqlite_failure_is_a_global_fence() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
