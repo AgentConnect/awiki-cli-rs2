@@ -2462,6 +2462,7 @@ mod tests {
 
 #[napi(object)]
 pub struct NodeDeviceJoinManagementStatus {
+    pub failure_code: Option<String>,
     pub join_session_id: String,
     pub recipient_device_id: String,
     pub phase: String,
