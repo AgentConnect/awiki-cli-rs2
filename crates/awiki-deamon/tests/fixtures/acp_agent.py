@@ -17,6 +17,11 @@ if recovery.startswith('startup-'):
     else:
         print('Error resuming session: permission denied', file=sys.stderr, flush=True)
     raise SystemExit(42)
+model_mode_file = pathlib.Path.cwd()/'model-mode'
+model_mode = model_mode_file.read_text() if model_mode_file.exists() else ''
+current_model = 'flash'
+def config_options():
+    return [{'id':'model','name':'Model','category':'model','type':'select','currentValue':current_model,'options':[{'value':'flash','name':'Flash'},{'value':'pro','name':'Pro'}]}]
 cwd = None
 prompt_id = None
 mcp = None
@@ -65,8 +70,8 @@ for line in sys.stdin:
         if method!='session/new':
             assert params['sessionId']==sid
             chunk('REPLAY_MUST_NOT_APPEAR')
-        mcp=params['mcpServers'][0]
-        reply(id,{'sessionId':sid,'configOptions':[{'id':'model','name':'Model','category':'model','type':'select','currentValue':'flash','options':[{'value':'flash','name':'Flash'},{'value':'pro','name':'Pro'}]}]})
+        mcp=next(iter(params.get('mcpServers', [])), None)
+        reply(id,{'sessionId':sid, **({'models':{'currentModelId':current_model,'availableModels':[{'modelId':'flash','name':'Flash'},{'modelId':'pro','name':'Pro'}]}} if model_mode == 'legacy' else {'configOptions':config_options()})})
     elif method=='session/list':
         with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'cursor':params.get('cursor')})+'\n')
         assert pathlib.Path(params['cwd']).resolve() == cwd.resolve()
@@ -82,7 +87,11 @@ for line in sys.stdin:
             log.write(json.dumps(params['prompt'])+'\n')
         (cwd/'wrapper-environment.json').write_text(json.dumps({'token_present': bool(os.environ.get('AWIKI_RUNTIME_RPC_TOKEN')), 'socket_present': bool(os.environ.get('AWIKI_DAEMON_RPC_SOCKET')), 'executable_present': bool(os.environ.get('AWIKI_DAEMON_EXECUTABLE'))}))
         text=''.join(p.get('text','') for p in params['prompt'])
-        if 'QUESTION_MCP' in text:
+        if 'CONFIG_UPDATE' in text:
+            current_model='pro'
+            emit({'method':'session/update','params':{'sessionId':sid,'update':{'sessionUpdate':'config_option_update','configOptions':config_options()}}})
+            finish('FIXTURE_RESPONSE')
+        elif 'QUESTION_MCP' in text:
             threading.Thread(target=tool_question,daemon=True).start()
         elif 'QUESTION_NATIVE' in text:
             emit({'id':'question','method':'elicitation/create','params':{'sessionId':sid,'mode':'form','message':'Choose a color','requestedSchema':{'type':'object','required':['color'],'properties':{'color':{'type':'string','enum':['red','blue']}}}}})
@@ -102,10 +111,21 @@ for line in sys.stdin:
         else:
             finish('FIXTURE_RESPONSE')
     elif method=='session/cancel':
+        if 'QUESTION' in text:
+            # Let the pending question report closure before the prompt ack,
+            # reproducing real native/MCP cancellation ordering.
+            import time
+            time.sleep(0.25)
         chunk('LATE_OUTPUT_MUST_NOT_APPEAR')
         reply(prompt_id,{'stopReason':'cancelled'})
-    elif method in ('session/close','session/set_config_option','session/set_model'):
-        reply(id,{'configOptions':[]})
+    elif method in ('session/set_config_option','session/set_model'):
+        if model_mode == 'reject':
+            emit({'id':id,'error':{'code':-32602,'message':'Model unavailable'}})
+        else:
+            if model_mode != 'wrong-current': current_model=params.get('value',params.get('modelId'))
+            reply(id,{} if model_mode == 'legacy' else {'configOptions':config_options()})
+    elif method=='session/close':
+        reply(id,{})
     elif id=='question':
         value=request.get('result',{})
         finish('ANSWER_'+value.get('content',{}).get('color',value.get('action','ERROR')))

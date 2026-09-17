@@ -1625,6 +1625,11 @@ seed or delivered once afterward, but is never lost or replayed as an older
 duplicate. The public committed patch envelope and patch variants are
 unchanged.
 
+Conversation and timeline seeds and explicit repairs notify existing subscribers when
+their committed read advances the shared cache. A new subscriber must not
+consume another subscriber's pending invalidation by updating that cache
+silently. Its own seed version suppresses the corresponding broadcast replay.
+
 ## 15. System Notification Projection
 
 Exact-device System Notification ingress is separated before ordinary Direct chat projection.

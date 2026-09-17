@@ -185,6 +185,10 @@ impl MessageStore {
     ) -> crate::messages::ThreadMessageStorePatch {
         let key = ThreadKey::from_thread(thread);
         let mut state = self.state.lock().expect("message store lock poisoned");
+        let changed_for_existing_subscribers = state
+            .threads
+            .get(&key)
+            .is_some_and(|previous| previous.items != items);
         state.version = state.version.saturating_add(1);
         state.threads.insert(
             key.clone(),
@@ -193,7 +197,7 @@ impl MessageStore {
                 items: items.clone(),
             },
         );
-        crate::messages::ThreadMessageStorePatch::Reset {
+        let patch = crate::messages::ThreadMessageStorePatch::Reset {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version: state.version,
@@ -207,7 +211,17 @@ impl MessageStore {
             thread_kind: key.kind,
             thread_id: key.id,
             items,
+        };
+        drop(state);
+        // A watch seed or explicit repair may observe a SQLite commit before
+        // its invalidation callback. Updating the shared cache must also
+        // advance existing listeners, or that callback will see no difference
+        // and silently consume their update. The new listener's seed version
+        // fences this same broadcast, so it still receives exactly one reset.
+        if changed_for_existing_subscribers {
+            let _ = self.sender.send(patch.clone());
         }
+        patch
     }
 
     fn emit_patches_for_tracked_threads(&self, client: &crate::core::ImClient, reason: &str) {
@@ -917,6 +931,46 @@ mod tests {
                 assert_eq!(message.id.as_str(), "m2");
             }
             other => panic!("unexpected patch: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_subscriber_cannot_consume_an_existing_subscribers_commit() {
+        let fixture = Fixture::new("message-store-second-subscriber");
+        let client = fixture.client();
+        let store = client.message_store();
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let mut first = store
+            .watch_for_client(&client, thread.clone(), Some(100))
+            .unwrap();
+        first.next_patch().await.unwrap();
+        // SQLite commit precedes its invalidation callback. Another listener
+        // may read that committed row while the callback is still queued.
+        crate::internal::message_runtime::local_projection::persist_messages(
+            &client,
+            &[message("m2", "committed response")],
+        )
+        .unwrap();
+        let mut second = store.watch_for_client(&client, thread, Some(100)).unwrap();
+        client.emit_committed_message_projection("delayed_invalidation");
+        for session in [&mut first, &mut second] {
+            let patch =
+                tokio::time::timeout(std::time::Duration::from_millis(100), session.next_patch())
+                    .await
+                    .expect("every subscriber must see the committed response")
+                    .unwrap();
+            assert!(
+                matches!(patch, crate::messages::ThreadMessageStorePatch::Reset { items, .. }
+                if items.len() == 1 && items[0].id.as_str() == "m2")
+            );
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(30), session.next_patch())
+                    .await
+                    .is_err(),
+                "the seed and delayed callback must not duplicate delivery"
+            );
         }
     }
 

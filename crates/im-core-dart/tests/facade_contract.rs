@@ -26,6 +26,23 @@ fn dart_attachment_cancel_error_is_typed_and_non_retryable() {
     assert_eq!(data["retryable"], false);
 }
 
+#[test]
+fn dart_attachment_preparation_keeps_stage_and_underlying_category() {
+    let error =
+        awiki_im_core::dto::error::DartImError::from(im_core::ImError::AttachmentPreparation {
+            stage: im_core::AttachmentPreparationStage::Discovery,
+            retryable: true,
+            cause: Box::new(im_core::ImError::TransportUnavailable {
+                detail: "network interrupted".into(),
+            }),
+        });
+    assert_eq!(error.code, "transport_unavailable");
+    let data: serde_json::Value =
+        serde_json::from_str(error.service_data_json.as_deref().unwrap()).unwrap();
+    assert_eq!(data["attachment_stage"], "discovery");
+    assert_eq!(data["retryable"], true);
+}
+
 #[tokio::test]
 async fn dart_attachment_cancel_api_reports_missing_transfer() {
     let destination = format!("/tmp/awiki-no-active-transfer-{}", std::process::id());

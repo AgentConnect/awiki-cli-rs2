@@ -165,6 +165,15 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: transport unavailable: {detail}"),
             "Check the service endpoint, runtime mode, and network connectivity.",
         ),
+        im_core::ImError::AttachmentPreparation { stage, retryable, cause } => {
+            let mut mapped = map_im_error(*cause, context);
+            if !mapped.detail.details.is_object() {
+                mapped.detail.details = serde_json::json!({});
+            }
+            mapped.detail.details["attachment_stage"] = serde_json::json!(stage.as_str());
+            mapped.detail.retryable = retryable;
+            mapped
+        }
         im_core::ImError::AttachmentTransfer {
             failure,
             received_bytes,

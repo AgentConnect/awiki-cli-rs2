@@ -8,13 +8,30 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 
 私聊 A 执行期间 B 占用唯一等待位；再来的 C 拒绝接受，由 APP 保留草稿。A 正常结束自动执行 B。停止 A 后 B 暂停，必须执行或取消；立即执行 B 必须先等待 A 确认取消或子进程退出。异常和 Daemon 重启暂停等待位，不重跑旧任务。群聊按 Agent＋群串行，忙碌指令明确拒绝，不创建等待位。
 
+在问题等待期间停止任务时，问题关闭不记录为交互失败。原生 elicitation 和共享 MCP 均遵守同一规则：取消确认前可能返回问题关闭／RPC 错误，连接及子进程退出后以该 run 已接受的停止意图收敛为 cancelled，保留部分输出与等待位。没有停止意图的过期、无效问题或客户端自行放弃仍明确失败。
+
 模型结束与最终消息投递分别持久化，最终输出复用既有 `runtime_final_outbox`，发送失败只重试投递。最终 outbox 入库与 ACP 任务完成使用同一事务：停止先被接受时丢弃最终输出，完成先提交时停止返回过期任务；网络投递在事务之后进行。控制命令关联准确会话、任务、问题和 revision；重复请求幂等，过期请求拒绝。问题回答独立于新消息，不占等待位；群内仅任务发起人可以回答。
 
 ## ACP 与环境
 
+### 2026-09 可靠交互补充合同
+
+- `acp_task_records` 按 `run_id` 保存执行详情；`acp_sessions` 只负责当前会话控制及兼容摘要。完成、停止、失败或重启中断时，先捕获当前任务文字／工具／问答，再启动等待任务，避免下一轮清空历史。
+- 流式 `acp_events.event_kind=snapshot` 可以合并；任务与问题终态使用 `event_kind=task` 和稳定事件 ID，与任务事实同事务写入，禁止后续快照删除。可靠控制载荷沿用 `awiki.acp.status.v1`，新增 `acp_task`（`awiki.acp.task.v1`）；旧 `acp` 快照继续发送。
+- 模型完成与消息投递分离。任务 `delivery` 为 `none/pending/sent/failed`；最终 outbox 状态更新与对应任务事件同事务提交。投递重试不启动模型。ACP 最终回复保留来源消息注解并增加 `annotations.awiki_run_id`。
+- 通过现有 `runtime.acp.control` 的 `task_history` 按会话及当前消息窗口的 source_message_ids 分页读取执行详情（最多 20 条、正常页面 512 KiB；单条完整记录不截断）。快照通过 task_history_available 显式声明支持，APP 不向旧版本盲发查询，继续验证控制者及当前 controller scope；历史未保存的详情不伪造。
+
+群上下文在调用权限通过后，由 Daemon 经 Core 的 `local_history_before_async` 读取当前指令之前的已提交消息。锚点、owner 和 conversation 绑定及排序由 Core 校验；Daemon 不拼接游标、不直接读取 Core 数据库。沿用最近 30 条、12,000 字符预算并过滤控制消息。分页只用于补足有效上下文，受扫描预算约束；本地锚点缺失、读取失败与真实空历史须分别表达。上下文只是背景，不授予权限；七种运行时共用相同入口。
+
+附件服务发现、凭证获取及对象传输的可重试错误由 Core 统一处理，Daemon 不叠加网络重试。下载失败保留失败阶段、稳定错误码和可重试属性；未取得并校验授权附件前不调用模型。取消、中断及权限拒绝不得转换成自动模型重跑。
+
 创建前仅检查版本、配置和 initialize 能力，不调用模型。明确失败阻止创建，无法验证账号有效性不等于失败。成功创建沿用既有 ready 前消息同步门禁和幂等欢迎消息。
 
 会话恢复优先使用广告的 `session/resume`，其次 `session/load`；加载回放不作为新输出发送。不可恢复时等待用户确认重建，保留聊天记录。模型选择只作用于当前会话，且仅在空闲、无等待项时允许。
+
+私聊 `prepare_session` 只握手、查询配置和验证选择，不发送 prompt；新建的探测 session ID 不持久化。准备、模型切换和任务接受使用同一会话锁，锁不跨越模型执行。`model_id` 是原生确认的有效值，`selected_model_id` 是会话选择；读取 configOptions.currentValue，兼容 models.currentModelId 和原生更新。切换失败不得将请求值写成有效值，后续 prompt 前重新验证已确认的模型。APP 在发送、响应不确定及等待 Core 路由投影期间保留草稿并阻止新指令；关闭模型窗口不解除这一约束。
+
+问答增量合同：共享 MCP 工具的问题声明交互版本 2、来源、定义摘要，以及自定义、补充文字和取消能力。`awiki.answer.v2` 的 structured 模式保留合法 content 和可选 text；custom 模式只含非空 text，最多 16 KiB UTF-8。原生 elicitation 严格按原 schema 返回，不携带 AWiki 扩展字段。新版提交携带问题定义摘要，旧 accept/content 保持兼容。任务发起人、run、question 和有效期在同一状态事务验证；文字流 revision 不使有效答案过期。问题答案、跳过、过期及关闭原因随任务记录持久化，终态事件不合并丢弃。工具权限选项不能仅因标题类似问答就当成业务答案。
 
 恢复失败必须有明确证据才能标记上下文丢失。除协议的资源不存在错误外，Kimi 与 DSH 的参数错误必须精确匹配当前原生 session ID。OpenCode 的 session 服务内部错误需再查询当前工作目录的完整分页会话列表；请求失败、无效记录、游标循环或超时均不等于会话不存在。Gemini 在 initialize 前退出时，仅识别其官方的明确会话缺失诊断，不根据退出码推断。诊断文本只在内存中判断，不记录协议或 stderr 内容；已停止或已被替换的任务不得修改上下文状态。
 
@@ -32,7 +49,7 @@ DeepSeek Harness 0.1.5-rc.1 的 ACP MCP 配置固定使用 60 秒默认期限。
 
 Gemini CLI 0.59 的会话记录文件名只包含 UTC 分钟；在创建当分钟启动新进程加载同一 session，会覆盖其初始记录。因此首次恢复等待创建分钟结束，期间显示“正在恢复上下文”，可取消。恢复进程同时使用官方 `--resume <session ID>` 参数，让启动清理器识别正在使用的会话，避免空检查点导致同 ID 的完整历史被连带删除。启动目录先解析为实际路径，保证 macOS `/var` 与 `/private/var` 等别名不会分裂原生项目历史。Daemon 不修改客户端记录，也不以重发历史替代原生恢复。版本升级时应重新验证并移除不再需要的兼容处理。相关上游问题：[会话加载失败](https://github.com/google-gemini/gemini-cli/issues/28693)。
 
-Gemini CLI 0.59.0 另有 `loadSession` 未等待 `streamHistory` 的协议缺陷：响应返回后继续发送历史回放。Daemon 在该客户端的探测和任务进程中通过 Node 官方模块加载钩子，仅对包名、版本和已知源码调用均匹配的模块补上 `await`；已修复的调用保持原样，未知的同版本实现拒绝加载。钩子文件权限 0600，结束删除，不修改安装文件、原生历史或用户配置，也不按内容猜测或去重历史。所用 `module.register` 要求 Node 20.6+（测试使用 Node 24）；原有 `NODE_OPTIONS` 保留。此兼容处理只适用于官方 npm 包布局的 0.59.0，其他版本需重新验证。依据：[上游回放顺序报告](https://github.com/google-gemini/gemini-cli/issues/28775)、[Node 模块加载钩子](https://nodejs.org/api/module.html#moduleregisterspecifier-parenturl-options)。
+Gemini CLI 0.59.0／0.60.0 的 `loadSession` 未等待 `streamHistory`：响应返回后继续发送历史回放。Daemon 用 Node 模块加载钩子补上 `await`，限定官方 npm 包名、版本及调用形态；其他版本保持原样。0.60.0 额外校验历史转换函数的 SHA-256 与记录调用形态：新任务记录原始 model parts，保留调用 ID、轮次和签名；旧记录只在精确 ID、名称、参数及真实 functionResponse 轮次都可确认时在内存中重建调用位置。已有真实结果不再从工具展示元信息重复合成，不按名称猜配，不删除真实消息。缺失、跨用户轮次或冲突的历史进入 `context_reset_required`，由用户确认重新开始；源代码形态不匹配是兼容失败，不推断上下文已丢失。安装文件和既有历史不被修改。钩子文件权限 0600，子进程结束删除；保留原 `NODE_OPTIONS`，要求 Node 20.6+。版本升级需复核并移除已被上游修复的兼容逻辑。依据：[上游回放顺序报告](https://github.com/google-gemini/gemini-cli/issues/28775)、[Node 模块加载钩子](https://nodejs.org/api/module.html#moduleregisterspecifier-parenturl-options)。
 
 ACP 子进程在独立执行线程的 Tokio runtime 中运行，使用 SDK 所有的进程组；固定 shell 启动器仅通过位置参数切换子进程工作目录，不插值命令文本。Daemon 正常退出先取消 ACP 任务并暂停等待项，再等待线程结束。启动器的同进程组监视器检查客户端的父进程；Daemon 被强制结束后会关闭该进程组，避免模型或工具子进程残留。重启撤销旧 ACP 文件投递 RPC token。停止时立即撤销文件投递 RPC token，等待协议取消，超过宽限期关闭整个进程组，随后才允许等待任务运行。状态投递由独立阻塞工作线程串行调度，不占用接收控制消息的异步线程或 RPC outbox 锁；状态投递失败不阻塞其他会话，也不阻塞原有最终消息 outbox。
 

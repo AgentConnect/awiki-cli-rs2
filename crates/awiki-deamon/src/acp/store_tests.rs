@@ -1,4 +1,8 @@
 use super::*;
+#[path = "store_tests/questions.rs"]
+mod questions;
+#[path = "store_tests/records.rs"]
+mod records;
 use crate::{
     runtime::{RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTaskTriggerKind},
     DaemonConfig,
@@ -239,6 +243,8 @@ fn questions_require_real_valid_answers_from_requester_once_before_expiry() {
         expires_at_ms: 100,
         request,
         response: None,
+        interaction: None,
+        end_reason: None,
     });
     let mut args = json!({"run_id":"run_a","question_id":"q1","response":{"action":"accept","content":{"choice":"no"}}});
     assert!(s.command("answer", &args, "did:human:alice", 1).is_err());

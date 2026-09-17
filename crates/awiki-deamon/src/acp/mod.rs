@@ -2,9 +2,16 @@
 pub mod attachments;
 pub mod client;
 pub mod host;
+mod models;
+mod tools;
+#[cfg(test)]
+mod tools_tests;
+pub mod operations;
+pub mod session_configuration;
 mod question_tool;
 mod questions;
 pub mod store;
+pub mod task_records;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};

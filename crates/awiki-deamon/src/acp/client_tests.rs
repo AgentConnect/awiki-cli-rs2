@@ -1,4 +1,10 @@
 use super::*;
+#[path = "client_tests/gemini.rs"]
+mod gemini;
+#[path = "client_tests/models.rs"]
+mod models;
+#[path = "client_tests/real_questions.rs"]
+mod real_questions;
 use crate::{
     acp::store::{Session, Work},
     runtime::{
@@ -91,7 +97,11 @@ impl Fixture {
         Turn {
             state: self.state.clone(),
             key: self.key.clone(),
-            run_id: "run_a".into(),
+            run_id: store::load(&self.state, &self.key)
+                .unwrap()
+                .active
+                .unwrap()
+                .run_id,
             profile: self.profile.clone(),
             cwd: self.root.path().join("work"),
             prompt: vec![ContentBlock::Text(TextContent::new(text))],
@@ -100,11 +110,12 @@ impl Fixture {
     }
     fn next(&self) {
         store::mutate(&self.state, &self.key, None, |s| {
-            s.complete("run_a", "finished")?;
-            s.submit(Work {
-                task: self.task.clone(),
-                run_id: "run_a".into(),
-            })
+            let previous = s.active.as_ref().unwrap().run_id.clone();
+            s.complete(&previous, "finished")?;
+            let next = format!("run_{}", rand::random::<u128>());
+            let mut task = self.task.clone();
+            task.task_id = format!("task_{next}");
+            s.submit(Work { task, run_id: next })
         })
         .unwrap();
     }
@@ -158,7 +169,8 @@ process.stdout.write(events.join(','));
     assert!(launch.environment()["NODE_OPTIONS"].starts_with("--no-warnings "));
     for (version, expected) in [
         ("0.59.0", "history,response"),
-        ("0.60.0", "response,history"),
+        ("0.60.0", "history,response"),
+        ("0.61.0", "response,history"),
     ] {
         std::fs::write(
             package.join("package.json"),
@@ -219,7 +231,11 @@ async fn missing_native_context_never_creates_replacement_without_confirmation()
     assert!(store::load(&f.state, &f.key).unwrap().context_lost);
     let log = std::fs::read_to_string(f.root.path().join("work/protocol.jsonl")).unwrap();
     assert_eq!(log.matches("session/new").count(), 1);
-    store::mutate(&f.state, &f.key, None, |s| s.complete("run_a", "failed")).unwrap();
+    store::mutate(&f.state, &f.key, None, |s| {
+        let run = s.active.as_ref().unwrap().run_id.clone();
+        s.complete(&run, "failed")
+    })
+    .unwrap();
     let before = store::load(&f.state, &f.key).unwrap();
     let reset = json!({"action":"reset_context","session_key":f.key,"revision":before.revision,"confirmed":false});
     assert!(store::control(
@@ -249,7 +265,7 @@ async fn missing_native_context_never_creates_replacement_without_confirmation()
     store::mutate(&f.state, &f.key, None, |s| {
         s.submit(Work {
             task: f.task.clone(),
-            run_id: "run_a".into(),
+            run_id: "run_rebuilt".into(),
         })
     })
     .unwrap();
@@ -392,6 +408,49 @@ async fn native_question_waits_for_user() {
 async fn shared_question_tool_waits_for_user() {
     answer_case("QUESTION_MCP", "color").await;
 }
+
+#[tokio::test]
+async fn stopping_pending_questions_is_cancellation_and_preserves_waiting_work() {
+    for mode in ["QUESTION_NATIVE", "QUESTION_MCP"] {
+        let f = Fixture::new();
+        let running = tokio::spawn(run(f.turn(mode)));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while store::load(&f.state, &f.key).unwrap().questions.is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        store::mutate(&f.state, &f.key, None, |s| {
+            let mut task = f.task.clone();
+            task.task_id = "task_b".into();
+            s.submit(Work {
+                task,
+                run_id: "run_b".into(),
+            })?;
+            s.stopping = true;
+            Ok(())
+        })
+        .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(15), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(result.cancelled, "{mode}: stopped question must not fail");
+        assert!(store::load(&f.state, &f.key)
+            .unwrap()
+            .interaction_error
+            .is_none());
+        store::mutate(&f.state, &f.key, None, |s| {
+            assert!(s.complete("run_a", "cancelled")?.is_none());
+            assert_eq!(s.waiting.as_ref().unwrap().run_id, "run_b");
+            assert!(s.waiting_paused);
+            Ok(())
+        })
+        .unwrap();
+    }
+}
 #[test]
 fn kimi_child_timeout_covers_human_answer_expiry_without_changing_other_clients() {
     let mut profile = CliRuntimeProfileRecord::for_driver("question-timeout", "kimi").unwrap();
@@ -495,12 +554,15 @@ async fn question_progress_stream_keeps_waiting_and_returns_only_the_real_answer
         serde_json::from_str(replies[0]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
         answer,
-        json!({"action":"accept","content":{"color":"blue"}})
+        json!({"action":"accept","content":{"color":"blue"},"answer_format":"awiki.answer.v2","mode":"structured"})
     );
 }
 #[tokio::test]
 async fn permission_question_never_auto_selects_first_option() {
-    answer_case("QUESTION_PERMISSION", "choice").await;
+    let f = Fixture::new();
+    let result = run(f.turn("QUESTION_PERMISSION")).await;
+    assert!(result.is_err());
+    assert!(store::load(&f.state, &f.key).unwrap().questions.is_empty());
 }
 
 #[tokio::test]
@@ -774,6 +836,31 @@ fn failed_attachment_download_is_not_dropped_from_the_prompt() {
     );
 }
 
+#[test]
+fn attachment_preparation_failure_survives_storage_without_transport_details() {
+    let f = Fixture::new();
+    let failure = crate::acp::attachments::AttachmentFailure::from_core(
+        &im_core::ImError::AttachmentPreparation {
+            stage: im_core::AttachmentPreparationStage::Discovery,
+            retryable: true,
+            cause: Box::new(im_core::ImError::TransportUnavailable {
+                detail: "https://private.invalid/secret?token=test".into(),
+            }),
+        },
+    );
+    crate::acp::attachments::remember_failure_details(&f.state, &f.task.agent_did, "a", &failure)
+        .unwrap();
+    let error = crate::acp::attachments::prompt_blocks(&f.state, &f.task).unwrap_err();
+    let stored = error
+        .downcast_ref::<crate::acp::attachments::AttachmentFailure>()
+        .unwrap();
+    assert_eq!(stored, &failure);
+    assert_eq!(stored.stage, "discovery");
+    assert!(stored.retryable);
+    assert_eq!(stored.code, "attachment_download_network");
+    assert!(!serde_json::to_string(stored).unwrap().contains("secret"));
+}
+
 #[tokio::test]
 async fn question_tool_rejects_foreign_origins_and_stale_tasks_and_closes() {
     let f = Fixture::new();
@@ -964,7 +1051,9 @@ async fn concurrent_questions_keep_their_answers_and_device_race_has_one_winner(
     assert_eq!(reply["id"], 2);
     let content: Value =
         serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(content, args["response"]);
+    assert_eq!(content["content"], args["response"]["content"]);
+    assert_eq!(content["answer_format"], "awiki.answer.v2");
+    assert_eq!(content["mode"], "structured");
     assert!(!first.is_finished());
     let first_args = answer(&question("First question").id, "one");
     store::control(
@@ -982,7 +1071,8 @@ async fn concurrent_questions_keep_their_answers_and_device_race_has_one_winner(
     assert_eq!(reply["id"], 1);
     let content: Value =
         serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(content, first_args["response"]);
+    assert_eq!(content["content"], first_args["response"]["content"]);
+    assert_eq!(content["answer_format"], "awiki.answer.v2");
 }
 
 /// Explicit opt-in: this invokes a real installed client/model. The fixture and
@@ -1090,7 +1180,11 @@ async fn real_client_missing_context_requires_confirmed_reset() {
         .is_err();
     let lost = store::load(&f.state, &f.key).unwrap();
     let preserved = lost.native_session_id.as_deref() == Some(missing.as_str());
-    store::mutate(&f.state, &f.key, None, |s| s.complete("run_a", "failed")).unwrap();
+    store::mutate(&f.state, &f.key, None, |s| {
+        let run = s.active.as_ref().unwrap().run_id.clone();
+        s.complete(&run, "failed")
+    })
+    .unwrap();
     let before = store::load(&f.state, &f.key).unwrap();
     let mut reset = json!({"action":"reset_context","session_key":f.key,"revision":before.revision,"confirmed":false});
     let denied = store::control(
@@ -1117,7 +1211,7 @@ async fn real_client_missing_context_requires_confirmed_reset() {
         store::mutate(&f.state, &f.key, None, |s| {
             s.submit(Work {
                 task: f.task.clone(),
-                run_id: "run_a".into(),
+                run_id: "run_rebuilt".into(),
             })
         })
         .unwrap();
@@ -1252,7 +1346,7 @@ async fn real_client_model_tools_resume_image_question_and_cancel() {
                 .unwrap_or(json!("blue"));
             content[name] = blue;
         }
-        store::mutate(&f.state,&f.key,None,|s|s.command("answer",&json!({"run_id":"run_a","question_id":q.id,"response":{"action":"accept","content":content}}),&f.task.requester_did,current_time_millis()?)).unwrap();
+        store::mutate(&f.state,&f.key,None,|s|s.command("answer",&json!({"run_id":q.run_id,"question_id":q.id,"response":{"action":"accept","content":content}}),&f.task.requester_did,current_time_millis()?)).unwrap();
     } else {
         store::mutate(&f.state, &f.key, None, |s| {
             s.stopping = true;

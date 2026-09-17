@@ -8,6 +8,7 @@ pub(super) fn handle(
     registration: &UserServiceAgentRegistrationClient,
     target: &str,
     sender: &str,
+    conversation_id: Option<String>,
     payload: &Value,
 ) -> Result<()> {
     let profile = state.load_runtime_agent_profile(target)?;
@@ -34,6 +35,67 @@ pub(super) fn handle(
     }
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target)?;
     let outcome: Result<(Value, Option<store::Work>)> = (|| {
+        if action == "prepare_session" || action == "set_model" {
+            let snapshot = acp::session_configuration::control(
+                state,
+                &profile,
+                sender,
+                conversation_id,
+                command,
+                args,
+            )?;
+            return Ok((
+                json!({"prepared_session_key":snapshot["session_key"],"sessions":[snapshot]}),
+                None,
+            ));
+        }
+        if action == "task_history" {
+            let key = args["session_key"]
+                .as_str()
+                .context("session_key_required")?;
+            let session = store::load(state, key)?;
+            if session.agent_did != target
+                || session.controller_scope_key != profile.controller_scope_key
+            {
+                bail!("conversation_mismatch");
+            }
+            let before = if args["cursor"].is_null() {
+                None
+            } else {
+                Some(
+                    args["cursor"]
+                        .as_i64()
+                        .filter(|v| *v > 0)
+                        .context("invalid_history_cursor")?,
+                )
+            };
+            let sources = args
+                .get("source_message_ids")
+                .map(|value| -> Result<Vec<String>> {
+                    let values = value.as_array().context("invalid_history_sources")?;
+                    if values.is_empty() || values.len() > 50 {
+                        bail!("invalid_history_sources");
+                    }
+                    values
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .filter(|s| !s.is_empty() && s.len() <= 512)
+                                .map(str::to_owned)
+                                .context("invalid_history_sources")
+                        })
+                        .collect()
+                })
+                .transpose()?;
+            let page = acp::task_records::page_for_sources(
+                &state.connection()?,
+                key,
+                before,
+                args["limit"].as_u64().unwrap_or(10).min(20) as usize,
+                sources.as_deref(),
+            )?;
+            return Ok((json!({"task_history":page,"session_key":key}), None));
+        }
         if action == "query" {
             let db = state.connection()?;
             let sessions = db
@@ -54,6 +116,15 @@ pub(super) fn handle(
                 None,
             ));
         }
+        let gate = acp::operations::session_gate(state, args["session_key"].as_str().unwrap_or(""));
+        let _configuration_guard = if action == "reset_context" {
+            Some(
+                gate.lock()
+                    .map_err(|_| anyhow::anyhow!("acp_configuration_interrupted"))?,
+            )
+        } else {
+            None
+        };
         let (snapshot, work) = store::control(state, target, sender, command, args)?;
         Ok((json!({"sessions":[snapshot]}), work))
     })();

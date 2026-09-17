@@ -23,6 +23,16 @@ pub struct Question {
     pub expires_at_ms: i64,
     pub request: Value,
     pub response: Option<Value>,
+    #[serde(default)]
+    pub interaction: Option<super::questions::QuestionInteraction>,
+    #[serde(default)]
+    pub end_reason: Option<String>,
+}
+
+impl Question {
+    pub fn pending(&self) -> bool {
+        self.response.is_none() && self.end_reason.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +49,12 @@ pub struct Session {
     #[serde(default)]
     pub restoring: bool,
     pub model: Option<String>,
+    #[serde(default)]
+    pub selected_model: Option<String>,
+    #[serde(default)]
+    pub configuration_version: u8,
+    #[serde(default)]
+    pub model_configuration_ready: bool,
     pub capabilities: Value,
     pub options: Value,
     pub group: bool,
@@ -53,29 +69,52 @@ pub struct Session {
     pub history: Vec<Value>,
     pub text: String,
     pub tools: Vec<Value>,
+    #[serde(default)]
+    pub omitted_tool_count: usize,
     pub questions: Vec<Question>,
     #[serde(default)]
     pub interaction_error: Option<String>,
+    #[serde(default)]
+    pub error_details: Option<Value>,
     pub last_run_id: Option<String>,
+    #[serde(skip)]
+    pending_records: Vec<super::task_records::TaskRecord>,
 }
 
 impl Session {
     pub fn new(task: &RuntimeTask) -> Self {
-        let scope = task.conversation_scope.scope_key();
+        Self::for_scope(
+            &task.agent_did,
+            &task.controller_scope_key,
+            task.conversation_scope.scope_key(),
+            task.conversation_id.clone(),
+            task.conversation_scope.kind() == RuntimeConversationScopeKind::GroupVisible,
+        )
+    }
+    pub fn for_scope(
+        agent: &str,
+        controller: &str,
+        scope: String,
+        conversation_id: Option<String>,
+        group: bool,
+    ) -> Self {
         Self {
-            key: session_key(&task.agent_did, &task.controller_scope_key, &scope),
-            agent_did: task.agent_did.clone(),
-            controller_scope_key: task.controller_scope_key.clone(),
+            key: session_key(agent, controller, &scope),
+            agent_did: agent.to_owned(),
+            controller_scope_key: controller.to_owned(),
             scope,
-            conversation_id: task.conversation_id.clone(),
+            conversation_id,
             revision: 0,
             native_session_id: None,
             native_created_at_ms: None,
             restoring: false,
             model: None,
+            selected_model: None,
+            configuration_version: 1,
+            model_configuration_ready: false,
             capabilities: json!({}),
             options: json!([]),
-            group: task.conversation_scope.kind() == RuntimeConversationScopeKind::GroupVisible,
+            group,
             active: None,
             waiting: None,
             waiting_paused: false,
@@ -86,9 +125,12 @@ impl Session {
             history: vec![],
             text: String::new(),
             tools: vec![],
+            omitted_tool_count: 0,
             questions: vec![],
             interaction_error: None,
+            error_details: None,
             last_run_id: None,
+            pending_records: vec![],
         }
     }
     pub fn submit(&mut self, work: Work) -> Result<bool> {
@@ -126,8 +168,10 @@ impl Session {
         self.waiting_paused = false;
         self.text.clear();
         self.tools.clear();
+        self.omitted_tool_count = 0;
         self.questions.clear();
         self.interaction_error = None;
+        self.error_details = None;
     }
     pub fn active_run(&self, run_id: &str) -> bool {
         self.active.as_ref().is_some_and(|w| w.run_id == run_id)
@@ -137,7 +181,15 @@ impl Session {
             bail!("stale_task");
         }
         let work = self.active.take().context("missing_task")?;
-        self.last_task = json!({"run_id":work.run_id,"source_message_id":work.task.correlation().source_message_id,"state":outcome});
+        self.close_questions(match outcome {
+            "cancelled" => "task_stopped",
+            "interrupted" => "task_interrupted",
+            "failed" => "task_failed",
+            _ => "task_ended",
+        });
+        let record = super::task_records::TaskRecord::capture(self, &work, outcome, true);
+        self.last_task = record.summary();
+        self.pending_records.push(record);
         self.record_last_task();
         self.questions.clear();
         self.restoring = false;
@@ -179,11 +231,15 @@ impl Session {
                 .iter_mut()
                 .find(|q| q.id == id && q.run_id == run_id)
                 .context("stale_question")?;
-            if question.expires_at_ms <= now || question.response.is_some() {
+            if question.expires_at_ms <= now || !question.pending() || work.run_id != run_id {
                 bail!("stale_question");
             }
-            let response = args["response"].clone();
-            validate_answer(&question.request, &response)?;
+            let response = super::questions::validate_response(question, args)?;
+            question.end_reason = match response["action"].as_str() {
+                Some("decline") => Some("user_skipped".into()),
+                Some("cancel") => Some("user_dismissed".into()),
+                _ => None,
+            };
             question.response = Some(response);
             return Ok(None);
         }
@@ -200,6 +256,7 @@ impl Session {
                     bail!("stale_task");
                 }
                 self.stopping = true;
+                self.close_questions("task_stopped");
                 self.waiting_paused = self.waiting.is_some();
             }
             "cancel_waiting" | "execute_waiting" => {
@@ -212,12 +269,20 @@ impl Session {
                 }
                 if action == "cancel_waiting" {
                     let waiting = self.waiting.take().unwrap();
-                    self.last_task = json!({"run_id":waiting.run_id,"source_message_id":waiting.task.correlation().source_message_id,"state":"cancelled"});
+                    let record = super::task_records::TaskRecord::capture(
+                        self,
+                        &waiting,
+                        "cancelled",
+                        false,
+                    );
+                    self.last_task = record.summary();
+                    self.pending_records.push(record);
                     self.record_last_task();
                     self.waiting_paused = false;
                     self.execute_after_stop = false;
                 } else if self.active.is_some() {
                     self.stopping = true;
+                    self.close_questions("task_stopped");
                     self.execute_after_stop = true;
                 } else {
                     if self.context_lost {
@@ -243,7 +308,8 @@ impl Session {
                 {
                     bail!("model_not_advertised");
                 }
-                self.model = Some(model.to_owned());
+                self.selected_model = Some(model.to_owned());
+                self.configuration_version = 1;
             }
             "reset_context" => {
                 if self.active.is_some() {
@@ -264,12 +330,38 @@ impl Session {
         let item = |w: &Work| json!({"run_id":w.run_id,"task_id":w.task.task_id,"source_message_id":w.task.correlation().source_message_id,"requester_did":w.task.requester_did});
         json!({"schema":"awiki.acp.session.v1","session_key":self.key,"agent_did":self.agent_did,
             "conversation_id":self.conversation_id,"revision":self.revision,"group":self.group,
+            "task_history_available":true,
             "active":self.active.as_ref().map(item),"waiting":self.waiting.as_ref().map(item),
             "waiting_paused":self.waiting_paused,"stopping":self.stopping,"restoring":self.restoring,"context_lost":self.context_lost,
-            "last_task":self.last_task,"history":self.history,"text":self.text,"tools":self.tools,
-            "error_code":self.interaction_error,
-            "questions":self.questions.iter().filter(|q|q.response.is_none()).map(|q| json!({"id":q.id,"run_id":q.run_id,"expires_at_ms":q.expires_at_ms,"request":q.request})).collect::<Vec<_>>(),
-            "capabilities":self.capabilities,"models":model_options(&self.options),"model_id":self.model})
+            "last_task":self.last_task,"history":self.history,"output_run_id":self.last_run_id,"text":self.text,"tools":self.tools,"omitted_tool_count":self.omitted_tool_count,
+            "error_code":self.interaction_error,"error_details":self.error_details,
+            "questions":self.questions.iter().map(|q| super::task_records::question_record(q,self.active.is_none())).collect::<Vec<_>>(),
+            "capabilities":self.capabilities,"models":model_options(&self.options),"model_id":self.model,"selected_model_id":self.model_selection(),"model_configuration_ready":self.model_configuration_ready})
+    }
+    pub fn model_selection(&self) -> Option<String> {
+        if self.configuration_version == 0 {
+            self.model.clone()
+        } else {
+            self.selected_model.clone()
+        }
+    }
+    pub fn update_configuration(&mut self, options: Value) {
+        self.model_configuration_ready = true;
+        // Before effective-model reporting, `model` represented the selected
+        // intent. Preserve that intent once when opening an older session.
+        if self.configuration_version == 0 {
+            self.selected_model = self.model.clone();
+            self.configuration_version = 1;
+        }
+        self.model = super::models::current_model(&options);
+        self.options = options;
+    }
+    fn close_questions(&mut self, reason: &str) {
+        for question in &mut self.questions {
+            if question.pending() {
+                question.end_reason = Some(reason.into());
+            }
+        }
     }
     fn record_last_task(&mut self) {
         if self.history.len() == 200 {
@@ -286,31 +378,7 @@ pub fn session_key(agent: &str, owner_scope: &str, scope: &str) -> String {
     )
 }
 
-pub fn model_options(options: &Value) -> Vec<Value> {
-    fn choices(value: &Value, result: &mut Vec<Value>) {
-        if let Some(items) = value.as_array() {
-            for item in items {
-                if let Some(id) = item["value"].as_str().or(item["modelId"].as_str()) {
-                    result.push(json!({"id":id,"name":item["name"].as_str().unwrap_or(id)}));
-                } else {
-                    choices(&item["options"], result);
-                }
-            }
-        }
-    }
-    let mut result = vec![];
-    if let Some(items) = options.as_array() {
-        for item in items
-            .iter()
-            .filter(|v| v["category"] == "model" || v["id"] == "model")
-        {
-            choices(&item["options"], &mut result);
-        }
-    } else {
-        choices(&options["availableModels"], &mut result);
-    }
-    result
-}
+pub use super::models::model_options;
 
 pub fn validate_answer(request: &Value, answer: &Value) -> Result<()> {
     super::questions::validate_schema(request)?;
@@ -392,6 +460,17 @@ pub(crate) fn initialize(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS acp_sessions (session_key TEXT PRIMARY KEY, agent_did TEXT NOT NULL, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS acp_events (event_id TEXT PRIMARY KEY, session_key TEXT NOT NULL, run_id TEXT NOT NULL, snapshot TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS acp_commands (command_id TEXT NOT NULL, agent_did TEXT NOT NULL, request TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(agent_did,command_id));")?;
+    let columns = db
+        .prepare("PRAGMA table_info(acp_events)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "event_kind") {
+        db.execute(
+            "ALTER TABLE acp_events ADD COLUMN event_kind TEXT NOT NULL DEFAULT 'snapshot'",
+            [],
+        )?;
+    }
+    super::task_records::initialize(db)?;
     Ok(())
 }
 
@@ -473,14 +552,52 @@ pub fn finish_with_final(
     Ok((cancelled, next))
 }
 
-fn save(db: &Connection, s: &mut Session) -> Result<()> {
+pub(super) fn save(db: &Connection, s: &mut Session) -> Result<()> {
     s.revision += 1;
+    for mut record in std::mem::take(&mut s.pending_records) {
+        record.revision = s.revision;
+        if s.last_task["run_id"] == record.run_id {
+            s.last_task = record.summary();
+        }
+        for entry in &mut s.history {
+            if entry["run_id"] == record.run_id {
+                *entry = record.summary();
+            }
+        }
+        super::task_records::persist(db, &record)?;
+    }
+    if let Some(active) = &s.active {
+        super::task_records::persist(
+            db,
+            &super::task_records::TaskRecord::capture(
+                s,
+                active,
+                if s.stopping { "stopping" } else { "running" },
+                true,
+            ),
+        )?;
+    }
+    if let Some(waiting) = &s.waiting {
+        super::task_records::persist(
+            db,
+            &super::task_records::TaskRecord::capture(
+                s,
+                waiting,
+                if s.waiting_paused {
+                    "paused"
+                } else {
+                    "waiting"
+                },
+                false,
+            ),
+        )?;
+    }
     db.execute("INSERT INTO acp_sessions(session_key,agent_did,data) VALUES(?1,?2,?3) ON CONFLICT(session_key) DO UPDATE SET data=excluded.data",params![s.key,s.agent_did,serde_json::to_string(s)?])?;
     if let Some(run) = &s.last_run_id {
         // A snapshot is complete: retain the newest undelivered revision rather
         // than queueing quadratic copies of every streamed text fragment.
         db.execute(
-            "DELETE FROM acp_events WHERE session_key=?1 AND sent=0",
+            "DELETE FROM acp_events WHERE session_key=?1 AND sent=0 AND event_kind='snapshot'",
             [&s.key],
         )?;
         db.execute(
@@ -599,8 +716,12 @@ pub fn recover(state: &DaemonState) -> Result<usize> {
             continue;
         }
         mutate(state, &key, None, |s| {
+            s.close_questions("task_interrupted");
             if let Some(active) = s.active.take() {
-                s.last_task = json!({"run_id":active.run_id,"source_message_id":active.task.correlation().source_message_id,"state":"interrupted"});
+                let record =
+                    super::task_records::TaskRecord::capture(s, &active, "interrupted", true);
+                s.last_task = record.summary();
+                s.pending_records.push(record);
                 s.record_last_task();
             }
             s.waiting_paused = s.waiting.is_some();
@@ -635,6 +756,7 @@ pub fn request_shutdown(state: &DaemonState) -> Result<()> {
         mutate(state, &key, None, |session| {
             if session.active.is_some() {
                 session.stopping = true;
+                session.close_questions("task_interrupted");
                 session.execute_after_stop = false;
                 session.waiting_paused = session.waiting.is_some();
             }

@@ -26,6 +26,12 @@ struct LoadSessionWithModels {
     #[serde(flatten)]
     inner: LoadSessionRequest,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, acp::JsonRpcRequest)]
+#[request(method="session/resume",response=Value)]
+struct ResumeSessionWithModels {
+    #[serde(flatten)]
+    inner: ResumeSessionRequest,
+}
 // Keep every list item: the SDK's tolerant list decoder skips malformed items,
 // which cannot establish that a previously recorded session is absent.
 #[derive(Debug, Clone, Serialize, Deserialize, acp::JsonRpcRequest)]
@@ -48,6 +54,12 @@ use super::{
 };
 use crate::security::runtime_token::current_time_millis;
 use crate::{state::CliRuntimeProfileRecord, DaemonState};
+
+mod configuration;
+pub use super::models::current_model;
+use super::models::session_options;
+use configuration::{configure_model, open_session};
+pub use configuration::{prepare as prepare_configuration, PreparedConfiguration};
 
 pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig> {
     let brand = Brand::parse(&profile.driver_id)?;
@@ -247,12 +259,19 @@ fn missing_native_context(error: &acp::Error, brand: Brand, id: &str) -> bool {
                 .data
                 .as_ref()
                 .and_then(|data| data["details"].as_str())
-                == Some("No previous sessions found for this project."))
+                .is_some_and(|details| {
+                    matches!(
+                        details,
+                        "No previous sessions found for this project."
+                            | "awiki_gemini_history_unrecoverable"
+                    )
+                }))
 }
 
 fn gemini_startup_missing(line: &str, id: &str) -> bool {
     let line = line.trim();
     line == "Error resuming session: No previous sessions found for this project."
+        || line == "Error resuming session: awiki_gemini_history_unrecoverable"
         || line == format!("Error resuming session: Invalid session identifier \"{id}\".")
 }
 
@@ -492,11 +511,16 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                     Some("tool_call" | "tool_call_update") => {
                         let id = update["toolCallId"].as_str().context("invalid_tool_id")?;
                         let item = s.tools.iter_mut().find(|v|v["id"].as_str()==Some(id));
-                        let mut summary = item.as_deref().cloned().unwrap_or_else(||json!({"id":id}));
-                        for k in ["title","status","kind"] { if !update[k].is_null() { summary[k]=update[k].clone(); } }
-                        if let Some(item) = item { *item=summary; } else { if s.tools.len() == 64 { s.tools.remove(0); } s.tools.push(summary); }
+                        let summary = super::tools::update_summary(item.as_deref(), &update);
+                        if let Some(item) = item { *item=summary; } else { if s.tools.len() == 64 { s.tools.remove(0); s.omitted_tool_count += 1; } s.tools.push(summary); }
                     }
-                    Some("config_option_update") => s.options=update["configOptions"].clone(),
+                    Some("config_option_update") => s.update_configuration(update["configOptions"].clone()),
+                    Some("current_model_update") => {
+                        if let Some(model)=update["currentModelId"].as_str() {
+                            s.model=Some(model.to_owned());
+                            if s.options.is_object() {s.options["currentModelId"]=json!(model);}
+                        }
+                    }
                     // Thoughts and usage are not assistant reply content.
                     _ => {},
                 }
@@ -505,25 +529,16 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             if result.is_err() { *update_failure.lock().unwrap()=Some("acp_update_failed".into()); }
             Ok(())
         }, acp::on_receive_notification!())
-        .on_receive_request(async move |request: RequestPermissionRequest, responder, cx| {
+        .on_receive_request(async move |request: RequestPermissionRequest, responder, _cx| {
             let current = store::load(&permission_state,&permission_key).ok();
             let allowed = current.as_ref().is_some_and(|s|s.active_run(&permission_run) && !s.stopping && s.native_session_id.as_deref()==Some(request.session_id.to_string().as_str()));
             let raw=serde_json::to_value(&request).unwrap();
             let title=raw["toolCall"]["title"].as_str().unwrap_or("").to_ascii_lowercase();
             if allowed && matches!(title.as_str(),"askuserquestion"|"ask_user"|"question") {
-                let state=permission_state.clone();let key=permission_key.clone();let run=permission_run.clone();
-                let question_id=format!("permission:{}",responder.id());
-                let failed=permission_failure.clone();
-                cx.spawn(async move {
-                    let choices=request.options.iter().map(|o|json!({"const":o.option_id.to_string(),"title":o.name})).collect::<Vec<_>>();
-                    let form=json!({"mode":"form","sessionId":request.session_id,"message":raw["toolCall"]["content"].as_array().and_then(|c|c.first()).and_then(|c|c["content"]["text"].as_str()).unwrap_or("Please choose"),"requestedSchema":{"type":"object","required":["choice"],"properties":{"choice":{"type":"string","oneOf":choices}}}});
-                    let answer=await_answer_id(&state,&key,&run,form,question_id).await;
-                    if answer.is_err() {*failed.lock().unwrap()=Some("unsupported_or_expired_question".into());}
-                    let selected=answer.ok().filter(|v|v["action"]=="accept").and_then(|v|v["content"]["choice"].as_str().map(str::to_owned));
-                    let option=request.options.iter().find(|o|Some(o.option_id.to_string())==selected);
-                    let outcome=option.map(|o|RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(o.option_id.clone()))).unwrap_or(RequestPermissionOutcome::Cancelled);
-                    responder.respond(RequestPermissionResponse::new(outcome))
-                })?;
+                // No verified native business-question adapter is advertised.
+                // Permission option IDs such as allow_once are not answers.
+                *permission_failure.lock().unwrap()=Some("unsupported_native_question".into());
+                responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))?;
                 return Ok(());
             }
             let option = if allowed { request.options.iter().find(|o|o.kind==PermissionOptionKind::AllowOnce) } else { None };
@@ -540,7 +555,9 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                 match response {
                     Ok(value) => responder.respond(serde_json::from_value::<CreateElicitationResponse>(value).map_err(|_|acp::Error::invalid_params())?),
                     Err(_) => {
-                        *failed.lock().unwrap()=Some("unsupported_or_expired_question".into());
+                        if store::load(&state,&key).is_ok_and(|s|s.active_run(&run_id) && !s.stopping) {
+                            *failed.lock().unwrap()=Some("unsupported_or_expired_question".into());
+                        }
                         responder.respond(serde_json::from_value::<CreateElicitationResponse>(json!({"action":"cancel"})).unwrap())
                     }
                 }
@@ -558,17 +575,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             let caps=serde_json::to_value(&init.agent_capabilities).unwrap();
             if caps["mcpCapabilities"]["http"]!=true {return Err(acp::Error::invalid_params());}
             let existing=store::load(&turn.state,&turn.key).map_err(|_|acp::Error::internal_error())?;
-            let session_result: Result<Value,acp::Error> = if let Some(id)=&existing.native_session_id {
-                if caps["sessionCapabilities"]["resume"].is_object() {
-                    let request: ResumeSessionRequest=serde_json::from_value(json!({"sessionId":id,"cwd":turn.cwd,"mcpServers":mcp_servers})).unwrap();
-                    cx.send_request(request).block_task().await.map(|r|serde_json::to_value(r).unwrap())
-                } else if caps["loadSession"]==true {
-                    let request: LoadSessionRequest=serde_json::from_value(json!({"sessionId":id,"cwd":turn.cwd,"mcpServers":mcp_servers})).unwrap();
-                    cx.send_request(LoadSessionWithModels{inner:request}).block_task().await
-                } else { Err(acp::Error::invalid_params()) }
-            } else {
-                cx.send_request(NewSessionWithModels{inner:serde_json::from_value(json!({"cwd":turn.cwd,"mcpServers":mcp_servers})).map_err(|_|acp::Error::invalid_params())?}).block_task().await
-            };
+            let session_result = open_session(&cx, &caps, &turn.cwd, existing.native_session_id.as_deref(), mcp_servers).await;
             let session = match session_result {
                 Ok(v)=>v,
                 Err(error)=>{
@@ -584,24 +591,18 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                     return Err(error);
                 }
             };
-            let id = existing.native_session_id.or_else(||session["sessionId"].as_str().map(str::to_string)).ok_or_else(acp::Error::invalid_params)?;
+            let id = existing.native_session_id.clone().or_else(||session["sessionId"].as_str().map(str::to_string)).ok_or_else(acp::Error::invalid_params)?;
             let sid=SessionId::new(id.clone());
             *output_native.lock().unwrap()=Some(id.clone());
-            let options=session.get("configOptions").or_else(||session.get("models")).cloned().unwrap_or(json!([]));
+            let options=session_options(&session);
             store::mutate(&turn.state,&turn.key,None,|s|{
                 if s.native_session_id.is_none() {s.native_created_at_ms=Some(current_time_millis()?);}
                 s.restoring=false;
-                s.native_session_id=Some(id);s.capabilities=caps.clone();s.options=options.clone();Ok(())
+                s.native_session_id=Some(id);s.capabilities=caps.clone();s.update_configuration(options.clone());Ok(())
             }).map_err(|_|acp::Error::internal_error())?;
-            if let Some(model) = existing.model.or(turn.profile.default_model) {
-                if let Some(option)=options.as_array().and_then(|items|items.iter().find(|v|v["category"]=="model" || v["id"]=="model")) {
-                    let request: SetSessionConfigOptionRequest=serde_json::from_value(json!({"sessionId":sid,"configId":option["id"],"value":model})).map_err(|_|acp::Error::invalid_params())?;
-                    cx.send_request(request).block_task().await?;
-                } else if options["availableModels"].is_array() {
-                    let request: SetSessionModelRequest=serde_json::from_value(json!({"sessionId":sid,"modelId":model})).unwrap();
-                    cx.send_request(request).block_task().await?;
-                } else {return Err(acp::Error::invalid_params());}
-                store::mutate(&turn.state,&turn.key,None,|s|{s.model=Some(model);Ok(())}).map_err(|_|acp::Error::internal_error())?;
+            if let Some(model) = existing.model_selection().or(turn.profile.default_model).or(existing.model.clone()) {
+                let confirmed=configure_model(&cx,&sid,options,&model).await?;
+                store::mutate(&turn.state,&turn.key,None,|s|{s.update_configuration(confirmed);Ok(())}).map_err(|_|acp::Error::internal_error())?;
             }
             if turn.prompt.iter().any(|b|matches!(b,ContentBlock::Image(_))) && caps["promptCapabilities"]["image"]!=true { return Err(acp::Error::invalid_params()); }
             output_accepting.store(true,Ordering::Release);
@@ -662,6 +663,14 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
     };
     tokio::select! {
         completed=tokio::time::timeout(Duration::from_secs(30*60),connection)=>{
+            // Closing an unanswered question can make a native prompt return
+            // an RPC error before it acknowledges session/cancel. Once the
+            // connection/process group has ended, the accepted stop intent is
+            // authoritative for this exact run, including that race.
+            let current = store::load(&watchdog_state, &watchdog_key)?;
+            if current.active_run(&watchdog_run) && current.stopping {
+                return Ok(TurnResult{text:String::new(),cancelled:true});
+            }
             let completed = completed.context("acp_turn_timeout")?;
             if completed.is_err() && startup_missing.load(Ordering::Acquire) {
                 if let Some(id) = &prior.native_session_id { mark_context_lost(&watchdog_state, &watchdog_key, &watchdog_run, id); }
@@ -701,25 +710,25 @@ pub(super) async fn await_answer_id(
             }
             return Ok(());
         }
-        if s.questions.iter().filter(|q| q.response.is_none()).count() >= 8
-            || s.questions.len() >= 100
-        {
+        if s.questions.iter().filter(|q| q.pending()).count() >= 8 || s.questions.len() >= 100 {
             bail!("too_many_questions");
         }
         s.questions.push(Question {
             id: id.clone(),
             run_id: run.to_string(),
             expires_at_ms: now + 15 * 60 * 1000,
+            interaction: Some(super::questions::QuestionInteraction::new(
+                &request,
+                native_request_id.starts_with("mcp:"),
+            )?),
             request,
             response: None,
+            end_reason: None,
         });
         Ok(())
     })?;
     loop {
         let s = store::load(state, key)?;
-        if !s.active_run(run) || s.stopping {
-            return Ok(json!({"action":"cancel"}));
-        }
         let q = s
             .questions
             .iter()
@@ -728,7 +737,21 @@ pub(super) async fn await_answer_id(
         if let Some(answer) = &q.response {
             return Ok(answer.clone());
         }
-        if current_time_millis()? > q.expires_at_ms {
+        if !s.active_run(run) || s.stopping || q.end_reason.is_some() {
+            bail!("question_closed");
+        }
+        if current_time_millis()? >= q.expires_at_ms {
+            let answer = store::mutate(state, key, None, |s| {
+                let q = s
+                    .questions
+                    .iter_mut()
+                    .find(|q| q.id == id)
+                    .context("stale_question")?;
+                super::questions::expire_or_answer(q, current_time_millis()?)
+            })?;
+            if let Some(answer) = answer {
+                return Ok(answer);
+            }
             bail!("question_expired");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

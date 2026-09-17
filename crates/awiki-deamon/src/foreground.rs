@@ -1203,8 +1203,6 @@ async fn process_hydrated_runtime_recovery(
         scanned = scanned.saturating_add(page.items.len());
         for item in page.items {
             validate_hydrated_recovery_message_binding(&item.logical_message_id, &item.message)?;
-            let group_history =
-                is_group_message(&item.message).then(|| std::slice::from_ref(&item.message));
             if process_runtime_inbox_message(
                 config,
                 state,
@@ -1215,7 +1213,7 @@ async fn process_hydrated_runtime_recovery(
                 agent_did,
                 &item.message,
                 runtime_routes,
-                group_history,
+                None,
             )
             .await?
             .unwrap_or(false)
@@ -2084,6 +2082,7 @@ async fn route_message(
                     registration,
                     target_agent_did,
                     &sender_did,
+                    conversation_id.clone(),
                     payload,
                 )?;
                 return Ok(true);
@@ -2360,12 +2359,17 @@ where
         payload,
     )
     .await?;
+    let recent_context = if group_history.is_empty() {
+        group_context::load_recent_group_context(target_client, message).await
+    } else {
+        build_recent_group_context(message, group_history)
+    };
     let task_payload = group_agent_mention_task_payload(
         message,
         &mention_context,
         task_text,
         authorization.sender_full_handle.as_deref(),
-        Some(build_recent_group_context(message, group_history)),
+        Some(recent_context),
     );
     let task_message_id =
         group_agent_mention_task_message_id(message, &mention_context.mention_id, target_agent_did);

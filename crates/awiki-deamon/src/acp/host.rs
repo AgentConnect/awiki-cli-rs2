@@ -44,7 +44,12 @@ pub fn run(
     let work = Work { task, run_id };
     let session = Session::new(&work.task);
     let key = session.key.clone();
-    match store::mutate(state, &key, Some(session), |s| s.submit(work.clone())) {
+    let admission = {
+        let gate = super::operations::session_gate(state, &key);
+        let _guard = gate.lock().map_err(|_| anyhow::anyhow!("acp_configuration_interrupted"))?;
+        store::mutate(state, &key, Some(session), |s| s.submit(work.clone()))
+    };
+    match admission {
         Ok(true) => {
             execute(state, profile, outbox, &key, work, socket)?;
         }
@@ -124,7 +129,11 @@ pub fn execute(
                 }
             }
             failed => {
-                let code = failed.err().map(|e| e.to_string()).unwrap_or_default();
+                let error = failed.err();
+                let attachment_failure = error.as_ref().and_then(|error| {
+                    error.downcast_ref::<super::attachments::AttachmentFailure>()
+                });
+                let code = error.as_ref().map(|e| e.to_string()).unwrap_or_default();
                 let code = match code.as_str() {
                     "attachment_download_failed"
                     | "attachment_changed"
@@ -134,7 +143,15 @@ pub fn execute(
                 };
                 store::mutate(state, key, None, |s| {
                     if s.interaction_error.is_none() {
-                        s.interaction_error = Some(code.into());
+                        s.interaction_error = Some(
+                            attachment_failure
+                                .map(|failure| failure.code.as_str())
+                                .unwrap_or(code)
+                                .into(),
+                        );
+                        s.error_details = attachment_failure
+                            .map(|failure| serde_json::to_value(failure))
+                            .transpose()?;
                     }
                     Ok(())
                 })?;
@@ -174,6 +191,21 @@ impl Drop for TokenGuard {
     }
 }
 
+pub(super) fn workspace(profile: &RuntimeAgentProfile, key: &str) -> Result<std::path::PathBuf> {
+    let base = profile
+        .workspace_root
+        .as_ref()
+        .context("acp_workspace_required")?;
+    let cwd = base.join("acp").join(key);
+    std::fs::create_dir_all(&cwd)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(cwd)
+}
+
 fn execute_turn(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
@@ -188,17 +220,7 @@ fn execute_turn(
         });
     }
     let cli = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
-    let base = profile
-        .workspace_root
-        .as_ref()
-        .context("acp_workspace_required")?;
-    let cwd = base.join("acp").join(key);
-    std::fs::create_dir_all(&cwd)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let cwd = workspace(profile, key)?;
     state.update_runtime_run_status(&work.run_id, RuntimeRunStatus::Running)?;
     let issued =
         crate::runtime::host::issue_acp_runtime_token(state, profile, &work.task, &work.run_id)?;
@@ -364,7 +386,10 @@ pub fn flush_events(
                     return Ok(false);
                 }
             }
-            let phase = if snapshot["stopping"] == true {
+            let task_record = snapshot["schema"] == "awiki.acp.task.v1";
+            let phase = if task_record {
+                snapshot["state"].as_str().unwrap_or("running")
+            } else if snapshot["stopping"] == true {
                 "stopping"
             } else if snapshot["active"].is_object() {
                 "running"
@@ -374,7 +399,13 @@ pub fn flush_events(
                     .unwrap_or("finished")
             };
             let rejected = snapshot["schema"] == "awiki.acp.rejection.v1";
-            let field = if rejected { "acp_rejection" } else { "acp" };
+            let field = if rejected {
+                "acp_rejection"
+            } else if task_record {
+                "acp_task"
+            } else {
+                "acp"
+            };
             let metadata = json!({field:snapshot,"acp_event_id":event});
             outbox.send_status_with_metadata(
                 &context(&profile, &run_id),

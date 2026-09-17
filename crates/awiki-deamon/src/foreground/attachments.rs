@@ -12,6 +12,7 @@ pub(super) struct RuntimeInboundAttachment {
     pub(super) local_path: Option<PathBuf>,
     pub(super) download_status: String,
     pub(super) error: Option<String>,
+    pub(super) failure: Option<crate::acp::attachments::AttachmentFailure>,
 }
 
 pub(super) async fn attachment_runtime_prompt_text(
@@ -66,10 +67,14 @@ pub(super) async fn attachment_runtime_prompt_text(
                 message.id.as_str(),
                 &items,
             )?,
-            Err(_) => crate::acp::attachments::remember_failure(
+            Err(_) => crate::acp::attachments::remember_failure_details(
                 state,
                 target_agent_did,
                 message.id.as_str(),
+                &resolved
+                    .iter()
+                    .find_map(|item| item.failure.clone())
+                    .unwrap_or_default(),
             )?,
         }
     }
@@ -114,6 +119,7 @@ fn attachment_items_from_payload(payload: &Value) -> Result<Vec<RuntimeInboundAt
             local_path: None,
             download_status: "pending".to_string(),
             error: None,
+            failure: None,
         });
     }
     if items.is_empty() {
@@ -146,6 +152,9 @@ async fn resolve_inbound_attachment(
         }
         Err(error) => {
             attachment.download_status = "failed".to_string();
+            attachment.failure = error
+                .downcast_ref::<im_core::ImError>()
+                .map(crate::acp::attachments::AttachmentFailure::from_core);
             attachment.error = Some(sanitize_error_message(&error.to_string()));
         }
     }

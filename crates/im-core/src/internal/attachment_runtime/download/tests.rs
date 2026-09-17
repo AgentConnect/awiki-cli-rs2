@@ -10,6 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+mod retry;
+
 #[test]
 fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
     let fixture = Fixture::new();
@@ -634,7 +636,11 @@ async fn direct_attachment_lookup_rejects_manifest_from_unrequested_peer_before_
     .await
     .unwrap_err();
 
-    assert!(matches!(error, crate::ImError::MessageNotFound { .. }));
+    assert!(matches!(error, crate::ImError::AttachmentPreparation {
+        stage: crate::AttachmentPreparationStage::History,
+        retryable: false,
+        cause,
+    } if matches!(*cause, crate::ImError::MessageNotFound { .. })));
     assert_eq!(calls.borrow().len(), 1);
     calls.borrow()[0].rpc("direct.get_history");
 }

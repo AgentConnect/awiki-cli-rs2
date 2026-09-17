@@ -99,8 +99,15 @@ async fn handle(
                     && !s.stopping
                     && s.questions
                         .iter()
-                        .any(|q| q.id == question_id && q.response.is_none())
+                        .any(|q| q.id == question_id && q.pending())
                 {
+                    if let Some(q) = s
+                        .questions
+                        .iter_mut()
+                        .find(|q| q.id == question_id && q.pending())
+                    {
+                        q.end_reason = Some("client_cancelled".into());
+                    }
                     s.interaction_error = Some("question_cancelled_by_client".into());
                 }
                 Ok(())
@@ -146,7 +153,7 @@ async fn rpc_response(context: &ContextState, request: &Value, id: Value) -> Val
         Err(_) => {
             if request["method"] == "tools/call" {
                 let _ = super::store::mutate(&context.state, &context.key, None, |s| {
-                    if s.active_run(&context.run) {
+                    if s.active_run(&context.run) && !s.stopping {
                         s.interaction_error = Some("unsupported_or_expired_question".into());
                     }
                     Ok(())
@@ -176,7 +183,7 @@ async fn dispatch(context: &ContextState, request: &Value) -> Result<Value> {
         }
         Some("ping") => Ok(json!({})),
         Some("tools/list") => Ok(
-            json!({"tools":[{"name":"request_user_input","description":"Ask the task requester for information and wait for their real answer in the chat. This tool does not execute commands or grant tool permissions.","inputSchema":{"type":"object","required":["message","schema_json"],"properties":{"message":{"type":"string"},"schema_json":{"type":"string","description":"JSON-encoded Schema object with flat string, number, integer, boolean or multi-select fields. Set required for mandatory fields. Example: {\"type\":\"object\",\"required\":[\"color\"],\"properties\":{\"color\":{\"type\":\"string\",\"enum\":[\"red\",\"blue\"]}}}"}},"additionalProperties":false}}]}),
+            json!({"tools":[{"name":"request_user_input","description":"Ask only for information necessary to continue; briefly explain why. Prefer one concise question (at most three related fields), meaningful choices, no preselected answer, and no extra Other option: the chat already offers custom text. Ordinary conversation or suggestions should be plain messages. Wait for the actual answer. The JSON result uses awiki.answer.v2: structured content may include supplemental text; custom mode contains only text and replaces all choices. Preserve both structured and supplemental meaning; clarify conflicts instead of discarding text. Decline means the user skipped; do not re-ask through another tool. This tool does not grant execution permissions.","inputSchema":{"type":"object","required":["message","schema_json"],"properties":{"message":{"type":"string"},"schema_json":{"type":"string","description":"JSON-encoded Schema object with flat string, number, integer, boolean or multi-select fields. Set required for mandatory fields. Example: {\"type\":\"object\",\"required\":[\"color\"],\"properties\":{\"color\":{\"type\":\"string\",\"enum\":[\"red\",\"blue\"]}}}"}},"additionalProperties":false}}]}),
         ),
         Some("tools/call") => {
             if request["params"]["name"] != "request_user_input" {

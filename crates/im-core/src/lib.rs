@@ -48,7 +48,8 @@ pub use crate::core::{
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
 pub use crate::error::{
-    AttachmentTransferFailure, DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult,
+    AttachmentPreparationStage, AttachmentTransferFailure, DeviceRevokeOutcomeCategory,
+    IdentityVaultFailure, ImError, ImResult,
 };
 pub use crate::external_http_auth::{
     ExternalHttpAuthAttempt, ExternalHttpAuthDecision, ExternalHttpAuthService, ExternalHttpHeader,

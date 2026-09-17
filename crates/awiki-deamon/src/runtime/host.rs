@@ -1554,6 +1554,12 @@ fn runtime_final_payload(
     };
     let correlation = task.correlation();
     let source_message_id = correlation.source_message_id.as_str();
+    let annotate = |mut payload: serde_json::Value| {
+        if record.final_source == "acp" {
+            payload["annotations"]["awiki_run_id"] = serde_json::json!(record.run_id);
+        }
+        payload
+    };
     let is_group = record
         .conversation_id
         .as_deref()
@@ -1578,7 +1584,7 @@ fn runtime_final_payload(
                         source_message_id: Some(source_message_id),
                         reply_text: &record.final_text,
                     }) {
-                        return Ok(Some(reply.payload));
+                        return Ok(Some(annotate(reply.payload)));
                     }
                 }
             }
@@ -1589,7 +1595,7 @@ fn runtime_final_payload(
         source_message_id,
         reply_text: &record.final_text,
     })
-    .map(|reply| reply.payload))
+    .map(|reply| annotate(reply.payload)))
 }
 
 fn mark_runtime_final_delivered(

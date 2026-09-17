@@ -800,7 +800,8 @@ WHERE idempotency_key = ?2
         message_id: Option<&str>,
     ) -> Result<bool> {
         let now = current_time_millis()?;
-        let connection = self.connection()?;
+        let mut db = self.connection()?;
+        let connection = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let updated = connection.execute(
             r#"
 UPDATE runtime_final_outbox
@@ -818,6 +819,15 @@ WHERE idempotency_key = ?3
         if updated == 0 {
             ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
+        if updated > 0 {
+            crate::acp::task_records::delivery_in(
+                &connection,
+                idempotency_key,
+                "sent",
+                message_id,
+            )?;
+        }
+        connection.commit()?;
         Ok(updated > 0)
     }
 
@@ -882,7 +892,8 @@ WHERE status = 'sending'
         error_code: &str,
         error_summary: &str,
     ) -> Result<bool> {
-        let connection = self.connection()?;
+        let mut db = self.connection()?;
+        let connection = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let updated = connection.execute(
             r#"
 UPDATE runtime_final_outbox
@@ -903,6 +914,10 @@ WHERE idempotency_key = ?4
         if updated == 0 {
             ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
+        if updated > 0 {
+            crate::acp::task_records::delivery_in(&connection, idempotency_key, "failed", None)?;
+        }
+        connection.commit()?;
         Ok(updated > 0)
     }
 

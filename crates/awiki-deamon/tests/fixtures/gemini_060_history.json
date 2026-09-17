@@ -1,0 +1,176 @@
+{
+  "description": "Native history before the second load; message text, tool arguments and result bodies removed. IDs and ordering preserved.",
+  "messages": [
+    {
+      "id": "d04923d38bb0f6017037e74183378ef4",
+      "type": "user",
+      "timestamp": "2026-09-17T08:39:56.761Z",
+      "content": [
+        {
+          "text": "<session_context>[REDACTED]"
+        }
+      ]
+    },
+    {
+      "id": "cd71cf0f-5a5f-4044-9a90-82ae0ff4e46c",
+      "type": "user",
+      "timestamp": "2026-09-17T08:39:56.768Z",
+      "content": [
+        {
+          "text": "[TEXT]"
+        },
+        {
+          "text": "[TEXT]"
+        }
+      ]
+    },
+    {
+      "id": "f13999fa-dca2-4bb8-9cd9-941b56bacafc",
+      "type": "gemini",
+      "timestamp": "2026-09-17T08:39:58.079Z",
+      "content": "[TEXT]",
+      "thoughts": []
+    },
+    {
+      "id": "7e887b76-0532-488c-8ef6-cc39c293357f",
+      "type": "gemini",
+      "timestamp": "2026-09-17T08:39:58.084Z",
+      "content": "",
+      "thoughts": [],
+      "toolCalls": [
+        {
+          "id": "update_topic__update_topic_1789634397665_0",
+          "name": "update_topic",
+          "status": "success",
+          "args": {},
+          "result": [
+            {
+              "functionResponse": {
+                "id": "update_topic__update_topic_1789634397665_0",
+                "name": "update_topic",
+                "response": {
+                  "redacted": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "run_shell_command__run_shell_command_1789634397992_1",
+          "name": "run_shell_command",
+          "status": "success",
+          "args": {},
+          "result": [
+            {
+              "functionResponse": {
+                "id": "run_shell_command__run_shell_command_1789634397992_1",
+                "name": "run_shell_command",
+                "response": {
+                  "redacted": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "google_web_search__google_web_search_1789634398046_2",
+          "name": "google_web_search",
+          "status": "success",
+          "args": {},
+          "result": [
+            {
+              "functionResponse": {
+                "id": "google_web_search__google_web_search_1789634398046_2",
+                "name": "google_web_search",
+                "response": {
+                  "redacted": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "run_shell_command__run_shell_command_1789634400699_0",
+          "name": "run_shell_command",
+          "status": "success",
+          "args": {},
+          "result": [
+            {
+              "functionResponse": {
+                "id": "run_shell_command__run_shell_command_1789634400699_0",
+                "name": "run_shell_command",
+                "response": {
+                  "redacted": true
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bf4227db-de23-47e5-a07f-8fcf9596c7d1",
+      "type": "user",
+      "timestamp": "2026-09-17T08:39:59.630Z",
+      "content": [
+        {
+          "functionResponse": {
+            "id": "update_topic__update_topic_1789634397665_0",
+            "name": "update_topic",
+            "response": {
+              "redacted": true
+            }
+          }
+        },
+        {
+          "functionResponse": {
+            "id": "run_shell_command__run_shell_command_1789634397992_1",
+            "name": "run_shell_command",
+            "response": {
+              "redacted": true
+            }
+          }
+        },
+        {
+          "functionResponse": {
+            "id": "google_web_search__google_web_search_1789634398046_2",
+            "name": "google_web_search",
+            "response": {
+              "redacted": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "abfe3550-4f14-4ad5-877a-d6983a801361",
+      "type": "gemini",
+      "timestamp": "2026-09-17T08:40:00.731Z",
+      "content": "[TEXT]",
+      "thoughts": []
+    },
+    {
+      "id": "ca35c9a2-e3fe-42a3-b7f9-f52a396e2b25",
+      "type": "user",
+      "timestamp": "2026-09-17T08:40:01.988Z",
+      "content": [
+        {
+          "functionResponse": {
+            "id": "run_shell_command__run_shell_command_1789634400699_0",
+            "name": "run_shell_command",
+            "response": {
+              "redacted": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "3791fdc3-a526-4d48-863d-9af52291356b",
+      "type": "gemini",
+      "timestamp": "2026-09-17T08:40:03.554Z",
+      "content": "[TEXT]",
+      "thoughts": []
+    }
+  ]
+}
