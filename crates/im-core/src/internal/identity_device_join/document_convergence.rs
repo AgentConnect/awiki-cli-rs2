@@ -57,8 +57,7 @@ pub(crate) async fn refresh_admin_document(
         .ok_or(crate::ImError::PermissionDenied)?;
     // The caller may hold the revoke mutex. Reuse its validated client: opening
     // another client would run pending-revoke recovery and acquire that mutex again.
-    let prepared =
-        prepare_admin_projection_context_for_client(core, client, &registry.checkpoint)?;
+    let prepared = prepare_admin_projection_context_for_client(core, client, &registry.checkpoint)?;
     let mut expected_state = expected
         .device_state
         .clone()
