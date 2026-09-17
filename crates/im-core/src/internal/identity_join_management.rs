@@ -83,6 +83,7 @@ impl ManagementTask {
 trait TaskIo: Send {
     fn now_ms(&self) -> i64;
     fn accepted_locally(&mut self) -> crate::ImResult<bool>;
+    fn delivery_expired(&mut self) -> crate::ImResult<bool>;
     fn persist(&mut self, task: &ManagementTask) -> crate::ImResult<()>;
     async fn registered(&mut self) -> crate::identity::RootKeyTransferResult<bool>;
     async fn send(&mut self) -> crate::identity::RootKeyTransferResult<()>;
@@ -125,6 +126,10 @@ async fn advance_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate:
             Err(_) => {}
         }
     }
+    if io.delivery_expired()? {
+        task.failed_attempt(io.now_ms(), "root_transfer.delivery_expired", false);
+        return io.persist(task);
+    }
     if matches!(
         task.phase,
         ManagementPhase::WaitingForRecipient | ManagementPhase::ManagementRegistered
@@ -154,6 +159,10 @@ async fn retry_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::I
     if registered {
         task.phase = ManagementPhase::ManagementRegistered;
         task.failure_code = None;
+    } else if io.delivery_expired()? {
+        task.failed_attempt(io.now_ms(), "root_transfer.delivery_expired", false);
+        io.persist(task)?;
+        return Err(crate::ImError::PermissionDenied);
     } else if io.accepted_locally()? {
         task.accepted();
     } else if task.phase == ManagementPhase::Failed {
@@ -236,6 +245,9 @@ mod runtime {
         }
         fn accepted_locally(&mut self) -> crate::ImResult<bool> {
             transfer::join_delivery_accepted(self.client, &self.join.recipient_device_id)
+        }
+        fn delivery_expired(&mut self) -> crate::ImResult<bool> {
+            transfer::join_delivery_expired(self.client, &self.join.recipient_device_id)
         }
         fn persist(&mut self, task: &ManagementTask) -> crate::ImResult<()> {
             self.join.task = task.clone();

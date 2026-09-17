@@ -485,6 +485,78 @@ pub(crate) fn join_delivery_accepted(
     ))
 }
 
+/// Inspect only the sender ledger; never export or decrypt root material.
+/// Pending delivery may have been accepted despite a lost response, so expiry
+/// must not retire its message ID or authorize a replacement ciphertext.
+pub(crate) fn join_delivery_expired(
+    client: &crate::core::ImClient,
+    recipient: &str,
+) -> crate::ImResult<bool> {
+    let core = client.core_handle();
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    delivery_expired_with_connection(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        client.exact_protocol_device_id()?.as_str(),
+        recipient,
+        OffsetDateTime::now_utc(),
+    )
+}
+
+fn delivery_expired_with_connection(
+    connection: &rusqlite::Connection,
+    owner: &str,
+    did: &str,
+    sender: &str,
+    recipient: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<bool> {
+    let mut query = connection
+        .prepare(
+            "SELECT phase, created_at, accepted_at FROM identity_root_transfer_sender_v1
+         WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
+         AND recipient_device_id = ?4 AND phase IN ('pending_delivery', 'sent')",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = query
+        .query_map(rusqlite::params![owner, did, sender, recipient], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if rows.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let Some((phase, created, accepted)) = rows.first() else {
+        return Ok(false);
+    };
+    let parse = |value: &str| {
+        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| crate::ImError::PermissionDenied)
+    };
+    let deadline = parse(created)?
+        .checked_add(Duration::seconds(ROOT_TRANSFER_ENVELOPE_TTL_SECONDS))
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if phase == "sent" {
+        // V2 can import arbitrarily late if the service accepted on time.
+        Ok(parse(
+            accepted
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )? > deadline)
+    } else {
+        Ok(now > deadline)
+    }
+}
+
 pub(crate) async fn join_management_registered(
     client: &crate::core::ImClient,
     join: &crate::internal::identity_device_join::management::AuthorizedManagementJoin,
@@ -652,6 +724,11 @@ async fn send_authorized_root_key_transfer(
         V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), local_state)
             .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     if let PreparedRootDelivery::ResumePending { message_id } = &state.delivery {
+        if join_delivery_expired(client, &recipient.device_id)
+            .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?
+        {
+            return Err(root_error(RootTransferErrorCode::StateChanged));
+        }
         let prepared = with_v2_runtime(&core, &scope, |direct| {
             direct.resume_outbound_for_exact_device(message_id.as_str(), &recipient.device_id)
         })
@@ -1689,3 +1766,7 @@ PRIMARY KEY (owner_identity_id, local_device_id, message_id)
         );
     }
 }
+
+#[cfg(test)]
+#[path = "identity_root_transfer_expiry_tests.rs"]
+mod expiry_tests;

@@ -67,6 +67,7 @@ struct FakeIo {
     local_accepted: bool,
     remote_registered: bool,
     persist_fails: bool,
+    expired: bool,
 }
 impl FakeIo {
     fn new(codes: &[Option<crate::identity::RootKeyTransferErrorCode>]) -> Self {
@@ -85,6 +86,7 @@ impl FakeIo {
             local_accepted: false,
             remote_registered: false,
             persist_fails: false,
+            expired: false,
         }
     }
 }
@@ -95,6 +97,9 @@ impl TaskIo for FakeIo {
     }
     fn accepted_locally(&mut self) -> crate::ImResult<bool> {
         Ok(self.local_accepted)
+    }
+    fn delivery_expired(&mut self) -> crate::ImResult<bool> {
+        Ok(self.expired)
     }
     fn persist(&mut self, task: &ManagementTask) -> crate::ImResult<()> {
         if self.persist_fails {
@@ -212,4 +217,37 @@ async fn manual_retry_reconciles_acceptance_before_starting_a_new_bounded_round(
     advance_task(&mut exhausted, &mut io).await.unwrap();
     assert_eq!(exhausted.attempts, 1);
     assert_eq!(io.sends.len(), 1);
+}
+
+#[tokio::test]
+async fn expired_delivery_stops_waiting_and_cannot_refund_budget_or_resend() {
+    for accepted in [false, true] {
+        let mut io = FakeIo::new(&[]);
+        io.local_accepted = accepted;
+        io.expired = true;
+        let mut task = ManagementTask::authorized();
+        task.attempts = 2;
+        task.phase = if accepted {
+            ManagementPhase::WaitingForRecipient
+        } else {
+            ManagementPhase::Scheduled
+        };
+        advance_task(&mut task, &mut io).await.unwrap();
+        assert_eq!(task.phase, ManagementPhase::Failed);
+        assert_eq!(
+            task.failure_code.as_deref(),
+            Some("root_transfer.delivery_expired")
+        );
+        let mut restored = io.saved.clone().unwrap();
+        assert!(retry_task(&mut restored, &mut io).await.is_err());
+        advance_task(&mut restored, &mut io).await.unwrap();
+        assert_eq!(restored.phase, ManagementPhase::Failed);
+        assert_eq!(restored.attempts, 2);
+        assert!(io.sends.is_empty());
+        // A lost response is not proof that the recipient did not import.
+        io.remote_registered = true;
+        advance_task(&mut restored, &mut io).await.unwrap();
+        assert_eq!(restored.phase, ManagementPhase::ManagementRegistered);
+        assert!(io.sends.is_empty());
+    }
 }
