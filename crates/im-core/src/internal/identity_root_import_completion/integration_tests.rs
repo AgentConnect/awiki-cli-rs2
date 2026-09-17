@@ -369,6 +369,7 @@ fn open_actor(root: &Path, domain: &str, actor: &str) -> crate::ImCore {
 struct Fixture {
     root: tempfile::TempDir,
     cfg: Config,
+    root_private_pem: zeroize::Zeroizing<String>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -670,7 +671,11 @@ async fn fixture(delay: i64) -> Fixture {
         state.preflight_delay_once = 7;
     });
     register(root.path());
-    Fixture { root, cfg }
+    Fixture {
+        root,
+        cfg,
+        root_private_pem: zeroize::Zeroizing::new(a.root_private_pem),
+    }
 }
 
 struct Child(std::process::Child);
@@ -782,6 +787,102 @@ async fn assert_promoted(fixture: &Fixture) {
         assert!(state.completed);
         assert_eq!(state.commits, 1);
     });
+}
+
+#[tokio::test]
+async fn completed_root_recovery_preserves_later_device_publications() {
+    let fixture = fixture(1).await;
+    assert!(wait_child(&mut child(fixture.root.path())).await.success());
+    assert_promoted(&fixture).await;
+    let core = open_actor(fixture.root.path(), &fixture.cfg.domain, "receiver");
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let entry = local_device_entry(&core, &client).unwrap();
+    let mut state = entry.device_state.clone().unwrap();
+    let mut checkpoint = state.checkpoint.clone().unwrap();
+    let mut document = fixture.cfg.document.clone();
+    document["alsoKnownAs"] = serde_json::json!(["https://example.test/after-device-join"]);
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut document,
+        client.did(),
+        &fixture.root_private_pem,
+    )
+    .unwrap();
+    checkpoint.document_version += 1;
+    checkpoint.registry_version += 1;
+    checkpoint.document_hash =
+        crate::internal::identity_wire::document::document_hash(&document).unwrap();
+    crate::internal::identity_custody::adopt_sibling_controller_document_async(
+        &core,
+        client.did(),
+        entry.anp_identity_store_id.as_deref().unwrap(),
+        entry.anp_identity_id.as_deref().unwrap(),
+        &document,
+        &checkpoint,
+    )
+    .await
+    .unwrap();
+    let store = IdentityStore::new(&core.inner().sdk_paths().identities);
+    let alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .unwrap_or(client.current_identity().id.as_str());
+    state.checkpoint = Some(checkpoint.clone());
+    store.save_did_document(&entry.dir_name, &document).unwrap();
+    store.save_device_state(alias, state.clone()).unwrap();
+
+    // A completed import is still replayed by secure Inbox hydration. Replaying
+    // it must preserve a later, verified sibling publication and active custody.
+    for _ in 0..2 {
+        recover_root_import_completions(&client).await.unwrap();
+        let current = local_device_entry(&core, &client).unwrap();
+        assert_eq!(
+            current.device_state.unwrap().checkpoint,
+            Some(checkpoint.clone())
+        );
+        assert_eq!(
+            client.runtime().key_provider.did_document().unwrap(),
+            document
+        );
+    }
+    assert_promoted(&fixture).await;
+
+    // A forward Registry counter does not authorize a same-version document
+    // replacement, nor may a newer document hide a Registry rollback.
+    for invalid in [
+        IdentityInternalCheckpoint {
+            document_version: checkpoint.document_version - 1,
+            ..checkpoint.clone()
+        },
+        IdentityInternalCheckpoint {
+            registry_version: checkpoint.registry_version - 2,
+            ..checkpoint.clone()
+        },
+    ] {
+        let mut invalid_state = state.clone();
+        invalid_state.checkpoint = Some(invalid);
+        store
+            .save_device_state(alias, invalid_state.clone())
+            .unwrap();
+        assert!(recover_root_import_completions(&client).await.is_err());
+        assert_eq!(
+            local_device_entry(&core, &client).unwrap().device_state,
+            Some(invalid_state)
+        );
+    }
+
+    // The historical import must never reactivate a device whose current
+    // authorization is revoked, even if its old root is still locally present.
+    state.authorization.as_mut().unwrap().status = DeviceAuthorizationStatus::Revoked;
+    state.authorization.as_mut().unwrap().management_ready = false;
+    store.save_device_state(alias, state.clone()).unwrap();
+    assert!(recover_root_import_completions(&client).await.is_err());
+    assert_eq!(
+        local_device_entry(&core, &client).unwrap().device_state,
+        Some(state)
+    );
 }
 
 fn persisted_import_time(fixture: &Fixture) -> Option<String> {

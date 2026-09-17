@@ -677,6 +677,8 @@ later phase, without regressing it; mismatched bindings or terminal states remai
 conflicts. Network awaits are followed by a fresh coordinator read. A local
 completion conflict is not reported as revoked device permission.
 
+已完成的 Root 导入在消息读取时再次恢复，必须保留之后合法加入、撤销设备所提交的当前文档与 checkpoint。只有本机仍为同一 active/admin/management_ready 设备、auth generation 与已确认晋升一致、文档与 Registry 版本均不低于导入记录时，才使用已验证的当前 checkpoint；同版本换摘要、任一计数回退或撤销状态均拒绝。当前文档仍须匹配本地 checkpoint，并由原 custody 身份核验根指纹和 active Root 能力。历史回执不能覆盖新文档，也不能重新激活已撤销设备；原有初次晋升和崩溃恢复继续使用精确导入回执。
+
 There is no root-specific delivery class, private completion sidecar, encrypted
 imported ACK, ACK-driven readiness, empty-Init phase, or root-transfer rollout
 state machine in the target architecture. P5 Reply only converges the standard
