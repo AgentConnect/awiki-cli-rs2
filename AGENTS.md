@@ -17,8 +17,8 @@ If Harness is absent, use local docs/tests/CI and disclose missing acceptance ev
   - 公共 facade/DTO/错误、升级入口：查 [公共 API](docs/api/im-core-public-api.md) 中受影响模块或 `Core open 前的 local-state 升级与恢复`。
   - Dart/Flutter binding、生命周期或宿主调用：查 [Flutter SDK](docs/flutter-sdk/awiki-im-core-flutter-sdk.md) 的对应功能章节；纯 Core 内部变化无需额外通读 Flutter 文档。
   - 跨越多个职责或仍有契约疑问时，再扩展到相邻章节和调用方。
-- 需要把本地工作区的 `awiki-deamon` 编译后通过本机 Nginx 暴露给联调时，使用 `scripts/release/daemon/publish-local-nginx.sh`。默认命令 `scripts/release/daemon/publish-local-nginx.sh` 会编译当前主机平台包并发布到 `/var/www/awiki-web/daemon-local`，对外地址为 `https://awiki.info/daemon-local`，不覆盖正式 `/daemon` 通道。联调安装示例：`curl -fsSL https://awiki.info/daemon-local/install.sh | sh -s -- --token <token> --state-root /tmp/awiki-daemon-local --foreground`。
-- 如果用户明确要求本地编译产物也通过正式线上 daemon 地址访问，使用 `scripts/release/daemon/publish-local-nginx.sh --official`。该模式会把当前主机平台包发布到 `https://awiki.info/daemon/releases/<version>/...`，并合并现有正式 manifest；默认保留正式 manifest 的 `latest`/`min_supported`，所以安装联调包时需要显式加 `--version <version>`，例如：`curl -fsSL https://awiki.info/daemon/install.sh | sh -s -- --token <token> --version <version> --state-root /tmp/awiki-daemon-local --foreground`。
-- 不要随意使用 `scripts/release/daemon/publish-local-nginx.sh --official --promote-latest`。该选项会把正式 manifest 的 `latest`/`min_supported` 提升到本地版本；只有确认该版本所有正式支持平台包都已存在，或用户明确接受当前只有单平台包的影响时才可使用。
+- 临时源码构建使用 `scripts/release/daemon/_build-artifact.sh --local-core`，合同见 `docs/publish.md` 的“临时集成当前 Core 源码”。该模式在隔离的已提交源码中集成 Core，ANP/Identity 仍为固定 registry 版本，并使用独立提交的 `local-core.Cargo.lock`；默认入口继续强制 registry SDK。
+- 2026-09-17 用户明确授权本次新加坡 ACP 测试用源码包经 `https://anpclaw.com/daemon` 发布，仅提供 macOS arm64、Linux amd64。可使用 `_stage-downloads.sh --allow-partial`；保留最低支持版本及旧包，更新公网 manifest 与租户推荐政策。APP 原命令的最终人工安装验收由用户执行，不要求其他平台。
+- 历史 `publish-local-nginx.sh` 已删除，不再引用它作为可执行发布入口。其他临时源码或不完整平台发布仍必须匹配用户明确的范围，不能静默绕过默认正式 registry 流程。
 - 测试代码尽量不要放到业务代码文件中。优先放在 `tests/`、`crates/<crate>/tests/` 等独立测试目录；确实需要访问私有 helper 的单元测试，可放到相邻的 `*_tests.rs` / `tests.rs` 测试专用文件中，并在业务文件里只保留最小的 `#[cfg(test)] mod tests;` 引用。
 - 发布 `awiki-deamon` 下载通道时，`scripts/release/daemon/publish-multi-platform.toml` 的 `base_url` 必须与签发 Daemon registration token 的 user-service 域名一致，例如 awiki.info 环境使用 `https://awiki.info`。`download_base_url` 默认应为同域 `/daemon`；镜像只作为备用下载源，不应让 installer 默认把 awiki.info token 发送到 awiki.ai 验证。
