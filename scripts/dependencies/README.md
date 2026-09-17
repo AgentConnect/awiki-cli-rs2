@@ -108,3 +108,12 @@ registry 来源验证或真实账号恢复验收。
 更新清单后，按 `--deps source --source-manifest dependencies.source.json --refresh-lock`
 重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
 Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。
+
+### 指定已提交消费者源码构建
+
+registry-build.py使用指定提交的Git归档构建输入，不再创建worktree/clone。默认仍
+要求tracked源码已提交。主目录存在其他任务修改时，可显式传
+`--source-commit <完整40位SHA> -- cargo build --release -p awiki-cli`；仅消费该提交，
+不会带入dirty文件，registry pin/lock与实际metadata检查保持。构建输入的
+`.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
+归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。

@@ -284,6 +284,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
     enforce_command_policy(command)?;
 
     match command.name.as_str() {
+        "http.request" => app.run_http_request_async(command).await,
         "init" => app.run_init_async().await,
         "onboarding.claim" => app.run_onboarding_claim_async(command).await,
         "onboarding.resume" => app.run_onboarding_resume_async(command).await,
@@ -725,3 +726,7 @@ fn async_only_error(command: &str) -> ExitError {
         "Use the async CLI entrypoint.",
     )
 }
+
+#[cfg(test)]
+#[path = "http_request_tests.rs"]
+mod http_request_tests;

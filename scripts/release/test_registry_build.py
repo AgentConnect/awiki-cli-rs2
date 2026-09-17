@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -70,6 +71,26 @@ class RegistryBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Commit tracked'):
                 build.prepare(Path(temp), Path(temp) / 'new', VERSIONS, ['cargo'])
             self.assertEqual(run.call_count, 1)
+
+    def test_committed_archive_excludes_dirty_files_without_a_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'repo';root.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git',*args],cwd=root,text=True,stderr=subprocess.DEVNULL).strip()
+            git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
+            (root/'source.rs').write_text('committed')
+            git('add','source.rs');git('commit','-qm','Fixture source')
+            commit=git('rev-parse','HEAD');before=git('worktree','list','--porcelain')
+            (root/'source.rs').write_text('unrelated work in progress')
+            (root/'untracked.rs').write_text('private development')
+            target=Path(temp)/'artifact-input'
+            build.export_commit(root,target,commit)
+            self.assertEqual((target/'source.rs').read_text(),'committed')
+            self.assertFalse((target/'untracked.rs').exists())
+            self.assertFalse((target/'.git').exists())
+            self.assertEqual(git('worktree','list','--porcelain'),before)
+            self.assertEqual((root/'source.rs').read_text(),'unrelated work in progress')
+            self.assertEqual(json.loads((target/'.awiki-source.json').read_text())['commit'],commit)
 
     def test_release_entrypoints_use_registry_mode(self):
         root = SCRIPT.parents[2]
