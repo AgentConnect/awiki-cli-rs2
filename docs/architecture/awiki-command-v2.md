@@ -112,6 +112,7 @@ awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example -
 awiki-cli id list
 awiki-cli id current
 awiki-cli id use alice
+awiki-cli --identity alice id logout
 awiki-cli id status
 awiki-cli id register --handle alice
 awiki-cli id bind --email alice@example.com
@@ -125,6 +126,7 @@ awiki-cli id profile set --markdown-file ./profile.md
 - `id` 命令的业务能力归 `im-core::identity` 和 `im-core::auth`。
 - CLI 负责参数解析、OTP 输入、文件读取、default identity 文件写入、dry-run 和输出。
 - `--identity` 是全局选择参数，用于选择本次命令读取/操作哪个本地身份；切换默认身份使用 `awiki-cli id use <identity>`。
+- `id logout` 必须显式指定身份，拒绝默认选择；复用 Core 的 credential-only retirement，保留业务数据，不撤销远端设备。原目录重新加入步骤见 [本地退出与重新加入](../cli-local-logout.zh-CN.md)。
 - 私钥、JWT、DID document 写入细节不进入普通输出。
 
 ## 6. Messaging

@@ -484,6 +484,7 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "id.import-v1",
         "id.bind",
         "id.refresh-token",
+        "id.logout",
         "id.resolve",
         "id.profile.get",
         "id.profile.set",
