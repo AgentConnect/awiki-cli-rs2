@@ -2472,6 +2472,7 @@ extension on AwikiImCoreConfig {
     mailServiceEndpoint: mailServiceEndpoint,
     anpServiceEndpoint: anpServiceEndpoint,
     anpServiceDid: anpServiceDid,
+    caBundle: caBundle,
     transportPolicy: transportPolicy._toGen(),
   );
 }

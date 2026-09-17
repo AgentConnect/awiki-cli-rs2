@@ -140,6 +140,12 @@ Me's few direct User Service HTTP adapters reuse the same package facts. All new
 User Service requests target `/user-service/v1/...` without an unversioned
 fallback.
 
+`AwikiImCoreConfig.caBundle` 可选指定本地 PEM CA 文件，透传到 Core 已有
+`ca_bundle` 配置。未指定时维持默认信任根；指定后追加信任根，仍验证证书链与
+目标主机名，不提供关闭 TLS 校验的开关。该配置用于显式私有 CA 环境（包括本地
+HTTPS DID 解析验收），不写入 DID 文档或跨域协议。Dart 绑定与 native bridge
+必须成对重新生成/构建，不能混用旧 ABI 制品。
+
 After the remote and local identity commits, exact-device P5 PreKey publication
 is a recoverable completion step. When Group E2EE v2 is enabled, Core also
 publishes a deterministic, retry-safe P6 KeyPackage family for the bootstrap

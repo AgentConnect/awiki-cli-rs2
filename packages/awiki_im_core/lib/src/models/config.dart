@@ -14,6 +14,7 @@ class AwikiImCoreConfig {
     this.mailServiceEndpoint,
     this.anpServiceEndpoint,
     this.anpServiceDid,
+    this.caBundle,
     this.transportPolicy = MessageTransportPolicy.auto,
   });
 
@@ -25,6 +26,8 @@ class AwikiImCoreConfig {
   final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
+  /// PEM roots added to Core's trust store; TLS verification remains enabled.
+  final String? caBundle;
   final MessageTransportPolicy transportPolicy;
 }
 

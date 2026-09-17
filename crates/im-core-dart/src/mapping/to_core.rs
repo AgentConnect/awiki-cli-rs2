@@ -55,6 +55,7 @@ impl TryFrom<DartImCoreConfig> for im_core::ImCoreConfig {
             .transpose()
             .map_err(DartImError::from)?;
         config.transport_policy = value.transport_policy.into();
+        config.ca_bundle = value.ca_bundle;
         Ok(config)
     }
 }
