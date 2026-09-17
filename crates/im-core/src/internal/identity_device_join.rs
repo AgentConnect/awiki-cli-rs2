@@ -1656,6 +1656,11 @@ pub(crate) async fn prepare_admin_approval_with_management_async(
     )
     .await?;
     if client.runtime().identity_session.is_none() {
+        if configure_management {
+            return Err(crate::ImError::UnsupportedCapability {
+                capability: "device_join_automatic_management".to_owned(),
+            });
+        }
         return prepare_admin_approval(
             core,
             &operation_id,

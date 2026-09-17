@@ -1175,6 +1175,7 @@ impl NativeImCoreNodeClient {
         Ok(statuses
             .into_iter()
             .map(|status| NodeDeviceJoinManagementStatus {
+                next_attempt_at_ms: status.next_attempt_at_ms,
                 failure_code: status.failure_code,
                 join_session_id: status.join_session_id,
                 recipient_device_id: status.recipient_device_id,

@@ -1193,6 +1193,55 @@ async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     );
     assert_eq!(progress.sas.as_deref(), Some(verified.sas.as_str()));
     assert!(progress.authorized_device.is_none());
+
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash: canonical_hash(
+            &core
+                .client(crate::identity::IdentitySelector::Default)
+                .unwrap()
+                .runtime()
+                .key_provider
+                .did_document()
+                .unwrap(),
+        )
+        .unwrap(),
+        registry_version: 3,
+    };
+    let presence = format_time(OffsetDateTime::now_utc()).unwrap();
+    let error = prepare_admin_approval_with_management_async(
+        &core,
+        "unsupported-auto-approval",
+        &started.session.join_session_id,
+        &checkpoint,
+        &presence,
+        true,
+        true,
+    )
+    .await
+    .expect_err("automatic management must not downgrade to ordinary Join");
+    assert!(matches!(
+        error,
+        crate::ImError::UnsupportedCapability { .. }
+    ));
+    let unchanged = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged, before);
+    // The legacy explicit member API remains available, with no root authority.
+    let ordinary = prepare_admin_approval_with_management_async(
+        &core,
+        "ordinary-approval",
+        &started.session.join_session_id,
+        &checkpoint,
+        &presence,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!ordinary.new_document.is_null());
 }
 
 #[cfg(feature = "provider-traits")]

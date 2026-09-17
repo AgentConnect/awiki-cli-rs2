@@ -1041,7 +1041,7 @@ export interface ImCoreNodeClient {
   prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   confirmDeviceJoinWithManagement(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
-  deviceJoinManagementStatus(): Promise<ReadonlyArray<{ readonly joinSessionId: string; readonly recipientDeviceId: string; readonly phase: string; readonly attempts: number; readonly failureCode?: string }>>
+  deviceJoinManagementStatus(): Promise<ReadonlyArray<{ readonly joinSessionId: string; readonly recipientDeviceId: string; readonly phase: string; readonly attempts: number; readonly nextAttemptAtMs: number; readonly failureCode?: string }>>
   retryDeviceJoinManagement(input: { readonly joinSessionId: string }): Promise<void>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>

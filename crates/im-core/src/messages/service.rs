@@ -3098,9 +3098,16 @@ impl<'a> MessageService<'a> {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
             let db = self.client.core_inner().local_state_db().await?;
             if db
-                .lane_capability_negotiation_required(
+                .lane_capability_negotiation_required_with_lanes(
                     binding.owner_identity_id.clone(),
                     binding.device_auth_generation.clone(),
+                    Some(
+                        crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                            &db,
+                            &binding.owner_identity_id,
+                        )
+                        .await?,
+                    ),
                 )
                 .await?
             {

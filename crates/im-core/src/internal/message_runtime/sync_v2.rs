@@ -2917,10 +2917,19 @@ async fn reconcile_explicit_lane_negotiation(
     .await
 }
 
-async fn desired_v1b_lanes(
+pub(crate) async fn desired_v1b_lanes(
     db: &crate::internal::local_state::actor::LocalStateDb,
     owner_identity_id: &str,
 ) -> crate::ImResult<BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>> {
+    Ok(desired_v1b_lanes_from_transport_states(
+        db.load_lane_transport_states(owner_identity_id.to_owned())
+            .await?,
+    ))
+}
+
+pub(crate) fn desired_v1b_lanes_from_transport_states(
+    states: Vec<crate::internal::local_state::sync_v2::SyncLaneTransportState>,
+) -> BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3> {
     use crate::internal::wire::sync_v2::SyncLaneV3;
     // Compile-time features declare what this Core implementation can consume;
     // they do not activate a lane or bypass explicit Service negotiation. The
@@ -2934,10 +2943,7 @@ async fn desired_v1b_lanes(
     lanes.insert(SyncLaneV3::P5Device);
     #[cfg(feature = "group-e2ee")]
     lanes.insert(SyncLaneV3::P6Group);
-    for state in db
-        .load_lane_transport_states(owner_identity_id.to_owned())
-        .await?
-    {
+    for state in states {
         let not_ready = state.last_transport_error.as_deref() == Some("lane_consumer_not_ready")
             || (state.lane == SyncLaneV3::P6Group
                 && state.last_transport_error.as_deref() == Some("lane_migration_repair_required"));
@@ -2945,7 +2951,7 @@ async fn desired_v1b_lanes(
             lanes.remove(&state.lane);
         }
     }
-    Ok(lanes)
+    lanes
 }
 
 fn negotiated_lane_capabilities_json(

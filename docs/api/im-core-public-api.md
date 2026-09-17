@@ -2091,3 +2091,8 @@ CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Cor
 - `resume_device_join_management(selector)`：前台等待已运行 worker，继续原预算；进程退出后不承诺发网。
 - `retry_device_join_management(selector, join_session_id)`：权威对账成功后才允许新的有界轮次。
 - 单次 HTTP 复用 connect 10s / response 30s，整个发送尝试另有 60s 上限；5s 是可重试失败结束后的退避。
+
+
+### 自动管理 Join 的能力与状态边界
+
+`confirm_device_join_with_management` 要求支持管理授权的 identity session；不支持时在准备/提交批准前返回 `unsupported_capability`，不得降级成普通 member Join。独立普通 Join API 保持兼容。Node `deviceJoinManagementStatus` 透传 `nextAttemptAtMs`（Unix 毫秒），与 Core 的失败完成后 5 秒重试时刻一致。升级后的 hydrate、realtime 和 inbox/read 与 sync 共用当前消费者能力集合，历史空 lane 协商不能绕过 P5 bootstrap。
