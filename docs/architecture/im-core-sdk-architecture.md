@@ -1714,3 +1714,5 @@ Conversation-level read state is separate from reliable sync checkpoints:
 V2原消息仍须在600秒投递窗口内被接受；接收端可在原checkpoint/设备/密钥/权限仍完全一致时延迟导入。真实首次导入操作开始时间在provider调用前原子保存，provider内部seal时刻仍归provider日志。无秘密identity_root_import_plan_v2绑定owner/DID/device/message、加密输入/route摘要和全部原身份事实。provider后/handoff前崩溃复用原计划与evidence；handoff与计划阶段同事务，所有接收/恢复入口共享OS锁。
 
 completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；只有原请求重放明确返回expired后，才CAS保存同nonce/imported_at/原checkpoint的新证明。服务端稳定intent键与锁内时钟保证旧/新证明并发只晋升一次。发送接受不代表本地Root active；现有token/Registry/pending-to-active确认链保持。服务端接口见User Service docs/api/root-import-completion-v2.md。
+
+自动管理任务在 P5 密文与 pending 账本的同一事务内记录非秘密发送 checkpoint。当前可信 Registry 与该 checkpoint 不一致且目标尚未成为 active admin 时，任务以 `root_transfer.delivery_invalidated` 结束，提示撤销成员后重新加入；不重新发送已接受的密文，不重置三次预算，不放宽接收校验。目标已管理就绪优先判定成功，因为晋升本身会推进 Registry。旧账本缺少此字段时不猜测发送版本，保留原状态并明确旧现场尚不能自动诊断。

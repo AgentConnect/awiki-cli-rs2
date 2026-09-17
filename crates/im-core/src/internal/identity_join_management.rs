@@ -152,10 +152,17 @@ async fn advance_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate:
 
 async fn retry_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::ImResult<()> {
     // Failure to reconcile leaves the previous round untouched.
-    let registered = io
-        .registered()
-        .await
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let registered = match io.registered().await {
+        Ok(value) => value,
+        Err(error)
+            if error.code == crate::identity::RootKeyTransferErrorCode::DeliveryInvalidated =>
+        {
+            task.failed_attempt(io.now_ms(), &error.to_string(), false);
+            io.persist(task)?;
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Err(_) => return Err(crate::ImError::PermissionDenied),
+    };
     if registered {
         task.phase = ManagementPhase::ManagementRegistered;
         task.failure_code = None;

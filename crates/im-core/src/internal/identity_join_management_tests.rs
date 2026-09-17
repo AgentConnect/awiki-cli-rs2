@@ -66,6 +66,7 @@ struct FakeIo {
     sends: Vec<i64>,
     local_accepted: bool,
     remote_registered: bool,
+    registry_error: Option<crate::identity::RootKeyTransferErrorCode>,
     persist_fails: bool,
     expired: bool,
 }
@@ -85,6 +86,7 @@ impl FakeIo {
             sends: vec![],
             local_accepted: false,
             remote_registered: false,
+            registry_error: None,
             persist_fails: false,
             expired: false,
         }
@@ -110,6 +112,9 @@ impl TaskIo for FakeIo {
         Ok(())
     }
     async fn registered(&mut self) -> crate::identity::RootKeyTransferResult<bool> {
+        if let Some(code) = self.registry_error {
+            return Err(crate::identity::RootKeyTransferError::new(code));
+        }
         Ok(self.remote_registered)
     }
     async fn send(&mut self) -> crate::identity::RootKeyTransferResult<()> {
@@ -250,4 +255,30 @@ async fn expired_delivery_stops_waiting_and_cannot_refund_budget_or_resend() {
         assert_eq!(restored.phase, ManagementPhase::ManagementRegistered);
         assert!(io.sends.is_empty());
     }
+}
+
+#[tokio::test]
+async fn accepted_checkpoint_invalidated_survives_restart_and_rejects_explicit_retry() {
+    let mut io = FakeIo::new(&[None]);
+    let mut task = ManagementTask::authorized();
+    advance_task(&mut task, &mut io).await.unwrap();
+    assert_eq!(task.phase, ManagementPhase::WaitingForRecipient);
+    io.registry_error = Some(crate::identity::RootKeyTransferErrorCode::DeliveryInvalidated);
+    for _ in 0..3 {
+        task = io.saved.clone().unwrap();
+        advance_task(&mut task, &mut io).await.unwrap();
+        assert_eq!(task.phase, ManagementPhase::Failed);
+        assert_eq!(
+            task.failure_code.as_deref(),
+            Some("root_transfer.delivery_invalidated")
+        );
+        assert_eq!(task.attempts, 1);
+        assert!(retry_task(&mut task, &mut io).await.is_err());
+    }
+    assert_eq!(io.sends.len(), 1);
+    io.registry_error = None;
+    io.remote_registered = true;
+    advance_task(&mut task, &mut io).await.unwrap();
+    assert_eq!(task.phase, ManagementPhase::ManagementRegistered);
+    assert_eq!(io.sends.len(), 1);
 }

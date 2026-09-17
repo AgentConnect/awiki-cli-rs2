@@ -2096,3 +2096,5 @@ CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Cor
 ### 自动管理 Join 的能力与状态边界
 
 `confirm_device_join_with_management` 要求支持管理授权的 identity session；不支持时在准备/提交批准前返回 `unsupported_capability`，不得降级成普通 member Join。独立普通 Join API 保持兼容。Node `deviceJoinManagementStatus` 透传 `nextAttemptAtMs`（Unix 毫秒），与 Core 的失败完成后 5 秒重试时刻一致。升级后的 hydrate、realtime 和 inbox/read 与 sync 共用当前消费者能力集合，历史空 lane 协商不能绕过 P5 bootstrap。
+
+自动设备管理任务的 `root_transfer.delivery_invalidated` 表示已准备的根密钥投递绑定版本失效；宿主提示管理设备撤销该成员后重新加入，不提供普通重试按钮。此错误不授权删除账本或重建密文。

@@ -603,7 +603,64 @@ pub(crate) async fn join_management_registered(
     {
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
-    Ok(recipient.role == DeviceAuthorizationRole::Admin && recipient.management_ready)
+    // A completed promotion itself advances the registry. Check success first.
+    if recipient.role == DeviceAuthorizationRole::Admin && recipient.management_ready {
+        return Ok(true);
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    ensure_sender_envelope_format_column_with_connection(&connection)
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    if delivery_checkpoint_changed(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        &join.authorizing_device_id,
+        &join.recipient_device_id,
+        &registry.checkpoint,
+    )
+    .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?
+    {
+        return Err(root_error(RootTransferErrorCode::DeliveryInvalidated));
+    }
+    Ok(false)
+}
+
+fn delivery_checkpoint_changed(
+    connection: &rusqlite::Connection,
+    owner: &str,
+    did: &str,
+    sender: &str,
+    recipient: &str,
+    current: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<bool> {
+    let mut query = connection
+        .prepare(
+            "SELECT transfer_checkpoint_json FROM identity_root_transfer_sender_v1
+         WHERE owner_identity_id=?1 AND owner_did=?2 AND local_device_id=?3
+         AND recipient_device_id=?4 AND phase IN ('pending_delivery','sent')",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = query
+        .query_map(rusqlite::params![owner, did, sender, recipient], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if rows.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    // Older ledgers cannot prove the checkpoint of their immutable ciphertext.
+    // Never infer it from today's Join record or rewrite the accepted message.
+    let Some(Some(encoded)) = rows.first() else {
+        return Ok(false);
+    };
+    let sent: crate::internal::identity_device_state::IdentityInternalCheckpoint =
+        serde_json::from_str(encoded).map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(&sent != current)
 }
 
 fn generate_root_key_transfer_message_id() -> String {
@@ -889,6 +946,7 @@ async fn send_authorized_root_key_transfer(
                         message_id.as_str(),
                         &recipient.device_id,
                         &now,
+                        &registry.checkpoint,
                     )
                 },
             ),
@@ -918,6 +976,7 @@ async fn send_authorized_root_key_transfer(
                         message_id.as_str(),
                         &recipient.device_id,
                         &now,
+                        &registry.checkpoint,
                     )
                 },
             )
@@ -1040,6 +1099,7 @@ fn root_key_transfer_send_result(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_sender_delivery_pending_tx(
     transaction: &rusqlite::Transaction<'_>,
     owner_identity_id: &str,
@@ -1048,13 +1108,16 @@ fn persist_sender_delivery_pending_tx(
     message_id: &str,
     recipient_device_id: &str,
     now: &str,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
+    let checkpoint_json =
+        serde_json::to_string(checkpoint).map_err(|_| crate::ImError::PermissionDenied)?;
     transaction
         .execute(
             r#"INSERT INTO identity_root_transfer_sender_v1 (
 owner_identity_id, owner_did, local_device_id, message_id,
-recipient_device_id, envelope_format, phase, created_at, updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_v1', 'pending_delivery', ?6, ?6)
+recipient_device_id, envelope_format, phase, created_at, updated_at, transfer_checkpoint_json
+) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_v1', 'pending_delivery', ?6, ?6, ?7)
 ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             rusqlite::params![
                 owner_identity_id,
@@ -1063,6 +1126,7 @@ ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
                 message_id,
                 recipient_device_id,
                 now,
+                checkpoint_json,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -1071,7 +1135,7 @@ ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             r#"SELECT COUNT(*) FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND message_id = ?4 AND recipient_device_id = ?5
-  AND envelope_format = 'legacy_v1'
+  AND envelope_format = 'legacy_v1' AND transfer_checkpoint_json = ?6
   AND phase IN ('pending_delivery', 'sent')"#,
             rusqlite::params![
                 owner_identity_id,
@@ -1079,6 +1143,7 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
                 sender_device_id,
                 message_id,
                 recipient_device_id,
+                checkpoint_json,
             ],
             |row| row.get(0),
         )
@@ -1219,25 +1284,42 @@ fn ensure_sender_envelope_format_column(core: &crate::core::ImCore) -> crate::Im
 fn ensure_sender_envelope_format_column_with_connection(
     connection: &rusqlite::Connection,
 ) -> crate::ImResult<()> {
-    let mut statement = connection
-        .prepare("PRAGMA table_info(identity_root_transfer_sender_v1)")
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    let has_column = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(crate::internal::local_state::local_state_unavailable)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(crate::internal::local_state::local_state_unavailable)?
-        .iter()
-        .any(|name| name == "envelope_format");
-    drop(statement);
-    if !has_column {
-        connection
-            .execute(
-                "ALTER TABLE identity_root_transfer_sender_v1 ADD COLUMN envelope_format TEXT NOT NULL DEFAULT 'legacy_v1'",
-                [],
-            )
+    // Serialize lazy upgrades across independent exact-recipient workers.
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let columns = {
+        let mut statement = transaction
+            .prepare("PRAGMA table_info(identity_root_transfer_sender_v1)")
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        columns
+    };
+    for (name, definition) in [
+        (
+            "envelope_format",
+            "envelope_format TEXT NOT NULL DEFAULT 'legacy_v1'",
+        ),
+        ("transfer_checkpoint_json", "transfer_checkpoint_json TEXT"),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            transaction
+                .execute(
+                    &format!(
+                        "ALTER TABLE identity_root_transfer_sender_v1 ADD COLUMN {definition}"
+                    ),
+                    [],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+        }
     }
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(())
 }
 
@@ -1695,6 +1777,7 @@ local_device_id TEXT NOT NULL,
 message_id TEXT NOT NULL,
 recipient_device_id TEXT NOT NULL,
 envelope_format TEXT NOT NULL,
+transfer_checkpoint_json TEXT,
 phase TEXT NOT NULL,
 failure_code TEXT,
 accepted_at TEXT,
@@ -1713,6 +1796,11 @@ PRIMARY KEY (owner_identity_id, local_device_id, message_id)
             "msg-root-key-1",
             "device-member",
             "2026-08-21T00:00:00Z",
+            &crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 1,
+                registry_version: 1,
+                document_hash: "hash".into(),
+            },
         )
         .unwrap();
         transaction.commit().unwrap();
