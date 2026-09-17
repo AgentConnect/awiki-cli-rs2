@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import hashlib
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path('scripts/release/registry-dependencies.json')
@@ -102,7 +103,7 @@ def export_commit(root, destination, commit):
     (destination / '.awiki-source.json').write_text(json.dumps({'commit': commit, 'source': 'git-archive', 'working_tree_edits_included': False}) + '\n')
 
 
-def prepare(root, destination, versions, cargo, refresh=False, source_commit=None):
+def prepare(root, destination, versions, cargo, refresh=False, source_commit=None, metadata_output=None):
     if destination.exists():
         raise ValueError(f'Refusing to overwrite an existing directory: {destination}')
     if source_commit is None and run(['git', 'status', '--porcelain', '--untracked-files=no'], root, capture=True).strip():
@@ -124,6 +125,13 @@ def prepare(root, destination, versions, cargo, refresh=False, source_commit=Non
         metadata = json.loads(run([*cargo, 'metadata', '--format-version', '1', '--locked'],
                                   destination, capture=True))
         verify_metadata(metadata, versions)
+        if metadata_output is not None:
+            receipt={'source_commit':commit,'source':'git-archive','working_tree_edits_included':False,
+                     'registry_lock_sha256':hashlib.sha256((destination/'Cargo.lock').read_bytes()).hexdigest(),
+                     'sdk_packages':[{k:p[k] for k in ('name','version','source')} for p in metadata['packages'] if p['name'] in versions]}
+            with metadata_output.open('x') as out:
+                os.chmod(metadata_output,0o600)
+                json.dump(receipt,out,indent=2);out.write('\n')
         if refresh:
             shutil.copy2(destination / 'Cargo.lock', root / LOCK)
     except BaseException:
@@ -136,6 +144,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', type=Path, help='Export persistent committed CI build input without Git metadata')
     parser.add_argument('--source-commit', help='Build this full committed SHA while preserving unrelated working-tree edits')
+    parser.add_argument('--metadata-output', type=Path, help='Write the verified source and registry dependency receipt to a new file')
     parser.add_argument('--refresh-lock', action='store_true', help='Refresh only the registry lock after an SDK release')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -155,11 +164,11 @@ def main(argv=None):
         raise ValueError('Resolve and remove dependencies.source.json before a registry release build')
     versions = load_versions(ROOT)
     if args.prepare:
-        prepare(ROOT, args.prepare.resolve(), versions, cargo, source_commit=args.source_commit)
+        prepare(ROOT, args.prepare.resolve(), versions, cargo, source_commit=args.source_commit,metadata_output=args.metadata_output.resolve() if args.metadata_output else None)
         return 0
     with tempfile.TemporaryDirectory(prefix='awiki-registry-build-') as temporary:
         checkout = Path(temporary) / 'source'
-        commit = prepare(ROOT, checkout, versions, cargo, args.refresh_lock, args.source_commit)
+        commit = prepare(ROOT, checkout, versions, cargo, args.refresh_lock, args.source_commit,args.metadata_output.resolve() if args.metadata_output else None)
         try:
             if command:
                 env = os.environ.copy()
