@@ -126,18 +126,24 @@ fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crat
 }
 
 fn open_empty_vault_core(root: &Path) -> crate::ImCore {
+    open_empty_vault_core_with_revoke(root, false)
+}
+
+fn open_empty_vault_core_with_revoke(root: &Path, revoke_enabled: bool) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
         test_paths(root),
-        crate::ImCoreOpenOptions::default().with_identity_secret_vault(
-            crate::IdentitySecretStoragePolicy::VaultRequired,
-            crate::ImCoreSecretVaultOptions::new(
-                crate::vault::DeviceVaultRootKey::from_bytes([53_u8; 32]),
-                root.join("vault"),
-                "join-candidate-workspace",
-                "join-candidate-vault-device",
-            ),
-        ),
+        crate::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([53_u8; 32]),
+                    root.join("vault"),
+                    "join-candidate-workspace",
+                    "join-candidate-vault-device",
+                ),
+            )
+            .with_multi_device_device_revoke_enabled(revoke_enabled),
     )
     .unwrap()
 }
@@ -3850,6 +3856,8 @@ async fn revoke_refreshes_sibling_document_but_preserves_pending_publication() {
     for pending in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (core, document, mut registry) = sibling_document_fixture(root.path(), pending);
+        drop(core);
+        let core = open_empty_vault_core_with_revoke(root.path(), true);
         let client = core
             .client_async(crate::identity::IdentitySelector::Default)
             .await
@@ -3868,15 +3876,21 @@ async fn revoke_refreshes_sibling_document_but_preserves_pending_publication() {
         );
         let old_document = client.runtime().key_provider.did_document().unwrap();
         assert_ne!(old_document, document);
-        let result = crate::internal::identity_device_revoke::prepare_initial_intent(
-            &client,
-            "peer-device",
-            &source.device_id,
-            &source.signing_key_id,
-            registry.clone(),
-            document,
+        // Match the real revoke path: convergence runs under the revoke mutex.
+        let _revoke_guard = core.inner().device_revoke_lock.lock().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::internal::identity_device_revoke::prepare_initial_intent(
+                &client,
+                "peer-device",
+                &source.device_id,
+                &source.signing_key_id,
+                registry.clone(),
+                document,
+            ),
         )
-        .await;
+        .await
+        .expect("sibling convergence must not reenter the revoke lock");
         if pending {
             assert!(result.is_err());
             assert_eq!(

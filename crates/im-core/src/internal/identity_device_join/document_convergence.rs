@@ -42,7 +42,6 @@ pub(crate) async fn refresh_admin_document(
         client.did().as_str(),
         &registry.checkpoint.document_hash,
     )?;
-    let selector = crate::identity::IdentitySelector::Id(client.current_identity().id.clone());
     let store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
     let alias = client
@@ -56,8 +55,10 @@ pub(crate) async fn refresh_admin_document(
         .get(alias)
         .cloned()
         .ok_or(crate::ImError::PermissionDenied)?;
+    // The caller may hold the revoke mutex. Reuse its validated client: opening
+    // another client would run pending-revoke recovery and acquire that mutex again.
     let prepared =
-        prepare_admin_projection_context_async(core, &selector, &registry.checkpoint).await?;
+        prepare_admin_projection_context_for_client(core, client, &registry.checkpoint)?;
     let mut expected_state = expected
         .device_state
         .clone()
