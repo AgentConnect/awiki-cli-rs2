@@ -2030,6 +2030,14 @@ fn conversation(
                 .find(|participant| participant.as_str() != owner_did)
                 .cloned()
                 .or_else(|| direct_peer_from_message(value.last_message.as_ref(), owner_did))
+                .or_else(|| match &value.thread {
+                    im_core::messages::ThreadRef::Direct(peer)
+                        if im_core::ids::Did::parse(peer.as_str()).is_ok() =>
+                    {
+                        Some(peer.as_str().to_owned())
+                    }
+                    _ => None,
+                })
         })
         .flatten();
     let peer_handle = (kind == "direct")
@@ -2216,6 +2224,10 @@ fn digest_hex(value: &str) -> Option<String> {
         output
     })
 }
+
+#[cfg(test)]
+#[path = "conversation_dto_tests.rs"]
+mod conversation_tests;
 
 #[cfg(test)]
 mod tests {
