@@ -3840,3 +3840,91 @@ async fn sibling_document_convergence_cas_preserves_concurrent_revocation() {
         before
     );
 }
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn revoke_refreshes_sibling_document_but_preserves_pending_publication() {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus,
+    };
+    for pending in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (core, document, mut registry) = sibling_document_fixture(root.path(), pending);
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Default)
+            .await
+            .unwrap();
+        let source = registry.devices[0].clone();
+        registry.devices.push(
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: "peer-device".to_owned(),
+                signing_key_id: format!("{}#peer-sign", client.did().as_str()),
+                e2ee_key_id: format!("{}#peer-e2ee", client.did().as_str()),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        );
+        let old_document = client.runtime().key_provider.did_document().unwrap();
+        assert_ne!(old_document, document);
+        let result = crate::internal::identity_device_revoke::prepare_initial_intent(
+            &client,
+            "peer-device",
+            &source.device_id,
+            &source.signing_key_id,
+            registry.clone(),
+            document,
+        )
+        .await;
+        if pending {
+            assert!(result.is_err());
+            assert_eq!(
+                client.runtime().key_provider.did_document().unwrap(),
+                old_document
+            );
+        } else {
+            let prepared = result.unwrap();
+            assert_eq!(prepared.expected_checkpoint, registry.checkpoint);
+            let manifest = anp::authentication::validate_device_manifest(&prepared.new_document)
+                .unwrap()
+                .unwrap();
+            assert!(manifest
+                .devices
+                .iter()
+                .any(|d| d.device_id == source.device_id));
+            assert!(!manifest
+                .devices
+                .iter()
+                .any(|d| d.device_id == "peer-device"));
+        }
+    }
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn stale_revoke_rejection_aborts_only_exact_prepared_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, registry) = sibling_document_fixture(root.path(), true);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let old = client.runtime().key_provider.did_document().unwrap();
+    assert!(
+        crate::internal::identity_device_revoke::abort_rejected_provider_change(&client, &old)
+            .await
+            .is_err()
+    );
+    assert!(
+        document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+            .await
+            .is_err()
+    );
+    crate::internal::identity_device_revoke::abort_rejected_provider_change(&client, &document)
+        .await
+        .unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
+}
