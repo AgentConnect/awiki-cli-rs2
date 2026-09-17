@@ -10,6 +10,7 @@ pub struct DartImCoreConfig {
     pub mail_service_endpoint: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
+    pub ca_bundle: Option<String>,
     pub transport_policy: DartMessageTransportPolicy,
 }
 

@@ -140,6 +140,12 @@ Me's few direct User Service HTTP adapters reuse the same package facts. All new
 User Service requests target `/user-service/v1/...` without an unversioned
 fallback.
 
+`AwikiImCoreConfig.caBundle` 可选指定本地 PEM CA 文件，透传到 Core 已有
+`ca_bundle` 配置。未指定时维持默认信任根；指定后追加信任根，仍验证证书链与
+目标主机名，不提供关闭 TLS 校验的开关。该配置用于显式私有 CA 环境（包括本地
+HTTPS DID 解析验收），不写入 DID 文档或跨域协议。Dart 绑定与 native bridge
+必须成对重新生成/构建，不能混用旧 ABI 制品。
+
 After the remote and local identity commits, exact-device P5 PreKey publication
 is a recoverable completion step. When Group E2EE v2 is enabled, Core also
 publishes a deterministic, retry-safe P6 KeyPackage family for the bootstrap
@@ -1331,6 +1337,8 @@ scripts/flutter/build-sdk-native.sh --android-only --android-abi arm64-v8a
 ```
 
 Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
+
+The Dart native binding enables `apple-native-keyring-store/protected` only for iOS targets. The pinned `anp-identity` dependency brings keyring v1 with its legacy macOS keychain feature; that alone cannot compile on iOS, where the protected-data backend is mandatory. This target-specific feature does not change other platforms or the Core identity lifecycle.
 
 The iOS XCFramework targets iOS 13+ for physical devices and x86_64 simulators. The arm64 simulator slice targets iOS 14+, matching the platform's availability. `build-apple.sh` passes those minimum versions to C dependencies as well as Cargo and rejects an archive containing a higher minimum OS before packaging. Override them only for an explicit compatibility test with `AWIKI_IOS_DEPLOYMENT_TARGET` and `AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET`.
 
