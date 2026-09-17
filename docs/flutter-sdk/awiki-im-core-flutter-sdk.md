@@ -1338,6 +1338,8 @@ scripts/flutter/build-sdk-native.sh --android-only --android-abi arm64-v8a
 
 Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
 
+The Dart native binding enables `apple-native-keyring-store/protected` only for iOS targets. The pinned `anp-identity` dependency brings keyring v1 with its legacy macOS keychain feature; that alone cannot compile on iOS, where the protected-data backend is mandatory. This target-specific feature does not change other platforms or the Core identity lifecycle.
+
 The iOS XCFramework targets iOS 13+ for physical devices and x86_64 simulators. The arm64 simulator slice targets iOS 14+, matching the platform's availability. `build-apple.sh` passes those minimum versions to C dependencies as well as Cargo and rejects an archive containing a higher minimum OS before packaging. Override them only for an explicit compatibility test with `AWIKI_IOS_DEPLOYMENT_TARGET` and `AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET`.
 
 Linux builds generate:
