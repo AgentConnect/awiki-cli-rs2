@@ -103,7 +103,10 @@ fn retryable(code: crate::identity::RootKeyTransferErrorCode) -> bool {
 
 async fn advance_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::ImResult<()> {
     task.activate();
-    if io.accepted_locally()? && task.phase != ManagementPhase::ManagementRegistered {
+    let invalidated = task.phase == ManagementPhase::Failed
+        && task.failure_code.as_deref() == Some("root_transfer.delivery_invalidated");
+    if io.accepted_locally()? && task.phase != ManagementPhase::ManagementRegistered && !invalidated
+    {
         task.accepted();
     }
     if task.attempts > 0
@@ -118,6 +121,9 @@ async fn advance_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate:
                 task.failure_code = None;
                 return io.persist(task);
             }
+            // Keep a proven invalidation across transient reads, stale reads,
+            // and restarts. Only the authoritative success above can clear it.
+            _ if invalidated => return io.persist(task),
             Ok(false) => {}
             Err(error) if !retryable(error.code) => {
                 task.failed_attempt(io.now_ms(), &error.to_string(), false);
@@ -166,6 +172,8 @@ async fn retry_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::I
     if registered {
         task.phase = ManagementPhase::ManagementRegistered;
         task.failure_code = None;
+    } else if task.failure_code.as_deref() == Some("root_transfer.delivery_invalidated") {
+        return Err(crate::ImError::PermissionDenied);
     } else if io.delivery_expired()? {
         task.failed_attempt(io.now_ms(), "root_transfer.delivery_expired", false);
         io.persist(task)?;

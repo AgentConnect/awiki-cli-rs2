@@ -276,6 +276,23 @@ async fn accepted_checkpoint_invalidated_survives_restart_and_rejects_explicit_r
         assert!(retry_task(&mut task, &mut io).await.is_err());
     }
     assert_eq!(io.sends.len(), 1);
+    // Once invalidation is proven, a transient read failure or a stale same-
+    // checkpoint response must not resurrect waiting or clear rejoin guidance.
+    for registry_error in [
+        Some(crate::identity::RootKeyTransferErrorCode::TemporarilyUnavailable),
+        None,
+    ] {
+        io.registry_error = registry_error;
+        task = io.saved.clone().unwrap();
+        advance_task(&mut task, &mut io).await.unwrap();
+        assert_eq!(task.phase, ManagementPhase::Failed);
+        assert_eq!(
+            task.failure_code.as_deref(),
+            Some("root_transfer.delivery_invalidated")
+        );
+        assert!(retry_task(&mut task, &mut io).await.is_err());
+        assert_eq!(task.attempts, 1);
+    }
     io.registry_error = None;
     io.remote_registered = true;
     advance_task(&mut task, &mut io).await.unwrap();
