@@ -698,6 +698,14 @@ impl<'a> CoreHttpTransport<'a> {
     }
 
     fn with_p6_delivery_context(&self, method: &str, mut params: Value) -> crate::ImResult<Value> {
+        #[cfg(feature = "sqlite")]
+        crate::internal::community_sync::guard_request(self.client, &params)?;
+        #[cfg(feature = "sqlite")]
+        if crate::internal::community_sync::cached_mode(self.client)?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+        {
+            return Ok(params);
+        }
         if method != "group.list_messages" || !self.client.realtime_requires_sync_changed_v2()? {
             return Ok(params);
         }
@@ -839,6 +847,14 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        let community_refresh = !force_new_auth && self.uses_community_auth()?;
+        if community_refresh
+            && self.deferred_auth_state_error == Some(DeferredAuthStateError::Missing)
+        {
+            let refreshed = self.refresh_jwt();
+            self.last_auth_retry_consumed = true;
+            refreshed?;
+        }
         if !force_new_auth {
             self.ensure_auth_state_ready()?;
         }
@@ -864,7 +880,12 @@ impl<'a> CoreHttpTransport<'a> {
         let mut response = self.http.execute(request)?;
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
-            let headers = if self.auth.should_retry_after_401(&response.headers) {
+            let headers = if community_refresh {
+                let refreshed = self.refresh_jwt();
+                self.last_auth_retry_consumed = true;
+                refreshed?;
+                self.auth_headers(url, method, body.as_slice(), false)?
+            } else if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers(url, method, &response.headers, body.as_slice())?
             } else {
                 self.auth.clear_token(url);
@@ -891,6 +912,14 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        let community_refresh = !force_new_auth && self.uses_community_auth()?;
+        if community_refresh
+            && self.deferred_auth_state_error == Some(DeferredAuthStateError::Missing)
+        {
+            let refreshed = Box::pin(self.refresh_jwt_async()).await;
+            self.last_auth_retry_consumed = true;
+            refreshed?;
+        }
         if !force_new_auth {
             self.ensure_auth_state_ready()?;
         }
@@ -917,7 +946,13 @@ impl<'a> CoreHttpTransport<'a> {
         let mut response = self.http.execute_async(request).await?;
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
-            let headers = if self.auth.should_retry_after_401(&response.headers) {
+            let headers = if community_refresh {
+                let refreshed = Box::pin(self.refresh_jwt_async()).await;
+                self.last_auth_retry_consumed = true;
+                refreshed?;
+                self.auth_headers_async(url, method, body.as_slice(), false)
+                    .await?
+            } else if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers_async(url, method, &response.headers, body.as_slice())
                     .await?
             } else {
@@ -937,6 +972,15 @@ impl<'a> CoreHttpTransport<'a> {
             response = self.http.execute_async(request).await?;
         }
         Ok(response)
+    }
+
+    fn uses_community_auth(&self) -> crate::ImResult<bool> {
+        #[cfg(feature = "sqlite")]
+        if !self.ephemeral_bearer {
+            return Ok(crate::internal::community_sync::cached_mode(self.client)?
+                == Some(crate::internal::community_sync::SyncServiceMode::Community));
+        }
+        Ok(false)
     }
 
     fn auth_headers(

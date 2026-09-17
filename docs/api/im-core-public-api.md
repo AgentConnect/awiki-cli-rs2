@@ -580,6 +580,8 @@ key ID、角色和由本地密钥可用性与服务端授权共同计算出的 r
 Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
 `document_hash`、`registry_version`、`auth_generation` checkpoint。
 
+`RegisterHandleRequest.verification = VerificationInput::Community` 是 Open Server 的显式无联系验证入口，成功结果的 `RegistrationMethod` 为 `Community`。Core 在准备身份材料前验证所选 Home 的完整 Community 声明、service DID 和 User/Message 同源关系；发现失败或商业声明不能继续无验证注册。该分支不生成占位 phone/OTP，也不借用 `AlreadyVerified` 的受信服务授权。CLI 对应 `id register --handle <handle> --community`，不能同时使用联系验证参数或 `--verification-stdin`；商业注册调用保持原合同。
+
 `IdentitySummary.device_id` 是兼容摘要字段，不是多设备密码运行时的授权来源。
 P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 active vNext
 authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
@@ -2068,3 +2070,9 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
 不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
 CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。
+
+### Imported Legacy identities at Community Homes
+
+`messages().uses_legacy_community_reads()` / `uses_legacy_community_reads_async()` performs fresh capability discovery for a local root-only identity without a sync account or Device Manifest. It returns true only for a complete Community declaration bound to the configured Home service DID and same-origin User/Message endpoints. Invalid discovery fails; commercial and vNext identities do not select this path. Presence of an invalid/null Manifest does not authorize Legacy fallback. Existing account, mode, lane, unified inbox or recovery records for the same local owner also reject fallback; this check is read-only and does not create tables in an old database.
+
+CLI uses this result to select existing ordinary online history/inbox APIs for explicitly imported v1 credentials. The check does not create a device/account binding or reliable-sync checkpoint. It does not authorize Snapshot, encrypted receive, or vNext listener semantics for a root-only identity. Ordinary attachment and read-state operations retain their existing owner and message authorization checks.

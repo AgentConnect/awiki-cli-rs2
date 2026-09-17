@@ -1449,7 +1449,12 @@ where
             ),
         )
         .await
-        .map_err(|_| sync_error("SYNC_RECEIVE_BUSY", "another receiver still owns this account sync"))??;
+        .map_err(|_| {
+            sync_error(
+                "SYNC_RECEIVE_BUSY",
+                "another receiver still owns this account sync",
+            )
+        })??;
         let run = db
             .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
             .await?;
@@ -1569,6 +1574,11 @@ where
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
         let mut result = empty_outcome();
+        if crate::internal::community_sync::cached_mode(self.client)?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+        {
+            require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
+        }
         let mut state = match db
             .load_message_sync_state(owner_identity_id.clone())
             .await?
@@ -1751,9 +1761,16 @@ where
                 hydrated
             };
 
-            for event in page.events.iter().filter(|event| event.event_type == "system.notification") {
+            for event in page
+                .events
+                .iter()
+                .filter(|event| event.event_type == "system.notification")
+            {
                 let projection = hydrated.get(&event.event_id).ok_or_else(|| {
-                    sync_error("SYNC_HYDRATION_INCOMPLETE", "system notification hydration is missing")
+                    sync_error(
+                        "SYNC_HYDRATION_INCOMPLETE",
+                        "system notification hydration is missing",
+                    )
                 })?;
                 validate_system_notification_hydration(&binding, event, projection)?;
             }
@@ -1893,13 +1910,19 @@ where
                     blocked_lanes.insert(lane);
                 }
                 SyncLaneDeltaSectionV3::Error(error) => {
-                    let recoverable = matches!((lane, error.anp_code.as_str()),
+                    let recoverable = matches!(
+                        (lane, error.anp_code.as_str()),
                         (SyncLaneV3::P5Device, "p5_device_recovery_required")
-                        | (SyncLaneV3::P6Group, "p6_group_recovery_required"));
+                            | (SyncLaneV3::P6Group, "p6_group_recovery_required")
+                    );
                     if recoverable && lane_recovery_attempted.insert(lane) {
                         recovery_requested.insert(lane);
                     } else {
-                        result.warnings.push(format!("sync.lane.{}.{}", lane.as_str(), error.anp_code));
+                        result.warnings.push(format!(
+                            "sync.lane.{}.{}",
+                            lane.as_str(),
+                            error.anp_code
+                        ));
                         blocked_lanes.insert(lane);
                     }
                 }
@@ -2036,7 +2059,9 @@ where
                 }
                 Err(_) => {
                     for lane in recovery_requested {
-                        result.warnings.push(format!("sync.lane.{}.recovery_deferred", lane.as_str()));
+                        result
+                            .warnings
+                            .push(format!("sync.lane.{}.recovery_deferred", lane.as_str()));
                         blocked_lanes.insert(lane);
                     }
                 }
@@ -2089,7 +2114,10 @@ where
             }
             self.refresh_session_and_lane_epoch().await?;
             let refreshed_binding = self.client.active_sync_account_binding().await?;
-            if let Some(error) = self.drain_read_outbox(db, &refreshed_binding, limit).await? {
+            if let Some(error) = self
+                .drain_read_outbox(db, &refreshed_binding, limit)
+                .await?
+            {
                 return Err(error);
             }
         }
@@ -2285,6 +2313,11 @@ where
         run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
+        if crate::internal::community_sync::cached_mode(self.client)?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+        {
+            return Err(crate::ImError::unsupported("community-snapshot-recovery"));
+        }
         let now = unix_time_i64();
         db.upsert_sync_recovery_state(crate::internal::local_state::sync_v2::RecoveryState {
             owner_identity_id: binding.owner_identity_id.clone(),
@@ -2540,21 +2573,42 @@ where
         run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
-        require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
+        let service_mode =
+            require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
         let client_instance_id = db
             .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
             .await?;
-        let requested_lanes = desired_v1b_lanes(db, &binding.owner_identity_id).await?;
-        let params = crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
-            &wire_identity(self.client),
-            &client_instance_id,
-            &requested_lanes,
-        )?;
+        let requested_lanes =
+            if service_mode == crate::internal::community_sync::SyncServiceMode::Community {
+                BTreeSet::new()
+            } else {
+                desired_v1b_lanes(db, &binding.owner_identity_id).await?
+            };
+        let params = if service_mode == crate::internal::community_sync::SyncServiceMode::Community
+        {
+            crate::internal::wire::sync_v2::community::build_community_bootstrap_params(
+                &wire_identity(self.client),
+                &client_instance_id,
+            )?
+        } else {
+            crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
+                &wire_identity(self.client),
+                &client_instance_id,
+                &requested_lanes,
+            )?
+        };
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
             .await?;
-        let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
+        let response =
+            if service_mode == crate::internal::community_sync::SyncServiceMode::Community {
+                crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(
+                    crate::internal::wire::sync_v2::community::parse_community_bootstrap(&raw)?,
+                )
+            } else {
+                crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?
+            };
         if let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
             recovery,
             lane_bootstrap,
@@ -2638,7 +2692,8 @@ where
         };
         if bootstrap.account_id != binding.account_id
             || bootstrap.device_id != binding.protocol_device_id
-            || !bootstrap.snapshot_paging_v1
+            || (service_mode == crate::internal::community_sync::SyncServiceMode::Commercial
+                && !bootstrap.snapshot_paging_v1)
             || bootstrap.lane_bootstrap.capabilities != requested_lanes
             || !bootstrap_p6_activation_matches(
                 &bootstrap.lane_bootstrap,
@@ -2789,20 +2844,38 @@ pub(crate) async fn refresh_lane_bootstrap_with_transport_async<T>(
 where
     T: AsyncAuthenticatedRpcTransport,
 {
-    require_explicit_sync_negotiation(transport, client).await?;
+    let service_mode = require_explicit_sync_negotiation(transport, client).await?;
     let client_instance_id = db
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await?;
-    let requested_lanes = desired_v1b_lanes(db, &binding.owner_identity_id).await?;
-    let params = crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
-        &wire_identity(client),
-        &client_instance_id,
-        &requested_lanes,
-    )?;
+    let requested_lanes =
+        if service_mode == crate::internal::community_sync::SyncServiceMode::Community {
+            BTreeSet::new()
+        } else {
+            desired_v1b_lanes(db, &binding.owner_identity_id).await?
+        };
+    let params = if service_mode == crate::internal::community_sync::SyncServiceMode::Community {
+        crate::internal::wire::sync_v2::community::build_community_bootstrap_params(
+            &wire_identity(client),
+            &client_instance_id,
+        )?
+    } else {
+        crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
+            &wire_identity(client),
+            &client_instance_id,
+            &requested_lanes,
+        )?
+    };
     let raw = transport
         .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
         .await?;
-    let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
+    let response = if service_mode == crate::internal::community_sync::SyncServiceMode::Community {
+        crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(
+            crate::internal::wire::sync_v2::community::parse_community_bootstrap(&raw)?,
+        )
+    } else {
+        crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?
+    };
     let (account_id, device_id, lane_bootstrap, activated_client_instance_id, snapshot_paging_v1) =
         match &response {
             crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) => (
@@ -2827,7 +2900,8 @@ where
         };
     if account_id != binding.account_id
         || device_id != binding.protocol_device_id
-        || !snapshot_paging_v1
+        || (service_mode == crate::internal::community_sync::SyncServiceMode::Commercial
+            && !snapshot_paging_v1)
         || lane_bootstrap.capabilities != requested_lanes
         || !bootstrap_p6_activation_matches(
             lane_bootstrap,
@@ -2844,12 +2918,18 @@ where
     // Bootstrap may only know the checkpoint ACK sent before the current page.
     // Keep newer durable reception within the same epoch; a new epoch starts
     // from the service's cursor while old inbox inputs retain their ownership.
-    let received = db.load_lane_sync_states(binding.owner_identity_id.clone()).await?;
+    let received = db
+        .load_lane_sync_states(binding.owner_identity_id.clone())
+        .await?;
     for state in &mut states {
-        if let Some(current) = received.iter().find(|current| current.lane == state.lane
-            && current.stream_epoch == state.stream_epoch) {
-            if crate::internal::local_state::sync_v2::compare_decimal(&current.scan_seq, &state.scan_seq)?
-                == std::cmp::Ordering::Greater {
+        if let Some(current) = received.iter().find(|current| {
+            current.lane == state.lane && current.stream_epoch == state.stream_epoch
+        }) {
+            if crate::internal::local_state::sync_v2::compare_decimal(
+                &current.scan_seq,
+                &state.scan_seq,
+            )? == std::cmp::Ordering::Greater
+            {
                 *state = current.clone();
             }
         }
@@ -2955,16 +3035,11 @@ async fn require_current_sync_run_generation(
 async fn require_explicit_sync_negotiation<T>(
     transport: &mut T,
     client: &crate::core::ImClient,
-) -> crate::ImResult<()>
+) -> crate::ImResult<crate::internal::community_sync::SyncServiceMode>
 where
     T: AsyncAuthenticatedRpcTransport,
 {
-    let params =
-        crate::internal::wire::sync_v2::build_capability_discovery_params(&wire_identity(client))?;
-    let raw = transport
-        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "anp.get_capabilities", params)
-        .await?;
-    crate::internal::wire::sync_v2::require_explicit_sync_negotiation_capability(&raw)
+    crate::internal::community_sync::discover(client, transport).await
 }
 
 fn bootstrap_p6_activation_matches(
@@ -4671,6 +4746,7 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    mod community;
     mod recovery_tests;
     mod dispatcher_tests {
         include!("sync_dispatcher_tests.rs");

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "contract": "awiki.device.access.v1",
+  "claims": {
+    "iss": "user-service",
+    "aud": [
+      "awiki-user-service",
+      "awiki-message-service"
+    ],
+    "sub": "$DID",
+    "type": "access",
+    "purpose": "awiki.device.access.v1",
+    "did": "$DID",
+    "user_id": "$ACCOUNT_ID",
+    "device_id": "device-primary",
+    "key_id": "$DID#device-primary-sign",
+    "auth_generation": 1,
+    "scopes": [
+      "device:manage",
+      "device:read",
+      "message:connect"
+    ]
+  }
+}

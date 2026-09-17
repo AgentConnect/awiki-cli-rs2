@@ -190,6 +190,10 @@ pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
         delete_owner_dids: false,
     },
     OwnerDeleteTable {
+        table: "sync_service_modes",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
         table: "sync_state",
         delete_owner_dids: false,
     },
@@ -599,6 +603,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let sqlite_path = directory.path().join("local-state.sqlite");
         let connection = super::super::open_writable(&sqlite_path).unwrap();
+        for owner in ["alice-owner", "bob-owner"] {
+            connection.execute(
+                "INSERT INTO identity_account_bindings(owner_identity_id,account_id,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,?1,?2,'device','1','1',0,0)",
+                rusqlite::params![owner, format!("did:example:{owner}")],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO sync_service_modes(owner_identity_id,mode,binding_json,service_did,capabilities_json) VALUES (?1,'community','{}','did:wba:example.test','{}')",
+                [owner],
+            ).unwrap();
+        }
         connection
             .execute(
                 "INSERT INTO messages \
@@ -639,6 +653,14 @@ mod tests {
 
         assert!(deleted >= 3);
         let connection = super::super::open_writable(&sqlite_path).unwrap();
+        let remaining_mode_owners = connection
+            .prepare("SELECT owner_identity_id FROM sync_service_modes ORDER BY owner_identity_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(remaining_mode_owners, vec!["bob-owner"]);
         assert_eq!(
             connection
                 .query_row(

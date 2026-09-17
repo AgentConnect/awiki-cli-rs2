@@ -128,6 +128,15 @@ pub fn register_handle_request(
     let email = trimmed_optional(&string_flag(command, "email"));
     let otp = string_flag(command, "otp");
     let otp = trimmed_optional(&otp);
+    let community = command.flags.get("community").map(String::as_str) == Some("true");
+    if community && (phone.is_some() || email.is_some() || otp.is_some()) {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--community cannot be combined with phone, email, or OTP verification",
+            "Choose Community registration or a contact verification method.",
+        ));
+    }
     let wait_for_verification = command
         .flags
         .get("wait")
@@ -139,6 +148,7 @@ pub fn register_handle_request(
             wait_for_verification,
         },
         (None, None, Some(code)) => VerificationInput::Otp { code },
+        (None, None, None) if community => VerificationInput::Community,
         (None, None, None) => {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -1903,6 +1913,7 @@ fn registration_method_label(method: RegistrationMethod) -> &'static str {
         RegistrationMethod::Phone => "phone",
         RegistrationMethod::Email => "email",
         RegistrationMethod::AlreadyVerified => "already_verified",
+        RegistrationMethod::Community => "community",
     }
 }
 

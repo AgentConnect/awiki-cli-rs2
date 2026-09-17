@@ -9,6 +9,9 @@ use serde_json::{json, Value};
 #[cfg(test)]
 mod handle_recovery_tests;
 
+#[cfg(test)]
+mod protocol_profiles_tests;
+
 const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
 const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
     "anp.core.binding.v1",
@@ -38,6 +41,7 @@ const VNEXT_SERVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
     anp::authentication::PROFILE_GROUP_BASE_V1,
+    "anp.group.base.v2",
     anp::authentication::PROFILE_GROUP_E2EE_V2,
     "anp.attachment.v1",
     "anp.federation.relay.v1",

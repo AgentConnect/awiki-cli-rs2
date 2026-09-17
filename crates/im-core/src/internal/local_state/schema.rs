@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 45;
+pub(crate) const SCHEMA_VERSION: i64 = 46;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -1263,6 +1263,13 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
+    if version == 45 && current_schema_shape_is_complete(connection)? {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        set_schema_version(&transaction, SCHEMA_VERSION)?;
+        return transaction.commit().map_err(super::local_state_unavailable);
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
@@ -1270,6 +1277,11 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     if version == SCHEMA_VERSION {
+        if !has_table(connection, "sync_service_modes")? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "missing sync service mode schema".to_owned(),
+            });
+        }
         if current_schema_shape_is_complete(connection)? {
             let inbox_ddl: String = connection
                 .query_row(
@@ -3046,6 +3058,11 @@ WHERE EXISTS (
 }
 
 pub(super) fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
+    if version == SCHEMA_VERSION {
+        connection
+            .execute_batch(crate::internal::community_sync::SCHEMA)
+            .map_err(super::local_state_unavailable)?;
+    }
     connection
         .pragma_update(None, "user_version", version)
         .map_err(super::local_state_unavailable)

@@ -16,6 +16,46 @@ use support::{
 };
 
 #[test]
+fn msg_history_bridge_uses_sdk_default_when_cli_identity_override_is_empty() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let workspace = TempDir::new("msg-ws-default-identity").unwrap();
+    register_ready_msg_identity(workspace.path(), "registered-default", "alice", "jwt-alice");
+    let current = success_json(&awiki_cmd(&["id", "current"], workspace.path()));
+    let expected_did = current["data"]["identity"]["did"].as_str().unwrap().to_owned();
+    let socket_dir = TempDir::new("ws-default-socket").unwrap();
+    let socket = socket_dir.path().join("bridge.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    write_msg_ws_config(workspace.path(), &closed_local_url(), socket.to_str().unwrap());
+    let server = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let (mut stream, _) = match listener.accept() {
+                Ok(stream) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10)); continue;
+                }
+                Err(_) => panic!("listener did not receive default identity request"),
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut stream).read_line(&mut line).unwrap();
+            if line.is_empty() { continue; } // Health probe only connects.
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "local.history");
+            assert_eq!(request["identity_name"], expected_did);
+            stream.write_all(br#"{"ok":true,"result":{"data":{"messages":[],"total":0},"summary":"Loaded history","warnings":[]}}"#).unwrap();
+            break;
+        }
+    });
+    let output = awiki_cmd(&["msg", "history", "--with", "did:wba:awiki.ai:bob:e1_bob"], workspace.path());
+    assert_success(&output);
+    server.join().unwrap();
+    assert_eq!(success_json(&output)["data"]["total"], 0);
+}
+
+#[test]
 fn msg_send_direct_websocket_mode_reports_http_failure_without_bridge_fallback() {
     let workspace = TempDir::new("msg-ws-proxy-direct-send-failure").expect("workspace");
     register_ready_msg_identity(workspace.path(), "alice-ws-failure", "alice", "jwt-alice");

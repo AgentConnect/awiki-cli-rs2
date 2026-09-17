@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 
 use super::common::{self, WireIdentity};
 
+pub(crate) mod community;
+
 pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
 pub(crate) const MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1: &str =
     "awiki.message-sync.explicit-negotiation.v1";

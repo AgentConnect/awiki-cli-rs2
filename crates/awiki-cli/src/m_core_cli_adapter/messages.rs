@@ -503,6 +503,19 @@ pub async fn read_inbox_via_im_core_async(
     mut secure_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    if client
+        .messages()
+        .uses_legacy_community_reads_async()
+        .await
+        .map_err(im_error_to_message_error)?
+    {
+        let page = client
+            .messages()
+            .inbox_with_metadata_async(query.clone())
+            .await
+            .map_err(im_error_to_message_error)?;
+        return render_inbox_page(&query, page, secure_warnings);
+    }
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
     let reconciled = reconcile_foreground_message_sync_async(client).await;
     rpc_phase.finish();
@@ -521,6 +534,14 @@ pub async fn read_local_inbox_projection_via_im_core_async(
         .local_inbox_projection_with_metadata_async(query.clone())
         .await
         .map_err(im_error_to_message_error)?;
+    render_inbox_page(&query, page, warnings)
+}
+
+fn render_inbox_page(
+    query: &InboxQuery,
+    page: im_core::messages::MessagePage,
+    warnings: Vec<String>,
+) -> Result<CommandResult, MessageAdapterError> {
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -552,6 +573,14 @@ pub async fn hydrate_secure_inbox_via_im_core_async(
 ) -> Result<Vec<String>, MessageAdapterError> {
     require_messaging_ready(client)?;
     if !matches!(&query.scope, InboxScope::DirectOnly | InboxScope::All) {
+        return Ok(Vec::new());
+    }
+    if client
+        .messages()
+        .uses_legacy_community_reads_async()
+        .await
+        .map_err(im_error_to_message_error)?
+    {
         return Ok(Vec::new());
     }
     client
@@ -604,13 +633,11 @@ pub(super) fn require_foreground_message_sync(
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message recovery did not complete".to_owned(),
         )),
-        MessageSyncStatus::RetryableFailure => {
-            Err(MessageAdapterError::ForegroundSyncPending {
-                budget_exhausted: false,
-                error_code: outcome.error_code.clone(),
-                warnings: outcome.warnings.clone(),
-            })
-        }
+        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: false,
+            error_code: outcome.error_code.clone(),
+            warnings: outcome.warnings.clone(),
+        }),
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),
         )),
@@ -793,12 +820,30 @@ fn read_direct_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let warnings = reconcile_foreground_message_sync(client)?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
-    let page = client
+    let (page, warnings) = if client
         .messages()
-        .local_history_with_metadata(ThreadRef::Direct(peer.clone()), local_history_query(query))
-        .map_err(im_error_to_message_error)?;
+        .uses_legacy_community_reads()
+        .map_err(im_error_to_message_error)?
+    {
+        (
+            client
+                .messages()
+                .history_with_metadata(ThreadRef::Direct(peer.clone()), query)
+                .map_err(im_error_to_message_error)?,
+            Vec::new(),
+        )
+    } else {
+        let warnings = reconcile_foreground_message_sync(client)?;
+        let page = client
+            .messages()
+            .local_history_with_metadata(
+                ThreadRef::Direct(peer.clone()),
+                local_history_query(query),
+            )
+            .map_err(im_error_to_message_error)?;
+        (page, warnings)
+    };
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -825,16 +870,33 @@ async fn read_direct_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let warnings = reconcile_foreground_message_sync_async(client).await?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
-    let page = client
+    let (page, warnings) = if client
         .messages()
-        .local_history_with_metadata_async(
-            ThreadRef::Direct(peer.clone()),
-            local_history_query(query),
-        )
+        .uses_legacy_community_reads_async()
         .await
-        .map_err(im_error_to_message_error)?;
+        .map_err(im_error_to_message_error)?
+    {
+        (
+            client
+                .messages()
+                .history_with_metadata_async(ThreadRef::Direct(peer.clone()), query)
+                .await
+                .map_err(im_error_to_message_error)?,
+            Vec::new(),
+        )
+    } else {
+        let warnings = reconcile_foreground_message_sync_async(client).await?;
+        let page = client
+            .messages()
+            .local_history_with_metadata_async(
+                ThreadRef::Direct(peer.clone()),
+                local_history_query(query),
+            )
+            .await
+            .map_err(im_error_to_message_error)?;
+        (page, warnings)
+    };
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -861,11 +923,29 @@ fn read_group_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let warnings = reconcile_foreground_message_sync(client)?;
-    let page = client
+    let (page, warnings) = if client
         .messages()
-        .local_history_with_metadata(ThreadRef::Group(group.clone()), local_history_query(query))
-        .map_err(im_error_to_message_error)?;
+        .uses_legacy_community_reads()
+        .map_err(im_error_to_message_error)?
+    {
+        (
+            client
+                .messages()
+                .history_with_metadata(ThreadRef::Group(group.clone()), query)
+                .map_err(im_error_to_message_error)?,
+            Vec::new(),
+        )
+    } else {
+        let warnings = reconcile_foreground_message_sync(client)?;
+        let page = client
+            .messages()
+            .local_history_with_metadata(
+                ThreadRef::Group(group.clone()),
+                local_history_query(query),
+            )
+            .map_err(im_error_to_message_error)?;
+        (page, warnings)
+    };
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -889,15 +969,32 @@ async fn read_group_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let warnings = reconcile_foreground_message_sync_async(client).await?;
-    let page = client
+    let (page, warnings) = if client
         .messages()
-        .local_history_with_metadata_async(
-            ThreadRef::Group(group.clone()),
-            local_history_query(query),
-        )
+        .uses_legacy_community_reads_async()
         .await
-        .map_err(im_error_to_message_error)?;
+        .map_err(im_error_to_message_error)?
+    {
+        (
+            client
+                .messages()
+                .history_with_metadata_async(ThreadRef::Group(group.clone()), query)
+                .await
+                .map_err(im_error_to_message_error)?,
+            Vec::new(),
+        )
+    } else {
+        let warnings = reconcile_foreground_message_sync_async(client).await?;
+        let page = client
+            .messages()
+            .local_history_with_metadata_async(
+                ThreadRef::Group(group.clone()),
+                local_history_query(query),
+            )
+            .await
+            .map_err(im_error_to_message_error)?;
+        (page, warnings)
+    };
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);

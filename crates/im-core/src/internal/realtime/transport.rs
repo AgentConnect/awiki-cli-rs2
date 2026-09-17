@@ -445,6 +445,19 @@ async fn prepare_p6_delivery_session_once_async(
         });
     }
     let db = client.core_inner().local_state_db().await?;
+    if crate::internal::community_sync::cached_mode(client)?
+        == Some(crate::internal::community_sync::SyncServiceMode::Community)
+    {
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+        crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
+            client,
+            &mut transport,
+            &db,
+            &binding,
+        )
+        .await?;
+        return Ok(None);
+    }
     if db
         .lane_capability_negotiation_required(
             owner_identity_id.to_owned(),

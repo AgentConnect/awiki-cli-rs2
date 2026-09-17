@@ -516,7 +516,12 @@ pub(crate) async fn lookup_handle_by_did_for_projection_async<T>(
 where
     T: AsyncRpcTransport,
 {
-    let raw = lookup_by_did_async(transport, did.as_str()).await?;
+    let raw = lookup_projection_binding_async(
+        transport,
+        did.as_str(),
+        &client.core_inner().sdk_config().did_domain,
+    )
+    .await?;
     let lookup = handle_lookup_from_value_with_client(client, &raw)?;
     if lookup.did != *did {
         return Err(crate::ImError::IdentityBindingConflict {
@@ -524,6 +529,41 @@ where
         });
     }
     Ok(lookup)
+}
+
+async fn lookup_projection_binding_async<T: AsyncRpcTransport>(
+    transport: &mut T,
+    did: &str,
+    home_domain: &str,
+) -> crate::ImResult<Value> {
+    match lookup_by_did_async(transport, did).await {
+        Ok(raw) => Ok(raw),
+        Err(error) if service_error_is_not_found(&error) => {
+            let parts: Vec<_> = did.split(':').collect();
+            let ["did", "wba", domain, "user" | "users", local, fingerprint] = parts.as_slice()
+            else {
+                return Err(error);
+            };
+            if domain.eq_ignore_ascii_case(home_domain) || !fingerprint.starts_with("e1_") {
+                return Err(error);
+            }
+            // The AWiki WBA path supplies only a lookup hint. The trusted Home
+            // directory verifies the remote WNS binding; its DID must match
+            // the actual message sender before any persona can be projected.
+            let handle = crate::ids::Handle::parse(format!("{local}.{domain}"), "")?;
+            let raw = lookup_by_handle_async(transport, handle.as_str()).await?;
+            if raw.get("did").and_then(Value::as_str) != Some(did)
+                || raw.get("full_handle").and_then(Value::as_str) != Some(handle.as_str())
+            {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "remote Handle lookup does not bind the requested sender DID"
+                        .to_owned(),
+                });
+            }
+            Ok(raw)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn resolve_profile_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
@@ -743,6 +783,8 @@ fn string_option(value: &Value, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    mod remote_projection;
 
     struct RecordingTransport {
         calls: Vec<(String, String, Value)>,

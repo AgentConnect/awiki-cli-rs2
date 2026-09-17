@@ -601,6 +601,9 @@ impl<'de> Deserialize<'de> for DaemonSubkeyPrivatePackage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationInput {
+    /// Register with an explicitly discovered Community Home that has no
+    /// contact-verification product. Never a fallback for commercial auth.
+    Community,
     Otp {
         code: String,
     },
@@ -687,6 +690,7 @@ pub struct HandleRegistrationJoinRequiredPreparation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegistrationMethod {
+    Community,
     Phone,
     Email,
     AlreadyVerified,

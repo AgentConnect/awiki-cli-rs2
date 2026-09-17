@@ -124,6 +124,7 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
             "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
             "anp.attachment.v1",
             "anp.federation.relay.v1",

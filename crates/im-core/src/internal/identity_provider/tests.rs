@@ -12,6 +12,66 @@ fn create_spec() -> ProviderCreateIdentityRequest {
 }
 
 #[tokio::test]
+async fn uncertain_document_publication_reconciles_with_canonical_remote_hash() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+        state_root: root.path().to_path_buf(),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "document-reconcile",
+            [0x63; 32],
+        )),
+    })
+    .unwrap();
+    let custody = direct::DirectAnpIdentityCustody::new(manager);
+    let identity = custody.create_identity(create_spec()).await.unwrap();
+    let change = identity
+        .prepare_document_change(serde_json::json!({
+            "changes": [{"change": "replace_services", "services": []}]
+        }))
+        .await
+        .unwrap();
+    let candidate = change.candidate().await.unwrap();
+    let attempt = change.begin_publication().await.unwrap();
+    change
+        .complete(attempt, ProviderPublicationResult::Unknown)
+        .await
+        .unwrap();
+    let document = candidate.candidate_document;
+    let digest = crate::internal::identity_wire::document::document_hash(&document).unwrap();
+    let evidence = ProviderPublicationEvidence {
+        document_version: 2,
+        registry_version: 1,
+        document_digest: digest,
+    };
+    let mut wrong = evidence.clone();
+    wrong.document_digest = candidate.candidate_digest;
+    assert_eq!(
+        change
+            .reconcile(ProviderVerifiedRemoteDocument {
+                document: document.clone(),
+                evidence: wrong,
+            })
+            .await
+            .unwrap_err()
+            .code,
+        IdentityProviderErrorCode::InvalidRequest
+    );
+    let result = change
+        .reconcile(ProviderVerifiedRemoteDocument {
+            document: document.clone(),
+            evidence,
+        })
+        .await
+        .unwrap();
+    match result {
+        ProviderDocumentChangeOutcome::Committed { identity } => {
+            assert_eq!(identity.document, document)
+        }
+        _ => panic!("verified pending document must commit"),
+    }
+}
+
+#[tokio::test]
 async fn completion_waiter_refreshes_same_identity_before_http_signing() {
     let root = tempfile::tempdir().unwrap();
     let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
@@ -66,6 +126,71 @@ async fn completion_waiter_refreshes_same_identity_before_http_signing() {
     );
     assert_eq!(signed_after.kid, signed_before.kid);
     assert_eq!(signed_after.binding_digest, signed_before.binding_digest);
+}
+
+#[tokio::test]
+async fn committed_document_revision_refreshes_existing_request_signer() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+        state_root: root.path().to_path_buf(),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "committed-signer",
+            [0x64; 32],
+        )),
+    })
+    .unwrap();
+    let custody = direct::DirectAnpIdentityCustody::new(manager);
+    let waiter = custody.create_identity(create_spec()).await.unwrap();
+    let before = waiter.public_identity().await.unwrap();
+    let writer = custody.open_identity(&before.reference).await.unwrap();
+    let request = ProviderExactHttpRequest {
+        key: ProviderKeySelector::Default,
+        url: "https://example.com/user-service/did-auth/rpc".into(),
+        method: "POST".into(),
+        headers: vec![],
+        body: Some(b"{}".to_vec()),
+        options: ProviderHttpSigningOptions::default(),
+    };
+    let signed_before = waiter
+        .prepare_http_signature(request.clone())
+        .await
+        .unwrap();
+    let change = writer
+        .prepare_document_change(serde_json::json!({
+            "changes": [{"change": "replace_services", "services": []}]
+        }))
+        .await
+        .unwrap();
+    let candidate = change.candidate().await.unwrap();
+    let attempt = change.begin_publication().await.unwrap();
+    change
+        .complete(
+            attempt,
+            ProviderPublicationResult::Confirmed {
+                evidence: ProviderPublicationEvidence {
+                    document_version: 2,
+                    registry_version: 1,
+                    document_digest: candidate.candidate_digest,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        waiter
+            .prepare_http_signature(request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        IdentityProviderErrorCode::Conflict
+    );
+    waiter.recover().await.unwrap();
+    let signed_after = waiter.prepare_http_signature(request).await.unwrap();
+    assert_eq!(signed_after.kid, signed_before.kid);
+    assert_eq!(
+        waiter.public_identity().await.unwrap().document,
+        candidate.candidate_document
+    );
 }
 
 #[tokio::test]

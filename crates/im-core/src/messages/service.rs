@@ -2271,6 +2271,37 @@ impl<'a> MessageService<'a> {
         Self { client }
     }
 
+    /// Discover whether an imported root-only identity may use ordinary online
+    /// reads at an explicitly declared Community Home. This does not authorize
+    /// vNext sync, create device bindings, or relax commercial receive gates.
+    pub async fn uses_legacy_community_reads_async(&self) -> crate::ImResult<bool> {
+        #[cfg(feature = "sqlite")]
+        {
+            crate::internal::community_sync::legacy_reads(self.client).await
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            Ok(false)
+        }
+    }
+
+    pub fn uses_legacy_community_reads(&self) -> crate::ImResult<bool> {
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| crate::ImError::Internal {
+                    message: "build Community read discovery runtime".into(),
+                })?;
+            runtime.block_on(client.messages().uses_legacy_community_reads_async())
+        })
+        .join()
+        .map_err(|_| crate::ImError::Internal {
+            message: "Community read discovery worker failed".into(),
+        })?
+    }
+
     pub fn send(
         &self,
         request: super::SendMessageRequest,

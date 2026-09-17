@@ -23,6 +23,7 @@ mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
 mod identity_register_handlers;
+mod identity_import_source;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
         choose_default_identity_name, create_migration_identity,
@@ -882,8 +883,12 @@ impl App {
     }
 
     pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
+        let mut resolved = self.resolve_config_for_workspace()?;
         require_legacy_file_compat_identity_storage(&resolved, "id import-v1")?;
+        identity_import_source::select_credentials_directory(
+            &mut resolved.paths.legacy_credentials_dir,
+            command.flags.get("credentials-dir").map(String::as_str),
+        )?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
         let import_all = command
             .flags

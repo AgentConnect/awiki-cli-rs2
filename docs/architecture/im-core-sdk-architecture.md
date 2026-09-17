@@ -1211,6 +1211,16 @@ account allowlist, device cohort, or percentage rollout input. The P5/P6
 product gates still control cryptographic admission; bootstrap capabilities
 control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
+### Community 单设备兼容模式（Schema 46）
+
+Open Server 在受信 Home 的本地能力入口显式声明 `awiki.open.single-device-sync.v1` 后，Core 可采用单设备、单安装 retained-log 模式。声明必须完整、闭合且不与 Snapshot/P5/P6 能力冲突；网络错误、缺字段、重复 JSON member 或不支持方法均不能触发隐式降级。商业模式仍要求既有显式协商及 Snapshot 能力。
+
+无联系验证注册使用显式 `VerificationInput::Community`（CLI `id register --community`），在准备身份材料前读取并验证同一配置 Home 的 Community 声明。该请求不携带占位手机号、OTP 或服务级验证 grant；不与 phone/email/OTP 输入混用。商业模式拒绝这条分支，原联系验证和受信服务注册语义保持不变。完成注册后再把服务模式绑定到真实 account/DID/device/installation。
+
+`sync_service_modes` 保存选择结果、能力来源和 Home/account/DID/device/key/generation/installation 绑定。已存模式变化、绑定替换、授权代次回退，或已有商业 lane/recovery 状态时拒绝直接进入 Community。同步恢复及重连重新发现同一 Home；不清除已有普通游标或未处理输入。Community bootstrap 使用闭合的 `tail_only` 响应并复用普通 hydration、持久接收与业务处理器，不新增 Snapshot 或 lane。
+
+已确认 Community 时，注册后不发布 P5/P6 材料，普通群历史不附加 P6 delivery context，WS 使用普通 v3 hint。显式加密请求仍失败，不能改发明文。设备凭据续期通过签名 `get_me` 验证并持久化精确 token，再以 Bearer 重试一次业务请求；商业认证重试路径保持原逻辑。未完成验证和正式交付的状态记录在跨仓升级计划中，不以能力 decoder 单测代表客户端交付。
+
 ### 统一持久接收与逐条处理（Schema 45）
 
 Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承诺完整输入已保存并与对应接收游标原子提交。普通事件、P5、P6 共用 `sync_lane_inbox`，必要正文 hydration 与账号/设备/来源校验先完成；业务归约、解密、Persona projection、通知和读状态回写不作为接收完成条件。旧 `sync_now` 保留显式兼容等待，使用同一接收表及 Core 处理器，等待发生在接收协调器之外；App、Listener 和 Daemon 主接收链路采用新入口。消息事实、逐条错误和处理后通知通过独立处理结果及现有本地投影机制交付。

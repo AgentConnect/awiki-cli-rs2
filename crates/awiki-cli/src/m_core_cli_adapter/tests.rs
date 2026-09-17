@@ -21,6 +21,25 @@ fn identity_selector_empty_uses_default() {
 }
 
 #[test]
+fn community_registration_is_explicit_and_rejects_mixed_contact_verification() {
+    let command = command_with_flags([("handle", "alice"), ("community", "true")]);
+    assert!(matches!(
+        identity::register_handle_request(&command)
+            .unwrap()
+            .verification,
+        VerificationInput::Community
+    ));
+    for contact in ["phone", "email", "otp"] {
+        let mut invalid = command.clone();
+        invalid
+            .flags
+            .insert(contact.to_owned(), "provided".to_owned());
+        assert!(identity::register_handle_request(&invalid).is_err());
+    }
+    assert!(identity::register_handle_request(&command_with_flags([("handle", "alice")])).is_err());
+}
+
+#[test]
 fn identity_selector_local_alias_trims_input() {
     assert!(matches!(
         identity::cli_identity_selector(" alice "),

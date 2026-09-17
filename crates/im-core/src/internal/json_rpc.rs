@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod strict_json;
+
 pub(crate) const CONTENT_TYPE_JSON: &str = "application/json";
 const JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_ID: &str = "req-1";
@@ -38,7 +40,7 @@ pub(crate) fn build_payload(method: &str, params: Value) -> Value {
 
 pub(crate) fn decode_response(raw: &[u8]) -> crate::ImResult<Value> {
     let envelope: Value =
-        serde_json::from_slice(raw).map_err(|err| crate::ImError::Serialization {
+        strict_json::decode(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
     if let Some(error) = envelope.get("error").filter(|error| !error.is_null()) {

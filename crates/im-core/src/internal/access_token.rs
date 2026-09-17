@@ -8,6 +8,9 @@ const EXPECTED_USER_SERVICE_AUDIENCE: &str = "awiki-user-service";
 const EXPECTED_MESSAGE_SERVICE_AUDIENCE: &str = "awiki-message-service";
 const CLOCK_SKEW_SECONDS: i64 = 30;
 
+#[cfg(test)]
+mod community_tests;
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExpectedDeviceAccess<'a> {
     pub(crate) did: &'a str,

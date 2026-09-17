@@ -995,6 +995,7 @@ fn registration_method_to_string(value: im_core::identity::RegistrationMethod) -
         im_core::identity::RegistrationMethod::Phone => "phone".to_string(),
         im_core::identity::RegistrationMethod::Email => "email".to_string(),
         im_core::identity::RegistrationMethod::AlreadyVerified => "already_verified".to_string(),
+        im_core::identity::RegistrationMethod::Community => "community".to_string(),
     }
 }
 

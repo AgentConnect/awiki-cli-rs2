@@ -4,6 +4,8 @@ pub(crate) mod attachment_runtime;
 pub(crate) mod auth;
 pub(crate) mod blob;
 pub(crate) mod canonical_identity;
+#[cfg(feature = "sqlite")]
+pub(crate) mod community_sync;
 pub(crate) mod contact_store;
 pub(crate) mod delegated_identity;
 pub(crate) mod did_transition;

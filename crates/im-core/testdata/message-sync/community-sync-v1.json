@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "contract": "awiki.open.single-device-sync.v1",
+  "cases": {
+    "C01": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "capability-1",
+        "method": "anp.get_capabilities",
+        "params": {
+          "meta": {
+            "profile": "anp.core.binding.v1",
+            "security_profile": "transport-protected",
+            "operation_id": "operation-capability-1"
+          },
+          "body": {}
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "capability-1",
+        "result": {
+          "service_did": "did:wba:community.example",
+          "supported_profiles": [
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.group.base.v1",
+            "anp.group.base.v2",
+            "anp.attachment.v1",
+            "anp.sync.local.v2",
+            "awiki.open.single-device-sync.v1"
+          ],
+          "supported_security_profiles": [
+            "transport-protected"
+          ],
+          "features": {
+            "community_sync": {
+              "profile": "awiki.open.single-device-sync.v1",
+              "wire_profile": "anp.sync.local.v2",
+              "max_devices": 1,
+              "max_client_instances": 1,
+              "snapshot": false,
+              "lanes": [],
+              "history": "retained_log",
+              "ws_subprotocol": "awiki.sync.event.v3"
+            }
+          }
+        }
+      }
+    },
+    "C02": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-1",
+        "method": "sync.bootstrap",
+        "params": {
+          "meta": {
+            "profile": "anp.sync.local.v2",
+            "security_profile": "transport-protected",
+            "sender_did": "did:wba:community.example:users:alice:e1_fixture",
+            "operation_id": "operation-bootstrap-1"
+          },
+          "body": {
+            "client_instance_id": "installation-alice-1",
+            "capabilities": {
+              "sync_profile": "anp.sync.local.v2",
+              "event_schema_max": 1
+            }
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-1",
+        "result": {
+          "mode": "tail_only",
+          "account_id": "account-alice-1",
+          "device_id": "device-alice-1",
+          "server_time": "2026-09-17T08:00:00Z",
+          "cursor": {
+            "stream_epoch": "1",
+            "scan_seq": "0"
+          },
+          "read_state_baseline": [],
+          "group_state_baseline": [],
+          "warnings": [
+            "single_device_pull_only"
+          ]
+        }
+      }
+    },
+    "C03": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-2",
+        "method": "sync.bootstrap",
+        "params": {
+          "meta": {
+            "profile": "anp.sync.local.v2",
+            "security_profile": "transport-protected",
+            "sender_did": "did:wba:community.example:users:alice:e1_fixture",
+            "operation_id": "operation-bootstrap-2"
+          },
+          "body": {
+            "client_instance_id": "installation-alice-2",
+            "capabilities": {
+              "sync_profile": "anp.sync.local.v2",
+              "event_schema_max": 1
+            }
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-2",
+        "error": {
+          "code": 1001,
+          "message": "sync.multiple_devices_not_supported",
+          "data": {
+            "anp_code": "anp.not_supported",
+            "retryable": false,
+            "details": {
+              "mode": "single_device_pull_only",
+              "reason": "second_client_instance"
+            }
+          }
+        }
+      }
+    },
+    "C04": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-1",
+        "method": "sync.bootstrap",
+        "params": {
+          "meta": {
+            "profile": "anp.sync.local.v2",
+            "security_profile": "transport-protected",
+            "sender_did": "did:wba:community.example:users:alice:e1_fixture",
+            "operation_id": "operation-bootstrap-1"
+          },
+          "body": {
+            "client_instance_id": "installation-alice-1",
+            "capabilities": {
+              "sync_profile": "anp.sync.local.v2",
+              "event_schema_max": 1,
+              "requested_snapshot_capabilities": {
+                "schema_max": 3,
+                "deliveries": [
+                  "paged_v1"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "bootstrap-1",
+        "error": {
+          "code": -32602,
+          "message": "sync.bootstrap_capabilities_invalid",
+          "data": {
+            "reason": "sync.bootstrap_capabilities_invalid",
+            "details": {}
+          }
+        }
+      }
+    },
+    "C05": {
+      "jsonrpc": "2.0",
+      "id": "bootstrap-1",
+      "error": {
+        "code": 1005,
+        "message": "session_unauthorized",
+        "data": {
+          "anp_code": "anp.unauthorized",
+          "retryable": false,
+          "details": {}
+        }
+      }
+    }
+  }
+}

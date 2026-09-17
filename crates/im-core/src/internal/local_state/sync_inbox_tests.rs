@@ -341,7 +341,10 @@ fn schema44_upgrade_preserves_pending_secure_inputs_and_outcome_foreign_keys() {
     db.execute("INSERT INTO sync_p5_input_outcomes(input_id,owner_identity_id,peer_scope,status,retryable,attempt_count,next_retry_at,updated_at) VALUES('legacy','owner','did:example:peer','pending',1,2,150,101)", []).unwrap();
     db.pragma_update(None, "user_version", 44).unwrap();
     schema::ensure_schema(&db).unwrap();
-    assert_eq!(schema::current_schema_version(&db).unwrap(), 45);
+    assert_eq!(
+        schema::current_schema_version(&db).unwrap(),
+        schema::SCHEMA_VERSION
+    );
     assert_eq!(
         db.query_row(
             "SELECT created_at FROM sync_lane_inbox WHERE input_id='legacy'",

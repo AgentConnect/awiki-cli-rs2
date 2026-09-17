@@ -9,13 +9,21 @@ use crate::workspace_config::Resolved;
 use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
 
-fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
+fn bridge_identity_name(resolved: &Resolved, requested: &str) -> Result<String, ExitError> {
     let requested = requested.trim();
-    if requested.is_empty() {
-        resolved.active_identity.trim().to_owned()
-    } else {
-        requested.to_owned()
+    if !requested.is_empty() {
+        return Ok(requested.to_owned());
     }
+    if !resolved.active_identity.trim().is_empty() {
+        return Ok(resolved.active_identity.trim().to_owned());
+    }
+    // Registration can establish the SDK default without writing a CLI
+    // identity override. Use that same default for the running listener.
+    let core = crate::m_core_cli_adapter::build_im_core(resolved)?;
+    let identity = core.identities().default_identity()
+        .map_err(|error| crate::m_core_cli_adapter::map_im_error(error, "resolve listener identity"))?
+        .ok_or_else(|| crate::m_core_cli_adapter::map_im_error(im_core::ImError::IdentityRequired, "resolve listener identity"))?;
+    Ok(identity.did.as_str().to_owned())
 }
 
 fn unsupported_inbox_option(command: &str, capability: &str, hint: &str) -> ExitError {
@@ -130,7 +138,7 @@ fn try_listener_local_command(
         crate::host_runtime::bridge::BridgeRequest {
             method: method.to_owned(),
             params,
-            identity_name: bridge_identity_name(resolved, requested_identity),
+            identity_name: bridge_identity_name(resolved, requested_identity)?,
         },
         resolved,
     )

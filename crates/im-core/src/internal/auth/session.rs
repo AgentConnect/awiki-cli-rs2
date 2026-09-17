@@ -56,13 +56,33 @@ impl SessionProvider for FileSessionProvider<'_> {
         &self,
         scope: crate::auth::AuthScope,
     ) -> crate::ImResult<crate::auth::SessionBundle> {
-        let snapshot = self.snapshot()?;
+        let mut snapshot = self.snapshot()?;
+        let original_token = snapshot.auth_state.bearer_token.clone();
+        #[cfg(feature = "sqlite")]
+        if (!snapshot.auth_state.has_valid_token || snapshot.auth_state.needs_refresh)
+            && crate::internal::community_sync::cached_mode(self.client)?
+                == Some(crate::internal::community_sync::SyncServiceMode::Community)
+        {
+            snapshot.ensure_identity_ready(scope)?;
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+            transport.refresh_jwt()?;
+            snapshot = self.snapshot()?;
+        }
         snapshot.ensure_ready(scope)?;
+        #[cfg(feature = "sqlite")]
+        if matches!(
+            scope,
+            crate::auth::AuthScope::Messaging | crate::auth::AuthScope::GroupMessaging
+        ) {
+            crate::internal::community_sync::ensure_session_mode_sync(self.client)?;
+            snapshot = self.snapshot()?;
+            snapshot.ensure_ready(scope)?;
+        }
         Ok(crate::auth::SessionBundle {
             subject: snapshot.subject,
             scope,
             expires_at: snapshot.auth_state.expires_at.clone(),
-            refreshed: false,
+            refreshed: original_token != snapshot.auth_state.bearer_token,
             bearer_token: snapshot.auth_state.bearer_token,
         })
     }
@@ -128,17 +148,35 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
         let snapshot = self.snapshot_async().await?;
         snapshot.ensure_identity_ready(scope)?;
         if snapshot.auth_state.has_valid_token && !snapshot.auth_state.needs_refresh {
-            return Ok(crate::auth::SessionBundle {
-                subject: snapshot.subject,
+            #[cfg(feature = "sqlite")]
+            if matches!(
                 scope,
-                expires_at: snapshot.auth_state.expires_at.clone(),
-                refreshed: false,
-                bearer_token: snapshot.auth_state.bearer_token,
+                crate::auth::AuthScope::Messaging | crate::auth::AuthScope::GroupMessaging
+            ) {
+                crate::internal::community_sync::ensure_session_mode(self.client).await?;
+            }
+            let current = self.snapshot_async().await?;
+            current.ensure_ready(scope)?;
+            return Ok(crate::auth::SessionBundle {
+                subject: current.subject,
+                scope,
+                expires_at: current.auth_state.expires_at.clone(),
+                refreshed: snapshot.auth_state.bearer_token != current.auth_state.bearer_token,
+                bearer_token: current.auth_state.bearer_token,
             });
         }
 
         let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
         transport.refresh_jwt_async().await?;
+        let refreshed = self.snapshot_async().await?;
+        refreshed.ensure_ready(scope)?;
+        #[cfg(feature = "sqlite")]
+        if matches!(
+            scope,
+            crate::auth::AuthScope::Messaging | crate::auth::AuthScope::GroupMessaging
+        ) {
+            crate::internal::community_sync::ensure_session_mode(self.client).await?;
+        }
         let refreshed = self.snapshot_async().await?;
         refreshed.ensure_ready(scope)?;
         Ok(crate::auth::SessionBundle {

@@ -28,6 +28,14 @@ fn command_with_registration_verification_reader(
     command: &ParsedCommand,
     reader: impl Read,
 ) -> Result<ParsedCommand, ExitError> {
+    if command.flags.get("community").map(String::as_str) == Some("true") {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--community cannot be combined with --verification-stdin",
+            "Choose Community registration or contact verification.",
+        ));
+    }
     if ["phone", "email", "otp"].iter().any(|name| {
         command
             .flags
@@ -93,6 +101,19 @@ fn invalid_verification_input(message: impl Into<String>) -> ExitError {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn community_registration_rejects_verification_stdin_without_reading_it() {
+        struct Unreadable;
+        impl Read for Unreadable {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("verification must not be read")
+            }
+        }
+        let mut command = stdin_command();
+        command.flags.insert("community".into(), "true".into());
+        assert!(command_with_registration_verification_reader(&command, Unreadable).is_err());
+    }
 
     fn stdin_command() -> ParsedCommand {
         ParsedCommand {

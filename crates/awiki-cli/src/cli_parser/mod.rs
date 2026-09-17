@@ -730,3 +730,6 @@ fn async_only_error(command: &str) -> ExitError {
 #[cfg(test)]
 #[path = "http_request_tests.rs"]
 mod http_request_tests;
+
+#[cfg(test)]
+mod identity_import_source_tests;

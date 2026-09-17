@@ -188,6 +188,14 @@ where
         ensure_registration_domain(self.core, &target)?;
         let method = registration_method(&request.verification);
         match &request.verification {
+            crate::identity::VerificationInput::Community => {
+                let raw = self.transport.rpc(
+                    "/im/rpc",
+                    "anp.get_capabilities",
+                    community_registration_discovery(),
+                )?;
+                require_community_registration(self.core, &raw)?;
+            }
             crate::identity::VerificationInput::Phone { phone, otp } => {
                 let phone = crate::internal::identity_wire::normalize_phone(phone)?;
                 if otp.as_deref().map(str::trim).unwrap_or_default().is_empty() {
@@ -356,6 +364,17 @@ where
         ensure_registration_domain(self.core, &target)?;
         let method = registration_method(&request.verification);
         match &request.verification {
+            crate::identity::VerificationInput::Community => {
+                let raw = self
+                    .transport
+                    .rpc(
+                        "/im/rpc",
+                        "anp.get_capabilities",
+                        community_registration_discovery(),
+                    )
+                    .await?;
+                require_community_registration(self.core, &raw)?;
+            }
             crate::identity::VerificationInput::Phone { phone, otp } => {
                 let phone = crate::internal::identity_wire::normalize_phone(phone)?;
                 if otp.as_deref().map(str::trim).unwrap_or_default().is_empty() {
@@ -837,8 +856,50 @@ fn verify_pending_matches_request(
     Ok(())
 }
 
+fn community_registration_discovery() -> Value {
+    serde_json::json!({"meta": {"profile":"anp.core.binding.v1", "security_profile":"transport-protected", "operation_id":"community-registration-discovery"}, "body":{}})
+}
+
+fn require_community_registration(core: &crate::core::ImCore, raw: &Value) -> crate::ImResult<()> {
+    use crate::internal::wire::sync_v2::community::{discover_sync_service_mode, SyncServiceMode};
+    let config = core.inner().sdk_config();
+    if discover_sync_service_mode(raw)? != SyncServiceMode::Community {
+        return Err(crate::ImError::invalid_input(
+            Some("verification".into()),
+            "This Home requires phone or email verification; Community registration is unavailable",
+        ));
+    }
+    let expected_service = config
+        .anp_service_did
+        .as_ref()
+        .map(|did| did.as_str().to_owned())
+        .unwrap_or_else(|| format!("did:wba:{}", config.did_domain.replace(':', "%3A")));
+    let user = config
+        .user_service_endpoint
+        .as_ref()
+        .unwrap_or(&config.service_base_url);
+    let message = config
+        .message_service_endpoint
+        .as_ref()
+        .unwrap_or(&config.service_base_url);
+    let origin = |endpoint: &crate::ServiceEndpoint| {
+        reqwest::Url::parse(endpoint.as_str())
+            .map(|url| url.origin())
+            .map_err(|_| crate::ImError::PermissionDenied)
+    };
+    if raw.get("service_did").and_then(Value::as_str) != Some(expected_service.as_str())
+        || origin(user)? != origin(message)?
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Community registration requires the configured User and Message Home".into(),
+        });
+    }
+    Ok(())
+}
+
 fn pending_verification_kind(verification: &crate::identity::VerificationInput) -> &'static str {
     match verification {
+        crate::identity::VerificationInput::Community => "community",
         crate::identity::VerificationInput::Phone { .. } => "phone",
         crate::identity::VerificationInput::Email { .. } => "email",
         crate::identity::VerificationInput::Otp { .. } => "otp",
@@ -857,6 +918,7 @@ fn pending_verification_target(
             Some(email.trim().to_ascii_lowercase()).filter(|value| !value.is_empty())
         }
         crate::identity::VerificationInput::Otp { .. }
+        | crate::identity::VerificationInput::Community
         | crate::identity::VerificationInput::AlreadyVerified => None,
     }
 }
@@ -1840,6 +1902,28 @@ async fn publish_v2_messaging_material_after_registration_async(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
 ) -> Vec<String> {
+    #[cfg(feature = "sqlite")]
+    {
+        let discovery = async {
+            let client = core
+                .client_async(crate::identity::IdentitySelector::Did(did.clone()))
+                .await?;
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+            crate::internal::community_sync::discover(&client, &mut transport).await
+        }
+        .await;
+        match discovery {
+            Ok(crate::internal::community_sync::SyncServiceMode::Community) => return Vec::new(),
+            Ok(crate::internal::community_sync::SyncServiceMode::Commercial) => {}
+            Err(_) => {
+                let mut warnings = registration_messaging_material_unavailable_warnings(
+                    core.inner().group_e2ee_v2_enabled(),
+                );
+                warnings.push("identity.capability_discovery_pending".to_owned());
+                return warnings;
+            }
+        }
+    }
     let prekey_result = publish_v2_prekeys_after_registration_async(core, did).await;
     let group_key_package_result = if core.inner().group_e2ee_v2_enabled() {
         Some(publish_v2_group_key_package_after_registration_async(core, did).await)
@@ -1858,6 +1942,11 @@ pub(crate) async fn publish_v2_group_key_package_after_registration_async(
         let client = core
             .client_async(crate::identity::IdentitySelector::Did(did.clone()))
             .await?;
+        if crate::internal::community_sync::ensure_session_mode(&client).await?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+        {
+            return Ok(());
+        }
         let device_id = client.exact_protocol_device_id()?;
         let (operation_id, key_package_id) =
             deterministic_registration_group_key_package_ids(did, &device_id);
@@ -1910,6 +1999,12 @@ pub(crate) async fn publish_v2_prekeys_after_registration_async(
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(did.clone()))
         .await?;
+    #[cfg(feature = "sqlite")]
+    if crate::internal::community_sync::ensure_session_mode(&client).await?
+        == Some(crate::internal::community_sync::SyncServiceMode::Community)
+    {
+        return Ok(());
+    }
     let has_device_authorization = client.runtime().owner.sync_account.is_some();
     let has_valid_bearer = client.runtime().key_provider.valid_auth_token()?.is_some();
     if registration_prekey_access_requires_refresh(has_device_authorization, has_valid_bearer) {
@@ -1967,6 +2062,9 @@ pub(crate) fn registration_method(
     verification: &crate::identity::VerificationInput,
 ) -> crate::identity::RegistrationMethod {
     match verification {
+        crate::identity::VerificationInput::Community => {
+            crate::identity::RegistrationMethod::Community
+        }
         crate::identity::VerificationInput::Phone { .. }
         | crate::identity::VerificationInput::Otp { .. } => {
             crate::identity::RegistrationMethod::Phone
@@ -2111,6 +2209,7 @@ pub(crate) fn email_verified(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod community_registration;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use time::OffsetDateTime;
 

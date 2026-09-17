@@ -141,7 +141,7 @@ impl PendingRegistration {
             || self.display_name.trim().is_empty()
             || !matches!(
                 self.verification_kind.as_str(),
-                "phone" | "email" | "otp" | "already_verified"
+                "phone" | "email" | "otp" | "already_verified" | "community"
             )
             || self.document_hash
                 != crate::internal::identity_wire::document::document_hash(

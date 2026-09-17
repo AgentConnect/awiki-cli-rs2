@@ -56,11 +56,24 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let mut payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
         )?;
+        #[cfg(feature = "sqlite")]
+        if crate::internal::community_sync::cached_mode(self.client)?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+            && request.max_members.is_none()
+        {
+            if let Some(policy) = payload
+                .body
+                .get_mut("group_policy")
+                .and_then(Value::as_object_mut)
+            {
+                policy.remove("max_members");
+            }
+        }
         self.signed_group_rpc(payload, credentials)
     }
 
@@ -215,11 +228,24 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let mut payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
         )?;
+        #[cfg(feature = "sqlite")]
+        if crate::internal::community_sync::cached_mode(self.client)?
+            == Some(crate::internal::community_sync::SyncServiceMode::Community)
+            && request.max_members.is_none()
+        {
+            if let Some(policy) = payload
+                .body
+                .get_mut("group_policy")
+                .and_then(Value::as_object_mut)
+            {
+                policy.remove("max_members");
+            }
+        }
         self.signed_group_rpc_async(payload, credentials).await
     }
 

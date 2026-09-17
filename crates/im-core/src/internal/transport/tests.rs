@@ -8,6 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
 
+#[cfg(feature = "sqlite")]
+mod community;
+
 #[tokio::test]
 async fn attachment_stream_uses_idle_timeout_instead_of_total_request_deadline() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
