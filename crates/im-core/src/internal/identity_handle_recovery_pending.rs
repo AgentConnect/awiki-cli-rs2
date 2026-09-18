@@ -206,6 +206,10 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) identity: HandleRecoveryIdentityRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) previous_custody: Option<crate::internal::identity_provider::ProviderIdentityRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) registration_candidate_cleanup: Option<
+        crate::internal::identity_handle_recovery_registration_cleanup::RegistrationCandidateCleanup,
+    >,
     pub(crate) factor_state: RecoveryFactorStateV4,
     pub(crate) authoritative_binding: Option<RecoveryAuthoritativeBindingV4>,
     pub(crate) intent: Option<RecoveryIntentV4>,
@@ -364,6 +368,7 @@ impl PendingHandleRecoveryV4 {
             local_previous_did,
             identity,
             previous_custody: None,
+            registration_candidate_cleanup: None,
             factor_state: RecoveryFactorStateV4::AwaitingOtp,
             authoritative_binding: None,
             intent: None,
@@ -1021,6 +1026,7 @@ impl PendingHandleRecoveryStore {
             full_handle: legacy.full_handle,
             local_previous_did: legacy.local_previous_did,
             previous_custody: None,
+            registration_candidate_cleanup: None,
             identity: HandleRecoveryIdentityRef {
                 store_id: public.reference.store_id,
                 identity_id: public.reference.identity_id,

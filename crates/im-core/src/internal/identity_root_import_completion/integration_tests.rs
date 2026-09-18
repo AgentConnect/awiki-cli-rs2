@@ -24,6 +24,7 @@ const CHILD_ENV: &str = "AWIKI_ROOT_V2_CORE_CHILD";
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
+    completion_v2: bool,
     domain: String,
     did: String,
     document: Value,
@@ -216,10 +217,47 @@ fn response(
                 denied.status_code = 401;
                 return Ok(denied);
             }
-            assert_eq!(params["type"], ROOT_COMPLETION_V2);
+            assert_eq!(
+                params["type"],
+                if cfg.completion_v2 {
+                    ROOT_COMPLETION_V2
+                } else {
+                    "awiki.device.root-key-import-complete.v1"
+                }
+            );
+            if !cfg.completion_v2 {
+                let statement = params["statement"].as_object().unwrap();
+                let mut keys: Vec<_> = statement.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                // Closed V1 service contract: no delivery/proof timing extensions.
+                let mut expected = vec![
+                    "type",
+                    "message_id",
+                    "did",
+                    "sending_device_id",
+                    "importing_device_id",
+                    "sender_e2ee_key_id",
+                    "recipient_e2ee_key_id",
+                    "root_key_id",
+                    "root_public_key_fingerprint",
+                    "document_version",
+                    "document_hash",
+                    "registry_version",
+                    "imported_at",
+                    "expires_at",
+                    "nonce",
+                    "proof",
+                ];
+                expected.sort_unstable();
+                assert_eq!(keys, expected);
+            }
             assert_eq!(
                 params["statement"]["type"],
-                "awiki.device.root-possession.v2"
+                if cfg.completion_v2 {
+                    "awiki.device.root-possession.v2"
+                } else {
+                    "awiki.device.root-possession.v1"
+                }
             );
             assert_eq!(params["statement"]["did"], cfg.did);
             assert_eq!(params["statement"]["sending_device_id"], cfg.sender);
@@ -233,7 +271,11 @@ fn response(
                     && value.starts_with("Bearer ")));
             let statement = &params["statement"];
             let imported = statement["imported_at"].as_str().unwrap();
-            let created = statement["proof_created_at"].as_str().unwrap();
+            let created = if cfg.completion_v2 {
+                statement["proof_created_at"].as_str().unwrap()
+            } else {
+                imported
+            };
             assert_eq!(params["proof"]["created"], created);
             assert_eq!(statement["proof"]["created"], created);
             let nonce_hash = digest(statement["nonce"].as_str().unwrap().as_bytes());
@@ -381,6 +423,10 @@ impl Drop for Fixture {
 }
 
 async fn fixture(delay: i64) -> Fixture {
+    fixture_contract(delay, true).await
+}
+
+async fn fixture_contract(delay: i64, completion_v2: bool) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let domain = format!("root-integration-{}.example.test", rand::random::<u64>());
     let a = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(&domain,"source",None,None).unwrap();
@@ -608,7 +654,7 @@ async fn fixture(delay: i64) -> Fixture {
         crate::internal::identity_wire::document::extract_identity_public_key(root_method).unwrap();
     let fingerprint = anp::authentication::compute_multikey_fingerprint(&public).unwrap();
     let envelope = Zeroizing::new(RootKeyEnvelope {
-        completion_contract: Some(ROOT_COMPLETION_V2.into()),
+        completion_contract: completion_v2.then(|| ROOT_COMPLETION_V2.into()),
         system_type: ROOT_KEY_ENVELOPE_SYSTEM_TYPE.into(),
         message_id: "msg-root-key-integration".into(),
         did: a.did.as_str().into(),
@@ -646,6 +692,7 @@ async fn fixture(delay: i64) -> Fixture {
     })
     .unwrap();
     let cfg = Config {
+        completion_v2,
         domain,
         did: a.did.as_str().into(),
         document,
@@ -1036,5 +1083,18 @@ async fn delayed_receive_keeps_strict_checkpoint_and_never_imports_on_drift() {
     with_state(fixture.root.path(), |state| {
         assert_eq!(state.completions, 0);
         assert_eq!(state.commits, 0);
+    });
+}
+
+#[tokio::test]
+async fn v1_receive_promotes_with_a_strict_v1_only_service_contract() {
+    let fixture = fixture_contract(2, false).await;
+    let mut receiver = child(fixture.root.path());
+    assert!(wait_child(&mut receiver).await.success());
+    assert_promoted(&fixture).await;
+    assert!(persisted_import_time(&fixture).is_none());
+    with_state(fixture.root.path(), |state| {
+        assert_eq!(state.completions, 1);
+        assert_eq!(state.commits, 1);
     });
 }

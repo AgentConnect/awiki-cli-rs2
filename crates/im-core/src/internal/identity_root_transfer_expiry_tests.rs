@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn expiry_uses_service_acceptance_not_receiver_or_wall_clock_and_preserves_ledger() {
+fn historical_delivery_preserves_acceptance_based_recovery_without_rewriting_ledger() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(
         "CREATE TABLE identity_root_transfer_sender_v1 (
@@ -90,7 +90,35 @@ fn durable_delivery_checkpoint_detects_supersession_without_rewriting_accepted_m
     )
     .unwrap();
     tx.commit().unwrap();
+    let contract: String = db
+        .query_row(
+            "SELECT completion_contract FROM identity_root_transfer_sender_v1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(contract, "v1");
+    let at =
+        |s: &str| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).unwrap();
     db.execute("UPDATE identity_root_transfer_sender_v1 SET phase='sent',accepted_at='2026-09-17T00:00:01Z'", []).unwrap();
+    assert!(!delivery_expired_with_connection(
+        &db,
+        "owner",
+        "did",
+        "sender",
+        "recipient",
+        at("2026-09-17T00:10:00Z")
+    )
+    .unwrap());
+    assert!(delivery_expired_with_connection(
+        &db,
+        "owner",
+        "did",
+        "sender",
+        "recipient",
+        at("2026-09-17T00:10:00.001Z")
+    )
+    .unwrap());
     assert!(
         !delivery_checkpoint_changed(&db, "owner", "did", "sender", "recipient", &original)
             .unwrap()
@@ -158,4 +186,24 @@ fn durable_delivery_checkpoint_detects_supersession_without_rewriting_accepted_m
     assert!(
         delivery_checkpoint_changed(&db, "owner", "did", "sender", "recipient", &original).is_err()
     );
+}
+
+#[test]
+fn sender_emits_the_closed_v1_envelope_without_a_completion_extension() {
+    // An old strict V1 reader rejects added fields, even when system_type is V1.
+    let original = serde_json::json!({
+        "system_type": ROOT_KEY_ENVELOPE_V1,
+        "message_id": "msg-root-key-compat", "did": "did:example:owner",
+        "root_key_id": "root", "root_public_key_fingerprint": "fingerprint",
+        "root_private_key_pkcs8_b64u": "test-only",
+        "sender_device_id": "sender", "sender_e2ee_key_id": "sender-e2ee",
+        "recipient_device_id": "recipient", "recipient_e2ee_key_id": "recipient-e2ee",
+        "document_version": 1, "document_hash": "hash", "registry_version": 2,
+        "issued_at": "2026-09-18T00:00:00Z", "expires_at": "2026-09-18T00:10:00Z"
+    });
+    let envelope: RootKeyEnvelopeV1 = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&envelope).unwrap(), original);
+    let mut extended = original;
+    extended["completion_contract"] = serde_json::json!("awiki.device.root-key-import-complete.v2");
+    assert!(serde_json::from_value::<RootKeyEnvelopeV1>(extended).is_err());
 }

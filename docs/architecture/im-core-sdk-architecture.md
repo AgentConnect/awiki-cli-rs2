@@ -137,6 +137,16 @@ Recovery 或未索引恢复材料时返回 `recovery_in_progress`。Recovery 不
 registration pending 占用的 custody。异步注册、恢复 prepare/advance 与既有删除路径
 使用相同 Handle→owner 锁序，避免 owner 冻结期间的进程内跨流程竞争。
 
+Recovery 首次创建操作时，在同 Handle 锁内记录可安全收尾的 registration 候选精确引用。
+只有 registration 仍为 Prepared、没有远端尝试/成功结果且未被本地身份或历史迁移占用，
+才关联该候选。恢复达到 Applied 且本地完成凭据一致后，再核对同 Vault scope、同 Handle
+及完整候选引用，先删除候选 custody，再删除 registration pending。结果未知、候选引用
+变化、已被其他身份/恢复占用时保留材料。清理失败保留持久化重试标记，后续 resume
+重试，不撤销已经成功的恢复。Applied 操作只要仍有收尾引用（包括首次清理前崩溃），
+就继续出现在 pending 列表并允许 Resume；清理完成后移出。候选记录损坏或占用检查
+无法确认安全时不关联清理目标，Vault 不可用仍返回错误。旧版恢复记录缺少关联引用时不推断清理对象；该流程仅
+收尾未发布的注册候选，不定义业务身份失效状态，也不删除恢复前驱身份。
+
 Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完成的
 `identity_transition_pending` 中的前驱/后继，以及 exact completed retirement binding，
 都不能作为“未投影的新身份”复用。该排除依据是删除凭证后仍保留的非秘密 Core 记录，
@@ -1243,6 +1253,8 @@ Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承
 
 同一 SQLite 数据库、同一 owner 的 HTTP 接收轮次使用跨进程文件锁协调，锁等待计入原有接收时间预算；进程退出或任务取消时由操作系统释放。进程内请求仍由现有 coordinator 合并。后到的 CLI/Core 等待当前接收提交，再从持久游标继续；`run_generation` 和当前身份检查仍作为旧结果写入的最后一道校验。该锁只覆盖接收，不覆盖独立的逐条处理、Root completion 或 App 本地读取。
 
+同步通道能力状态的本地协调使用 `BEGIN IMMEDIATE`，在读取账号绑定前取得 SQLite 写锁，再原子提交通道游标与协商结果。这样并发连接遵循已有忙等待配置，不会因延迟事务的读快照升级而直接返回 `database is locked`；该事务只包含本地数据库操作，不持锁执行网络请求。
+
 设备授权代次变化仍要求使用新认证重新 bootstrap 并验证 exact account/device 与 lane 协商结果。同一 owner/account/device 的普通 stream epoch 未变时，重新协商保留已经接收的游标，再拉取其后的事件，不能把期间已经投递的 Join 通知当成尾部初始化前的历史而越过；lane 的同 epoch 本地接收位置也不能退回较早的服务端 ACK。新身份/设备的首次初始化、DID transition 清除旧接收状态和 stream epoch 变化继续走各自既有初始化或恢复路径。
 
 Core 原子领取并按类型有限并发分发，处理器只执行单条事件。 `sync_input_leases` 仅保存最多 8 个活动尝试的 token 与租期，不保存输入、身份或处理结果；即使接收载荷被淘汰，实际调用的占位仍延续到调用结束。它与独立维护共用活动上限，避免另一个 Core/连接因看不到已删除的输入而越过并发上限。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
@@ -1709,7 +1721,9 @@ Conversation-level read state is separate from reliable sync checkpoints:
 
 ## Root导入/完成V2时效与恢复
 
-新自动Join保留敏感envelope.v1分类，使用closed completion_contract字段显式选择root-key-import-complete.v2。旧V1/独立手动路径保持原时效；未知或null合同拒绝，不让Root进入普通JSON解析。已pending/accepted的原message与密文不重建。
+新自动 Join 与独立手动发送统一复用 V1，省略 completion_contract 字段，保持旧接收端与旧 User Service 的请求合同。正常 Join/SAS 授权后无需第二次 Root 发送审批；失败最多尝试三次，间隔五秒。V1 必须在原 600 秒窗口内完成导入，已接受但超时同样报告过期，不另建消息或重置预算。
+
+V2 离线增强作为独立能力评审，不是自动发送的依赖；保留已有 V2 消息的接收、恢复和完成支持。历史 pending/accepted 原 message 与密文不重建。发送账本为新消息记录非秘密 completion_contract=v1；历史空值保留原恢复行为，不能据此声称旧记录实际使用 V2。未知或显式 null 的线协议合同仍拒绝，不让 Root 进入普通 JSON 解析。
 
 V2原消息仍须在600秒投递窗口内被接受；接收端可在原checkpoint/设备/密钥/权限仍完全一致时延迟导入。真实首次导入操作开始时间在provider调用前原子保存，provider内部seal时刻仍归provider日志。无秘密identity_root_import_plan_v2绑定owner/DID/device/message、加密输入/route摘要和全部原身份事实。provider后/handoff前崩溃复用原计划与evidence；handoff与计划阶段同事务，所有接收/恢复入口共享OS锁。
 

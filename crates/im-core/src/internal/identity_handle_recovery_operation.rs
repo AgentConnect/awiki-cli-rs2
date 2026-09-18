@@ -291,6 +291,25 @@ ORDER BY updated_at DESC,operation_id DESC"#,
         .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
+pub(crate) fn list_applied(sqlite_path: &Path) -> crate::ImResult<Vec<RecoveryOperationRecord>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let mut statement = connection
+        .prepare(
+            r#"SELECT operation_id,owner_identity_id,account_user_id,full_handle,lifecycle_class,
+commit_attempted,key_state,intent_hash,vault_key_id,state_root_fingerprint,
+superseded_by_operation_id,last_error_code,created_at,updated_at
+FROM handle_recovery_operations_v4
+WHERE lifecycle_class = 'applied'
+ORDER BY updated_at DESC,operation_id DESC"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], row_to_record)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)
+}
+
 pub(crate) fn list_handle(
     sqlite_path: &Path,
     full_handle: &str,

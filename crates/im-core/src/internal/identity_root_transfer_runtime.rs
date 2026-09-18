@@ -26,7 +26,6 @@ const ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS: u64 = 10;
 const ROOT_TRANSFER_HANDLE_TTL_SECONDS: i64 = 60;
 const ROOT_TRANSFER_ENVELOPE_TTL_SECONDS: i64 = 600;
 const ROOT_KEY_ENVELOPE_V1: &str = "awiki.device.root-key-envelope.v1";
-const ROOT_COMPLETION_V2: &str = "awiki.device.root-key-import-complete.v2";
 pub(crate) const ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX: &str = "msg-root-key-";
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
@@ -143,10 +142,9 @@ impl RootKeyTransferAuthorizationStore {
 }
 
 #[derive(Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 struct RootKeyEnvelopeV1 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    completion_contract: Option<String>,
     system_type: String,
     message_id: String,
     did: String,
@@ -415,7 +413,7 @@ pub(crate) async fn send_for_authorized_join(
     }
     // The persistent task owns all automatic retries; the independent manual
     // transfer keeps its existing same-message immediate recovery behavior.
-    send_authorized_root_key_transfer(client, state, false, Some(ROOT_COMPLETION_V2)).await
+    send_authorized_root_key_transfer(client, state, false).await
 }
 
 pub(crate) fn validate_join_key_binding(
@@ -514,9 +512,10 @@ fn delivery_expired_with_connection(
     recipient: &str,
     now: OffsetDateTime,
 ) -> crate::ImResult<bool> {
+    ensure_sender_envelope_format_column_with_connection(connection)?;
     let mut query = connection
         .prepare(
-            "SELECT phase, created_at, accepted_at FROM identity_root_transfer_sender_v1
+            "SELECT phase, created_at, accepted_at, completion_contract FROM identity_root_transfer_sender_v1
          WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
          AND recipient_device_id = ?4 AND phase IN ('pending_delivery', 'sent')",
         )
@@ -527,6 +526,7 @@ fn delivery_expired_with_connection(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })
         .map_err(crate::internal::local_state::local_state_unavailable)?
@@ -535,7 +535,7 @@ fn delivery_expired_with_connection(
     if rows.len() > 1 {
         return Err(crate::ImError::PermissionDenied);
     }
-    let Some((phase, created, accepted)) = rows.first() else {
+    let Some((phase, created, accepted, contract)) = rows.first() else {
         return Ok(false);
     };
     let parse = |value: &str| {
@@ -546,12 +546,15 @@ fn delivery_expired_with_connection(
         .checked_add(Duration::seconds(ROOT_TRANSFER_ENVELOPE_TTL_SECONDS))
         .ok_or(crate::ImError::PermissionDenied)?;
     if phase == "sent" {
-        // V2 can import arbitrarily late if the service accepted on time.
+        // Historical rows have no contract marker: preserve their existing recovery
+        // behavior without guessing or rewriting an already encrypted message.
+        // All newly created sends use V1, whose import window also expires.
         Ok(parse(
             accepted
                 .as_deref()
                 .ok_or(crate::ImError::PermissionDenied)?,
-        )? > deadline)
+        )? > deadline
+            || (contract.as_deref() == Some("v1") && now > deadline))
     } else {
         Ok(now > deadline)
     }
@@ -707,14 +710,13 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     if !request.user_presence_confirmed {
         return Err(root_error(RootTransferErrorCode::UserPresenceDenied));
     }
-    send_authorized_root_key_transfer(client, state, true, None).await
+    send_authorized_root_key_transfer(client, state, true).await
 }
 
 async fn send_authorized_root_key_transfer(
     client: &crate::core::ImClient,
     state: RootKeyTransferAuthorizationState,
     immediate_transport_retry: bool,
-    completion_contract: Option<&str>,
 ) -> RootTransferResult<crate::identity::RootKeyTransferSendResult> {
     if state.identity_id != client.current_identity().id || state.did != *client.did() {
         return Err(root_error(RootTransferErrorCode::AuthorizationInvalid));
@@ -881,7 +883,6 @@ async fn send_authorized_root_key_transfer(
         zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(exported_root.as_pkcs8_der()));
     let envelope = zeroize::Zeroizing::new(RootKeyEnvelopeV1 {
         system_type: ROOT_KEY_ENVELOPE_V1.to_owned(),
-        completion_contract: completion_contract.map(str::to_owned),
         message_id: message_id.as_str().to_owned(),
         did: state.did.as_str().to_owned(),
         root_key_id: state.root_key_id,
@@ -1116,8 +1117,8 @@ fn persist_sender_delivery_pending_tx(
         .execute(
             r#"INSERT INTO identity_root_transfer_sender_v1 (
 owner_identity_id, owner_did, local_device_id, message_id,
-recipient_device_id, envelope_format, phase, created_at, updated_at, transfer_checkpoint_json
-) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_v1', 'pending_delivery', ?6, ?6, ?7)
+recipient_device_id, envelope_format, phase, created_at, updated_at, transfer_checkpoint_json, completion_contract
+) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_v1', 'pending_delivery', ?6, ?6, ?7, 'v1')
 ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             rusqlite::params![
                 owner_identity_id,
@@ -1136,6 +1137,7 @@ ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND message_id = ?4 AND recipient_device_id = ?5
   AND envelope_format = 'legacy_v1' AND transfer_checkpoint_json = ?6
+  AND completion_contract = 'v1'
   AND phase IN ('pending_delivery', 'sent')"#,
             rusqlite::params![
                 owner_identity_id,
@@ -1305,6 +1307,7 @@ fn ensure_sender_envelope_format_column_with_connection(
             "envelope_format TEXT NOT NULL DEFAULT 'legacy_v1'",
         ),
         ("transfer_checkpoint_json", "transfer_checkpoint_json TEXT"),
+        ("completion_contract", "completion_contract TEXT"),
     ] {
         if !columns.iter().any(|column| column == name) {
             transaction
@@ -1778,6 +1781,7 @@ message_id TEXT NOT NULL,
 recipient_device_id TEXT NOT NULL,
 envelope_format TEXT NOT NULL,
 transfer_checkpoint_json TEXT,
+completion_contract TEXT,
 phase TEXT NOT NULL,
 failure_code TEXT,
 accepted_at TEXT,
