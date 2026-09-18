@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn failure_delay_starts_after_failure_and_third_attempt_can_succeed() {
+fn failure_delay_starts_after_failure_and_fourth_attempt_can_succeed() {
     let mut task = ManagementTask::authorized();
     assert!(!task.claim(0));
     task.activate();
@@ -13,24 +13,27 @@ fn failure_delay_starts_after_failure_and_third_attempt_can_succeed() {
     task.failed_attempt(20_000, "prekey_unavailable", true);
     assert!(!task.claim(24_999));
     assert!(task.claim(25_000));
+    task.failed_attempt(30_000, "prekey_unavailable", true);
+    assert!(!task.claim(34_999));
+    assert!(task.claim(35_000));
     task.accepted();
-    assert_eq!(task.attempts, 3);
+    assert_eq!(task.attempts, 4);
     assert_eq!(task.phase, ManagementPhase::WaitingForRecipient);
     assert!(!task.claim(i64::MAX));
 }
 
 #[test]
-fn crashes_do_not_refund_budget_or_allow_a_fourth_attempt() {
+fn crashes_do_not_refund_budget_or_allow_a_fifth_attempt() {
     let mut task = ManagementTask::authorized();
     task.activate();
-    for n in 0..3 {
+    for n in 0..4 {
         assert!(task.claim(n * 10_000));
         let saved = serde_json::to_vec(&task).unwrap();
         task = serde_json::from_slice(&saved).unwrap();
         task.recover_interrupted(n * 10_000 + 1_000);
         assert!(!task.claim(n * 10_000 + 5_999));
     }
-    assert_eq!(task.attempts, 3);
+    assert_eq!(task.attempts, 4);
     assert_eq!(task.phase, ManagementPhase::Failed);
     assert!(!task.claim(i64::MAX));
     task.activate();
@@ -135,7 +138,12 @@ impl TaskIo for FakeIo {
 #[tokio::test]
 async fn production_driver_prekey_failures_then_success_obey_completion_delay() {
     use crate::identity::RootKeyTransferErrorCode::PrekeyUnavailable;
-    let mut io = FakeIo::new(&[Some(PrekeyUnavailable), Some(PrekeyUnavailable), None]);
+    let mut io = FakeIo::new(&[
+        Some(PrekeyUnavailable),
+        Some(PrekeyUnavailable),
+        Some(PrekeyUnavailable),
+        None,
+    ]);
     let mut task = ManagementTask::authorized();
     advance_task(&mut task, &mut io).await.unwrap();
     assert_eq!(task.next_attempt_at_ms, 5_700);
@@ -146,19 +154,24 @@ async fn production_driver_prekey_failures_then_success_obey_completion_delay() 
     advance_task(&mut task, &mut io).await.unwrap();
     io.now = 11_400;
     advance_task(&mut task, &mut io).await.unwrap();
+    io.now = 17_099;
+    advance_task(&mut task, &mut io).await.unwrap();
     assert_eq!(io.sends, [0, 5_700, 11_400]);
+    io.now = 17_100;
+    advance_task(&mut task, &mut io).await.unwrap();
+    assert_eq!(io.sends, [0, 5_700, 11_400, 17_100]);
     assert_eq!(task.phase, ManagementPhase::WaitingForRecipient);
     io.now = 100_000;
     advance_task(&mut task, &mut io).await.unwrap();
-    assert_eq!(io.sends.len(), 3);
+    assert_eq!(io.sends.len(), 4);
 }
 
 #[tokio::test]
 async fn lost_response_after_last_attempt_reconciles_registered_without_resend() {
     use crate::identity::RootKeyTransferErrorCode::TransportPending;
-    let mut io = FakeIo::new(&[Some(TransportPending); 3]);
+    let mut io = FakeIo::new(&[Some(TransportPending); 4]);
     let mut task = ManagementTask::authorized();
-    for now in [0, 5_700, 11_400] {
+    for now in [0, 5_700, 11_400, 17_100] {
         io.now = now;
         advance_task(&mut task, &mut io).await.unwrap();
     }
@@ -167,8 +180,8 @@ async fn lost_response_after_last_attempt_reconciles_registered_without_resend()
     io.remote_registered = true;
     advance_task(&mut task, &mut io).await.unwrap();
     assert_eq!(task.phase, ManagementPhase::ManagementRegistered);
-    assert_eq!(task.attempts, 3);
-    assert_eq!(io.sends.len(), 3);
+    assert_eq!(task.attempts, 4);
+    assert_eq!(io.sends.len(), 4);
 }
 
 #[tokio::test]
@@ -197,14 +210,14 @@ async fn accepted_ledger_prevents_resend_after_response_persistence_crash() {
 async fn manual_retry_reconciles_acceptance_before_starting_a_new_bounded_round() {
     let mut exhausted = ManagementTask::authorized();
     exhausted.phase = ManagementPhase::Failed;
-    exhausted.attempts = 3;
+    exhausted.attempts = 4;
     for (registered, accepted) in [(true, false), (false, true)] {
         let mut task = exhausted.clone();
         let mut io = FakeIo::new(&[]);
         io.remote_registered = registered;
         io.local_accepted = accepted;
         retry_task(&mut task, &mut io).await.unwrap();
-        assert_eq!(task.attempts, 3);
+        assert_eq!(task.attempts, 4);
         assert_eq!(
             task.phase,
             if registered {
@@ -298,4 +311,33 @@ async fn accepted_checkpoint_invalidated_survives_restart_and_rejects_explicit_r
     advance_task(&mut task, &mut io).await.unwrap();
     assert_eq!(task.phase, ManagementPhase::ManagementRegistered);
     assert_eq!(io.sends.len(), 1);
+}
+
+#[test]
+fn legacy_task_keeps_its_signed_three_attempt_budget_after_upgrade() {
+    let mut task: ManagementTask = serde_json::from_value(serde_json::json!({
+        "phase":"scheduled", "attempts":2, "next_attempt_at_ms":0, "failure_code":null
+    }))
+    .unwrap();
+    assert_eq!(task.max_attempts, 3);
+    assert!(task.claim(0));
+    task.failed_attempt(700, "prekey_unavailable", true);
+    assert_eq!(task.phase, ManagementPhase::Failed);
+    assert!(!task.claim(5700));
+    let restored: ManagementTask =
+        serde_json::from_slice(&serde_json::to_vec(&task).unwrap()).unwrap();
+    assert_eq!(restored.max_attempts, 3);
+    assert_eq!(restored.attempts, 3);
+}
+
+#[tokio::test]
+async fn explicit_retry_preserves_the_legacy_signed_budget() {
+    let mut task = ManagementTask::authorized();
+    task.max_attempts = 3;
+    task.attempts = 3;
+    task.phase = ManagementPhase::Failed;
+    let mut io = FakeIo::new(&[]);
+    retry_task(&mut task, &mut io).await.unwrap();
+    assert_eq!(task.max_attempts, 3);
+    assert_eq!(task.attempts, 0);
 }

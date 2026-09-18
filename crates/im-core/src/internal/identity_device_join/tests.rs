@@ -3991,3 +3991,74 @@ async fn stale_revoke_rejection_aborts_only_exact_prepared_candidate() {
         .await
         .unwrap();
 }
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn management_budget_is_signed_and_legacy_authorization_survives_upgrade() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let store = JoinStateStore::new(&fixture.admin);
+    let mut stored = store
+        .load(&fixture.prepared.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    management::validate_authority(&stored).unwrap();
+    assert_eq!(
+        stored
+            .approval
+            .as_ref()
+            .unwrap()
+            .management_task
+            .as_ref()
+            .unwrap()
+            .max_attempts,
+        4
+    );
+    stored
+        .approval
+        .as_mut()
+        .unwrap()
+        .management_task
+        .as_mut()
+        .unwrap()
+        .max_attempts = 3;
+    assert!(management::validate_authority(&stored).is_err());
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let approval = stored.approval.as_ref().unwrap();
+    let proof = sign_object_proof_async(
+        &client,
+        &approval
+            .management_proof
+            .as_ref()
+            .unwrap()
+            .verification_method,
+        &management::authorization_payload(&stored, approval).unwrap(),
+        &approval.pairing_confirmation.user_presence_at,
+    )
+    .await
+    .unwrap();
+    stored.approval.as_mut().unwrap().management_proof = Some(proof);
+    let mut legacy = serde_json::to_value(&stored).unwrap();
+    legacy["approval"]["management_task"]
+        .as_object_mut()
+        .unwrap()
+        .remove("max_attempts");
+    let mut restored: StoredJoinSession = serde_json::from_value(legacy).unwrap();
+    management::validate_authority(&restored).unwrap();
+    restored
+        .approval
+        .as_mut()
+        .unwrap()
+        .management_task
+        .as_mut()
+        .unwrap()
+        .max_attempts = 4;
+    assert!(management::validate_authority(&restored).is_err());
+}

@@ -28,7 +28,7 @@ pub(crate) fn tasks(
         let Some(mut task) = approval.management_task.clone() else {
             continue;
         };
-        if task.attempts > crate::internal::identity_join_management::MAX_ATTEMPTS {
+        if task.attempts > task.max_attempts {
             return Err(crate::ImError::PermissionDenied);
         }
         if matches!(
@@ -103,7 +103,7 @@ pub(super) fn authorization_payload(
         "expected_checkpoint": approval.expected_checkpoint,
         "approved_document_hash": canonical_hash(&approval.new_document)?,
         "pairing_confirmation": approval.pairing_confirmation,
-        "maximum_attempts_per_round": crate::internal::identity_join_management::MAX_ATTEMPTS,
+        "maximum_attempts_per_round": approval.management_task.as_ref().ok_or(crate::ImError::PermissionDenied)?.max_attempts,
     }))
 }
 
@@ -117,6 +117,13 @@ pub(super) fn validate_authority(stored: &StoredJoinSession) -> crate::ImResult<
         } else {
             Err(crate::ImError::PermissionDenied)
         };
+    }
+    let task = approval
+        .management_task
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if !matches!(task.max_attempts, 3 | 4) || task.attempts > task.max_attempts {
+        return Err(crate::ImError::PermissionDenied);
     }
     let proof = approval
         .management_proof

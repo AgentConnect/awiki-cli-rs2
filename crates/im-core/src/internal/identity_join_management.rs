@@ -2,13 +2,15 @@
 //! encrypted delivery remains owned by the existing P5 sender ledger.
 use serde::{Deserialize, Serialize};
 
-pub(crate) const MAX_ATTEMPTS: u8 = 3;
+pub(crate) const MAX_ATTEMPTS: u8 = 4;
 pub(crate) const RETRY_DELAY_MS: i64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ManagementTask {
     pub phase: ManagementPhase,
     pub attempts: u8,
+    #[serde(default = "legacy_max_attempts")]
+    pub max_attempts: u8,
     pub next_attempt_at_ms: i64,
     pub failure_code: Option<String>,
 }
@@ -24,11 +26,16 @@ pub enum ManagementPhase {
     Failed,
 }
 
+fn legacy_max_attempts() -> u8 {
+    3
+}
+
 impl ManagementTask {
     pub(crate) fn authorized() -> Self {
         Self {
             phase: ManagementPhase::AwaitingJoin,
             attempts: 0,
+            max_attempts: MAX_ATTEMPTS,
             next_attempt_at_ms: 0,
             failure_code: None,
         }
@@ -50,7 +57,7 @@ impl ManagementTask {
 
     pub(crate) fn claim(&mut self, now_ms: i64) -> bool {
         if self.phase != ManagementPhase::Scheduled
-            || self.attempts >= MAX_ATTEMPTS
+            || self.attempts >= self.max_attempts
             || now_ms < self.next_attempt_at_ms
         {
             return false;
@@ -63,7 +70,7 @@ impl ManagementTask {
 
     pub(crate) fn failed_attempt(&mut self, now_ms: i64, code: &str, retryable: bool) {
         self.failure_code = Some(code.to_owned());
-        self.phase = if retryable && self.attempts < MAX_ATTEMPTS {
+        self.phase = if retryable && self.attempts < self.max_attempts {
             ManagementPhase::Scheduled
         } else {
             ManagementPhase::Failed
@@ -181,7 +188,9 @@ async fn retry_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::I
     } else if io.accepted_locally()? {
         task.accepted();
     } else if task.phase == ManagementPhase::Failed {
+        let max_attempts = task.max_attempts;
         *task = ManagementTask::authorized();
+        task.max_attempts = max_attempts;
         task.activate();
     } else {
         return Err(crate::ImError::PermissionDenied);
