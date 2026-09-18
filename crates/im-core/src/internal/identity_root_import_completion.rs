@@ -37,6 +37,11 @@ pub(crate) const ROOT_KEY_ENVELOPE_SYSTEM_TYPE: &str = "awiki.device.root-key-en
 pub(crate) mod integration_tests;
 mod v2;
 const ROOT_COMPLETION_V2: &str = "awiki.device.root-key-import-complete.v2";
+const ROOT_COMPLETION_EXTENDED: &str = "awiki.device.root-key-import-complete.extensions.v1";
+
+fn is_extended_completion_contract(value: &str) -> bool {
+    matches!(value, ROOT_COMPLETION_V2 | ROOT_COMPLETION_EXTENDED)
+}
 const ROOT_ENVELOPE_MAX_WINDOW_SECONDS: i64 = 600;
 
 fn root_import_now(_core: &crate::core::ImCore) -> OffsetDateTime {
@@ -1962,9 +1967,19 @@ fn completion_statement(
         statement["delivery_issued_at"] = serde_json::json!(timing.delivery_issued_at);
         statement["delivery_expires_at"] = serde_json::json!(record.expires_at);
         statement["proof_created_at"] = serde_json::json!(created);
-        statement["expires_at"] = serde_json::json!(format_time(
-            parse_whole_second_time("proof_created_at", &created)? + Duration::seconds(600)
-        )?);
+        let proof_expires = format_time(
+            parse_whole_second_time("proof_created_at", &created)? + Duration::seconds(600),
+        )?;
+        if timing.completion_contract == ROOT_COMPLETION_EXTENDED {
+            statement["type"] = serde_json::json!("awiki.device.root-possession.v1");
+            statement["completion_contract"] = serde_json::json!(ROOT_COMPLETION_EXTENDED);
+            statement["completion_proof_expires_at"] = serde_json::json!(proof_expires);
+        } else if timing.completion_contract == ROOT_COMPLETION_V2 {
+            // Preserve historical V2 requests and their original expiry semantics.
+            statement["expires_at"] = serde_json::json!(proof_expires);
+        } else {
+            return Err(crate::ImError::PermissionDenied);
+        }
     }
     Ok((statement, created))
 }
@@ -2054,11 +2069,19 @@ async fn prepare_completion_params_inner(
         .filter(|authorization| authorization.protocol_device_id.as_str() == record.local_device_id)
         .map(|authorization| authorization.signing_key_id)
         .ok_or(crate::ImError::PermissionDenied)?;
-    let unsigned_params = serde_json::json!({
+    let mut unsigned_params = serde_json::json!({
         "operation_id": record.message_id.clone(),
         "type": if record.v2_timing.is_some() { "awiki.device.root-key-import-complete.v2" } else { "awiki.device.root-key-import-complete.v1" },
         "statement": signed_statement,
     });
+    if record
+        .v2_timing
+        .as_ref()
+        .is_some_and(|timing| timing.completion_contract == ROOT_COMPLETION_EXTENDED)
+    {
+        unsigned_params["type"] = serde_json::json!("awiki.device.root-key-import-complete.v1");
+        unsigned_params["completion_contract"] = serde_json::json!(ROOT_COMPLETION_EXTENDED);
+    }
     let params = sign_device_object_proof_async(
         client,
         &device_key_id,
@@ -2246,7 +2269,11 @@ fn validate_pending_root_candidate(
     validate_outer_equality(metadata, body, session, delivery, envelope)?;
     let accepted_at = authoritative_root_accepted_at(delivery)?;
     let mut imported_at = validate_envelope_time(envelope, accepted_at, now)?;
-    let saved_plan = if envelope.completion_contract.as_deref() == Some(ROOT_COMPLETION_V2) {
+    let saved_plan = if envelope
+        .completion_contract
+        .as_deref()
+        .is_some_and(is_extended_completion_contract)
+    {
         v2::load_plan(core, client, &envelope.message_id)?
     } else {
         None
@@ -2300,9 +2327,16 @@ fn validate_pending_root_candidate(
         root_key: root_der,
     };
     let plan = RootImportSealedPlan {
-        v2_timing: if envelope.completion_contract.as_deref() == Some(ROOT_COMPLETION_V2) {
+        v2_timing: if envelope
+            .completion_contract
+            .as_deref()
+            .is_some_and(is_extended_completion_contract)
+        {
             Some(v2::ImportTiming {
-                completion_contract: ROOT_COMPLETION_V2.to_owned(),
+                completion_contract: envelope
+                    .completion_contract
+                    .clone()
+                    .ok_or(crate::ImError::PermissionDenied)?,
                 delivery_issued_at: envelope.issued_at.clone(),
                 input_hash: v2::input_hash(metadata, body, delivery)?,
             })
@@ -2737,7 +2771,10 @@ fn validate_envelope_time(
         || expires_at - issued_at > Duration::seconds(ROOT_ENVELOPE_MAX_WINDOW_SECONDS)
         || accepted_at > expires_at
         || (envelope.completion_contract.is_none() && imported_at > expires_at)
-        || (envelope.completion_contract.as_deref() == Some(ROOT_COMPLETION_V2)
+        || (envelope
+            .completion_contract
+            .as_deref()
+            .is_some_and(is_extended_completion_contract)
             && accepted_at < issued_at)
     {
         return Err(crate::ImError::PermissionDenied);
@@ -2749,7 +2786,7 @@ fn validate_envelope_field_bounds(envelope: &RootKeyEnvelope) -> crate::ImResult
     if envelope
         .completion_contract
         .as_deref()
-        .is_some_and(|value| value != ROOT_COMPLETION_V2)
+        .is_some_and(|value| !is_extended_completion_contract(value))
     {
         return Err(crate::ImError::PermissionDenied);
     }

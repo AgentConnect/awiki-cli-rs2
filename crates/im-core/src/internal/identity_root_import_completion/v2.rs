@@ -132,7 +132,7 @@ pub(super) fn load_plan_connection(
             || plan
                 .v2_timing
                 .as_ref()
-                .is_none_or(|timing| timing.completion_contract != ROOT_COMPLETION_V2)
+                .is_none_or(|timing| !is_extended_completion_contract(&timing.completion_contract))
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -238,7 +238,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
-    if value != ROOT_COMPLETION_V2 {
+    if !is_extended_completion_contract(&value) {
         return Err(serde::de::Error::custom(
             "unsupported Root completion contract",
         ));
@@ -396,6 +396,24 @@ mod tests {
             refreshed.as_object_mut().unwrap().remove(key);
         }
         assert_eq!(first, refreshed);
+        record.v2_timing.as_mut().unwrap().completion_contract = ROOT_COMPLETION_EXTENDED.into();
+        let (mut extended, _) =
+            completion_statement(&record, "unchanged-nonce", first_time).unwrap();
+        let (mut refreshed_extended, _) =
+            completion_statement(&record, "unchanged-nonce", first_time + Duration::days(1))
+                .unwrap();
+        assert_eq!(extended["type"], "awiki.device.root-possession.v1");
+        assert_eq!(extended["expires_at"], value.envelope_expires_at);
+        assert_eq!(extended["completion_contract"], ROOT_COMPLETION_EXTENDED);
+        assert_ne!(
+            extended["completion_proof_expires_at"],
+            refreshed_extended["completion_proof_expires_at"]
+        );
+        for key in ["proof_created_at", "completion_proof_expires_at"] {
+            extended.as_object_mut().unwrap().remove(key);
+            refreshed_extended.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(extended, refreshed_extended);
         record.v2_timing = None;
         let (legacy, legacy_created) =
             completion_statement(&record, "unchanged-nonce", first_time + Duration::days(1))

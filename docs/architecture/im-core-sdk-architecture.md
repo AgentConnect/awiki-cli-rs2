@@ -1734,3 +1734,9 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 已可信确认的 `delivery_invalidated` 是持久失败：后续网络/本地读取暂时失败或返回未晋升，不能将其改回 waiting 或清除重新加入提示；显式重试也不能重置它。仅权威 Registry 已证明目标管理就绪时收敛为成功。
 
 新自动管理授权固定最多四次尝试（首次加三次重试），失败间隔五秒。次数上限随任务持久化并绑定授权签名；历史无上限字段的任务按原三次恢复，不能在升级时静默扩大已签名权限。
+
+### 保持原字段含义的 Root completion 扩展
+
+纯 V1 字段、校验和默认发送不变。明确声明 `awiki.device.root-key-import-complete.extensions.v1` 的 envelope 使用独立扩展完成合同：外层及 statement 保留 V1 type，增加 completion_contract；expires_at 恒为原 envelope 期限，独立 completion_proof_expires_at 表示完成证明有效期。刷新只能更新证明时间/期限与签名，原 expires_at、导入时间、nonce 和身份事实不可变。历史 V2 不改写、不降级，继续按原合同恢复。
+
+旧接收端与旧服务端采用 closed schema，不能假定忽略新增字段。当前所有生产发送入口继续发纯 V1；未接入可信 exact-device 与服务端能力协商前不启用扩展发送，不能凭 V2 支持或版本号推断支持本扩展。新扩展仅提供显式输入的接收/恢复能力；仍需真实混合版本验收。

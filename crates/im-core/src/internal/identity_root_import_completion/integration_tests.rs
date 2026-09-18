@@ -25,6 +25,7 @@ const CHILD_ENV: &str = "AWIKI_ROOT_V2_CORE_CHILD";
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
     completion_v2: bool,
+    extended: bool,
     domain: String,
     did: String,
     document: Value,
@@ -219,7 +220,7 @@ fn response(
             }
             assert_eq!(
                 params["type"],
-                if cfg.completion_v2 {
+                if cfg.completion_v2 && !cfg.extended {
                     ROOT_COMPLETION_V2
                 } else {
                     "awiki.device.root-key-import-complete.v1"
@@ -253,12 +254,23 @@ fn response(
             }
             assert_eq!(
                 params["statement"]["type"],
-                if cfg.completion_v2 {
+                if cfg.completion_v2 && !cfg.extended {
                     "awiki.device.root-possession.v2"
                 } else {
                     "awiki.device.root-possession.v1"
                 }
             );
+            if cfg.extended {
+                assert_eq!(params["completion_contract"], ROOT_COMPLETION_EXTENDED);
+                assert_eq!(
+                    params["statement"]["completion_contract"],
+                    ROOT_COMPLETION_EXTENDED
+                );
+                assert_eq!(
+                    params["statement"]["expires_at"],
+                    params["statement"]["delivery_expires_at"]
+                );
+            }
             assert_eq!(params["statement"]["did"], cfg.did);
             assert_eq!(params["statement"]["sending_device_id"], cfg.sender);
             assert_eq!(params["statement"]["importing_device_id"], cfg.recipient);
@@ -302,7 +314,11 @@ fn response(
             intent["statement"]
                 .as_object_mut()
                 .unwrap()
-                .remove("expires_at");
+                .remove(if cfg.extended {
+                    "completion_proof_expires_at"
+                } else {
+                    "expires_at"
+                });
             let hash = digest(&serde_json_canonicalizer::to_vec(&intent).unwrap());
             if state.completed {
                 assert_eq!(state.intent_hash.as_deref(), Some(hash.as_str()));
@@ -311,7 +327,13 @@ fn response(
                 if now
                     > parse_whole_second_time(
                         "expires_at",
-                        statement["expires_at"].as_str().unwrap(),
+                        statement[if cfg.extended {
+                            "completion_proof_expires_at"
+                        } else {
+                            "expires_at"
+                        }]
+                        .as_str()
+                        .unwrap(),
                     )?
                 {
                     return Ok(http_json(
@@ -427,6 +449,10 @@ async fn fixture(delay: i64) -> Fixture {
 }
 
 async fn fixture_contract(delay: i64, completion_v2: bool) -> Fixture {
+    fixture_extension(delay, completion_v2, false).await
+}
+
+async fn fixture_extension(delay: i64, completion_v2: bool, extended: bool) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let domain = format!("root-integration-{}.example.test", rand::random::<u64>());
     let a = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(&domain,"source",None,None).unwrap();
@@ -654,7 +680,13 @@ async fn fixture_contract(delay: i64, completion_v2: bool) -> Fixture {
         crate::internal::identity_wire::document::extract_identity_public_key(root_method).unwrap();
     let fingerprint = anp::authentication::compute_multikey_fingerprint(&public).unwrap();
     let envelope = Zeroizing::new(RootKeyEnvelope {
-        completion_contract: completion_v2.then(|| ROOT_COMPLETION_V2.into()),
+        completion_contract: completion_v2.then(|| {
+            if extended {
+                ROOT_COMPLETION_EXTENDED.into()
+            } else {
+                ROOT_COMPLETION_V2.into()
+            }
+        }),
         system_type: ROOT_KEY_ENVELOPE_SYSTEM_TYPE.into(),
         message_id: "msg-root-key-integration".into(),
         did: a.did.as_str().into(),
@@ -693,6 +725,7 @@ async fn fixture_contract(delay: i64, completion_v2: bool) -> Fixture {
     .unwrap();
     let cfg = Config {
         completion_v2,
+        extended,
         domain,
         did: a.did.as_str().into(),
         document,
@@ -1097,4 +1130,20 @@ async fn v1_receive_promotes_with_a_strict_v1_only_service_contract() {
         assert_eq!(state.completions, 1);
         assert_eq!(state.commits, 1);
     });
+}
+
+#[tokio::test]
+async fn additive_completion_preserves_original_expiry_through_crash_and_refresh() {
+    for cut in ["after_provider", "after_proof", "after_completion_request"] {
+        let fixture = fixture_extension(86400, true, true).await;
+        with_state(fixture.root.path(), |state| state.crash = Some(cut.into()));
+        let mut first = child(fixture.root.path());
+        assert_eq!(wait_child(&mut first).await.code(), Some(86));
+        let imported = persisted_import_time(&fixture);
+        with_state(fixture.root.path(), |state| state.clock += 86400);
+        let mut resumed = child(fixture.root.path());
+        assert!(wait_child(&mut resumed).await.success());
+        assert_promoted(&fixture).await;
+        assert_eq!(persisted_import_time(&fixture), imported);
+    }
 }
