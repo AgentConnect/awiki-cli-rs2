@@ -2072,6 +2072,9 @@ async fn route_message(
                 content_type: content_type.clone(),
                 payload: payload.clone(),
             };
+            if is_awiki_agent_command_payload(payload) {
+                crate::commands::validate_application_json_payload(&payload_message)?;
+            }
             if is_awiki_agent_command_payload(payload)
                 && payload["command"] == "runtime.acp.control"
             {

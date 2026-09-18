@@ -59,7 +59,10 @@ mod configuration;
 pub use super::models::current_model;
 use super::models::session_options;
 use configuration::{configure_model, open_session};
-pub use configuration::{prepare as prepare_configuration, prepare_cancellable as prepare_configuration_cancellable, PreparedConfiguration};
+pub use configuration::{
+    prepare as prepare_configuration, prepare_cancellable as prepare_configuration_cancellable,
+    PreparedConfiguration,
+};
 
 pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig> {
     let brand = Brand::parse(&profile.driver_id)?;

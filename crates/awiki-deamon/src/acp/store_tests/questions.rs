@@ -19,6 +19,59 @@ fn args(question: &Question, response: Value) -> Value {
 }
 
 #[test]
+fn question_patterns_are_bounded_and_validated_by_the_daemon() {
+    let request = |pattern: Value| {
+        json!({"requestedSchema": {
+            "type": "object", "properties": {"code": {"type": "string", "pattern": pattern}}
+        }})
+    };
+    for pattern in [
+        json!("x".repeat(1025)),
+        json!("(a{1024}){1024}"),
+        json!(format!("{}x{}", "(".repeat(65), ")".repeat(65))),
+        json!("["),
+        json!(42),
+    ] {
+        assert!(crate::acp::questions::validate_schema(&request(pattern)).is_err());
+    }
+    for (pattern, good, bad) in [
+        ("^[A-Z]+$", "ABC", "abc"),
+        ("(?i)^ok$", "OK", "no"),
+        ("^\\w+$", "你好", "hello!"),
+        ("^(a+)+$", "aaaa", "aaaa!"),
+    ] {
+        let schema = request(json!(pattern));
+        validate_answer(
+            &schema,
+            &json!({"action":"accept", "content":{"code":good}}),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_answer(&schema, &json!({"action":"accept", "content":{"code":bad}}))
+                .unwrap_err()
+                .to_string(),
+            "answer_pattern_mismatch"
+        );
+    }
+    // This input is exponential in a backtracking engine but bounded in Rust.
+    let bad = format!("{}!", "a".repeat(16000));
+    assert_eq!(
+        validate_answer(
+            &request(json!("^(a+)+$")),
+            &json!({"action":"accept", "content":{"code":bad}})
+        )
+        .unwrap_err()
+        .to_string(),
+        "answer_pattern_mismatch"
+    );
+    assert!(validate_answer(
+        &request(json!(".*")),
+        &json!({"action":"accept", "content":{"code":"x".repeat(16385)}})
+    )
+    .is_err());
+}
+
+#[test]
 fn shared_answers_preserve_choices_supplement_and_custom_unicode_exactly() {
     let q = question(true);
     for response in [

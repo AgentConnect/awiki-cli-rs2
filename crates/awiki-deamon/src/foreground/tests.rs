@@ -8,6 +8,7 @@ use im_core::messages::{
 };
 
 use super::*;
+mod acp_envelope;
 use crate::app_bridge::bootstrap::{
     encrypt_secure_bootstrap_payload_for_test, encrypt_secure_bootstrap_payload_for_test_with_hash,
     BootstrapProcessOutcome,

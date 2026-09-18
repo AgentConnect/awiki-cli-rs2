@@ -178,8 +178,11 @@ pub fn build_cli_child_path(home: Option<&Path>, current_path: Option<&OsStr>) -
 /// One resolver for installation detection and actual runtime launch.
 pub fn resolve_cli_binary(name: &str) -> PathBuf {
     let path = Path::new(name);
-    if path.components().count() > 1 { return path.to_path_buf(); }
-    cli_child_path().and_then(|path| find_executable_on_path(name, &path))
+    if path.components().count() > 1 {
+        return path.to_path_buf();
+    }
+    cli_child_path()
+        .and_then(|path| find_executable_on_path(name, &path))
         .unwrap_or_else(|| PathBuf::from(name))
 }
 

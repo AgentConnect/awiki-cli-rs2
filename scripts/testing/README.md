@@ -28,3 +28,4 @@ APP 的无模型组件与聊天回归：在 `awiki-me` 执行 `dart run tests/un
 System 聚合入口与归属见 [ACP 测试说明](../../../awiki-system-test/docs/acp-testing.md)。
 
 宿主机安装检测与创建准入也由此入口覆盖：使用临时可执行脚本模拟已安装／缺失／异常客户端，不读取日常安装或模型配置。
+Hermes 模块探测另用隔离的 Python 和临时包验证普通／可编辑／命名空间安装、缺少包或入口、异常或超时的导入钩子；直接执行随 Daemon 嵌入的探测脚本，断言不导入 Gateway、不写入字节码，不需要安装 Hermes 或 pip 依赖。

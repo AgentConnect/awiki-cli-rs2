@@ -2,6 +2,10 @@
 
 本模块仅用于 OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness。使用官方 Rust SDK、稳定 ACP v1、stdio 子进程。Hermes、Claude Code、Codex 的原有通路保持不变。
 
+Gemini 的正式创建入口（`gemini`、`gemini-cli`，或 `acp + driver=gemini`）统一使用 ACP。2026-05/06 的 `generic-cli + driver=gemini` 只预留名称、配置和诊断，运行驱动一直未实现，APP 当时也没有 Gemini 选项；它不是需要维护的第二套可用接入。历史占位配置仍可读取并明确报告未实现，不自动迁移为 ACP 会话。旧的 `runtime.cli.gemini-cli` 标识仅供历史数据解析。
+
+控制命令在运行时分发前复用公共 `application/json`／JSON object／发送者和目标非空校验。省略内容类型沿用公共 JSON 默认行为；显式错误类型必须拒绝，ACP 不另开宽松入口。权限、任务发起人、幂等与过期校验仍由各自的既有职责承担。
+
 ## 所有权与状态
 
 Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消、原生 session、模型选择和问题的状态。会话按 Runtime Agent、Controller Scope 和经过授权的稳定 conversation scope 隔离；Direct 传输 DID 别名改变不改变原生上下文归属。APP 显示路由取自 Core 已提交消息的本地规范 conversation ID，不使用 Daemon 侧别名推导；Daemon 通道只能更新 Runtime 通道已建立的映射。APP 只消费 Core 已提交的 control message；不建立第二套消息、同步或任务事实源。ACP 状态使用单调 revision，旧回放不能覆盖新状态。
@@ -27,6 +31,8 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 `status` 为 `ready/missing/unavailable/unknown`，只表示安装和启动条件，不验证账号或模型。
 六种 CLI 复用实际运行的程序/PATH 执行版本命令；Hermes 检查解释器及 Gateway 模块，
 不执行完整 Gateway、ACP 初始化或 prompt。原始输出、环境及路径不回传。
+Hermes 使用目标解释器的标准顶层模块发现机制，兼容普通安装、可编辑安装和命名空间包；
+子模块只在已发现的包路径中查找，不导入 `tui_gateway` 或执行 `entry`，不补写安装路径或配置。
 创建前先复核所选客户端，再注册；ACP 继续协议校验。幂等命中已创建结果时不重复检查。
 旧 Daemon 未声明能力时 APP 保留原创建流程并说明无法检测；新 Daemon 未知结果不放行。
 
@@ -53,6 +59,8 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 APP 模型窗口先显示缓存，成功读取超过 5 分钟时按需刷新一次，另提供手动刷新；不后台轮询。窗口保持打开时，忙碌结束或安全加载时间到达可续接延期查询。查询不阻止草稿和新指令。当前模型未列入候选项时显示独立只读当前项，不补造可选能力，不将目录缺项推断为模型失效；模型未提供、目录为空、读取失败分别表达。模型来源始终是对应宿主机 CLI，APP 不直连供应商列模型，也不根据聊天正文推断模型身份。
 
 问答增量合同：共享 MCP 工具的问题声明交互版本 2、来源、定义摘要，以及自定义、补充文字和取消能力。`awiki.answer.v2` 的 structured 模式保留合法 content 和可选 text；custom 模式只含非空 text，最多 16 KiB UTF-8。原生 elicitation 严格按原 schema 返回，不携带 AWiki 扩展字段。新版提交携带问题定义摘要，旧 accept/content 保持兼容。任务发起人、run、question 和有效期在同一状态事务验证；文字流 revision 不使有效答案过期。问题答案、跳过、过期及关闭原因随任务记录持久化，终态事件不合并丢弃。工具权限选项不能仅因标题类似问答就当成业务答案。
+
+智能体提供的 `pattern` 仅在 Daemon 使用无回溯的 Rust regex 校验，APP 不解释这些规则。单条规则最多 1024 UTF-8 字节、嵌套深度 64、编译尺寸及 DFA 缓存各 1 MiB；问题总量仍为 64 KiB／32 字段，单个文本回答 16 KiB、整体回答 64 KiB。超限或不支持的规则明确拒绝，不静默忽略约束。回答格式不符时不提交答案事实，APP 保留草稿并允许修改后以新命令提交；不把明确拒绝当成传输结果未知。
 
 恢复失败必须有明确证据才能标记上下文丢失。除协议的资源不存在错误外，Kimi 与 DSH 的参数错误必须精确匹配当前原生 session ID。OpenCode 的 session 服务内部错误需再查询当前工作目录的完整分页会话列表；请求失败、无效记录、游标循环或超时均不等于会话不存在。Gemini 在 initialize 前退出时，仅识别其官方的明确会话缺失诊断，不根据退出码推断。诊断文本只在内存中判断，不记录协议或 stderr 内容；已停止或已被替换的任务不得修改上下文状态。
 

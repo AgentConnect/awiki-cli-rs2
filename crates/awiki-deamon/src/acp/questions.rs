@@ -3,6 +3,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+const MAX_ANSWER_BYTES: usize = 64 * 1024;
+const MAX_PATTERN_BYTES: usize = 1024;
+const MAX_PATTERN_COMPILED_BYTES: usize = 1024 * 1024;
+
+// Agent-provided patterns are evaluated only by the bounded, non-backtracking
+// Rust engine. App renderers must not evaluate them with their own regex engine.
+fn question_pattern(property: &Value) -> Result<Option<regex::Regex>> {
+    let Some(value) = property.get("pattern") else {
+        return Ok(None);
+    };
+    let pattern = value.as_str().context("unsupported_question_pattern")?;
+    if pattern.len() > MAX_PATTERN_BYTES {
+        bail!("question_pattern_size_limit");
+    }
+    regex::RegexBuilder::new(pattern)
+        .nest_limit(64)
+        .size_limit(MAX_PATTERN_COMPILED_BYTES)
+        .dfa_size_limit(MAX_PATTERN_COMPILED_BYTES)
+        .build()
+        .map(Some)
+        .context("unsupported_question_pattern")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionInteraction {
     pub source: String,
@@ -48,7 +71,7 @@ pub fn expire_or_answer(question: &mut super::store::Question, now: i64) -> Resu
 pub fn validate_response(question: &super::store::Question, args: &Value) -> Result<Value> {
     let answer = &args["response"];
     let fields = answer.as_object().context("invalid_answer")?;
-    if serde_json::to_vec(answer)?.len() > 64 * 1024 {
+    if serde_json::to_vec(answer)?.len() > MAX_ANSWER_BYTES {
         bail!("answer_size_limit");
     }
     let interaction = question.interaction.as_ref();
@@ -146,9 +169,7 @@ pub fn validate_schema(request: &Value) -> Result<()> {
                     || property["items"]["anyOf"].is_array() => {}
             _ => bail!("unsupported_question_field"),
         }
-        if let Some(pattern) = property["pattern"].as_str() {
-            regex::Regex::new(pattern).context("unsupported_question_pattern")?;
-        }
+        question_pattern(property)?;
         if let Some(format) = property["format"].as_str() {
             if !matches!(format, "email" | "uri" | "date" | "date-time") {
                 bail!("unsupported_question_format");
@@ -167,8 +188,11 @@ pub fn validate_schema(request: &Value) -> Result<()> {
 
 pub fn validate_property(property: &Value, value: &Value) -> Result<()> {
     if let Some(s) = value.as_str() {
-        if let Some(pattern) = property["pattern"].as_str() {
-            if !regex::Regex::new(pattern)?.is_match(s) {
+        if s.len() > MAX_ANSWER_BYTES {
+            bail!("answer_size_limit");
+        }
+        if let Some(pattern) = question_pattern(property)? {
+            if !pattern.is_match(s) {
                 bail!("answer_pattern_mismatch");
             }
         }

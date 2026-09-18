@@ -273,11 +273,6 @@ pub fn resolve_runtime(
             CLAUDE_CODE_CLI_DRIVER_ID,
             "runtime.cli.claude-code",
         ),
-        "gemini" | "gemini-cli" => cli_alias_resolution(
-            driver_id_override,
-            GEMINI_CLI_DRIVER_ID,
-            "runtime.cli.gemini-cli",
-        ),
         "hermes" => native_runtime_resolution("runtime.hermes", driver_id_override),
         "openclaw" => native_runtime_resolution("runtime.openclaw", driver_id_override),
         _ => native_runtime_resolution(runtime, driver_id_override),
@@ -591,9 +586,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_runtime_routes_new_brands_to_acp_without_changing_legacy_generic_profiles() {
+    fn resolve_runtime_routes_new_brands_to_acp() {
         for (alias, driver) in [
             ("opencode", "opencode"),
+            ("gemini", "gemini"),
             ("gemini-cli", "gemini"),
             ("kimi-code", "kimi"),
             ("dsh", "deepseek-harness"),
@@ -626,6 +622,27 @@ mod tests {
         assert_eq!(explicit.driver_id.as_deref(), Some(GEMINI_CLI_DRIVER_ID));
         assert_eq!(explicit.legacy_runtime_plugin_id, None);
         assert!(!explicit.defaulted_driver_id);
+    }
+
+    #[test]
+    fn acp_gemini_does_not_make_the_legacy_generic_placeholder_runnable() {
+        use crate::plugins::generic_cli::GenericCliDriverRegistry;
+        use crate::runtime::RuntimePlugin;
+        use crate::state::CliRuntimeProfileRecord;
+
+        // This identifier remains readable for old stored profiles, but never
+        // represented a working Gemini integration before ACP.
+        let legacy = CliRuntimeProfileRecord::for_driver("legacy-gemini", "gemini").unwrap();
+        let status = GenericCliDriverRegistry::new(legacy)
+            .check_install_status()
+            .unwrap();
+        assert!(!status.installed);
+        assert!(status.detail.unwrap().contains("not implemented"));
+        for alias in ["gemini", "gemini-cli"] {
+            let resolved = resolve_runtime(alias, None).unwrap();
+            assert_eq!(resolved.runtime_plugin_id, crate::acp::PLUGIN_ID);
+            assert_eq!(resolved.driver_id.as_deref(), Some("gemini"));
+        }
     }
 
     #[test]

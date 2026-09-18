@@ -1,10 +1,10 @@
 use super::*;
 #[path = "client_tests/gemini.rs"]
 mod gemini;
-#[path = "client_tests/models.rs"]
-mod models;
 #[path = "client_tests/model_refresh.rs"]
 mod model_refresh;
+#[path = "client_tests/models.rs"]
+mod models;
 use crate::{
     acp::store::{Session, Work},
     runtime::{

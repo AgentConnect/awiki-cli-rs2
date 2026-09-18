@@ -21,6 +21,7 @@ pub const KINDS: [&str; 7] = [
 ];
 const TTL: Duration = Duration::from_secs(30);
 const ITEM_TIMEOUT: Duration = Duration::from_secs(5);
+const HERMES_MODULE_PROBE: &str = include_str!("hermes_probe.py");
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ClientInstallation {
@@ -232,11 +233,7 @@ fn inspect_hermes(config: &DaemonConfig, deadline: Instant) -> Result<String, &'
             continue;
         }
         let mut command = Command::new(python);
-        command.args(["-B", "-c", r#"import sys, importlib.machinery as m
-sys.path = [p for p in sys.path if p not in ('', '.')]
-p = m.PathFinder.find_spec('tui_gateway', sys.path)
-e = m.PathFinder.find_spec('tui_gateway.entry', p.submodule_search_locations) if p and p.submodule_search_locations else None
-sys.exit(0 if e else 2)"#]);
+        command.args(["-B", "-c", HERMES_MODULE_PROBE]);
         if let Some(path) = crate::cli_runtime_env::cli_child_path() {
             command.env("PATH", path);
         }
@@ -252,3 +249,6 @@ sys.exit(0 if e else 2)"#]);
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod hermes_tests;

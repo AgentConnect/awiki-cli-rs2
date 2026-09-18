@@ -36,7 +36,17 @@ pub(super) fn handle(
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target)?;
     let outcome: Result<(Value, Option<store::Work>)> = (|| {
         if action == "refresh_models" {
-            return Ok((acp::model_refresh::control(state, &profile, sender, conversation_id, command, args)?, None));
+            return Ok((
+                acp::model_refresh::control(
+                    state,
+                    &profile,
+                    sender,
+                    conversation_id,
+                    command,
+                    args,
+                )?,
+                None,
+            ));
         }
         if action == "prepare_session" || action == "set_model" {
             let snapshot = acp::session_configuration::control(

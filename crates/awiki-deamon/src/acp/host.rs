@@ -46,7 +46,9 @@ pub fn run(
     let key = session.key.clone();
     let admission = {
         let gate = super::operations::session_gate(state, &key);
-        let _guard = gate.lock().map_err(|_| anyhow::anyhow!("acp_configuration_interrupted"))?;
+        let _guard = gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("acp_configuration_interrupted"))?;
         store::mutate(state, &key, Some(session), |s| s.submit(work.clone()))
     };
     match admission {

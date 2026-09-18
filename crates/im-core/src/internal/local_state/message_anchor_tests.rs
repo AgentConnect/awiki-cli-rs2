@@ -1,6 +1,6 @@
 use super::*;
-use rusqlite::Connection;
 use crate::{ids::GroupRef, messages::ThreadRef};
+use rusqlite::Connection;
 
 fn record(id: &str, owner: &str, group: &str, time: &str) -> MessageRecord {
     MessageRecord {

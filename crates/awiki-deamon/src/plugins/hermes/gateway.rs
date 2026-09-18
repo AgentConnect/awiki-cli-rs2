@@ -346,7 +346,10 @@ pub(crate) fn installation_probe_candidates(config: &DaemonConfig) -> Result<Vec
     if let Some(command) = configured_gateway_command(config) {
         return Ok(vec![split_gateway_command(&command)?]);
     }
-    Ok(hermes_gateway_command_candidates().into_iter().map(|c| c.parts).collect())
+    Ok(hermes_gateway_command_candidates()
+        .into_iter()
+        .map(|c| c.parts)
+        .collect())
 }
 
 fn configured_gateway_command(config: &DaemonConfig) -> Option<String> {
