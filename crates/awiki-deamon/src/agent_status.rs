@@ -597,6 +597,7 @@ fn daemon_diagnostics_summary(
         "release_error": release.error.clone(),
         "bootstrap_key_status": if bootstrap_key.is_some() { "ready" } else { "missing" },
         "generic_cli": generic_cli_daemon_capability_summary(),
+        "runtime_client_detection": {"schema_version":1},
         "acp": {"capability_schema_version":1,"supported_drivers":["opencode","gemini","kimi","deepseek-harness"],"protocol_version":1},
     });
     if let Some(bootstrap_key) = bootstrap_key {

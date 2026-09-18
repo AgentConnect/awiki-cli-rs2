@@ -341,6 +341,14 @@ struct HermesGatewayCommandCandidate {
     source: String,
 }
 
+/// Read-only candidates shared with discovery; no gateway startup/config writes.
+pub(crate) fn installation_probe_candidates(config: &DaemonConfig) -> Result<Vec<Vec<String>>> {
+    if let Some(command) = configured_gateway_command(config) {
+        return Ok(vec![split_gateway_command(&command)?]);
+    }
+    Ok(hermes_gateway_command_candidates().into_iter().map(|c| c.parts).collect())
+}
+
 fn configured_gateway_command(config: &DaemonConfig) -> Option<String> {
     normalize_gateway_command(std::env::var(HERMES_GATEWAY_CMD_ENV).ok())
         .or_else(|| normalize_gateway_command(config.hermes_gateway_cmd.clone()))
@@ -967,7 +975,7 @@ fn spawn_gateway_process(
     let parts = split_gateway_command(gateway_cmd)?;
     let executable = parts.first().context("AWIKI_HERMES_GATEWAY_CMD is empty")?;
     let path = path_with_launcher_dir(launcher_dir)?;
-    let mut command = Command::new(executable);
+    let mut command = Command::new(crate::cli_runtime_env::resolve_cli_binary(executable));
     crate::agent_network::apply_agent_network(&mut command);
     command
         .args(parts.iter().skip(1))
@@ -1152,7 +1160,7 @@ fn ensure_runtime_wrapper_launcher(hermes_home: &Path) -> Result<PathBuf> {
 
 fn path_with_launcher_dir(launcher_dir: &Path) -> Result<std::ffi::OsString> {
     let mut paths = vec![launcher_dir.to_path_buf()];
-    if let Some(existing) = std::env::var_os("PATH") {
+    if let Some(existing) = crate::cli_runtime_env::cli_child_path() {
         paths.extend(std::env::split_paths(&existing));
     }
     std::env::join_paths(paths).context("build Hermes gateway PATH")
@@ -1268,18 +1276,7 @@ fn split_gateway_command(command: &str) -> Result<Vec<String>> {
 }
 
 fn executable_is_available(executable: &str) -> bool {
-    let path = Path::new(executable);
-    if path.components().count() > 1 {
-        return path.exists();
-    }
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let candidate = dir.join(executable);
-                candidate.is_file()
-            })
-        })
-        .unwrap_or(false)
+    crate::cli_runtime_env::resolve_cli_binary(executable).is_file()
 }
 
 fn sanitize_gateway_command(command: &str) -> String {

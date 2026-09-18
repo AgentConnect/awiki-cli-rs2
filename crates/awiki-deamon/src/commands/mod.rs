@@ -38,6 +38,7 @@ use crate::workspace::WorkspaceMode;
 use crate::{DaemonConfig, ImCoreAdapter};
 
 pub(crate) mod latest_value_dispatcher;
+mod runtime_clients;
 
 use latest_value_dispatcher::LatestValueDispatcher;
 
@@ -427,6 +428,8 @@ where
                         json!({
                             "command": RUNTIME_AGENT_CREATE,
                             "client_request_id": payload.args.client_request_id.as_deref(),
+                            "error_code": runtime_clients::creation_error_code(&error),
+                            "phase": if runtime_clients::creation_error_code(&error) != "creation_failed" { "client_readiness" } else { "creation" },
                         }),
                     )?;
                     return Err(error);
@@ -485,6 +488,10 @@ where
             }
 
             Ok(AgentCommandOutcome::RuntimeAgentCreated(outcome))
+        }
+        "runtime.clients.inspect" => {
+            runtime_clients::handle(config, state, outbox, &daemon_agent, &message, &envelope)?;
+            Ok(AgentCommandOutcome::StatusReported { command_id: envelope.command_id })
         }
         AGENT_STATUS_QUERY => {
             send_snapshot_status(
@@ -915,6 +922,15 @@ where
     }
     let resolution = validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = resolution.runtime_plugin_id.clone();
+    // Before registration exchange: a stale UI snapshot must not create a broken Agent.
+    let client_kind = resolution.driver_id.as_deref().unwrap_or(if plugin_id == HERMES_RUNTIME_PLUGIN_ID { "hermes" } else { &plugin_id });
+    if crate::runtime_clients::KINDS.contains(&client_kind) {
+        // Generic CLI creation already supports an explicit host binary path.
+        let binary_override = if matches!(client_kind, "codex" | "claude-code") {
+            payload.args.driver_config.as_ref().and_then(|c| c.get("binary_path")).and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty())
+        } else { None };
+        crate::runtime_clients::require_installed(config, client_kind, binary_override)?;
+    }
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
     let is_generic_cli = matches!(
         plugin_id.as_str(),
@@ -3387,6 +3403,7 @@ fn normalize_run_status(status: &str) -> &'static str {
 }
 
 fn status_scope_for_result(result: &Value) -> &'static str {
+    if result["command"] == "runtime.clients.inspect" { return "client_installation"; }
     if result.get("runtimes").is_some() {
         return "snapshot";
     }

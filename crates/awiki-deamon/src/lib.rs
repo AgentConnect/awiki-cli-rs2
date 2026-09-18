@@ -41,6 +41,7 @@ pub mod registration;
 )]
 pub mod runtime;
 pub mod runtime_inbox;
+pub mod runtime_clients;
 pub mod secret_vault;
 pub mod security;
 pub mod service;

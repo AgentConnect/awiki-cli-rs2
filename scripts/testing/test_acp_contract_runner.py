@@ -31,6 +31,13 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 test_binary(json.dumps({**artifact, **changed}))
 
+    def test_registration_target_is_selected_explicitly(self):
+        artifact = {"reason": "compiler-artifact", "target": {"name": "agent_registration_management"},
+                    "profile": {"test": True}, "executable": "/tmp/registration-tests"}
+        self.assertEqual(test_binary(json.dumps(artifact), "agent_registration_management"), artifact["executable"])
+        with self.assertRaises(RuntimeError):
+            test_binary(json.dumps(artifact))
+
     def test_empty_selection_cannot_pass(self):
         with patch("acp_contract.subprocess.check_output", return_value="0 tests, 0 benchmarks\n"), \
                 patch("acp_contract.subprocess.Popen") as spawn:

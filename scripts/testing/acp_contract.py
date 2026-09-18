@@ -28,15 +28,15 @@ def test_environment(home, tool_dir):
     }
 
 
-def test_binary(output):
+def test_binary(output, target="awiki_deamon"):
     for line in output.splitlines():
         record = json.loads(line)
         if (record.get("reason") == "compiler-artifact"
-                and record.get("target", {}).get("name") == "awiki_deamon"
+                and record.get("target", {}).get("name") == target
                 and record.get("profile", {}).get("test")
                 and record.get("executable")):
             return record["executable"]
-    raise RuntimeError("Cargo did not produce the daemon unit-test executable")
+    raise RuntimeError("Cargo did not produce test executable: " + target)
 
 
 def run_selection(executable, selection, environment):
@@ -72,13 +72,14 @@ def main():
     command = [binaries["cargo"]]
     if args.cargo_toolchain:
         command.append("+" + args.cargo_toolchain)
-    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--no-run", "--message-format=json"]
+    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--test", "agent_registration_management", "--no-run", "--message-format=json"]
     # Compilation uses normal dependency caches. Only the resulting test process
     # receives the isolated environment; no model calls happen during compilation.
     built = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, timeout=1800)
     if built.returncode:
         return built.returncode
     executable = test_binary(built.stdout)
+    registration = test_binary(built.stdout, "agent_registration_management")
     with tempfile.TemporaryDirectory(prefix="acp-contract-") as temporary:
         home = Path(temporary)
         tool_dir = home / "bin"
@@ -86,10 +87,13 @@ def main():
         for name in ("node", "python3", "ps", "sleep"):
             (tool_dir / name).symlink_to(binaries[name])
         environment = test_environment(home, tool_dir)
-        for selection in ("acp", "group_context::tests"):
+        for selection in ("acp", "group_context::tests", "runtime_clients", "cli_runtime_env::tests"):
             result = run_selection(executable, selection, environment)
             if result:
                 return result
+        result = run_selection(registration, "", environment)
+        if result:
+            return result
     return 0
 
 

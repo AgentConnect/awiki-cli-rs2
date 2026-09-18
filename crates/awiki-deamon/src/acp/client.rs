@@ -67,9 +67,12 @@ pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig
         profile
             .binary_path
             .clone()
-            .unwrap_or_else(|| PathBuf::from(brand.command())),
+            .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command())),
     )
     .args(brand.args().iter().copied());
+    if let Some(path) = crate::cli_runtime_env::cli_child_path() {
+        config = config.env("PATH", path.to_string_lossy());
+    }
     if brand == Brand::Kimi {
         // Kimi does not reset its MCP tool timeout from progress events.
         // Keep the task child alive past the question's 15-minute expiry;
@@ -334,10 +337,11 @@ pub async fn inspect(profile: &CliRuntimeProfileRecord) -> Result<Value> {
     let binary = profile
         .binary_path
         .clone()
-        .unwrap_or_else(|| PathBuf::from(brand.command()));
+        .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command()));
     let version = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(binary)
+            .envs(crate::cli_runtime_env::cli_child_path().map(|path| ("PATH", path)))
             .arg("--version")
             .kill_on_drop(true)
             .output(),

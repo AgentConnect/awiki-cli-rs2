@@ -205,8 +205,30 @@ impl AgentInventoryClient for MockRegistrationClient {
 }
 
 fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
+    // This integration executable uses only local fake clients, including the
+    // new pre-registration installation check; never inspect the developer's CLIs.
+    static HOST: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let host = HOST.get_or_init(|| {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in ["codex", "claude", "python3", "opencode", "gemini", "kimi", "dsh"] {
+            let path = bin.join(name);
+            std::fs::write(&path, "#!/bin/sh\necho 9.9.9\n").unwrap();
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        std::env::remove_var("AWIKI_HERMES_GATEWAY_CMD");
+        std::env::remove_var("AWIKI_HERMES_BIN");
+        std::env::set_var("HOME", home.path());
+        home
+    });
     let root = tempfile::tempdir().unwrap();
     let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.hermes_gateway_cmd = Some(format!("'{}' -m tui_gateway.entry", host.path().join(".local/bin/python3").display()));
+
     // Status snapshots must remain an offline contract test even when the
     // product's fresh-install download host changes.
     config.download_base_url = format!("file://{}", root.path().join("release-fixture").display());
@@ -3451,4 +3473,65 @@ fn setup_daemon_agent_options_validate_required_fields() {
     .unwrap_err();
 
     assert!(error.to_string().contains("--handle"));
+}
+
+#[test]
+fn runtime_clients_inspection_is_correlated_read_only_and_controller_authorized() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(&config, &state, &registration,
+        "alice-inspection", "did:human:alice", RegistrationToken::new("fake-token").unwrap()).unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut message = IncomingAgentPayloadMessage {
+        message_id: "inspect-message".into(), conversation_id: Some("inspect-conversation".into()),
+        sender_did: "did:human:mallory".into(), target_agent_did: daemon.agent_did.clone(),
+        content_type: "application/json".into(),
+        payload: json!({"schema":"awiki.agent.command.v1","command":"runtime.clients.inspect",
+            "command_id":"inspect-command","target_agent_kind":"daemon","args":{"refresh":true}}),
+    };
+    assert!(handle_agent_payload_message(&config,&state,&registration,&outbox,message.clone()).is_err());
+    assert!(outbox.agent_statuses().is_empty());
+    message.sender_did = "did:human:alice".into();
+    let started = std::time::Instant::now();
+    handle_agent_payload_message(&config,&state,&registration,&outbox,message).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    while outbox.agent_statuses().is_empty() && started.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let results = outbox.agent_statuses();
+    assert_eq!(results.len(),1);
+    let result = &results[0];
+    assert_eq!(result.recipient_did,"did:human:alice");
+    assert_eq!(result.payload["command_id"],"inspect-command");
+    assert_eq!(result.payload["status_scope"],"client_installation");
+    let clients = result.payload["result"]["installation"]["clients"].as_array().unwrap();
+    assert_eq!(clients.len(),7);
+    assert!(clients.iter().all(|c| c["status"] == "ready"));
+    assert_eq!(registration.requests().len(),1, "inspection must not register an Agent");
+    assert!(state.list_agent_definitions().unwrap().iter().all(|a| a.agent_kind != AgentKind::Runtime));
+}
+
+#[test]
+fn unavailable_client_rejects_creation_before_registration_exchange() {
+    let (_root, mut config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(&config,&state,&registration,
+        "alice-readiness", "did:human:alice", RegistrationToken::new("fake-token").unwrap()).unwrap();
+    config.hermes_gateway_cmd = Some("/definitely-missing-python -m tui_gateway.entry".into());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = handle_agent_payload_message(&config,&state,&registration,&outbox,IncomingAgentPayloadMessage {
+        message_id:"create-missing-client".into(), conversation_id:None,
+        sender_did:"did:human:alice".into(), target_agent_did:daemon.agent_did,
+        content_type:"application/json".into(), payload:json!({
+            "schema":"awiki.agent.command.v1", "command":"runtime.agent.create", "command_id":"missing",
+            "args":{"runtime":"hermes","handle":"missing-client","display_name":"Missing client",
+                "controller_did":"did:human:alice","registration_token":"fake-runtime-token","client_request_id":"request-missing"}
+        }),
+    });
+    assert!(result.is_err());
+    assert_eq!(registration.requests().len(),1);
+    assert!(state.list_agent_definitions().unwrap().iter().all(|a| a.agent_kind != AgentKind::Runtime));
+    let statuses=outbox.agent_statuses();
+    assert_eq!(statuses[0].payload["result"]["phase"],"client_readiness");
+    assert_eq!(statuses[0].payload["result"]["error_code"],"runtime_client_not_found");
 }

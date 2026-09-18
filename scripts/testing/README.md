@@ -26,3 +26,5 @@ python3 -m unittest discover -s scripts/testing -p 'test_acp_contract_runner.py'
 
 APP 的无模型组件与聊天回归：在 `awiki-me` 执行 `dart run tests/unit/runner.dart --suite acp`。
 System 聚合入口与归属见 [ACP 测试说明](../../../awiki-system-test/docs/acp-testing.md)。
+
+宿主机安装检测与创建准入也由此入口覆盖：使用临时可执行脚本模拟已安装／缺失／异常客户端，不读取日常安装或模型配置。

@@ -18,6 +18,19 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 
 ## ACP 与环境
 
+### 宿主机客户端安装检测
+
+`config_summary.runtime_client_detection.schema_version=1` 声明 `runtime.clients.inspect`。
+该命令沿用控制者授权和可靠回复，结果单独投影，不改变在线或任务状态。
+`refresh` 绕过 30 秒内存缓存；并发请求合并，每项 5 秒、最多 3 项并行、整批 20 秒。
+返回 `schema_version/checked_at_ms/cache_age_ms/clients`，每项含 `kind/status/version/reason_code`。
+`status` 为 `ready/missing/unavailable/unknown`，只表示安装和启动条件，不验证账号或模型。
+六种 CLI 复用实际运行的程序/PATH 执行版本命令；Hermes 检查解释器及 Gateway 模块，
+不执行完整 Gateway、ACP 初始化或 prompt。原始输出、环境及路径不回传。
+创建前先复核所选客户端，再注册；ACP 继续协议校验。幂等命中已创建结果时不重复检查。
+旧 Daemon 未声明能力时 APP 保留原创建流程并说明无法检测；新 Daemon 未知结果不放行。
+
+
 ### 2026-09 可靠交互补充合同
 
 - `acp_task_records` 按 `run_id` 保存执行详情；`acp_sessions` 只负责当前会话控制及兼容摘要。完成、停止、失败或重启中断时，先捕获当前任务文字／工具／问答，再启动等待任务，避免下一轮清空历史。
