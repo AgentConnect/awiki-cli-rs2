@@ -59,4 +59,4 @@ ACP 子进程在独立执行线程的 Tokio runtime 中运行，使用 SDK 所�
 
 ## 验证边界
 
-真实客户端模型链路、Daemon 单元/协议、APP 状态/组件、产品 E2E、Mac/Linux 分别记录证据。测试用 Gemini→LiteLLM→DeepSeek 转换服务仅绑定回环地址，独立于产品；其补丁、模型模式和失败记录必须披露。
+自动测试只使用随源码维护的模拟 ACP 子进程、临时状态和 APP 模拟服务，不读取真实模型凭据、不启动已安装 Agent CLI。真实模型验收及其转换服务测试工具已移除；协议通过不代表第三方 CLI／上游模型兼容性已实测。入口见 [ACP 无模型回归](../../scripts/testing/README.md)。

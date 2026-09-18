@@ -267,9 +267,7 @@ redacted `awiki.app.action.result.v1` 回传和撤销 Daemon 消息授权。报�
 `PERSONALAGENT-E2E-001..005` 以及 `uiEnabled`、`runtimeFinalReceived`、
 `draftConfirmed`、`actionResultReturned`、`authorizationRevoked`。
 
-该 gate 不等同于 real Hermes smoke。P0 使用 deterministic fake Hermes gateway 验证
-daemon contract 与产品 UI 链路；`AWIKI_ENABLE_DAEMON_HERMES_SMOKE=1` 才运行真实
-Hermes gateway smoke。选择 full UI gate 后，缺少 Rust checkout、App runner、
+测试使用 deterministic fake Hermes gateway；真实 Hermes 模型 smoke 已移除。选择 full UI gate 后，缺少 Rust checkout、App runner、
 backend/OTP、fake Hermes command 或本地 cleanup 后端都必须 fail-fast，不能用 skip
 表示通过。daemon status query、latest-status 与 heartbeat 都必须包含公开 bootstrap key diagnostics，
 避免 App cache 被不含 key 的轻量心跳覆盖成 `bootstrap_key_status=missing`。2026-07-01

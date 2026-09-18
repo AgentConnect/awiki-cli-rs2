@@ -22,3 +22,7 @@ If Harness is absent, use local docs/tests/CI and disclose missing acceptance ev
 - 历史 `publish-local-nginx.sh` 已删除，不再引用它作为可执行发布入口。其他临时源码或不完整平台发布仍必须匹配用户明确的范围，不能静默绕过默认正式 registry 流程。
 - 测试代码尽量不要放到业务代码文件中。优先放在 `tests/`、`crates/<crate>/tests/` 等独立测试目录；确实需要访问私有 helper 的单元测试，可放到相邻的 `*_tests.rs` / `tests.rs` 测试专用文件中，并在业务文件里只保留最小的 `#[cfg(test)] mod tests;` 引用。
 - 发布 `awiki-deamon` 下载通道时，`scripts/release/daemon/publish-multi-platform.toml` 的 `base_url` 必须与签发 Daemon registration token 的 user-service 域名一致，例如 awiki.info 环境使用 `https://awiki.info`。`download_base_url` 默认应为同域 `/daemon`；镜像只作为备用下载源，不应让 installer 默认把 awiki.info token 发送到 awiki.ai 验证。
+
+## 模型无关测试（2026-09-18 用户决定）
+
+自动测试不调用真实大模型 API，不依赖个人 API Key 或已安装 Agent CLI。真实模型验收及其按需入口已移除；优先使用模拟 ACP 子进程、临时配置和 fake 服务。新增用例与统一 profile、catalog 同步；不能把模拟协议／组件通过描述为真实模型兼容性验收。普通服务端、身份、消息和附件测试继续遵循原有环境边界。
