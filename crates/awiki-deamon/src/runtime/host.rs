@@ -1423,6 +1423,13 @@ pub fn flush_runtime_final_outbox(
                 state,
                 &binding.daemon_agent_did,
             )? {
+                if state.mark_runtime_final_outbox_failed_terminal(
+                    &record.idempotency_key,
+                    "controller_identity_changed",
+                    "Controller identity changed; automatic delivery is fenced",
+                )? {
+                    state.fail_active_runtime_run(&record.run_id)?;
+                }
                 continue;
             }
         }
@@ -2503,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_final_outbox_stays_pending_after_controller_identity_change() {
+    fn runtime_final_outbox_is_fenced_after_controller_identity_change() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         let state = DaemonState::open(&config).unwrap();
@@ -2636,7 +2643,17 @@ mod tests {
             .load_runtime_final_outbox_by_run(&run.run_id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored.status, "pending");
+        assert_eq!(stored.status, "failed_terminal");
+        assert_eq!(
+            stored.last_error_code.as_deref(),
+            Some("controller_identity_changed")
+        );
+        assert!(state
+            .list_due_runtime_final_outbox(i64::MAX, 8)
+            .unwrap()
+            .is_empty());
+        assert_eq!(flush_runtime_final_outbox(&state, &outbox, 8).unwrap(), 0);
+        assert!(outbox.records().is_empty());
         assert_eq!(stored.controller_did, "did:human:alice");
         assert_eq!(stored.recipient_did, "did:human:alice");
     }

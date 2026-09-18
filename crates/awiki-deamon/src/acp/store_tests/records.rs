@@ -198,6 +198,11 @@ fn event_schema_migration_preserves_existing_pending_rows() {
         )
         .unwrap();
     assert_eq!(kind, "snapshot");
+    let scheduling: (i64, i64, Option<String>) = db.query_row(
+        "SELECT attempt_count,next_attempt_at_ms,blocked_reason FROM acp_events WHERE event_id='old'", [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ).unwrap();
+    assert_eq!(scheduling, (0, 0, None));
 }
 
 #[test]

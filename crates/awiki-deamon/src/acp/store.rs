@@ -473,12 +473,20 @@ pub(crate) fn initialize(db: &Connection) -> Result<()> {
         .prepare("PRAGMA table_info(acp_events)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !columns.iter().any(|column| column == "event_kind") {
-        db.execute(
-            "ALTER TABLE acp_events ADD COLUMN event_kind TEXT NOT NULL DEFAULT 'snapshot'",
-            [],
-        )?;
+    for (name, definition) in [
+        ("event_kind", "TEXT NOT NULL DEFAULT 'snapshot'"),
+        ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("next_attempt_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("blocked_reason", "TEXT"),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            db.execute(
+                &format!("ALTER TABLE acp_events ADD COLUMN {name} {definition}"),
+                [],
+            )?;
+        }
     }
+    db.execute("CREATE INDEX IF NOT EXISTS acp_events_due ON acp_events(sent,blocked_reason,next_attempt_at_ms)", [])?;
     super::task_records::initialize(db)?;
     Ok(())
 }
@@ -542,9 +550,17 @@ pub fn finish_with_final(
     if !session.active_run(&record.run_id) {
         bail!("stale_task");
     }
+    let active = &session.active.as_ref().context("missing_task")?.task;
+    // The session summary follows the latest admitted transport alias. A queued
+    // task must never replace the accepted active task's immutable reply binding.
     if session.agent_did != record.agent_did
         || session.controller_scope_key != record.controller_scope_key
-        || session.conversation_id != record.conversation_id
+        || active.agent_did != record.agent_did
+        || active.controller_scope_key != record.controller_scope_key
+        || active.conversation_scope.scope_key() != session.scope
+        || active.conversation_id != record.conversation_id
+        || active.reply_recipient_did != record.recipient_did
+        || active.controller_did != record.controller_did
     {
         bail!("conversation_mismatch");
     }

@@ -3,6 +3,8 @@ use super::*;
 mod questions;
 #[path = "store_tests/records.rs"]
 mod records;
+#[path = "store_tests/delivery.rs"]
+mod delivery;
 use crate::{
     runtime::{RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTaskTriggerKind},
     DaemonConfig,

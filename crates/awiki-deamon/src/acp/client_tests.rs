@@ -761,6 +761,12 @@ async fn final_and_status_delivery_retries_do_not_run_the_model_again() {
         .unwrap();
     let available = MemoryRuntimeOutbox::default();
     crate::runtime::host::flush_runtime_final_outbox(&f.state, &available, 20).unwrap();
+    // Advance persisted retry deadlines instead of sleeping through backoff.
+    f.state
+        .connection()
+        .unwrap()
+        .execute("UPDATE acp_events SET next_attempt_at_ms=0", [])
+        .unwrap();
     assert!(crate::acp::host::flush_events(&f.state, &available, 64).is_err());
     let pending: i64 = f
         .state

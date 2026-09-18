@@ -902,7 +902,7 @@ SET status = 'failed_terminal',
     last_error_summary = ?2,
     updated_at_ms = ?3
 WHERE idempotency_key = ?4
-  AND status = 'sending'
+  AND status IN ('pending', 'sending')
 "#,
             rusqlite::params![
                 error_code,

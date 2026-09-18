@@ -360,19 +360,28 @@ pub fn flush_events(
     let db = state.connection()?;
     let rows = db
         .prepare(
-            "SELECT event_id,run_id,snapshot FROM acp_events WHERE sent=0 ORDER BY rowid LIMIT ?1",
+            "SELECT event_id,run_id,snapshot,attempt_count FROM acp_events
+             WHERE sent=0 AND blocked_reason IS NULL AND next_attempt_at_ms<=?1
+             ORDER BY next_attempt_at_ms,rowid LIMIT ?2",
         )?
-        .query_map([limit as i64], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                crate::security::runtime_token::current_time_millis()?,
+                limit as i64
+            ],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, u32>(3)?,
+                ))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut sent = 0;
     let mut first_error = None;
-    for (event, run_id, raw) in rows {
+    for (event, run_id, raw, attempts) in rows {
         let delivered: Result<bool> = (|| {
             let snapshot: Value = serde_json::from_str(&raw)?;
             let run = state.load_runtime_run(&run_id)?;
@@ -451,13 +460,20 @@ pub fn flush_events(
                     security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 },
             )?;
-            db.execute("UPDATE acp_events SET sent=1 WHERE event_id=?1", [event])?;
+            db.execute("UPDATE acp_events SET sent=1 WHERE event_id=?1", [&event])?;
             Ok(true)
         })();
         match delivered {
             Ok(true) => sent += 1,
-            Ok(false) => {}
+            Ok(false) => {
+                // An authoritative identity fence must not occupy the ready
+                // window, and cannot be treated as successful delivery.
+                db.execute("UPDATE acp_events SET blocked_reason='controller_identity_changed' WHERE event_id=?1 AND sent=0", [&event])?;
+            }
             Err(error) => {
+                let delay = 1_000_i64 * (1_i64 << attempts.min(8));
+                let next = crate::security::runtime_token::current_time_millis()? + delay;
+                db.execute("UPDATE acp_events SET attempt_count=attempt_count+1,next_attempt_at_ms=?1 WHERE event_id=?2 AND sent=0", rusqlite::params![next,event])?;
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
