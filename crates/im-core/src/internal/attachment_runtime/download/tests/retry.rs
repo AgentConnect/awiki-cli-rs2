@@ -160,9 +160,19 @@ async fn attachment_preparation_and_stream_share_retry_budget() {
 }
 
 #[tokio::test]
-async fn attachment_preparation_failure_is_typed_and_authorization_is_not_retried() {
-    for (phase, error, retries) in [
+async fn attachment_preparation_preserves_terminal_errors_and_types_exhausted_retries() {
+    for (phase, error, attempts) in [
         ("discovery", network(), 4),
+        ("history", network(), 4),
+        ("ticket", network(), 4),
+        (
+            "discovery",
+            crate::ImError::InvalidInput {
+                field: Some("did".into()),
+                message: "unsupported DID method".into(),
+            },
+            1,
+        ),
         ("ticket", crate::ImError::PermissionDenied, 1),
         (
             "history",
@@ -171,32 +181,151 @@ async fn attachment_preparation_failure_is_typed_and_authorization_is_not_retrie
             },
             1,
         ),
+        (
+            "ticket",
+            crate::ImError::Service {
+                status_code: Some(403),
+                code: Some("anp.attachment.access_denied".into()),
+                message: "attachment access denied".into(),
+                data: None,
+            },
+            1,
+        ),
+    ] {
+        for local in [false, true] {
+            let fixture = Fixture::new();
+            let client = fixture.client();
+            let transport = fault_transport(VecDeque::from(vec![(phase, error.clone()); attempts]));
+            let phases = transport.phases.clone();
+            let output = fixture.root.join("failed.txt");
+            let destination = if local {
+                crate::attachments::AttachmentDestination::LocalFile(output.clone())
+            } else {
+                crate::attachments::AttachmentDestination::Memory
+            };
+            let actual = AttachmentDownloadRuntime {
+                client: &client,
+                session_provider: ReadySessionProvider {
+                    scopes: Rc::new(RefCell::new(vec![])),
+                },
+                transport,
+            }
+            .download_async(input(destination))
+            .await
+            .unwrap_err();
+            if attempts == 1 {
+                assert_eq!(actual, error, "phase={phase}, local={local}");
+            } else {
+                assert!(
+                    matches!(&actual, crate::ImError::AttachmentPreparation { stage, retryable: true, cause }
+                    if stage.as_str() == phase && **cause == error),
+                    "{actual:?}"
+                );
+            }
+            assert_eq!(
+                phases.borrow().iter().filter(|p| **p == phase).count(),
+                attempts
+            );
+            assert!(!phases.borrow().contains(&"object"));
+            assert!(!output.exists());
+        }
+    }
+}
+
+struct FailingSessionProvider {
+    error: crate::ImError,
+    calls: Rc<RefCell<usize>>,
+}
+
+impl crate::internal::auth::session::AsyncSessionProvider for FailingSessionProvider {
+    async fn ensure_session(
+        &self,
+        _: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        *self.calls.borrow_mut() += 1;
+        Err(self.error.clone())
+    }
+
+    async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        unreachable!()
+    }
+
+    async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        unreachable!()
+    }
+}
+
+#[tokio::test]
+async fn attachment_session_failure_preserves_auth_errors_and_bounds_network_retries() {
+    for (error, attempts) in [
+        (crate::ImError::AuthRequired, 1),
+        (crate::ImError::SessionExpired, 1),
+        (network(), 4),
     ] {
         let fixture = Fixture::new();
         let client = fixture.client();
-        let transport = fault_transport(VecDeque::from(vec![(phase, error); retries]));
+        let calls = Rc::new(RefCell::new(0));
+        let transport = fault_transport(VecDeque::new());
         let phases = transport.phases.clone();
-        let result = AttachmentDownloadRuntime {
+        let actual = AttachmentDownloadRuntime {
             client: &client,
-            session_provider: ReadySessionProvider {
-                scopes: Rc::new(RefCell::new(vec![])),
+            session_provider: FailingSessionProvider {
+                error: error.clone(),
+                calls: calls.clone(),
             },
             transport,
         }
         .download_async(input(crate::attachments::AttachmentDestination::Memory))
-        .await;
-        let error = result.err().unwrap();
-        assert!(
-            matches!(&error, crate::ImError::AttachmentPreparation { stage, retryable, .. }
-            if stage.as_str() == phase && *retryable == (retries > 1)),
-            "{error:?}"
-        );
-        assert_eq!(
-            phases.borrow().iter().filter(|p| **p == phase).count(),
-            retries
-        );
-        assert!(!phases.borrow().contains(&"object"));
+        .await
+        .unwrap_err();
+        let expected = if attempts == 1 {
+            error
+        } else {
+            crate::ImError::AttachmentPreparation {
+                stage: crate::AttachmentPreparationStage::Session,
+                retryable: true,
+                cause: Box::new(error),
+            }
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(*calls.borrow(), attempts);
+        assert!(phases.borrow().is_empty());
     }
+}
+
+#[tokio::test]
+async fn attachment_terminal_error_stays_unwrapped_after_shared_retry_budget_is_spent() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let transport = fault_transport(VecDeque::from([
+        ("history", network()),
+        ("history", network()),
+        ("history", network()),
+        ("ticket", crate::ImError::PermissionDenied),
+    ]));
+    let phases = transport.phases.clone();
+    let error = AttachmentDownloadRuntime {
+        client: &client,
+        session_provider: ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(vec![])),
+        },
+        transport,
+    }
+    .download_async(input(crate::attachments::AttachmentDestination::Memory))
+    .await
+    .unwrap_err();
+    assert_eq!(error, crate::ImError::PermissionDenied);
+    assert_eq!(
+        phases.borrow().as_slice(),
+        &[
+            "history",
+            "history",
+            "history",
+            "history",
+            "discovery",
+            "ticket"
+        ]
+    );
 }
 
 #[tokio::test]

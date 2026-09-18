@@ -1866,9 +1866,11 @@ Debug SQL 属于 CLI `debug.db.*`，不属于 SDK default API。
 
 异步下载的会话准备、历史查找、DID 服务发现、凭证与文件传输共用最多三次重试，
 仅网络故障、临时服务不可用等可恢复错误消耗重试预算；权限和消息归属校验失败不会重试。
-前置失败使用 `ImError::AttachmentPreparation { stage, retryable, cause }`，
+不可重试的前置错误直接返回原有 `ImError` 变体（例如 `InvalidInput`、`AuthRequired`、
+`PermissionDenied`、`MessageNotFound`），保留公开错误匹配的兼容性。
+可恢复的前置错误耗尽重试预算后使用 `ImError::AttachmentPreparation { stage, retryable: true, cause }`，
 `AttachmentPreparationStage` 包含 `Session`、`History`、`Discovery`、`Ticket`；
-`cause` 保留原错误类别。Dart／CLI 错误数据携带 `attachment_stage` 和 `retryable`，
+`cause` 保留最后一次原错误。Dart／CLI 映射此包装错误时携带 `attachment_stage` 和 `retryable`，
 Node 保留原有安全错误码与重试属性。文件目的地的取消注册覆盖整个异步流程，
 在服务发现、凭证等待或重试退避期间也能取消；内存下载继续通过丢弃 future 取消。
 

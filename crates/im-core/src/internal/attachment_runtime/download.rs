@@ -54,12 +54,16 @@ macro_rules! retry_preparation {
             match $operation.await {
                 Ok(value) => break Ok(value),
                 Err(error) => {
+                    // Preserve terminal errors in the public download contract.
+                    if !download_retryable(&error) {
+                        break Err(error);
+                    }
                     if $budget.retry(&error).await {
                         continue;
                     }
                     break Err(crate::ImError::AttachmentPreparation {
                         stage: $stage,
-                        retryable: download_retryable(&error),
+                        retryable: true,
                         cause: Box::new(error),
                     });
                 }
