@@ -33,6 +33,10 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 不执行完整 Gateway、ACP 初始化或 prompt。原始输出、环境及路径不回传。
 Hermes 使用目标解释器的标准顶层模块发现机制，兼容普通安装、可编辑安装和命名空间包；
 子模块只在已发现的包路径中查找，不导入 `tui_gateway` 或执行 `entry`，不补写安装路径或配置。
+确认 Gateway 入口存在后，在同一解释器内通过 `importlib.metadata.version("hermes-agent")`
+读取可选安装版本；保留预发布／本地版本后缀，不把启动警告中的 Python 版本当成 Hermes 版本。
+元数据缺失、损坏或读取抛错时保持 `ready`、`version=null`；只有版本可获取时 APP 才追加显示。
+不为版本查询执行 Hermes CLI、启动 Gateway、访问模型或新增 Python 依赖；沿用探测总超时。
 创建前先复核所选客户端，再注册；ACP 继续协议校验。幂等命中已创建结果时不重复检查。
 旧 Daemon 未声明能力时 APP 保留原创建流程并说明无法检测；新 Daemon 未知结果不放行。
 

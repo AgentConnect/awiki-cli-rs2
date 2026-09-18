@@ -51,6 +51,12 @@ impl Installation {
         self.finder("return importlib.util.spec_from_file_location(fullname, Path(__file__).parent.parent / 'source tree' / 'tui_gateway' / '__init__.py')");
     }
 
+    fn metadata(&self, metadata: &str) {
+        let directory = self.path("site-packages/hermes_agent-0.15.1.dist-info");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("METADATA"), metadata).unwrap();
+    }
+
     fn run(&self, deadline: Instant, extra_setup: &str) -> Result<String, &'static str> {
         let mut command = Command::new("python3");
         // -I/-S exclude user environment, installed packages and startup hooks.
@@ -145,4 +151,81 @@ fn hanging_import_hook_respects_probe_deadline() {
         Err("timeout")
     );
     assert!(start.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn metadata_versions_are_reported_for_regular_and_editable_installations() {
+    for base in ["site-packages", "source tree"] {
+        for version in ["0.15.1", "0.16.0rc1", "0.16.0.dev2+local"] {
+            let installation = Installation::new();
+            installation.package(base, true);
+            if base == "source tree" {
+                installation.editable();
+            }
+            installation.metadata(&format!(
+                "Metadata-Version: 2.1\nName: hermes-agent\nVersion: {version}\n"
+            ));
+            let report = ClientInstallation::result("hermes", installation.probe());
+            assert_eq!(report.status, "ready");
+            assert_eq!(report.version.as_deref(), Some(version));
+        }
+    }
+}
+
+#[test]
+fn missing_or_broken_metadata_does_not_disable_gateway() {
+    for metadata in [None, Some("Metadata-Version: 2.1\nName: hermes-agent\n")] {
+        let installation = Installation::new();
+        installation.package("site-packages", true);
+        if let Some(metadata) = metadata {
+            installation.metadata(metadata);
+        }
+        let report = ClientInstallation::result("hermes", installation.probe());
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.version, None);
+    }
+    let installation = Installation::new();
+    installation.package("site-packages", true);
+    let report = ClientInstallation::result(
+        "hermes",
+        installation.run(
+            Instant::now() + ITEM_TIMEOUT,
+            "import importlib.metadata\ndef broken_metadata(name):\n    raise OSError('private metadata path')\nimportlib.metadata.version = broken_metadata",
+        ),
+    );
+    assert_eq!(report.status, "ready");
+    assert_eq!(report.version, None);
+    assert!(!serde_json::to_string(&report).unwrap().contains("private"));
+}
+
+#[test]
+fn installed_metadata_does_not_replace_gateway_entry_check() {
+    let installation = Installation::new();
+    installation.metadata("Metadata-Version: 2.1\nName: hermes-agent\nVersion: 0.15.1\n");
+    assert_eq!(installation.probe(), Err("version_failed"));
+}
+
+#[test]
+fn version_ignores_startup_output_and_rejects_unsafe_metadata() {
+    let warning = "Python 3.14.0 at /private/path\n";
+    assert_eq!(hermes_version(warning), None);
+    assert_eq!(hermes_version("{\"version\":\"3.14.0\"}\n"), None);
+    for invalid in [
+        "",
+        "0.15.1\n/private/path",
+        "0.15.1 /private/path",
+        "<script>",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(["1".repeat(65)])
+    {
+        let output = format!(
+            "{warning}{}\n",
+            serde_json::json!({"awiki_hermes_version": invalid})
+        );
+        let report = ClientInstallation::result("hermes", Ok(output));
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.version, None);
+    }
 }

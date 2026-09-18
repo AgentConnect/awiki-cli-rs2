@@ -36,7 +36,11 @@ impl ClientInstallation {
             Ok(text) => Self {
                 kind: kind.into(),
                 status: "ready",
-                version: version(&text),
+                version: if kind == "hermes" {
+                    hermes_version(&text)
+                } else {
+                    version(&text)
+                },
                 reason_code: None,
             },
             Err(code) => Self {
@@ -61,6 +65,22 @@ fn version(text: &str) -> Option<String> {
         })
         .find(text)
         .map(|v| v.as_str().to_owned())
+}
+
+fn hermes_version(text: &str) -> Option<String> {
+    // Only use our metadata field, never a Python version in startup warnings.
+    // Keep Python prerelease/local suffixes intact; display text is bounded and
+    // cannot contain paths, whitespace or control characters.
+    text.lines().find_map(|line| {
+        let record: serde_json::Value = serde_json::from_str(line).ok()?;
+        let value = record.get("awiki_hermes_version")?.as_str()?;
+        (value.len() <= 64
+            && value.as_bytes().first()?.is_ascii_digit()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".!+_-".contains(&b)))
+        .then(|| value.to_owned())
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -238,7 +258,7 @@ fn inspect_hermes(config: &DaemonConfig, deadline: Instant) -> Result<String, &'
             command.env("PATH", path);
         }
         match process::run(&mut command, deadline) {
-            Ok(_) => return Ok(String::new()),
+            Ok(output) => return Ok(output),
             Err("version_failed") => failure = "gateway_module_missing",
             Err(code) => failure = code,
         }

@@ -14,4 +14,18 @@ entry = (
     if locations
     else None
 )
-sys.exit(0 if entry else 2)
+if not entry:
+    sys.exit(2)
+
+# Version is optional: source-only installs and damaged/missing metadata must
+# not turn a discoverable Gateway into an unavailable client. Query the same
+# interpreter's distribution metadata without importing any Hermes code.
+try:
+    import importlib.metadata
+    import json
+
+    installed_version = importlib.metadata.version("hermes-agent")
+    if isinstance(installed_version, str):
+        print(json.dumps({"awiki_hermes_version": installed_version}))
+except Exception:
+    pass
