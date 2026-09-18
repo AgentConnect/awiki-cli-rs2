@@ -59,7 +59,7 @@ mod configuration;
 pub use super::models::current_model;
 use super::models::session_options;
 use configuration::{configure_model, open_session};
-pub use configuration::{prepare as prepare_configuration, PreparedConfiguration};
+pub use configuration::{prepare as prepare_configuration, prepare_cancellable as prepare_configuration_cancellable, PreparedConfiguration};
 
 pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig> {
     let brand = Brand::parse(&profile.driver_id)?;
@@ -598,11 +598,18 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             store::mutate(&turn.state,&turn.key,None,|s|{
                 if s.native_session_id.is_none() {s.native_created_at_ms=Some(current_time_millis()?);}
                 s.restoring=false;
-                s.native_session_id=Some(id);s.capabilities=caps.clone();s.update_configuration(options.clone());Ok(())
+                s.native_session_id=Some(id);s.capabilities=caps.clone();s.update_catalog(options.clone());Ok(())
             }).map_err(|_|acp::Error::internal_error())?;
             if let Some(model) = existing.model_selection().or(turn.profile.default_model).or(existing.model.clone()) {
-                let confirmed=configure_model(&cx,&sid,options,&model).await?;
+                let confirmed=configure_model(&cx,&sid,options,&model).await.map_err(|error| {
+                    let _ = store::mutate(&turn.state,&turn.key,None,|s| {
+                        s.interaction_error=Some("model_configuration_failed".into());Ok(())
+                    });
+                    error
+                })?;
                 store::mutate(&turn.state,&turn.key,None,|s|{s.update_configuration(confirmed);Ok(())}).map_err(|_|acp::Error::internal_error())?;
+            } else {
+                store::mutate(&turn.state,&turn.key,None,|s|{s.update_configuration(options);Ok(())}).map_err(|_|acp::Error::internal_error())?;
             }
             if turn.prompt.iter().any(|b|matches!(b,ContentBlock::Image(_))) && caps["promptCapabilities"]["image"]!=true { return Err(acp::Error::invalid_params()); }
             output_accepting.store(true,Ordering::Release);

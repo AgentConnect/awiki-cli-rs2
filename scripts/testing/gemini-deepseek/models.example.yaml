@@ -1,0 +1,27 @@
+# 仅为 Gemini CLI → DeepSeek 的回环测试中转；不进入产品运行链路。
+model_list:
+  - model_name: deepseek-flash
+    litellm_params:
+      model: deepseek/deepseek-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      thinking: {type: disabled}
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: deepseek/deepseek-v4-pro
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      thinking: {type: disabled}
+  # Gemini 0.60 内部主题/上下文辅助请求；在用户可选列表中隐藏。
+  - model_name: gemini-3-flash-preview
+    litellm_params:
+      model: deepseek/deepseek-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      thinking: {type: disabled}
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+litellm_settings:
+  turn_off_message_logging: true
+  request_timeout: 120
+  num_retries: 1

@@ -1,0 +1,94 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  },
+  "model": {
+    "name": "deepseek-flash"
+  },
+  "experimental": {
+    "dynamicModelConfiguration": true
+  },
+  "modelConfigs": {
+    "modelDefinitions": {
+      "auto": {
+        "isVisible": false
+      },
+      "pro": {
+        "isVisible": false
+      },
+      "flash": {
+        "isVisible": false
+      },
+      "flash-lite": {
+        "isVisible": false
+      },
+      "auto-gemini-3": {
+        "isVisible": false
+      },
+      "auto-gemini-2.5": {
+        "isVisible": false
+      },
+      "gemini-3.1-flash-lite": {
+        "isVisible": false
+      },
+      "gemini-3.1-pro-preview": {
+        "isVisible": false
+      },
+      "gemini-3.1-pro-preview-customtools": {
+        "isVisible": false
+      },
+      "gemini-3-pro-preview": {
+        "isVisible": false
+      },
+      "gemini-3-flash-preview": {
+        "isVisible": false
+      },
+      "gemini-3.5-flash": {
+        "isVisible": false
+      },
+      "gemini-2.5-pro": {
+        "isVisible": false
+      },
+      "gemini-2.5-flash": {
+        "isVisible": false
+      },
+      "gemini-2.5-flash-lite": {
+        "isVisible": false
+      },
+      "gemma-4-31b-it": {
+        "isVisible": false
+      },
+      "gemma-4-26b-a4b-it": {
+        "isVisible": false
+      },
+      "deepseek-flash": {
+        "displayName": "DeepSeek Flash",
+        "tier": "custom",
+        "family": "deepseek",
+        "isVisible": true,
+        "features": {
+          "thinking": false
+        }
+      },
+      "deepseek-v4-pro": {
+        "displayName": "DeepSeek V4 Pro",
+        "tier": "custom",
+        "family": "deepseek",
+        "isVisible": true,
+        "features": {
+          "thinking": false
+        }
+      }
+    },
+    "modelIdResolutions": {
+      "deepseek-flash": {
+        "default": "deepseek-flash"
+      },
+      "deepseek-v4-pro": {
+        "default": "deepseek-v4-pro"
+      }
+    }
+  }
+}

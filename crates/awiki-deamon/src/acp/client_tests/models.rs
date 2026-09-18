@@ -169,6 +169,7 @@ async fn selected_model_requires_native_confirmation_before_prompt() {
         std::fs::write(f.root.path().join("work/model-mode"), mode).unwrap();
         store::mutate(&f.state, &f.key, None, |session| {
             session.selected_model = Some("pro".into());
+            session.model = Some("pro".into());
             Ok(())
         })
         .unwrap();
@@ -183,7 +184,7 @@ async fn selected_model_requires_native_confirmation_before_prompt() {
         assert_eq!(f.root.path().join("work/prompts.jsonl").exists(), succeeds);
         assert_eq!(
             store::load(&f.state, &f.key).unwrap().model.as_deref(),
-            Some(if succeeds { "pro" } else { "flash" })
+            Some("pro")
         );
     }
 }

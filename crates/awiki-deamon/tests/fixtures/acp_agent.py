@@ -19,9 +19,12 @@ if recovery.startswith('startup-'):
     raise SystemExit(42)
 model_mode_file = pathlib.Path.cwd()/'model-mode'
 model_mode = model_mode_file.read_text() if model_mode_file.exists() else ''
-current_model = 'flash'
+current_model_file = pathlib.Path.cwd()/'current-model'
+current_model = current_model_file.read_text() if current_model_file.exists() else 'flash'
 def config_options():
-    return [{'id':'model','name':'Model','category':'model','type':'select','currentValue':current_model,'options':[{'value':'flash','name':'Flash'},{'value':'pro','name':'Pro'}]}]
+    catalog_file = pathlib.Path.cwd()/'catalog.json'
+    choices = json.loads(catalog_file.read_text()) if catalog_file.exists() else [{'value':'flash','name':'Flash'},{'value':'pro','name':'Pro'}]
+    return [{'id':'model','name':'Model','category':'model','type':'select','currentValue':current_model,'options':choices}]
 cwd = None
 prompt_id = None
 mcp = None
@@ -54,6 +57,12 @@ for line in sys.stdin:
         cwd=pathlib.Path(params['cwd']);cwd.mkdir(parents=True,exist_ok=True)
         assert cwd.resolve() == pathlib.Path.cwd().resolve(), 'process cwd must match the ACP session cwd'
         with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'sessionId':params.get('sessionId')})+'\n')
+        if (cwd/'slow-catalog').exists():
+            import time
+            child=subprocess.Popen(['sleep','120'])
+            (cwd/'catalog-child.pid').write_text(str(child.pid))
+            (cwd/'catalog.pid').write_text(str(os.getpid()))
+            time.sleep(1 if (cwd/'slow-catalog').read_text() == 'short' else 120)
         if method!='session/new' and recovery:
             error = {'code':-32603,'message':'Internal error: OpenCode service failure','data':{'service':'session'}}
             if recovery == 'kimi': error = {'code':-32602,'message':f'Invalid params: Unknown sessionId: {sid}'}

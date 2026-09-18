@@ -3,6 +3,7 @@ pub mod attachments;
 pub mod client;
 pub mod host;
 mod models;
+pub mod model_refresh;
 mod tools;
 #[cfg(test)]
 mod tools_tests;

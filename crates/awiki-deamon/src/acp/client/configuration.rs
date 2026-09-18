@@ -13,6 +13,23 @@ pub async fn prepare(
     existing_native: Option<String>,
     desired: Option<String>,
 ) -> Result<PreparedConfiguration> {
+    prepare_cancellable(
+        profile,
+        cwd,
+        existing_native,
+        desired,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+pub async fn prepare_cancellable(
+    profile: CliRuntimeProfileRecord,
+    cwd: PathBuf,
+    existing_native: Option<String>,
+    desired: Option<String>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<PreparedConfiguration> {
     let cwd = std::fs::canonicalize(cwd).context("acp_workspace_unavailable")?;
     let brand = Brand::parse(&profile.driver_id)?;
     let launch = launch_in_workspace(&profile, &cwd, existing_native.as_deref())?;
@@ -93,9 +110,18 @@ pub async fn prepare(
             }
             Ok(())
         });
-    let done = tokio::time::timeout(Duration::from_secs(45), connection)
-        .await
-        .context("acp_configuration_timeout")?;
+    let cancellation = async {
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+    let done = tokio::select! {
+        done = tokio::time::timeout(Duration::from_secs(45), connection) => done.context("acp_configuration_timeout")?,
+        _ = cancellation => { bail!("model_refresh_deferred"); }
+    };
     if done.is_err() {
         bail!(if missing.load(Ordering::Acquire) {
             "context_reset_required"

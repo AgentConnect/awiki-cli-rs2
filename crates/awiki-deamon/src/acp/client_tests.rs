@@ -3,6 +3,10 @@ use super::*;
 mod gemini;
 #[path = "client_tests/models.rs"]
 mod models;
+#[path = "client_tests/model_refresh.rs"]
+mod model_refresh;
+#[path = "client_tests/real_models.rs"]
+mod real_models;
 #[path = "client_tests/real_questions.rs"]
 mod real_questions;
 use crate::{

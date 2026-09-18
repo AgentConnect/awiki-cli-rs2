@@ -55,6 +55,8 @@ pub struct Session {
     pub configuration_version: u8,
     #[serde(default)]
     pub model_configuration_ready: bool,
+    #[serde(default)]
+    pub model_catalog_updated_at_ms: Option<i64>,
     pub capabilities: Value,
     pub options: Value,
     pub group: bool,
@@ -112,6 +114,7 @@ impl Session {
             selected_model: None,
             configuration_version: 1,
             model_configuration_ready: false,
+            model_catalog_updated_at_ms: None,
             capabilities: json!({}),
             options: json!([]),
             group,
@@ -336,7 +339,8 @@ impl Session {
             "last_task":self.last_task,"history":self.history,"output_run_id":self.last_run_id,"text":self.text,"tools":self.tools,"omitted_tool_count":self.omitted_tool_count,
             "error_code":self.interaction_error,"error_details":self.error_details,
             "questions":self.questions.iter().map(|q| super::task_records::question_record(q,self.active.is_none())).collect::<Vec<_>>(),
-            "capabilities":self.capabilities,"models":model_options(&self.options),"model_id":self.model,"selected_model_id":self.model_selection(),"model_configuration_ready":self.model_configuration_ready})
+            "capabilities":self.capabilities,"models":model_options(&self.options),"model_id":self.model,"selected_model_id":self.model_selection(),"model_configuration_ready":self.model_configuration_ready,
+            "model_refresh_supported":!self.group,"model_catalog_updated_at_ms":self.model_catalog_updated_at_ms})
     }
     pub fn model_selection(&self) -> Option<String> {
         if self.configuration_version == 0 {
@@ -354,6 +358,11 @@ impl Session {
             self.configuration_version = 1;
         }
         self.model = super::models::current_model(&options);
+        self.update_catalog(options);
+    }
+    /// A catalog read does not confirm a model switch or replace session intent.
+    pub fn update_catalog(&mut self, options: Value) {
+        self.model_catalog_updated_at_ms = current_time_millis().ok();
         self.options = options;
     }
     fn close_questions(&mut self, reason: &str) {

@@ -36,7 +36,11 @@ pub fn model_options(options: &Value) -> Vec<Value> {
         if let Some(items) = value.as_array() {
             for item in items {
                 if let Some(id) = item["value"].as_str().or(item["modelId"].as_str()) {
-                    result.push(json!({"id":id,"name":item["name"].as_str().unwrap_or(id)}));
+                    let mut model = json!({"id":id,"name":item["name"].as_str().unwrap_or(id)});
+                    if let Some(description) = item["description"].as_str() {
+                        model["description"] = json!(description);
+                    }
+                    result.push(model);
                 } else {
                     choices(&item["options"], result);
                 }

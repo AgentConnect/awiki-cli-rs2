@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.97"
+version = "0.1.98"
 dependencies = [
  "agent-client-protocol",
  "anp",
