@@ -795,6 +795,10 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 路径和投影进度。CLI、Daemon、Flutter 不得分别实现另一套 Range 拼接或完整性判断。Memory
 sink 只用于明确需要内存结果的兼容调用方，不是 App 大文件主路径。
 
+附件历史的内部下载缓存保留显式 `message_security_profile`；明文历史未携带该字段时使用
+`transport-protected`，不能套用 secure lane 的 Direct/Group E2EE 默认值。下载票据仍按原消息、
+对象、接收方和安全类型精确匹配既有授权，公共投影的脱敏不改变此内部事实。
+
 `im-core` is blocking-first. Flutter/Dart and App hosts expose async APIs by running SDK work on their own worker thread or platform runtime. Any future async public API must be designed separately from the current blocking contract.
 
 Transport is explicit through configuration and capability checks:
@@ -1620,6 +1624,11 @@ patches: a commit during seed construction is either represented by the newer
 seed or delivered once afterward, but is never lost or replayed as an older
 duplicate. The public committed patch envelope and patch variants are
 unchanged.
+
+Conversation and timeline seeds and explicit repairs notify existing subscribers when
+their committed read advances the shared cache. A new subscriber must not
+consume another subscriber's pending invalidation by updating that cache
+silently. Its own seed version suppresses the corresponding broadcast replay.
 
 ## 15. System Notification Projection
 

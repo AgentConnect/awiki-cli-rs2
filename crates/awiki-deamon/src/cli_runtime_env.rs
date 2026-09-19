@@ -155,6 +155,9 @@ pub fn build_cli_child_path(home: Option<&Path>, current_path: Option<&OsStr>) -
     let mut paths = Vec::<PathBuf>::new();
     if let Some(home) = home {
         push_existing_dir(&mut paths, home.join(".local").join("bin"));
+        push_existing_dir(&mut paths, home.join(".opencode").join("bin"));
+        push_existing_dir(&mut paths, home.join(".bun").join("bin"));
+        push_existing_dir(&mut paths, home.join(".cargo").join("bin"));
         push_existing_dir(&mut paths, home.join(".npm-global").join("bin"));
         push_existing_dir(&mut paths, home.join(".nvm").join("current").join("bin"));
         push_nvm_node_bins(&mut paths, home);
@@ -170,6 +173,17 @@ pub fn build_cli_child_path(home: Option<&Path>, current_path: Option<&OsStr>) -
         return None;
     }
     std::env::join_paths(paths).ok()
+}
+
+/// One resolver for installation detection and actual runtime launch.
+pub fn resolve_cli_binary(name: &str) -> PathBuf {
+    let path = Path::new(name);
+    if path.components().count() > 1 {
+        return path.to_path_buf();
+    }
+    cli_child_path()
+        .and_then(|path| find_executable_on_path(name, &path))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 pub fn find_executable_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {

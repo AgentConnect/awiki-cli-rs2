@@ -601,6 +601,14 @@ WHERE retry_id = ?2
         &self,
         record: &RuntimeFinalOutboxRecord,
     ) -> Result<()> {
+        let connection = self.connection()?;
+        Self::upsert_runtime_final_outbox_pending_in(&connection, record)
+    }
+
+    pub(crate) fn upsert_runtime_final_outbox_pending_in(
+        connection: &Connection,
+        record: &RuntimeFinalOutboxRecord,
+    ) -> Result<()> {
         record.validate()?;
         if record.status != "pending" {
             bail!("runtime final outbox upsert requires pending status");
@@ -609,7 +617,6 @@ WHERE retry_id = ?2
             bail!("runtime final outbox upsert requires final_body_hash");
         }
         let now = current_time_millis()?;
-        let connection = self.connection()?;
         connection.execute(
             r#"
 INSERT INTO runtime_final_outbox (
@@ -793,7 +800,8 @@ WHERE idempotency_key = ?2
         message_id: Option<&str>,
     ) -> Result<bool> {
         let now = current_time_millis()?;
-        let connection = self.connection()?;
+        let mut db = self.connection()?;
+        let connection = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let updated = connection.execute(
             r#"
 UPDATE runtime_final_outbox
@@ -811,6 +819,15 @@ WHERE idempotency_key = ?3
         if updated == 0 {
             ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
+        if updated > 0 {
+            crate::acp::task_records::delivery_in(
+                &connection,
+                idempotency_key,
+                "sent",
+                message_id,
+            )?;
+        }
+        connection.commit()?;
         Ok(updated > 0)
     }
 
@@ -875,7 +892,8 @@ WHERE status = 'sending'
         error_code: &str,
         error_summary: &str,
     ) -> Result<bool> {
-        let connection = self.connection()?;
+        let mut db = self.connection()?;
+        let connection = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let updated = connection.execute(
             r#"
 UPDATE runtime_final_outbox
@@ -884,7 +902,7 @@ SET status = 'failed_terminal',
     last_error_summary = ?2,
     updated_at_ms = ?3
 WHERE idempotency_key = ?4
-  AND status = 'sending'
+  AND status IN ('pending', 'sending')
 "#,
             rusqlite::params![
                 error_code,
@@ -896,6 +914,10 @@ WHERE idempotency_key = ?4
         if updated == 0 {
             ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
+        if updated > 0 {
+            crate::acp::task_records::delivery_in(&connection, idempotency_key, "failed", None)?;
+        }
+        connection.commit()?;
         Ok(updated > 0)
     }
 

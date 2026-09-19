@@ -935,11 +935,7 @@ fn apply_claude_code_base_env(command: &mut Command) {
 }
 
 fn default_claude_code_binary_path() -> PathBuf {
-    crate::cli_runtime_env::cli_child_path()
-        .and_then(|path| {
-            crate::cli_runtime_env::find_executable_on_path(DEFAULT_CLAUDE_CODE_BINARY, &path)
-        })
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY))
+    crate::cli_runtime_env::resolve_cli_binary(DEFAULT_CLAUDE_CODE_BINARY)
 }
 
 pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<String> {

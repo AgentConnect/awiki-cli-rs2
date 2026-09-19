@@ -10,6 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+mod retry;
+
 #[test]
 fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
     let fixture = Fixture::new();

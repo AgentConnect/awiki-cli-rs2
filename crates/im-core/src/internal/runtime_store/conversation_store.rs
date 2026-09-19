@@ -160,16 +160,25 @@ impl ConversationStore {
         unread_total: u32,
     ) -> crate::messages::ConversationStorePatch {
         let mut state = self.state.lock().expect("conversation store lock poisoned");
+        let changed_for_existing_subscribers =
+            state.version > 0 && (state.items != items || state.unread_total != unread_total);
         state.version = state.version.saturating_add(1);
         state.items = items.clone();
         state.unread_total = unread_total;
-        crate::messages::ConversationStorePatch::Reset {
+        let patch = crate::messages::ConversationStorePatch::Reset {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version: state.version,
             unread_total,
             items,
+        };
+        drop(state);
+        // A seed/repair can overtake the commit's invalidation callback.
+        // Existing watchers must see the committed cache advance as well.
+        if changed_for_existing_subscribers {
+            let _ = self.sender.send(patch.clone());
         }
+        patch
     }
 
     fn diff_committed_items(
@@ -711,6 +720,44 @@ mod tests {
                 assert_eq!(item.last_message.unwrap().id, "msg-local-send");
             }
             other => panic!("expected local send upsert patch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_repair_cannot_consume_an_existing_conversation_watchers_commit() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let mut first = client.messages().watch_conversation_patches().unwrap();
+        first.next_patch().await.unwrap();
+        crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
+            &client,
+            "did:example:bob",
+            "did:example:bob",
+            None,
+            None,
+            &send_result("msg-before-repair"),
+            None,
+        )
+        .unwrap();
+        let repaired = client.messages().repair_conversation_store().unwrap();
+        let mut second = client.messages().watch_conversation_patches().unwrap();
+        client.emit_committed_conversation_projection("delayed_invalidation");
+        let first_patch =
+            tokio::time::timeout(std::time::Duration::from_millis(100), first.next_patch())
+                .await
+                .expect("repair must notify the existing watcher")
+                .unwrap();
+        assert_eq!(first_patch, repaired);
+        assert!(matches!(second.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Reset { items, .. })
+            if items.len() == 1 && items[0].last_message.as_ref().unwrap().id == "msg-before-repair"));
+        for session in [&mut first, &mut second] {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(30), session.next_patch())
+                    .await
+                    .is_err(),
+                "the next seed and delayed callback must not duplicate delivery"
+            );
         }
     }
 

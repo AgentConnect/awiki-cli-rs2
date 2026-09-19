@@ -31,6 +31,26 @@ pub enum AttachmentTransferFailure {
     Cancelled,
 }
 
+/// Download preparation phase; the underlying error retains its original category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentPreparationStage {
+    Session,
+    History,
+    Discovery,
+    Ticket,
+}
+
+impl AttachmentPreparationStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::History => "history",
+            Self::Discovery => "discovery",
+            Self::Ticket => "ticket",
+        }
+    }
+}
+
 impl AttachmentTransferFailure {
     pub const fn code(self) -> &'static str {
         match self {
@@ -97,6 +117,11 @@ pub enum ImError {
     },
     TransportUnavailable {
         detail: String,
+    },
+    AttachmentPreparation {
+        stage: AttachmentPreparationStage,
+        retryable: bool,
+        cause: Box<ImError>,
     },
     AttachmentTransfer {
         failure: AttachmentTransferFailure,
@@ -236,6 +261,9 @@ impl fmt::Display for ImError {
             },
             Self::MessageNotFound { message_id } => write!(f, "message not found: {message_id}"),
             Self::TransportUnavailable { detail } => write!(f, "transport unavailable: {detail}"),
+            Self::AttachmentPreparation { stage, retryable, cause } => write!(
+                f, "attachment preparation failed during {} (retryable={retryable}): {cause}", stage.as_str(),
+            ),
             Self::AttachmentTransfer {
                 failure,
                 received_bytes,

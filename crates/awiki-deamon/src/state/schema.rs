@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 35;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 36;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -17,6 +17,7 @@ pub fn current_schema_version(connection: &Connection) -> Result<i64> {
 }
 
 pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
+    crate::acp::store::initialize(connection)?;
     connection.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;

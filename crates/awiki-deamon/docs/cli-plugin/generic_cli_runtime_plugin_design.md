@@ -121,7 +121,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| 单一 CLI runtime plugin type | 已实现 | CLI family 持久化 `runtime_plugin_id=generic-cli`；Codex/Claude/Gemini/command 是 `driver_id`。 |
+| 单一 CLI runtime plugin type | 已实现 | 本插件的 Codex/Claude/command 以 `driver_id` 区分；Gemini 的正式接入由独立 ACP 插件承担。 |
 | Runtime alias 解析 | 已实现 | `runtime=codex` / `codex-cli` -> `generic-cli + driver_id=codex`；`runtime=claude-code` -> `generic-cli + driver_id=claude-code`；legacy `runtime.cli.*` 仅兼容。 |
 | `cli_runtime_profile` | 已实现 | 保存 driver、binary/config home、model、sandbox、workspace mode、recipient policy、driver config。 |
 | `WorkspaceMode::RouteRoot` | 已实现 | 默认按消息 route 创建 cwd；它是上下文目录隔离，不是安全边界。 |
@@ -129,7 +129,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | keyed route hash/salt | 已实现 | 新 route 使用 daemon-local keyed hash，降低路径可枚举风险；hash 不是授权凭据。 |
 | Codex driver | 已实现 | `codex exec` fresh / explicit `resume <native_session_id>`，不使用 `resume --last`；`CODEX_HOME` profile home，create 时种子复制 `config.toml` / `auth.json`，auth 缺失 fail fast，stdout/stderr/final output sanitizer，native id parser。 |
 | Claude Code driver | 已实现 | `claude -p --verbose --output-format stream-json --session-id/--resume`，cwd 固定 route workspace，native id parser，settings/MCP 来源默认收紧；Claude Code 2.1.x 在 `stream-json` 输出下要求显式 `--verbose`。 |
-| Gemini driver | 未实现 | create alias 可解析，但 registry 对 `gemini` fail closed。 |
+| 历史 Gemini 占位 | 未实现 | 仅兼容读取旧 generic-cli 标识，运行明确失败；正式创建别名已走 ACP，不提供第二套 Gemini 驱动。 |
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
 | profile/host-home lock | 已实现 | 获取顺序是 route lease -> profile lock -> host-home lock；Claude host default HOME 需要 host-home driver lock。 |
 | install/status probe env allowlist | 已实现 | probe 使用 `env_clear()`，只恢复最小运行环境；Codex probe 可带 profile `CODEX_HOME`，并会补充常见用户 CLI bin 路径（如 `~/.nvm/versions/node/*/bin`）以覆盖 systemd user service 的最小 PATH；Claude probe 保留 `HOME` 仅表达 host-default setup 诊断。 |
@@ -305,7 +305,7 @@ claude -p \
 
 `command` driver 是测试/内部 driver，不是 App runtime selector 的用户选项。即使 daemon capability 中包含它，App 也不能把它暴露为普通用户可创建 runtime，除非另有 UI、权限、审计和 system tests。
 
-`gemini` 当前未实现。Registry 对 `gemini` launch fail closed。Google Cloud Code 不在本文范围内。
+`generic-cli` 中的 `gemini` 从未实现运行驱动。保留旧档案的读取与明确失败诊断；新的 `gemini`／`gemini-cli` 创建请求统一走 [ACP](../../../../docs/architecture/acp-runtime.md)，不自动迁移旧占位档案或会话。Google Cloud Code 不在本文范围内。
 
 ### 3.4 Cloud Code 命名
 

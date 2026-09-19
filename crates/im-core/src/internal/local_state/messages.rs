@@ -2259,6 +2259,68 @@ LIMIT ?5"#,
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_messages_before_for_thread_ref_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+    anchor_message_id: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> crate::ImResult<ThreadLocalHistoryRecords> {
+    use rusqlite::OptionalExtension;
+    let owner = required("owner_identity_id", owner_identity_id)?;
+    let anchor_id = canonical_message_id_for_request(
+        connection,
+        &owner,
+        &required("anchor_message_id", anchor_message_id)?,
+    )?;
+    let conversations = conversation_ids_for_thread_ref(connection, &owner, owner_did, thread)?;
+    let anchor: Option<(String, String)> = connection
+        .query_row(
+            "SELECT COALESCE(NULLIF(conversation_id, ''), thread_id), \
+             COALESCE(NULLIF(sent_at, ''), stored_at) FROM messages \
+             WHERE owner_identity_id=?1 AND msg_id=?2 AND hydration_state='hydrated'",
+            rusqlite::params![owner, anchor_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let (_, timestamp) = anchor
+        .filter(|(conversation, _)| conversations.contains(conversation))
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("anchor_message_id".to_owned()),
+                "history anchor is not a committed message in this owner and conversation",
+            )
+        })?;
+    let anchor = (timestamp, anchor_id);
+    if let Some(boundary) = decode_local_history_cursor(cursor)? {
+        if boundary > anchor {
+            return Err(crate::ImError::invalid_input(
+                Some("cursor".to_owned()),
+                "history cursor must not advance past the anchor",
+            ));
+        }
+    }
+    let anchor_cursor = format!(
+        "local-history:v1:{}:{}",
+        base64_url_encode(&anchor.0),
+        base64_url_encode(&anchor.1),
+    );
+    list_messages_for_thread_ref_for_owner_identity(
+        connection,
+        &owner,
+        owner_did,
+        thread,
+        limit,
+        cursor
+            .filter(|value| !value.trim().is_empty())
+            .or(Some(&anchor_cursor)),
+    )
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn list_messages_for_thread_ref_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -4892,6 +4954,10 @@ fn now_utc_like() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "message_anchor_tests.rs"]
+mod anchor_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {

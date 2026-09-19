@@ -161,6 +161,30 @@ Server Info 独立控制；静态 daemon manifest 的同名字段只兼容旧版
 
 ## 5. 手工准备 daemon 下载目录
 
+### 临时集成当前 Core 源码
+
+2026-09-17 新加坡 ACP 验证经用户明确授权，仅发布 macOS arm64 与 Linux amd64，
+由 APP 原安装命令从公网下载安装，人工安装验收由用户执行。本次允许 Core 尚未发布到
+crates.io；这不是正式 registry 检查通过的证明，不改变默认三平台 registry 发布入口。
+
+`_build-artifact.sh --local-core` 在干净的已提交源码上创建隔离 worktree，保留仓内 Core，
+将 ANP/Identity 固定为 registry-dependencies.json 声明的 crates.io 版本，并验证实际解析来源。
+先执行 `python3 scripts/release/daemon/local-core-build.py --refresh-lock`，检查并提交独立的
+`local-core.Cargo.lock`；两平台随后以同一源码提交和锁文件构建。归档内 SOURCE.md 记录
+源码提交、实际 SDK 来源、锁文件 SHA-256 和 Cargo 版本。
+
+```bash
+scripts/release/daemon/_build-artifact.sh --local-core --os darwin --arch arm64 --dist dist/daemon-source
+# Linux 主机执行：
+scripts/release/daemon/_build-artifact.sh --local-core --os linux --arch amd64 --dist dist/daemon-source
+```
+
+收齐两包后复用 `_stage-downloads.sh --allow-partial`，明确指定原最低版本和新加坡同域地址。
+核对平台集合、包校验和、自检后，先发布完整版本目录，最后切换 manifest；保留旧包和旧入口
+备份，再通过 User Service 受管流程提升推荐版本。公网下载复核不代替用户的 APP 安装验收。
+
+### 常规下载目录
+
 一般发布不需要手工执行底层脚本。只有在本地调试 release 包或下载目录结构时，才直接使用下面两个脚本。
 
 先构建三个平台包：
