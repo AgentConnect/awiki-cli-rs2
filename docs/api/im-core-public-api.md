@@ -1251,6 +1251,12 @@ impl MessageService<'_> {
         thread: ThreadRef,
         query: LocalHistoryQuery,
     ) -> ImResult<Page<Message>>;
+    pub async fn local_history_before_async(
+        &self,
+        thread: ThreadRef,
+        anchor_message_id: MessageId,
+        query: LocalHistoryQuery,
+    ) -> ImResult<Page<Message>>;
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
     pub fn sync_now(&self, request: MessageSyncRequest) -> ImResult<MessageSyncOutcome>;
     pub fn sync_diagnostics(&self) -> ImResult<MessageSyncDiagnostics>;
@@ -1260,6 +1266,10 @@ impl MessageService<'_> {
     ) -> ImResult<SyncThreadAfterResult>;
 }
 ```
+
+`local_history_before_async` 只读当前 owner 与指定 conversation 中锚点消息之前的已提交历史，
+按已有本地历史顺序分页；锚点可使用 Core 已知消息别名。锚点缺失、未 hydration 或属于其他
+owner/conversation 时明确报错。后续 cursor 不能越过锚点；不触发网络、不推进已读或同步游标。
 
 Direct `local_history` compatibility reads addressed by Handle or DID resolve
 the canonical conversation from the current owner-scoped Persona projection
@@ -1868,6 +1878,16 @@ execute_sql()
 Debug SQL 属于 CLI `debug.db.*`，不属于 SDK default API。
 
 ## 12. attachments：P4+
+
+异步下载的会话准备、历史查找、DID 服务发现、凭证与文件传输共用最多三次重试，
+仅网络故障、临时服务不可用等可恢复错误消耗重试预算；权限和消息归属校验失败不会重试。
+不可重试的前置错误直接返回原有 `ImError` 变体（例如 `InvalidInput`、`AuthRequired`、
+`PermissionDenied`、`MessageNotFound`），保留公开错误匹配的兼容性。
+可恢复的前置错误耗尽重试预算后使用 `ImError::AttachmentPreparation { stage, retryable: true, cause }`，
+`AttachmentPreparationStage` 包含 `Session`、`History`、`Discovery`、`Ticket`；
+`cause` 保留最后一次原错误。Dart／CLI 映射此包装错误时携带 `attachment_stage` 和 `retryable`，
+Node 保留原有安全错误码与重试属性。文件目的地的取消注册覆盖整个异步流程，
+在服务发现、凭证等待或重试退避期间也能取消；内存下载继续通过丢弃 future 取消。
 
 ```rust
 pub struct AttachmentService<'a> {

@@ -15,6 +15,63 @@ const ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE: i64 = 100;
 const ATTACHMENT_TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACHMENT_TRANSFER_MAX_ATTEMPTS: usize = 4;
 
+/// A single budget follows the whole download, including discovery and tickets.
+/// Successful stages do not consume it; nested stages cannot multiply retries.
+#[derive(Default)]
+struct DownloadRetryBudget {
+    retries: usize,
+}
+
+impl DownloadRetryBudget {
+    async fn retry(&mut self, error: &crate::ImError) -> bool {
+        if self.retries >= ATTACHMENT_TRANSFER_MAX_ATTEMPTS - 1 || !download_retryable(error) {
+            return false;
+        }
+        attachment_retry_delay(self.retries).await;
+        self.retries += 1;
+        true
+    }
+}
+
+fn download_retryable(error: &crate::ImError) -> bool {
+    matches!(error, crate::ImError::TransportUnavailable { .. })
+        || matches!(
+            error,
+            crate::ImError::Service {
+                status_code: Some(429 | 502 | 503 | 504),
+                ..
+            }
+        )
+        || attachment_transfer_retryable(error)
+        || attachment_digest_mismatch(error)
+}
+
+// Keep the operation in the caller's future so async SDK facades retain Send
+// without a lending async-closure bound at the FFI boundary.
+macro_rules! retry_preparation {
+    ($budget:expr, $stage:expr, $operation:expr $(,)?) => {{
+        loop {
+            match $operation.await {
+                Ok(value) => break Ok(value),
+                Err(error) => {
+                    // Preserve terminal errors in the public download contract.
+                    if !download_retryable(&error) {
+                        break Err(error);
+                    }
+                    if $budget.retry(&error).await {
+                        continue;
+                    }
+                    break Err(crate::ImError::AttachmentPreparation {
+                        stage: $stage,
+                        retryable: true,
+                        cause: Box::new(error),
+                    });
+                }
+            }
+        }
+    }};
+}
+
 pub(crate) struct AttachmentDownloadRuntime<'a, P, T> {
     client: &'a crate::core::ImClient,
     session_provider: P,
@@ -474,31 +531,48 @@ where
             )?;
         }
         let target = download_target(&input.request.thread, input.resolved_peer_did)?;
-        self.session_provider
-            .ensure_session(auth_scope(&target))
-            .await?;
-        let selection = self
-            .find_selection_async(
-                &target,
-                input.request.message_id.as_str(),
-                input.request.attachment_id.as_deref().unwrap_or_default(),
-            )
-            .await?;
+        let mut budget = DownloadRetryBudget::default();
+        retry_preparation!(
+            &mut budget,
+            crate::AttachmentPreparationStage::Session,
+            async {
+                self.session_provider
+                    .ensure_session(auth_scope(&target))
+                    .await
+            },
+        )?;
+        let selection = retry_preparation!(
+            &mut budget,
+            crate::AttachmentPreparationStage::History,
+            async {
+                self.find_selection_async(
+                    &target,
+                    input.request.message_id.as_str(),
+                    input.request.attachment_id.as_deref().unwrap_or_default(),
+                )
+                .await
+            },
+        )?;
         if selection.public.sender_did.trim().is_empty() {
             return Err(crate::ImError::invalid_input(
                 Some("sender_did".to_string()),
                 "attachment message sender_did is required",
             ));
         }
-        let attachment_service = self
-            .resolve_attachment_service_async(&selection.public.sender_did)
-            .await?;
+        let attachment_service = retry_preparation!(
+            &mut budget,
+            crate::AttachmentPreparationStage::Discovery,
+            async {
+                self.resolve_attachment_service_async(&selection.public.sender_did)
+                    .await
+            },
+        )?;
         let filename =
             Some(selection.public.filename.clone()).filter(|value| !value.trim().is_empty());
         let (destination, plaintext_len, object_content_type, ticket) = match sink {
             crate::internal::blob::sink::AttachmentSink::Memory => {
                 let (plaintext, content_type, ticket) = self
-                    .download_to_memory(&target, &selection, &attachment_service)
+                    .download_to_memory(&target, &selection, &attachment_service, &mut budget)
                     .await?;
                 let plaintext_len = plaintext.len();
                 (
@@ -517,6 +591,7 @@ where
                         path,
                         overwrite,
                         cancellation.expect("local-file download has cancellation registration"),
+                        &mut budget,
                     )
                     .await?;
                 (
@@ -553,6 +628,7 @@ where
         target: &DownloadTarget,
         selection: &crate::attachments::selection::InternalAttachmentSelection,
         attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        budget: &mut DownloadRetryBudget,
     ) -> crate::ImResult<(
         Vec<u8>,
         Option<String>,
@@ -561,12 +637,13 @@ where
         let mut downloaded = Vec::new();
         let mut expected_size = declared_object_size(selection)?;
         let mut content_type = None;
-        let mut last_error = None;
-        for attempt in 0..ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+        loop {
             let offset = downloaded.len() as u64;
-            let ticket = self
-                .get_download_ticket_async(target, selection, attachment_service)
-                .await?;
+            let ticket =
+                retry_preparation!(budget, crate::AttachmentPreparationStage::Ticket, async {
+                    self.get_download_ticket_async(target, selection, attachment_service)
+                        .await
+                },)?;
             let response = self
                 .transport
                 .get_attachment_object_stream_from(
@@ -579,13 +656,9 @@ where
                 Ok(response) => response,
                 Err(error) => {
                     let error = attachment_transfer_error(error, offset, expected_size);
-                    if !attachment_transfer_retryable(&error)
-                        || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
-                    {
+                    if !budget.retry(&error).await {
                         return Err(error);
                     }
-                    last_error = Some(error);
-                    attachment_retry_delay(attempt).await;
                     continue;
                 }
             };
@@ -607,28 +680,21 @@ where
             )
             .await;
             if let Err(error) = result {
-                if !attachment_transfer_retryable(&error)
-                    || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
-                {
+                if !budget.retry(&error).await {
                     return Err(error);
                 }
-                last_error = Some(error);
-                attachment_retry_delay(attempt).await;
                 continue;
             }
             if expected_size.is_some_and(|expected| downloaded.len() as u64 != expected) {
                 let error = incomplete_transfer(downloaded.len() as u64, expected_size);
-                if attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+                if !budget.retry(&error).await {
                     return Err(error);
                 }
-                last_error = Some(error);
-                attachment_retry_delay(attempt).await;
                 continue;
             }
             let plaintext = verified_download_body(selection, downloaded)?;
             return Ok((plaintext, content_type, ticket));
         }
-        Err(last_error.unwrap_or_else(|| incomplete_transfer(0, expected_size)))
     }
 
     async fn download_to_local_file(
@@ -639,6 +705,7 @@ where
         destination: PathBuf,
         overwrite: bool,
         cancellation: &tokio_util::sync::CancellationToken,
+        budget: &mut DownloadRetryBudget,
     ) -> crate::ImResult<(
         PathBuf,
         usize,
@@ -655,12 +722,13 @@ where
             .await?;
         let mut content_type = None;
         let mut last_ticket = None;
-        let mut last_error = None;
-        for attempt in 0..ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+        loop {
             if expected_size != Some(received) {
-                let ticket = self
-                    .get_download_ticket_async(target, selection, attachment_service)
-                    .await?;
+                let ticket =
+                    retry_preparation!(budget, crate::AttachmentPreparationStage::Ticket, async {
+                        self.get_download_ticket_async(target, selection, attachment_service)
+                            .await
+                    },)?;
                 last_ticket = Some(ticket.clone());
                 let response = self
                     .transport
@@ -674,13 +742,9 @@ where
                     Ok(response) => response,
                     Err(error) => {
                         let error = attachment_transfer_error(error, received, expected_size);
-                        if !attachment_transfer_retryable(&error)
-                            || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
-                        {
+                        if !budget.retry(&error).await {
                             return Err(error);
                         }
-                        last_error = Some(error);
-                        attachment_retry_delay(attempt).await;
                         continue;
                     }
                 };
@@ -712,50 +776,44 @@ where
                 match appended {
                     Ok(value) => received = value,
                     Err(error) => {
-                        if !attachment_transfer_retryable(&error)
-                            || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
-                        {
+                        if !budget.retry(&error).await {
                             return Err(error);
                         }
                         received = tokio::fs::metadata(&partial)
                             .await
                             .map(|metadata| metadata.len())
                             .unwrap_or(received);
-                        last_error = Some(error);
-                        attachment_retry_delay(attempt).await;
                         continue;
                     }
                 }
             }
             if expected_size.is_some_and(|expected| received != expected) {
                 let error = incomplete_transfer(received, expected_size);
-                if attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+                if !budget.retry(&error).await {
                     return Err(error);
                 }
-                last_error = Some(error);
-                attachment_retry_delay(attempt).await;
                 continue;
             }
             if let Err(error) = verify_downloaded_file(selection, &partial).await {
-                if attachment_digest_mismatch(&error)
-                    && attempt + 1 < ATTACHMENT_TRANSFER_MAX_ATTEMPTS
-                {
+                if attachment_digest_mismatch(&error) && budget.retry(&error).await {
                     crate::internal::attachment_runtime::atomic_write::reset_resumable_partial(
                         &partial,
                     )
                     .await?;
                     received = 0;
-                    last_error = Some(error);
-                    attachment_retry_delay(attempt).await;
                     continue;
                 }
                 return Err(error);
             }
             if last_ticket.is_none() {
-                last_ticket = Some(
-                    self.get_download_ticket_async(target, selection, attachment_service)
-                        .await?,
-                );
+                last_ticket = Some(retry_preparation!(
+                    budget,
+                    crate::AttachmentPreparationStage::Ticket,
+                    async {
+                        self.get_download_ticket_async(target, selection, attachment_service)
+                            .await
+                    },
+                )?);
             }
             let (path, plaintext_len) = if selection.is_object_e2ee() {
                 let ciphertext =
@@ -798,7 +856,6 @@ where
                 last_ticket.expect("download ticket is set before completion"),
             ));
         }
-        Err(last_error.unwrap_or_else(|| incomplete_transfer(received, expected_size)))
     }
 
     async fn find_selection_async(

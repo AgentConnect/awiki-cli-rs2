@@ -3335,6 +3335,24 @@ impl<'a> MessageService<'a> {
             .map(super::MessagePage::into_page)
     }
 
+    /// Read committed messages strictly before an owner/conversation-bound anchor.
+    /// Continuations cannot move past the anchor. This method neither syncs nor
+    /// changes read state.
+    pub async fn local_history_before_async(
+        &self,
+        thread: super::ThreadRef,
+        anchor_message_id: crate::ids::MessageId,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        crate::internal::message_runtime::read::local_history_before_async(
+            self.client,
+            thread,
+            anchor_message_id,
+            query,
+        )
+        .await
+    }
+
     pub fn local_history_with_metadata(
         &self,
         thread: super::ThreadRef,

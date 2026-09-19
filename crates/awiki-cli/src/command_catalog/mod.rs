@@ -390,7 +390,7 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "onboarding") {
+    if has_any_command_prefix(name, &["onboarding", "http"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -608,6 +608,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "http") {
+        return CommandAudience::AdvancedUser;
+    }
     if has_command_prefix(name, "id.device") {
         return CommandAudience::AdvancedUser;
     }
@@ -710,6 +713,9 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "http") {
+        return CommandOwner::ImCoreAuth;
+    }
     if has_command_prefix(name, "onboarding") {
         return CommandOwner::ImCoreOnboarding;
     }
@@ -798,6 +804,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "http") {
+        return CliShellRole::ParsesInputOnly;
+    }
     if matches!(
         name,
         "id.device.join.approve"
@@ -1290,6 +1299,9 @@ macro_rules! cmd {
 
 fn default_specs() -> &'static [CommandSpec] {
     &[
+        CommandSpec { name: "http", use_: "http", short: "Authenticated HTTP requests", long: "Closed JSON input over stdin; credentials stay in the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "http.request", use_: "request", short: "Send an exact authenticated HTTPS request from stdin", long: "At most 4 MiB body; no redirects, shell arguments or caller-provided credentials.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "http.request", side_effect: true, outputs: &["json"], flags: &[] },
+
         cmd!("status", "status", "Show the current CLI, workspace, and identity status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),

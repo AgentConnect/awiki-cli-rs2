@@ -5,6 +5,8 @@
 > 范围：通用 daemon 架构、Daemon Agent、Agent DID 创建、Runtime 插件层、Skill + daemon CLI wrapper 回传链路、消息文本/附件/结构化 JSON 分层、本地数据库与目录策略、核心流程、MVP 落地顺序
 > 非范围：Hermes / OpenClaw / Claude Code / Codex / Gemini CLI 等具体插件内部实现细节；AVIC / AMP 等复杂授权凭证；群组协作的完整细节
 
+> 当前接入补充（2026-09-18）：Codex、Claude Code 使用 generic-cli；OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness 使用独立 [ACP 插件](../../../docs/architecture/acp-runtime.md)。旧 generic-cli Gemini 仅有名称／配置占位，驱动未实现；本文历史示例中的 Gemini 不代表旧版 APP 已提供该能力。ACP 的会话、问答与状态回传以 ACP 合同为准，仍由 Daemon 持有身份和消息发送权。
+
 ---
 
 ## 0. 核心结论
@@ -178,7 +180,8 @@ Native Runtime Plugins / Generic CLI Runtime Plugin
 │ - Generic CLI Runtime Plugin                 │
 │   - Claude Code Driver                       │
 │   - Codex Driver                             │
-│   - Gemini CLI Driver                        │
+│ - ACP Runtime Plugin                        │
+│   - OpenCode / Gemini CLI / Kimi / DSH        │
 └──────────────────────────────────────────────┘
                     │
                     ▼
@@ -381,8 +384,9 @@ Runtime Plugin
 插件分类：
 
 1. **Native Runtime Plugin**：适合 Hermes、OpenClaw 这类有原生 session、event、tool、approval、gateway 能力的 runtime。
-2. **Generic CLI Runtime Plugin**：适合 Claude Code、Codex CLI、Gemini CLI 等 workspace-bound CLI agent。
-3. **Future Runtime Plugin**：未来可接入其他自研 agent runtime、MCP agent、浏览器 agent、容器 agent 等。
+2. **Generic CLI Runtime Plugin**：接入 Claude Code、Codex CLI 等 workspace-bound CLI agent。
+3. **ACP Runtime Plugin**：接入 OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness，统一使用 stdio ACP 与任务内 MCP 工具。
+4. **Future Runtime Plugin**：未来可接入其他自研 agent runtime、MCP agent、浏览器 agent、容器 agent 等。
 
 ### 3.6 Runtime Profile
 
@@ -1257,9 +1261,10 @@ OpenClaw
 ```text
 Claude Code
 Codex CLI
-Gemini CLI
 其他 CLI coding agent
 ```
+
+Gemini CLI 的正式接入使用 ACP；本插件中的历史 Gemini driver 仅保留不可运行的占位诊断。
 
 Generic CLI Plugin 负责共性：
 

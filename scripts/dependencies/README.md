@@ -63,10 +63,12 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 Release 依赖为已发布的 ANP `1.0.3`、Identity `0.2.3`、Core `0.1.4`。
-`registry-dependencies.json` 与通过既有 `--refresh-lock` 入口生成的
-`registry-Cargo.lock` 已同步；实际 Cargo metadata 已确认三者均来自 crates.io，
-没有 path/git SDK 替换。CLI、Daemon、Dart binding 与 Node binding 共用这组精确版本。
+上次正式 Release 使用已发布的 ANP `1.0.3`、Identity `0.2.3`、Core `0.1.4`。
+本 ACP 分支已将 Core 源码及目标 registry pin 提升到 `0.1.5`，但该版本尚未发布，
+正式 registry lock 仍为上一版；registry CI 尚不能通过，不应声称二者已同步。
+2026-09-17 用户授权的两平台 Daemon 临时验证包改用显式 `--local-core` 入口，
+使用独立的 `scripts/release/daemon/local-core.Cargo.lock`，不改变 SDK 的公开发布状态。
+具体范围和复现步骤见 [Daemon 发布说明](../../docs/publish.md)。
 
 2026-09-09 的历史发布按用户明确要求不运行测试；完成了发布构建、包校验、上传及 registry
 版本/来源核验。以下此前执行的测试记录属于发布前的历史证据，不表示本次重新执行。
@@ -108,3 +110,12 @@ registry 来源验证或真实账号恢复验收。
 更新清单后，按 `--deps source --source-manifest dependencies.source.json --refresh-lock`
 重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
 Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。
+
+### 指定已提交消费者源码构建
+
+registry-build.py使用指定提交的Git归档构建输入，不再创建worktree/clone。默认仍
+要求tracked源码已提交。主目录存在其他任务修改时，可显式传
+`--source-commit <完整40位SHA> -- cargo build --release -p awiki-cli`；仅消费该提交，
+不会带入dirty文件，registry pin/lock与实际metadata检查保持。构建输入的
+`.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
+归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。

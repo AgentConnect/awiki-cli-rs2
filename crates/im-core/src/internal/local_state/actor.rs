@@ -496,6 +496,7 @@ enum LocalStateCommand {
         thread: crate::messages::ThreadRef,
         limit: i64,
         cursor: Option<String>,
+        before_message_id: Option<String>,
         reply: oneshot::Sender<crate::ImResult<super::messages::ThreadLocalHistoryRecords>>,
     },
     MaxServerSeqForThreadRef {
@@ -1989,6 +1990,30 @@ impl LocalStateDb {
             thread,
             limit,
             cursor,
+            before_message_id: None,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_messages_before_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+        before_message_id: String,
+        limit: i64,
+        cursor: Option<String>,
+    ) -> crate::ImResult<super::messages::ThreadLocalHistoryRecords> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListMessagesForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            limit,
+            cursor,
+            before_message_id: Some(before_message_id),
             reply,
         })
         .await?;
@@ -3374,16 +3399,30 @@ fn run_actor(
                 thread,
                 limit,
                 cursor,
+                before_message_id,
                 reply,
             } => {
-                let result = super::messages::list_messages_for_thread_ref_for_owner_identity(
-                    &connection,
-                    &owner_identity_id,
-                    &owner_did,
-                    &thread,
-                    limit,
-                    cursor.as_deref(),
-                );
+                let result = match before_message_id {
+                    Some(anchor) => {
+                        super::messages::list_messages_before_for_thread_ref_for_owner_identity(
+                            &connection,
+                            &owner_identity_id,
+                            &owner_did,
+                            &thread,
+                            &anchor,
+                            limit,
+                            cursor.as_deref(),
+                        )
+                    }
+                    None => super::messages::list_messages_for_thread_ref_for_owner_identity(
+                        &connection,
+                        &owner_identity_id,
+                        &owner_did,
+                        &thread,
+                        limit,
+                        cursor.as_deref(),
+                    ),
+                };
                 let _ = reply.send(result);
             }
             LocalStateCommand::MaxServerSeqForThreadRef {

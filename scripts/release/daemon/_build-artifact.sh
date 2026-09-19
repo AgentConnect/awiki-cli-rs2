@@ -10,7 +10,7 @@ usage() {
 Build an awiki-deamon release archive.
 
 Usage:
-  scripts/release/daemon/_build-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--dry-run]
+  scripts/release/daemon/_build-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--local-core] [--dry-run]
 
 Options:
   --version VERSION   Package version. Defaults to crates/awiki-deamon/Cargo.toml package version.
@@ -18,6 +18,7 @@ Options:
   --arch ARCH        Release arch name: amd64 or arm64. Defaults to current host.
   --target TRIPLE    Rust target triple. Defaults from --os/--arch.
   --dist DIR         Output directory. Defaults to dist/daemon.
+  --local-core       Explicit temporary build with committed local Core; other SDKs stay registry.
   --dry-run          Print the plan without building.
 USAGE
 }
@@ -80,6 +81,7 @@ ARCH_NAME=""
 TARGET_TRIPLE=""
 DIST_DIR="${ROOT_DIR}/dist/daemon"
 DRY_RUN=0
+LOCAL_CORE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --local-core)
+      LOCAL_CORE=1
       shift
       ;;
     -h|--help)
@@ -149,10 +155,17 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
-cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
-
 archive_path="${DIST_DIR}/awiki-deamon-${OS_NAME}-${ARCH_NAME}.tar.gz"
-build_bin="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/awiki-deamon"
+provenance_path="${archive_path}.source.json"
+target_dir="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+case "${target_dir}" in /*) ;; *) target_dir="${ROOT_DIR}/${target_dir}" ;; esac
+build_bin="${target_dir}/${TARGET_TRIPLE}/release/awiki-deamon"
+if [[ "${LOCAL_CORE}" == "1" ]]; then
+  [[ "${commit}" == "$(git rev-parse HEAD)" ]] || die "local Core source commit must match HEAD"
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/daemon/local-core-build.py" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
+else
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
@@ -208,6 +221,11 @@ The source location above identifies the exact revision used to build this
 release. The Corresponding Source is provided under Apache License 2.0 as described in
 the accompanying LICENSE file.
 EOF
+
+if [[ "${LOCAL_CORE}" == "1" ]]; then
+  printf '\nDependency mode: local-core (explicit temporary source build)\n\n' >> "${stage_dir}/SOURCE.md"
+  cat "${provenance_path}" >> "${stage_dir}/SOURCE.md"
+fi
 
 (cd "${stage_dir}" && shasum -a 256 \
   awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \

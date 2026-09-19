@@ -681,11 +681,7 @@ fn apply_minimal_process_env(command: &mut Command) {
 }
 
 fn default_codex_binary_path() -> PathBuf {
-    crate::cli_runtime_env::cli_child_path()
-        .and_then(|path| {
-            crate::cli_runtime_env::find_executable_on_path(DEFAULT_CODEX_BINARY, &path)
-        })
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CODEX_BINARY))
+    crate::cli_runtime_env::resolve_cli_binary(DEFAULT_CODEX_BINARY)
 }
 
 pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String> {

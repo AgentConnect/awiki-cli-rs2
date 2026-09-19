@@ -40,6 +40,7 @@ pub mod registration;
     reason = "runtime host calls keep plugin, authority, process, and persistence inputs explicit"
 )]
 pub mod runtime;
+pub mod runtime_clients;
 pub mod runtime_inbox;
 pub mod secret_vault;
 pub mod security;
@@ -283,3 +284,4 @@ async fn initialize_state_for_management(
     };
     Ok((config, state, status))
 }
+pub mod acp;

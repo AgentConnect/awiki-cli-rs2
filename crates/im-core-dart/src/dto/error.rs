@@ -150,6 +150,17 @@ impl From<im_core::ImError> for DartImError {
                 "transport_unavailable",
                 format!("transport unavailable: {detail}"),
             ),
+            im_core::ImError::AttachmentPreparation { stage, cause, retryable } => {
+                let mut mapped = Self::from(*cause);
+                let mut data = mapped.service_data_json.as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .filter(serde_json::Value::is_object)
+                    .unwrap_or_else(|| serde_json::json!({}));
+                data["attachment_stage"] = serde_json::json!(stage.as_str());
+                data["retryable"] = serde_json::json!(retryable);
+                mapped.service_data_json = Some(data.to_string());
+                mapped
+            }
             im_core::ImError::AttachmentTransfer {
                 failure,
                 received_bytes,

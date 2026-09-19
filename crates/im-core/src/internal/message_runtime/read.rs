@@ -2015,6 +2015,37 @@ fn local_history_records_to_page(
     })
 }
 
+/// Anchored local reads share the local history order and never fetch the network.
+pub(crate) async fn local_history_before_async(
+    client: &crate::core::ImClient,
+    thread: crate::messages::ThreadRef,
+    anchor: crate::ids::MessageId,
+    query: crate::messages::LocalHistoryQuery,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .list_messages_before_for_thread_ref(
+                client.current_identity().id.as_str(),
+                client.did().as_str(),
+                thread,
+                anchor.as_str().to_owned(),
+                page_limit(query.limit, 50),
+                query.cursor.map(|cursor| cursor.as_str().to_owned()),
+            )
+            .await?;
+        local_history_records_to_page(records)
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, thread, anchor, query);
+        Err(crate::ImError::unsupported("message-local-history-before"))
+    }
+}
+
 fn merge_raw_metadata(target: &mut Value, source: &Value, fallback_source: &str) {
     let Some(target_object) = target.as_object_mut() else {
         return;
@@ -5625,7 +5656,18 @@ pub(crate) fn attachment_manifest_cache_record(
             message_id,
             wire_message_id: string_value(object.get("raw_message_id")),
             sender_did: string_value(object.get("sender_did")),
-            message_security_profile: secure_message_security_profile(object),
+            // Ordinary history/Sync projections may omit the profile. Only
+            // secure messages can use the secure lane's inferred default;
+            // otherwise the download ticket must match the plain send grant.
+            message_security_profile: if object.get("secure").and_then(Value::as_bool) == Some(true)
+                || ["message_security_profile", "security_profile", "security"]
+                    .iter()
+                    .any(|key| !string_value(object.get(*key)).trim().is_empty())
+            {
+                secure_message_security_profile(object)
+            } else {
+                "transport-protected".to_owned()
+            },
             content: serde_json::to_string(&content).ok()?,
             stored_at: first_non_empty_owned([
                 string_value(object.get("stored_at")),

@@ -293,6 +293,16 @@ where
         anyhow::bail!("run_id must not be empty");
     }
 
+    if profile.runtime_plugin_id == crate::acp::PLUGIN_ID {
+        return crate::acp::host::run(
+            state,
+            profile,
+            outbox,
+            task,
+            run_id,
+            local_socket_path.as_deref(),
+        );
+    }
     let run = RuntimeRun {
         run_id,
         task_id: task.task_id.clone(),
@@ -1413,6 +1423,13 @@ pub fn flush_runtime_final_outbox(
                 state,
                 &binding.daemon_agent_did,
             )? {
+                if state.mark_runtime_final_outbox_failed_terminal(
+                    &record.idempotency_key,
+                    "controller_identity_changed",
+                    "Controller identity changed; automatic delivery is fenced",
+                )? {
+                    state.fail_active_runtime_run(&record.run_id)?;
+                }
                 continue;
             }
         }
@@ -1544,6 +1561,12 @@ fn runtime_final_payload(
     };
     let correlation = task.correlation();
     let source_message_id = correlation.source_message_id.as_str();
+    let annotate = |mut payload: serde_json::Value| {
+        if record.final_source == "acp" {
+            payload["annotations"]["awiki_run_id"] = serde_json::json!(record.run_id);
+        }
+        payload
+    };
     let is_group = record
         .conversation_id
         .as_deref()
@@ -1568,7 +1591,7 @@ fn runtime_final_payload(
                         source_message_id: Some(source_message_id),
                         reply_text: &record.final_text,
                     }) {
-                        return Ok(Some(reply.payload));
+                        return Ok(Some(annotate(reply.payload)));
                     }
                 }
             }
@@ -1579,7 +1602,7 @@ fn runtime_final_payload(
         source_message_id,
         reply_text: &record.final_text,
     })
-    .map(|reply| reply.payload))
+    .map(|reply| annotate(reply.payload)))
 }
 
 fn mark_runtime_final_delivered(
@@ -1609,7 +1632,7 @@ fn mark_runtime_final_delivered(
     Ok(())
 }
 
-fn runtime_final_outbox_record(
+pub(crate) fn runtime_final_outbox_record(
     profile: &RuntimeAgentProfile,
     controller_did: &str,
     recipient_did: &str,
@@ -2413,6 +2436,36 @@ fn runtime_allowed_methods(authority: RuntimeInvocationAuthority) -> Vec<RpcMeth
     methods
 }
 
+pub(crate) fn issue_acp_runtime_token(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &str,
+) -> Result<crate::security::runtime_token::IssuedRuntimeToken> {
+    let policy = runtime_recipient_policy(
+        state,
+        profile,
+        &task.reply_recipient_did,
+        task.invocation_authority,
+    )?;
+    let mut methods = vec![RpcMethod::RpcPing];
+    if task.invocation_authority.can_send_outbound() {
+        methods.extend([RpcMethod::MsgSend, RpcMethod::SendAttachment]);
+    }
+    let mut scope = RuntimeTokenScope::new(
+        profile.agent_did.clone(),
+        profile.runtime_profile_id.clone(),
+        run.to_owned(),
+        methods,
+        Some(policy.allowed_recipients),
+        Duration::from_secs(30 * 60),
+    )?;
+    scope.allowed_message_security = Some(policy.allowed_message_security);
+    let issued = issue_runtime_token(scope)?;
+    state.store_runtime_token(&issued)?;
+    Ok(issued)
+}
+
 fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Result<()> {
     let Some(value) = value else {
         return Ok(());
@@ -2457,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_final_outbox_stays_pending_after_controller_identity_change() {
+    fn runtime_final_outbox_is_fenced_after_controller_identity_change() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         let state = DaemonState::open(&config).unwrap();
@@ -2590,7 +2643,17 @@ mod tests {
             .load_runtime_final_outbox_by_run(&run.run_id)
             .unwrap()
             .unwrap();
-        assert_eq!(stored.status, "pending");
+        assert_eq!(stored.status, "failed_terminal");
+        assert_eq!(
+            stored.last_error_code.as_deref(),
+            Some("controller_identity_changed")
+        );
+        assert!(state
+            .list_due_runtime_final_outbox(i64::MAX, 8)
+            .unwrap()
+            .is_empty());
+        assert_eq!(flush_runtime_final_outbox(&state, &outbox, 8).unwrap(), 0);
+        assert!(outbox.records().is_empty());
         assert_eq!(stored.controller_did, "did:human:alice");
         assert_eq!(stored.recipient_did, "did:human:alice");
     }
