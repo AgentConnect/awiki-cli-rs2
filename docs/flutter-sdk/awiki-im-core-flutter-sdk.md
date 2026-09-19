@@ -696,7 +696,11 @@ bridge retains a cancellation signal and the Rust worker handle after stream
 attachment, wakes an idle `next_patch()` call, and joins the worker before the
 stop call completes. Conversation-list, conversation-timeline, and legacy
 thread patch streams use the same rule; an attached stream must never make its
-stop API a no-op.
+stop API a no-op. The Dart facade must call the native stop before awaiting
+bridge subscription cancellation: an idle bridge generator may otherwise wait
+for the very producer that would only be stopped after cancellation completes.
+Cancellation while session creation is pending must release that session once
+creation finishes, without attaching a new reader.
 
 Remote history, conversation catch-up, and realtime incoming messages share one
 Core canonical-ingress gate. A Direct wire DID must resolve to a verified
