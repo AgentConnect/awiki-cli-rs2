@@ -17,6 +17,83 @@ use support::{
 };
 
 #[test]
+fn logout_requires_explicit_identity_and_preserves_other_identity_and_history() {
+    let workspace = TempDir::new().unwrap();
+    let home = workspace.path().join(".awiki-cli");
+    write_service_config(&home, "http://127.0.0.1:1");
+    let alice = write_ready_identity(
+        &home,
+        TestIdentityOptions {
+            identity_name: "alice",
+            handle: "alice",
+            make_default: true,
+            ..Default::default()
+        },
+    );
+    let bob = write_ready_identity(
+        &home,
+        TestIdentityOptions {
+            identity_name: "bob",
+            handle: "bob",
+            ..Default::default()
+        },
+    );
+    let connection = support::open_local_state(&home);
+    for identity in [&alice, &bob] {
+        connection.execute(
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content, stored_at, metadata, is_read) VALUES (?1, ?2, ?3, 'dm:peer', 'dm:peer', 0, 'did:wba:peer', ?3, 'text', 'preserved history', '2026-09-17T00:00:00Z', '{}', 0)",
+            (&identity.identity_name, &identity.unique_id, &identity.did),
+        ).unwrap();
+    }
+    for args in [
+        vec!["id", "logout"],
+        vec!["--identity", "default", "id", "logout"],
+        vec!["--identity", "missing", "id", "logout"],
+    ] {
+        let output = awiki_cmd_with_env(&args, workspace.path(), &[]);
+        assert!(!output.status.success());
+        assert!(alice.identity_dir.exists());
+        assert!(bob.identity_dir.exists());
+    }
+    let dry = success_json(&awiki_cmd_with_env(
+        &["--identity", "alice", "--dry-run", "id", "logout"],
+        workspace.path(),
+        &[],
+    ));
+    assert_eq!(dry["data"]["plan"]["remote_calls"], json!([]));
+    assert!(alice.identity_dir.exists());
+    let result = success_json(&awiki_cmd_with_env(
+        &["--identity", "alice", "id", "logout"],
+        workspace.path(),
+        &[],
+    ));
+    assert_eq!(result["data"]["preserves_business_data"], true);
+    assert_eq!(result["data"]["was_default"], true);
+    assert!(!alice.identity_dir.exists());
+    assert!(bob.identity_dir.exists());
+    // Reopening replays retirement safely and keeps the other identity usable.
+    success_json(&awiki_cmd_with_env(
+        &["--identity", "bob", "id", "status"],
+        workspace.path(),
+        &[],
+    ));
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE content = 'preserved history'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    let index: Value = serde_json::from_slice(
+        &std::fs::read(tenant_workspace(&home).join("identities/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(index["credentials"]["alice"].is_null());
+    assert!(!index["credentials"]["bob"].is_null());
+}
+
+#[test]
 fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
 

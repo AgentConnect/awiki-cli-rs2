@@ -3288,9 +3288,16 @@ async fn sync_lane_capability_enabled_async(
         return Ok(false);
     };
     if db
-        .lane_capability_negotiation_required(
+        .lane_capability_negotiation_required_with_lanes(
             owner_identity_id.clone(),
             binding.device_auth_generation,
+            Some(
+                crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                    &db,
+                    &owner_identity_id,
+                )
+                .await?,
+            ),
         )
         .await?
     {
@@ -3334,10 +3341,22 @@ fn sync_lane_capability_enabled_blocking(
         Ok(None) | Err(crate::ImError::IdentityBindingConflict { .. }) => return false,
         Err(_) => return true,
     };
-    match crate::internal::local_state::sync_v2::lane_capability_negotiation_required(
+    let transport_states = match crate::internal::local_state::sync_v2::load_lane_transport_states(
+        &connection,
+        owner_identity_id,
+    ) {
+        Ok(states) => states,
+        Err(_) => return true,
+    };
+    let desired =
+        crate::internal::message_runtime::sync_v2::desired_v1b_lanes_from_transport_states(
+            transport_states,
+        );
+    match crate::internal::local_state::sync_v2::lane_capability_negotiation_required_with_lanes(
         &connection,
         owner_identity_id,
         &binding.device_auth_generation,
+        Some(&desired),
     ) {
         Ok(true) => true,
         Err(_) => true,

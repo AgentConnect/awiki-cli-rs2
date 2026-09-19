@@ -107,3 +107,5 @@ Diagnostics 不能输出 raw SQLite rows、message plaintext、`e2ee_outbox.plai
 Direct E2EE 和 Group E2EE 的 public discovery 继续 disabled。默认 DID/service discovery 不能 advertise `anp.direct.e2ee.v1`、`direct-e2ee`、`anp.group.e2ee.v1` 或 `group-e2ee`。
 
 Group MLS provider state/path 必须继续按 `owner_identity_id + device_id` scoped。CLI、Dart DTO、doctor、日志和文档只能暴露 high-level secure status / repair summary，不能暴露 raw cryptographic artifacts。
+
+Root V2的 `identity_root_import_plan_v2` 是加性无秘密恢复表，保存provider调用前的不可变计划与handoff状态，按owner_identity_id及精确owner DID清理；它不能因completion proof到期或未知结果被删除，也不得用于删除其他owner或provider pending Root。

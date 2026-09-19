@@ -38,6 +38,8 @@
 
 ### 功能与使用说明
 
+- [CLI 本地退出与重新加入](cli-local-logout.zh-CN.md)：显式身份退出、保留数据与原工作区重加流程。
+
 - `installation.md`：安装、配置、工作区、runtime 和常见问题。
 - `configuration.md` / `configuration.zh-CN.md`：运行时与编译开关清单。
 - `flutter-sdk/awiki-im-core-flutter-sdk.md`：Flutter/Dart SDK 使用与边界。

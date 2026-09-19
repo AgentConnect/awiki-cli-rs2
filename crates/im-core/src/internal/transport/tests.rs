@@ -1171,3 +1171,47 @@ fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
         other => panic!("expected service error, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn caller_owned_retry_budget_never_resubmits_after_authentication_rejection() {
+    for rpc_rejection in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = host_backed_core(root.path(), &format!("http://{address}"));
+        let (client, _, _) = host_backed_client(&core);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request_headers(&mut stream);
+            if rpc_rejection {
+                let body = r#"{"jsonrpc":"2.0","id":"request","error":{"code":1401,"message":"unauthorized"}}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            } else {
+                write_unauthorized(&mut stream);
+            }
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let mut count = 1;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        count += 1;
+                        let _ = read_request_headers(&mut stream);
+                        write_unauthorized(&mut stream);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(e) => panic!("local test listener failed: {e}"),
+                }
+            }
+            count
+        });
+        let result = CoreHttpTransport::new(&client)
+            .authenticated_rpc_once("/user-service/v1/did/rpc", "get_me", json!({}))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(server.join().unwrap(), 1);
+    }
+}

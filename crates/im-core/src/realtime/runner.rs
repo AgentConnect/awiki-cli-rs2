@@ -2367,6 +2367,7 @@ pub(crate) async fn spawn_default_async(
 
 #[cfg(feature = "sqlite")]
 async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
+    crate::internal::identity_join_management::start_worker(client);
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)
             .await;

@@ -1,5 +1,18 @@
 # Awiki IM Core Flutter SDK
 
+## 一次 Join 授权自动配置管理权限（2026-09-15）
+
+App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。
+
+Core 在发送批准请求前，将自动任务随该 Join 的既有持久化批准记录保存，绑定 owner、DID、Join、目标设备和签名/E2EE 公钥、源管理设备及已批准文档。服务端批准响应丢失时，只能由已验证批准结果/通知恢复任务。自动尝试状态归 Core，发送原消息/密文仍复用既有 sender ledger 与 P5 pending outbound，不复制密码学实现。
+
+首次立即尝试，包括 PreKey 未就绪在内最多三次；每次可重试失败结束后持久化五秒后的下次时间。尝试先记账后发网，崩溃不返还预算；恢复中的未完成尝试先对账，并保守等待五秒。跨进程文件锁覆盖整个推进轮次，防止实时线程、同步与恢复重叠。网络操作有独立超时，不把五秒作为整个操作超时。
+
+发送接受后停止发送重试，等待原接收端 pending root、完成证明、Registry 登记、本地 root 激活和认证更新链路。发送端只能报告服务端管理登记，不能据此声明接收端本地 root 已激活。三次耗尽显示“设备已加入，管理权限配置失败”；显式重试先对账接受/登记状态，才允许新一轮预算。撤销、设备/密钥变化、身份/签名验证失败终止任务。进程退出保留状态，不承诺退出后仍发网；长期离线保持等待，无任意失败期限。
+
+无秘密投影只包含 Join/设备 ID、阶段、尝试次数、下次尝试时间、稳定错误码；不暴露 root、密文、proof 或自动授权 handle。真实四方向及第三台设备批准证据属于后续真实环境验收，不由本地测试代替。
+
+
 `packages/awiki_im_core` is a general-purpose Flutter/Dart SDK for `crates/im-core`. It is not an `awiki-me` adapter and must not expose app UI/cache DTOs such as `ChatMessage` or `ConversationSummary`.
 
 ## Layers
@@ -333,8 +346,8 @@ transcript 与 Vault pairing secret 按需重新派生同一 SAS；SAS 本身仍
 verification methods。
 
 用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
-`confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless
-`member`；Registry 中既有设备的 member/admin role 仍可用于授权设备展示。approval handle
+`confirmDeviceJoinWithManagement` 明确采用自动管理配置；旧 `confirmDeviceJoinApproval` 保留 member-only 行为。Join 注册先落为 rootless
+`member`，Core 自动任务随后完成 Root 配置；Registry 角色不能证明接收端本地激活。approval handle
 只保留在进程内，不得记录或持久化。
 
 Join model 只暴露安全的 Session、设备、Registry role/status、expiry、请求生命周期和短期 SAS
@@ -451,11 +464,10 @@ root key from ANP Identity. When it is true, Core uses ANP Identity's Rust root
 export to build the legacy `RootKeyEnvelopeV1`; Flutter never receives the key
 or envelope and the existing confirmation interaction remains unchanged.
 
-The same API is valid both immediately after Join and later from an eligible
-device-list row. Each action starts with a fresh `prepare`; the App must not
+This independent manual API is used for an existing eligible member with no automatic Join task. Normal App/CLI Join instead uses the persistent Join-bound workflow. Each action starts with a fresh `prepare`; the App must not
 reuse a Join session or an old authorization handle. If Core already has an
 uncertain `pending_delivery`, `prepare` binds the new handle to its original
-message ID and sealed P5 bytes without sending them. Startup also leaves those
+message ID and sealed P5 bytes without sending them. Without an automatic Join grant, startup also leaves those
 bytes unsent. Only the fresh `confirmAndSend(userPresenceConfirmed: true)` may
 resume them; `false` consumes the handle without root export or network send.
 
@@ -696,7 +708,11 @@ bridge retains a cancellation signal and the Rust worker handle after stream
 attachment, wakes an idle `next_patch()` call, and joins the worker before the
 stop call completes. Conversation-list, conversation-timeline, and legacy
 thread patch streams use the same rule; an attached stream must never make its
-stop API a no-op.
+stop API a no-op. The Dart facade must call the native stop before awaiting
+bridge subscription cancellation: an idle bridge generator may otherwise wait
+for the very producer that would only be stopped after cancellation completes.
+Cancellation while session creation is pending must release that session once
+creation finishes, without attaching a new reader.
 
 Remote history, conversation catch-up, and realtime incoming messages share one
 Core canonical-ingress gate. A Direct wire DID must resolve to a verified
@@ -1352,3 +1368,9 @@ The file is copied from `target/<target>/release/libawiki_im_core.so` and is ign
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.
 
 Recovery context inspection also repairs the existing committed/applied SQLite lifecycle projection from the exact encrypted result and completed marker, without sending OTP/Commit or finalizing local custody. The journal's known committed fact must not be displayed as outcome unknown after a partial index write. `local_transition_superseded` is non-retryable for that old operation; its committed journal and audit remain available.
+
+### 自动 Join 管理配置状态接口
+
+Native App 明确调用 `confirmDeviceJoinWithManagement`，选择 Core `confirm_device_join_with_management`；旧 Dart `confirmDeviceJoinApproval` 保留普通 Join；旧 Core `confirm_device_join_approval` 留给原 member-only Node/DSH 调用方。
+`deviceJoinManagementStatus(selector)` 返回 exact Join/recipient、phase、attempts、nextAttemptAtMs 和稳定 failureCode，不含授权 handle、root、proof、密文。`retryDeviceJoinManagement(selector:, joinSessionId:)` 只恢复该已确认 Join；Web 明确 unsupported。
+阶段为 `awaiting_join`、`scheduled`、`attempting`、`waiting_for_recipient`、`management_registered`、`failed`。`management_registered` 只证明 Registry；本机 App 必须另外用 `identityDeviceSummary.readiness == adminReady` 才开放管理功能。

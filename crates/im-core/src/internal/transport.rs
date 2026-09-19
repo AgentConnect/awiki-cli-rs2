@@ -674,6 +674,20 @@ impl<'a> CoreHttpTransport<'a> {
         Ok(result)
     }
 
+    /// One physical request for a caller that owns the complete retry budget.
+    /// Authentication rejection remains terminal instead of resubmitting a
+    /// security-sensitive operation outside that caller's persistent counter.
+    pub(crate) async fn authenticated_rpc_once(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.last_auth_retry_consumed = true;
+        self.authenticated_rpc_inner_async(endpoint, method, params)
+            .await
+    }
+
     async fn authenticated_rpc_inner_async(
         &mut self,
         endpoint: &str,

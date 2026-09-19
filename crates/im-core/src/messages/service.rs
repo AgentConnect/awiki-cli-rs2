@@ -3073,6 +3073,8 @@ impl<'a> MessageService<'a> {
         &self,
         limit: crate::ids::PageLimit,
     ) -> crate::ImResult<Vec<String>> {
+        #[cfg(feature = "sqlite")]
+        crate::internal::identity_join_management::start_worker(self.client);
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
@@ -3096,9 +3098,16 @@ impl<'a> MessageService<'a> {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
             let db = self.client.core_inner().local_state_db().await?;
             if db
-                .lane_capability_negotiation_required(
+                .lane_capability_negotiation_required_with_lanes(
                     binding.owner_identity_id.clone(),
                     binding.device_auth_generation.clone(),
+                    Some(
+                        crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                            &db,
+                            &binding.owner_identity_id,
+                        )
+                        .await?,
+                    ),
                 )
                 .await?
             {
@@ -3862,6 +3871,8 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MessageSyncRequest,
     ) -> crate::ImResult<super::MessageReceiveOutcome> {
+        #[cfg(feature = "sqlite")]
+        crate::internal::identity_join_management::start_worker(self.client);
         self.coordinated_receive_now_async(
             request,
             crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::EnsureCurrent,

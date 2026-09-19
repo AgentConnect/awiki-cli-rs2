@@ -478,6 +478,23 @@ pub async fn confirm_device_join_approval(
         .map_err(DartImError::from)
 }
 
+pub async fn confirm_device_join_with_management(
+    core: &Arc<crate::api::core::DartImCore>,
+    approval_handle: String,
+    user_presence_confirmed: bool,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .confirm_device_join_with_management(im_core::identity::DeviceJoinConfirmApprovalRequest {
+            approval_handle,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn reject_device_join(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -831,4 +848,29 @@ impl From<DartInitialProfile> for im_core::identity::InitialProfile {
             avatar_url: value.avatar_url,
         }
     }
+}
+
+/// Secret-free automatic management configuration projection.
+pub async fn device_join_management_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<Vec<crate::dto::identity::DartDeviceJoinManagementStatus>, DartImError> {
+    core.clone_inner()?
+        .device_join()
+        .device_join_management_status(selector.try_into()?)
+        .await
+        .map(|statuses| statuses.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn retry_device_join_management(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    join_session_id: String,
+) -> Result<(), DartImError> {
+    core.clone_inner()?
+        .device_join()
+        .retry_device_join_management(selector.try_into()?, &join_session_id)
+        .await
+        .map_err(DartImError::from)
 }

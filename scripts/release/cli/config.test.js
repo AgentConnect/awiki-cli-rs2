@@ -94,6 +94,7 @@ function validateImCoreNodeCiWorkflow(workflow) {
       'cargo clippy -p awiki-im-core --all-targets --all-features -- -D warnings',
       'cargo clippy -p awiki-im-core-node --all-targets --all-features -- -D warnings',
       'cargo test -p awiki-im-core',
+      'cargo test -p awiki-im-core --all-features --lib',
       'cargo test -p awiki-im-core --features blocking --lib target_first_direct',
       'cargo test -p awiki-im-core-node',
     ],
@@ -284,6 +285,10 @@ test('IM Core Node CI validation rejects fixture and cargo-test bypass mutations
         'cargo test -p awiki-im-core',
         'cargo test -p awiki-im-core --lib',
       );
+    }],
+    ['missing feature-owned secure lane tests', workflow => {
+      const step = workflowStep(workflow, 'Verify Rust facade and Node bridge');
+      step.run = step.run.replace('cargo test -p awiki-im-core --all-features --lib', '');
     }],
     ['shell success fallback', workflow => {
       const step = workflowStep(workflow, 'Verify Rust facade and Node bridge');
