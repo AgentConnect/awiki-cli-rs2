@@ -36,6 +36,7 @@ mod legacy_sqlite {
         StoreError,
     };
 }
+mod http_request_handlers;
 mod mail_handlers;
 mod msg_handlers;
 mod onboarding_handlers;

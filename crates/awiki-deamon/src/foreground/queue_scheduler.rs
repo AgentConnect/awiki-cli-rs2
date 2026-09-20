@@ -124,7 +124,20 @@ impl QueueScheduler {
         reconciliation_interval: Duration,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let acp_state = state.clone();
+        let acp_outbox = Arc::clone(&rpc_outbox);
+        let acp_stop = Arc::clone(&stop);
         let tasks = vec![
+            tokio::spawn(run_acp_event_scheduler(acp_stop, move || {
+                // Clone under the lock, then deliver outside the foreground
+                // executor and the RPC outbox lock. Network waits must not
+                // delay receiving stop, answer, or ordinary messages.
+                let outbox = acp_outbox
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?
+                    .clone();
+                crate::acp::host::flush_events(&acp_state, &outbox, 64)
+            })),
             spawn_message_sync_outbox_scheduler(
                 config.clone(),
                 state.clone(),
@@ -218,6 +231,23 @@ fn spawn_message_sync_outbox_scheduler(
         .await;
     })
 }
+
+async fn run_acp_event_scheduler<F>(stop: Arc<AtomicBool>, drain: F)
+where
+    F: Fn() -> Result<usize> + Clone + Send + 'static,
+{
+    while !stop.load(Ordering::Relaxed) {
+        let work = drain.clone();
+        let _ = tokio::task::spawn_blocking(work).await;
+        if !stop.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "acp_scheduler_tests.rs"]
+mod acp_scheduler_tests;
 
 fn spawn_runtime_final_outbox_scheduler(
     state: DaemonState,

@@ -4,6 +4,6 @@
   "packages": {
     "anp": "1.0.3",
     "anp-identity": "0.2.3",
-    "awiki-im-core": "0.1.4"
+    "awiki-im-core": "0.1.5"
   }
 }

@@ -124,6 +124,13 @@ impl SafeError {
                 "The IM service could not be reached.",
                 true,
             ),
+            ImError::AttachmentPreparation {
+                cause, retryable, ..
+            } => {
+                let mut mapped = Self::from_im(*cause);
+                mapped.retryable = retryable;
+                mapped
+            }
             ImError::AttachmentTransfer {
                 failure, retryable, ..
             } => Self::new(

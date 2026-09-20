@@ -597,6 +597,8 @@ fn daemon_diagnostics_summary(
         "release_error": release.error.clone(),
         "bootstrap_key_status": if bootstrap_key.is_some() { "ready" } else { "missing" },
         "generic_cli": generic_cli_daemon_capability_summary(),
+        "runtime_client_detection": {"schema_version":1},
+        "acp": {"capability_schema_version":1,"supported_drivers":["opencode","gemini","kimi","deepseek-harness"],"protocol_version":1},
     });
     if let Some(bootstrap_key) = bootstrap_key {
         if let Some(object) = config_summary.as_object_mut() {
@@ -803,6 +805,20 @@ fn runtime_status_summary_with_gateway_status(
     let is_hermes = runtime.runtime_plugin_id.as_deref()
         == Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID);
     if !is_hermes {
+        if runtime.runtime_plugin_id.as_deref() == Some(crate::acp::PLUGIN_ID) {
+            let missing = runtime
+                .runtime_profile_id
+                .as_deref()
+                .and_then(|id| state.load_cli_runtime_profile(id).ok())
+                .is_none();
+            return RuntimeStatusSummary {
+                is_hermes: false,
+                needs_config: missing,
+                last_error_code: missing.then(|| "acp_profile_missing".into()),
+                gateway_command_status: None,
+                model_config_status: None,
+            };
+        }
         if runtime.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
             let (needs_config, last_error_code) = generic_cli_runtime_status(state, runtime);
             return RuntimeStatusSummary {
@@ -864,6 +880,26 @@ fn runtime_diagnostics_summary(
     runtime: &AgentDefinition,
     runtime_status: &RuntimeStatusSummary,
 ) -> Value {
+    if runtime.runtime_plugin_id.as_deref() == Some(crate::acp::PLUGIN_ID) {
+        let Some(id) = runtime.runtime_profile_id.as_deref() else {
+            return json!({"profile_status":"missing","config_summary":{"protocol":"acp"}});
+        };
+        let driver = state.load_cli_runtime_profile(id).ok().map(|p| p.driver_id);
+        let probe = state
+            .connection()
+            .ok()
+            .and_then(|db| {
+                db.query_row(
+                    "SELECT report FROM acp_probes WHERE profile_id=?1",
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(json!({}));
+        return json!({"profile_status":"ready","runtime_version":probe["binaryVersion"],"config_summary":{"protocol":"acp","driver_id":driver,"capabilities":probe["agentCapabilities"],"auth_status":"unknown"}});
+    }
     if runtime.runtime_plugin_id.as_deref()
         != Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID)
     {
@@ -1949,6 +1985,7 @@ fn runtime_name_from_plugin(plugin_id: Option<&str>) -> &'static str {
     match plugin_id {
         Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID) => "hermes",
         Some(crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID) => "generic-cli",
+        Some(crate::acp::PLUGIN_ID) => "acp",
         _ => "runtime",
     }
 }
@@ -3145,6 +3182,44 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn acp_runtime_diagnostics_fit_existing_inventory_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let mut runtime = generic_cli_runtime();
+        runtime.runtime_plugin_id = Some(crate::acp::PLUGIN_ID.into());
+        let id = runtime.runtime_profile_id.as_deref().unwrap();
+        state
+            .upsert_cli_runtime_profile(
+                &crate::state::CliRuntimeProfileRecord::for_driver(id, "opencode").unwrap(),
+            )
+            .unwrap();
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+        let allowed = [
+            "installation_status",
+            "profile_status",
+            "runner_status",
+            "active_session_count",
+            "runtime_version",
+            "release_manifest_url",
+            "release_status",
+            "release_error",
+            "config_summary",
+        ];
+        assert!(diagnostics
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| allowed.contains(&key.as_str())));
+        assert_eq!(diagnostics["config_summary"]["protocol"], "acp");
+        assert_eq!(diagnostics["config_summary"]["driver_id"], "opencode");
+        assert!(!status.needs_config);
+    }
+
     #[test]
     fn generic_cli_runtime_status_reports_driver_version_and_setup_gate() {
         use std::os::unix::fs::PermissionsExt;
