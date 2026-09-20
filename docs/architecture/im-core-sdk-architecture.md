@@ -1749,3 +1749,7 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 纯 V1 字段、校验和默认发送不变。明确声明 `awiki.device.root-key-import-complete.extensions.v1` 的 envelope 使用独立扩展完成合同：外层及 statement 保留 V1 type，增加 completion_contract；expires_at 恒为原 envelope 期限，独立 completion_proof_expires_at 表示完成证明有效期。刷新只能更新证明时间/期限与签名，原 expires_at、导入时间、nonce 和身份事实不可变。历史 V2 不改写、不降级，继续按原合同恢复。
 
 旧接收端与旧服务端采用 closed schema，不能假定忽略新增字段。当前所有生产发送入口继续发纯 V1；未接入可信 exact-device 与服务端能力协商前不启用扩展发送，不能凭 V2 支持或版本号推断支持本扩展。新扩展仅提供显式输入的接收/恢复能力；仍需真实混合版本验收。
+
+### 根导入完成计划的追加兼容存储
+
+`identity_root_import_plan_v2` 是历史 V2/extensions 接收恢复的无私钥伴随表，默认纯 V1 导入不冻结该计划。schema 45 的旧完整库可在打开时追加该表；已有计划和 handoff 标记重复重开后保留。它不改变既有必需表的字段含义，因此本轮不强制提升 schema 版本；未知更新版本仍在追加 DDL 前拒绝。此约定不表示旧二进制能续跑新完成合同；完整旧二进制回滚须另验，未来不兼容结构改动须进入版本迁移。
