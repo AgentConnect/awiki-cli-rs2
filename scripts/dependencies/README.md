@@ -132,3 +132,27 @@ Flutter 产品验收。Apple 制品仍需明确消费相同源码与锁，独立
 
 registry-check 保持独立，正式 Release 仍拒绝存在临时 source 清单；发布 0.1.5
 并刷新正式锁之后须移除临时清单和锁，重新通过 registry 检查。
+
+
+### Apple source integration artifacts
+
+With a clean committed consumer and the reviewed source manifest/lock, run:
+
+```bash
+AWIKI_APPLE_SOURCE_INTEGRATION=1 scripts/flutter/build-apple.sh --macos --macos-arch arm64
+# Use x86_64 on an Intel host. For all supported iOS slices:
+AWIKI_APPLE_SOURCE_INTEGRATION=1 scripts/flutter/build-apple.sh --ios
+scripts/flutter/verify-native-artifact.sh --macos
+```
+
+Do not combine this explicit integration mode with `AWIKI_RELEASE_REGISTRY=1`.
+It optimizes native libraries but remains a Debug source integration operation,
+not a registry Release. The existing Apple packaging and deployment-target checks
+are retained. Libraries are built under `.artifacts/dependencies/source/target`,
+separate from the default target tree. Each target records the exact consumer,
+selected dependency commits, registry resolutions, manifest/lock hashes and archive
+digest after successful compilation. The XCFramework manifest embeds this evidence;
+verification rejects changed inputs or native bytes without requiring a mode flag.
+Retain these ignored provenance records together with the local build for verification.
+Publishing still requires removing the temporary source manifest/lock and rebuilding
+through the registry entrypoint.

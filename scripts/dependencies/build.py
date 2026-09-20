@@ -139,7 +139,13 @@ def main(argv=None):
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--resolve-only', action='store_true', help='只校验实际依赖图，不编译')
     parser.add_argument('--refresh-lock', action='store_true', help='仅刷新提交用的源码联调锁文件')
+    parser.add_argument('--target', choices=['aarch64-apple-darwin', 'x86_64-apple-darwin', 'aarch64-apple-ios', 'aarch64-apple-ios-sim', 'x86_64-apple-ios'])
+    parser.add_argument('--features')
+    parser.add_argument('--no-default-features', action='store_true')
+    parser.add_argument('--optimized', action='store_true', help='Optimize a Debug source integration build; not a release gate')
     args = parser.parse_args(argv)
+    if any((args.target, args.features, args.no_default_features, args.optimized)) and (args.deps != 'source' or args.profile != 'debug' or args.package != 'im-core-dart' or args.refresh_lock or args.resolve_only):
+        parser.error('Native build options require a Debug source im-core-dart build/check')
     if args.profile == 'release' and (ROOT / 'dependencies.source.json').exists():
         parser.error('Resolve and remove dependencies.source.json before release')
     if args.profile == 'release' and args.resolve_only:
@@ -154,6 +160,14 @@ def main(argv=None):
     if args.refresh_lock and args.deps != 'source':
         parser.error('--refresh-lock is only for source dependencies')
     command = [os.environ.get('CARGO', 'cargo'), 'check' if args.check else 'build', '-p', args.package]
+    if args.target:
+        command += ['--target', args.target]
+    if args.features:
+        command += ['--features', args.features]
+    if args.no_default_features:
+        command.append('--no-default-features')
+    if args.optimized:
+        command.append('--release')
     if args.profile == 'release':
         command.append('--release')
         # Existing release entrypoint checks clean committed source and registry metadata.
@@ -207,6 +221,13 @@ def main(argv=None):
         (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n')
         if not args.refresh_lock and not args.resolve_only:
             run([*command, '--locked'], checkout, env=env)
+            if args.target and not args.check:
+                evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+                evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+                evidence['build'] = {'target': args.target, 'features': sorted((args.features or '').split(',')), 'optimized': args.optimized, 'no_default_features': args.no_default_features}
+                archive = artifacts / 'target' / args.target / ('release' if args.optimized else 'debug') / 'libawiki_im_core.a'
+                evidence['archive_sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+                (artifacts / (args.target + '.json')).write_text(json.dumps(evidence, indent=2) + '\n')
     return 0
 
 

@@ -183,7 +183,42 @@ def xcframework_record(platform: str) -> dict[str, Any]:
     }
 
 
-def current_source_record() -> dict[str, Any]:
+def source_integration_record(targets: list[str]) -> dict[str, Any]:
+    manifest = ROOT / "dependencies.source.json"
+    lock = ROOT / "dependencies.source.Cargo.lock"
+    records = {}
+    selections = json.loads(manifest.read_text())["dependencies"]
+    revision = run("git", "rev-parse", "HEAD").decode().strip()
+    for target in targets:
+        base = ROOT / ".artifacts/dependencies/source"
+        evidence = json.loads((base / (target + ".json")).read_text())
+        if (evidence.get("mode") != "source"
+                or evidence["consumer"]["commit"] != revision
+                or evidence["consumer"]["dirty"]
+                or evidence.get("source_manifest_sha256") != sha256_file(manifest)
+                or evidence.get("source_lock_sha256") != sha256_file(lock)):
+            raise ManifestError("source integration input provenance changed")
+        for name, selection in selections.items():
+            dependency = evidence["dependencies"][name]
+            if dependency["commit"] != selection["commit"] or dependency["repository"] != selection["repository"] or dependency["dirty"]:
+                raise ManifestError("source integration dependency provenance changed")
+        build = evidence["build"]
+        if build["target"] != target or not build["optimized"] or not build["no_default_features"]:
+            raise ManifestError("source integration native build options mismatch")
+        archive = base / "target" / target / "release/libawiki_im_core.a"
+        if evidence["archive_sha256"] != sha256_file(archive):
+            raise ManifestError("source integration archive changed")
+        records[target] = evidence
+    return records
+
+
+def current_source_record(source_targets: list[str] | None = None) -> dict[str, Any]:
+    if source_targets is not None:
+        return {
+            "repositories": [repository_record("awiki-cli-rs2", ROOT, SOURCE_INPUTS)],
+            "bridge": bridge_record(),
+            "sourceIntegration": source_integration_record(source_targets),
+        }
     return {
         "repositories": [
             repository_record("awiki-cli-rs2", ROOT, SOURCE_INPUTS),
@@ -205,7 +240,7 @@ def write_manifest(platform: str, targets: str, features: str) -> None:
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z"),
-        "source": current_source_record(),
+        "source": current_source_record(sorted(item for item in targets.split(",") if item) if os.environ.get("AWIKI_APPLE_SOURCE_INTEGRATION") == "1" else None),
         "build": {
             "targets": sorted(item for item in targets.split(",") if item),
             "features": sorted(item for item in features.split(",") if item),
@@ -245,7 +280,8 @@ def verify_manifest(platform: str) -> None:
         raise ManifestError("native artifact manifest schema or platform is invalid")
 
     differences: list[str] = []
-    current_source = current_source_record()
+    integration = recorded.get("source", {}).get("sourceIntegration")
+    current_source = current_source_record(sorted(integration) if integration is not None else None)
     if recorded.get("source") != current_source:
         differences.append("source revision, source inputs, or generated bridge changed")
     current_artifact = xcframework_record(platform)
@@ -279,7 +315,7 @@ def main() -> int:
             write_manifest(args.platform, args.targets, args.features)
         else:
             verify_manifest(args.platform)
-    except ManifestError as error:
+    except (ManifestError, OSError, ValueError, KeyError) as error:
         print(f"native artifact verification failed: {error}", file=sys.stderr)
         return 1
     return 0
