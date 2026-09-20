@@ -337,6 +337,8 @@ export interface UpdateProfileInput {
 
 /** First stage of phone registration. */
 export interface RegistrationInput {
+  /** Creation-only invitation, passed through for OTP and completion. */
+  readonly inviteCode?: string
   readonly handle: string
   readonly phone: string
 }

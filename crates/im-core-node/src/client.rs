@@ -624,7 +624,7 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, None)?;
+        let request = registration_request(input.handle, input.phone, None, input.invite_code)?;
         let challenge = self
             .inner
             .wait_im(
@@ -689,7 +689,12 @@ impl NativeImCoreNodeClient {
         let mut operation = self.inner.write_operation().await?;
         let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, Some(otp.to_owned()))?;
+        let request = registration_request(
+            input.handle,
+            input.phone,
+            Some(otp.to_owned()),
+            input.invite_code,
+        )?;
         let result = self
             .inner
             .wait_im(
@@ -3036,13 +3041,14 @@ fn registration_request(
     handle: String,
     phone: String,
     otp: Option<String>,
+    invite_code: Option<String>,
 ) -> SafeResult<im_core::identity::RegisterHandleRequest> {
     let requested_handle = im_core::ids::Handle::parse(handle, "").map_err(SafeError::from_im)?;
     Ok(im_core::identity::RegisterHandleRequest {
         local_alias: Some("default".to_owned()),
         requested_handle,
         verification: im_core::identity::VerificationInput::Phone { phone, otp },
-        invite_code: None,
+        invite_code,
         profile: im_core::identity::InitialProfile {
             display_name: None,
             avatar_url: None,
@@ -3275,6 +3281,33 @@ fn ensure_sync_readable(status: im_core::messages::MessageSyncStatus) -> SafeRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_invitation_survives_both_otp_and_completion() {
+        for otp in [None, Some("123456".to_owned())] {
+            let request = registration_request(
+                "abc".to_owned(),
+                "+15555550123".to_owned(),
+                otp.clone(),
+                Some("invite-test".to_owned()),
+            )
+            .unwrap();
+            assert_eq!(request.invite_code.as_deref(), Some("invite-test"));
+            match request.verification {
+                im_core::identity::VerificationInput::Phone { phone, otp: actual } => {
+                    assert_eq!(phone, "+15555550123");
+                    assert_eq!(actual, otp);
+                }
+                _ => panic!("phone verification expected"),
+            }
+        }
+        assert!(
+            registration_request("alice".to_owned(), "+15555550123".to_owned(), None, None)
+                .unwrap()
+                .invite_code
+                .is_none()
+        );
+    }
 
     #[derive(Default)]
     struct ClearingIdentityProvider {
