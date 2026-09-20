@@ -12,6 +12,15 @@ spec.loader.exec_module(deps)
 VERSIONS = {'anp': '1.0.1', 'anp-identity': '0.2.1', 'awiki-im-core': '0.1.1'}
 
 class BuildDependencyTests(unittest.TestCase):
+    def test_isolated_cli_carries_consumer_commit_and_rejects_wrong_metadata(self):
+        with patch.dict(deps.os.environ, {'CARGO_TARGET_DIR': '/unrelated'}, clear=True):
+            env = deps.consumer_environment('a' * 40, Path('/source-target'))
+            self.assertEqual(env['AWIKI_CLI_COMMIT'], 'a' * 40)
+            self.assertEqual(env['CARGO_TARGET_DIR'], '/source-target')
+        with patch.dict(deps.os.environ, {'AWIKI_CLI_COMMIT': 'b' * 40}):
+            with self.assertRaisesRegex(ValueError, 'metadata commit'):
+                deps.consumer_environment('a' * 40, Path('/source-target'))
+
     def test_source_process_output_uses_utf8_for_non_ascii_git_paths(self):
         text = '路径/”source.rs'
         output = deps.run([sys.executable, '-c', "import sys; sys.stdout.buffer.write(bytes.fromhex('" + text.encode('utf-8').hex() + "'))"], capture=True)

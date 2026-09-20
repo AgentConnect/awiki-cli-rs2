@@ -129,6 +129,15 @@ def verify_resolution(metadata, versions, roots):
             raise ValueError(f'{name}: unselected SDK must resolve from crates.io')
 
 
+def consumer_environment(commit, target):
+    env = os.environ.copy()
+    if env.get('AWIKI_CLI_COMMIT', commit) != commit:
+        raise ValueError('Build metadata commit differs from the consumer source')
+    env['AWIKI_CLI_COMMIT'] = commit
+    env['CARGO_TARGET_DIR'] = str(target)
+    return env
+
+
 def source_cargo_command(arguments):
     """Accept only locked development build/check/test operations."""
     args = list(arguments)
@@ -231,8 +240,7 @@ def main(argv=None):
                 raise ValueError('Source PR requires its committed .Cargo.lock; generate with --refresh-lock')
         if lock.is_file():
             shutil.copy2(lock, checkout / 'Cargo.lock')
-        env = os.environ.copy()
-        env['CARGO_TARGET_DIR'] = str(artifacts / 'target')
+        env = consumer_environment(evidence['consumer']['commit'], artifacts / 'target')
         metadata_cmd = [command[0], *([command[1]] if len(command) > 1 and command[1].startswith('+') else []), 'metadata', '--format-version', '1']
         if args.deps != 'local' and not args.refresh_lock:
             metadata_cmd.append('--locked')
