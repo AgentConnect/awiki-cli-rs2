@@ -94,7 +94,7 @@ for line in sys.stdin:
             assert params['sessionId']==sid
             chunk('REPLAY_MUST_NOT_APPEAR')
         mcp=next(iter(params.get('mcpServers', [])), None)
-        reply(id,{'sessionId':sid, **({'models':{'currentModelId':current_model,'availableModels':[{'modelId':'flash','name':'Flash'},{'modelId':'pro','name':'Pro'}]}} if model_mode == 'legacy' else {'configOptions':config_options()})})
+        reply(id,{'sessionId':sid, **({'models':{'currentModelId':current_model,'availableModels':[{'modelId':'flash','name':'Flash'},{'modelId':'pro','name':'Pro'}]}} if model_mode.startswith('legacy') else {'configOptions':config_options()})})
     elif method=='session/list':
         with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'cursor':params.get('cursor')})+'\n')
         assert pathlib.Path(params['cwd']).resolve() == cwd.resolve()
@@ -108,9 +108,15 @@ for line in sys.stdin:
         prompt_id=id
         with (cwd/'prompts.jsonl').open('a') as log:
             log.write(json.dumps(params['prompt'])+'\n')
+        with (cwd/'request-models.jsonl').open('a') as log:
+            log.write(json.dumps({'model':current_model})+'\n')
         (cwd/'wrapper-environment.json').write_text(json.dumps({'token_present': bool(os.environ.get('AWIKI_RUNTIME_RPC_TOKEN')), 'socket_present': bool(os.environ.get('AWIKI_DAEMON_RPC_SOCKET')), 'executable_present': bool(os.environ.get('AWIKI_DAEMON_EXECUTABLE'))}))
         text=''.join(p.get('text','') for p in params['prompt'])
-        if 'CONFIG_UPDATE' in text:
+        if 'LEGACY_CONFIG_UPDATE' in text:
+            current_model='pro'
+            emit({'method':'session/update','params':{'sessionId':sid,'update':{'sessionUpdate':'current_model_update','currentModelId':current_model}}})
+            finish('FIXTURE_RESPONSE')
+        elif 'CONFIG_UPDATE' in text:
             current_model='pro'
             emit({'method':'session/update','params':{'sessionId':sid,'update':{'sessionUpdate':'config_option_update','configOptions':config_options()}}})
             finish('FIXTURE_RESPONSE')
@@ -145,8 +151,13 @@ for line in sys.stdin:
         if model_mode == 'reject':
             emit({'id':id,'error':{'code':-32602,'message':'Model unavailable'}})
         else:
-            if model_mode != 'wrong-current': current_model=params.get('value',params.get('modelId'))
-            reply(id,{} if model_mode == 'legacy' else {'configOptions':config_options()})
+            if 'wrong-current' not in model_mode: current_model=params.get('value',params.get('modelId'))
+            if 'notify' in model_mode:
+                update = {'sessionUpdate':'config_option_update','configOptions':config_options()} if 'config' in model_mode else {'sessionUpdate':'current_model_update','currentModelId':current_model}
+                emit({'method':'session/update','params':{'sessionId':'foreign' if 'foreign' in model_mode else sid,'update':update}})
+                chunk('CONFIGURATION_TEXT_MUST_NOT_APPEAR')
+            if model_mode == 'persistent': current_model_file.write_text(current_model)
+            reply(id,{} if model_mode.startswith('legacy') else {'configOptions':config_options()})
     elif method=='session/close':
         reply(id,{})
     elif id=='question':

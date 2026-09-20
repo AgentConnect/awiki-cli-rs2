@@ -5,6 +5,38 @@ pub struct PreparedConfiguration {
     pub options: Value,
 }
 
+/// Observe only the current set-model operation, never restoration replay.
+/// Legacy set_model may acknowledge with {} and report the actual selection
+/// separately. Keep that report instead of overwriting it with the request.
+#[derive(Default)]
+pub(super) struct ModelChangeNotifications {
+    session: Option<SessionId>,
+    options: Value,
+    changed: bool,
+}
+
+impl ModelChangeNotifications {
+    pub(super) fn observe(&mut self, notification: &SessionNotificationWithModels) {
+        if self.session.as_ref() != Some(&notification.session_id) {
+            return;
+        }
+        let update = serde_json::to_value(&notification.update).unwrap();
+        match update["sessionUpdate"].as_str() {
+            Some("config_option_update") => {
+                self.options = update["configOptions"].clone();
+                self.changed = true;
+            }
+            Some("current_model_update") => {
+                if let Some(model) = update["currentModelId"].as_str() {
+                    super::super::models::set_current_model(&mut self.options, model);
+                }
+                self.changed = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Initialize/query/configure only. No prompt, task token, or user tool server.
 /// A newly allocated native session is deliberately not returned for storage.
 pub async fn prepare(
@@ -42,6 +74,8 @@ pub async fn prepare_cancellable(
     let startup_native = existing_native.clone();
     let initialized = Arc::new(AtomicBool::new(false));
     let did_initialize = initialized.clone();
+    let changes = Arc::new(Mutex::new(ModelChangeNotifications::default()));
+    let observed_changes = changes.clone();
     let agent = AcpAgent::new(launch).with_debug(move |line, direction| {
         if brand == Brand::Gemini
             && direction == acp::LineDirection::Stderr
@@ -57,7 +91,10 @@ pub async fn prepare_cancellable(
         .builder()
         // Restoration may replay history; configuration never publishes it.
         .on_receive_notification(
-            async |_notification: SessionNotification, _cx| Ok(()),
+            async move |notification: SessionNotificationWithModels, _cx| {
+                observed_changes.lock().unwrap().observe(&notification);
+                Ok(())
+            },
             acp::on_receive_notification!(),
         )
         .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
@@ -105,7 +142,7 @@ pub async fn prepare_cancellable(
             let sid = SessionId::new(native);
             let mut options = session_options(&session);
             if let Some(desired) = desired {
-                options = configure_model(&cx, &sid, options, &desired).await?;
+                options = configure_model(&cx, &sid, options, &desired, &changes).await?;
             }
             *output.lock().unwrap() = Some(PreparedConfiguration {
                 capabilities: caps.clone(),
@@ -238,6 +275,7 @@ pub(super) async fn configure_model(
     sid: &SessionId,
     mut options: Value,
     desired: &str,
+    changes: &Mutex<ModelChangeNotifications>,
 ) -> Result<Value, acp::Error> {
     if current_model(&options).as_deref() == Some(desired) {
         return Ok(options);
@@ -248,6 +286,11 @@ pub(super) async fn configure_model(
     {
         return Err(acp::Error::invalid_params());
     }
+    *changes.lock().unwrap() = ModelChangeNotifications {
+        session: Some(sid.clone()),
+        options: options.clone(),
+        changed: false,
+    };
     if let Some(option) = options.as_array().and_then(|items| {
         items
             .iter()
@@ -272,8 +315,8 @@ pub(super) async fn configure_model(
             })
             .block_task()
             .await?;
-        // Legacy ACP set_model confirms success with an empty response. Only
-        // after that acknowledgement may the requested value become effective.
+        // An empty legacy acknowledgement is valid, but cannot override an
+        // explicit current-model notification from the same operation.
         let returned = response
             .get("models")
             .cloned()
@@ -285,6 +328,17 @@ pub(super) async fn configure_model(
         options["currentModelId"] = json!(desired);
     } else {
         return Err(acp::Error::invalid_params());
+    }
+    let observed = std::mem::take(&mut *changes.lock().unwrap());
+    if observed.changed {
+        if current_model(&observed.options).as_deref() != Some(desired) {
+            return Err(acp::Error::invalid_params());
+        }
+        // Modern responses carry the full authoritative configuration. Legacy
+        // responses may contain no configuration at all.
+        if options.is_object() {
+            options = observed.options;
+        }
     }
     Ok(options)
 }

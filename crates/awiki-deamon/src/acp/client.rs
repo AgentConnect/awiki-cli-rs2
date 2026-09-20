@@ -48,6 +48,33 @@ struct SetSessionModelRequest {
     model_id: String,
 }
 
+// The current SDK no longer decodes the legacy model update. Preserve that
+// one compatibility variant while retaining SDK validation for all others.
+#[derive(Debug, Clone, Serialize, Deserialize, acp::JsonRpcNotification)]
+#[notification(method = "session/update")]
+#[serde(rename_all = "camelCase")]
+struct SessionNotificationWithModels {
+    session_id: SessionId,
+    update: SessionUpdateWithModels,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SessionUpdateWithModels {
+    Standard(SessionUpdate),
+    Legacy(LegacyModelUpdate),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "sessionUpdate")]
+enum LegacyModelUpdate {
+    #[serde(rename = "current_model_update")]
+    CurrentModel {
+        #[serde(rename = "currentModelId")]
+        current_model_id: String,
+    },
+}
+
 use super::{
     store::{self, Question},
     Brand,
@@ -532,6 +559,10 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
     let (launch, _replay_hook) = configure_gemini_replay(brand, launch)?;
     let initialized = Arc::new(AtomicBool::new(false));
     let did_initialize = initialized.clone();
+    let model_changes = Arc::new(Mutex::new(
+        configuration::ModelChangeNotifications::default(),
+    ));
+    let observed_model_changes = model_changes.clone();
     let startup_missing = Arc::new(AtomicBool::new(false));
     let saw_missing = startup_missing.clone();
     let startup_native = prior.native_session_id.clone();
@@ -554,7 +585,8 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
         }
     });
     let connection = acp::Client.builder()
-        .on_receive_notification(async move |notification: SessionNotification, _cx| {
+        .on_receive_notification(async move |notification: SessionNotificationWithModels, _cx| {
+            observed_model_changes.lock().unwrap().observe(&notification);
             if !update_accepting.load(Ordering::Acquire) { return Ok(()); }
             if update_native.lock().unwrap().as_deref() != Some(notification.session_id.to_string().as_str()) { return Err(acp::Error::invalid_params()); }
             let update = serde_json::to_value(&notification.update).unwrap();
@@ -577,7 +609,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                     Some("current_model_update") => {
                         if let Some(model)=update["currentModelId"].as_str() {
                             s.model=Some(model.to_owned());
-                            if s.options.is_object() {s.options["currentModelId"]=json!(model);}
+                            super::models::set_current_model(&mut s.options, model);
                         }
                     }
                     // Thoughts and usage are not assistant reply content.
@@ -674,7 +706,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                 s.native_session_id=Some(id);s.capabilities=caps.clone();s.update_catalog(options.clone());Ok(())
             }).map_err(|_|acp::Error::internal_error())?;
             if let Some(model) = existing.model_selection().or(turn.profile.default_model).or(existing.model.clone()) {
-                let confirmed=configure_model(&cx,&sid,options,&model).await.map_err(|error| {
+                let confirmed=configure_model(&cx,&sid,options,&model,&model_changes).await.map_err(|error| {
                     let _ = store::mutate(&turn.state,&turn.key,None,|s| {
                         s.interaction_error=Some("model_configuration_failed".into());Ok(())
                     });

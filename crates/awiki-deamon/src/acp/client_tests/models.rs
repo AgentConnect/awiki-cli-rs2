@@ -163,8 +163,31 @@ async fn default_model_and_native_configuration_updates_are_reported() {
 }
 
 #[tokio::test]
+async fn legacy_model_notifications_update_both_current_model_and_catalog() {
+    for mode in ["", "legacy"] {
+        let f = Fixture::new();
+        std::fs::write(f.root.path().join("work/model-mode"), mode).unwrap();
+        run(f.turn("LEGACY_CONFIG_UPDATE")).await.unwrap();
+        let session = store::load(&f.state, &f.key).unwrap();
+        assert_eq!(session.model.as_deref(), Some("pro"));
+        assert_eq!(current_model(&session.options).as_deref(), Some("pro"));
+        assert_eq!(session.model_selection(), None);
+    }
+}
+
+#[tokio::test]
 async fn selected_model_requires_native_confirmation_before_prompt() {
-    for mode in ["", "legacy", "reject", "wrong-current"] {
+    for mode in [
+        "",
+        "legacy",
+        "reject",
+        "wrong-current",
+        "legacy-notify",
+        "legacy-notify-wrong-current",
+        "legacy-config-notify",
+        "legacy-config-notify-wrong-current",
+        "legacy-notify-foreign-wrong-current",
+    ] {
         let f = Fixture::new();
         std::fs::write(f.root.path().join("work/model-mode"), mode).unwrap();
         store::mutate(&f.state, &f.key, None, |session| {
@@ -174,7 +197,13 @@ async fn selected_model_requires_native_confirmation_before_prompt() {
         })
         .unwrap();
         let result = run(f.turn("hello")).await;
-        let succeeds = mode == "" || mode == "legacy";
+        let succeeds = matches!(
+            mode,
+            "" | "legacy"
+                | "legacy-notify"
+                | "legacy-config-notify"
+                | "legacy-notify-foreign-wrong-current"
+        );
         assert_eq!(
             result.is_ok(),
             succeeds,
@@ -185,6 +214,65 @@ async fn selected_model_requires_native_confirmation_before_prompt() {
         assert_eq!(
             store::load(&f.state, &f.key).unwrap().model.as_deref(),
             Some("pro")
+        );
+    }
+}
+
+#[tokio::test]
+async fn configuration_notifications_are_session_scoped_and_cannot_be_replaced_by_empty_ack() {
+    for (mode, succeeds) in [
+        ("legacy-notify", true),
+        ("legacy-notify-wrong-current", false),
+        ("legacy-config-notify", true),
+        ("legacy-config-notify-wrong-current", false),
+        ("legacy-notify-foreign-wrong-current", true),
+    ] {
+        let f = Fixture::new();
+        let cwd = f.root.path().join("work");
+        std::fs::write(cwd.join("model-mode"), mode).unwrap();
+        let result = prepare_configuration(f.profile, cwd.clone(), None, Some("pro".into())).await;
+        assert_eq!(result.is_ok(), succeeds, "{mode}");
+        if let Ok(prepared) = result {
+            assert_eq!(current_model(&prepared.options).as_deref(), Some("pro"));
+        }
+        assert!(!cwd.join("prompts.jsonl").exists());
+        assert!(store::load(&f.state, &f.key).unwrap().text.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn opaque_model_ids_survive_selection_and_process_restart_into_prompt_requests() {
+    let f = Fixture::new();
+    let cwd = f.root.path().join("work");
+    std::fs::write(cwd.join("model-mode"), "persistent").unwrap();
+    std::fs::write(
+        cwd.join("catalog.json"),
+        json!([
+            {"value":"flash","name":"Default"},
+            {"value":"provider:future-model.v42","name":"Future"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    store::mutate(&f.state, &f.key, None, |s| {
+        s.selected_model = Some("provider:future-model.v42".into());
+        Ok(())
+    })
+    .unwrap();
+    for _ in 0..2 {
+        assert_eq!(run(f.turn("hello")).await.unwrap().text, "FIXTURE_RESPONSE");
+        assert_eq!(
+            store::load(&f.state, &f.key).unwrap().model.as_deref(),
+            Some("provider:future-model.v42")
+        );
+        f.next();
+    }
+    let requests = std::fs::read_to_string(cwd.join("request-models.jsonl")).unwrap();
+    assert_eq!(requests.lines().count(), 2);
+    for line in requests.lines() {
+        assert_eq!(
+            serde_json::from_str::<Value>(line).unwrap()["model"],
+            "provider:future-model.v42"
         );
     }
 }
