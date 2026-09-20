@@ -31,7 +31,7 @@ fn read_bounded(mut pipe: impl Read) -> Vec<u8> {
     bytes
 }
 
-pub(super) fn run(command: &mut Command, deadline: Instant) -> Result<String, &'static str> {
+pub(crate) fn run(command: &mut Command, deadline: Instant) -> Result<String, &'static str> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

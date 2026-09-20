@@ -61,14 +61,24 @@ pub async fn prepare_cancellable(
             acp::on_receive_notification!(),
         )
         .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
-            let initialized = cx.send_request(initialize_request()).block_task().await?;
+            let initialized = cx
+                .send_request(initialize_request(true))
+                .block_task()
+                .await?;
             did_initialize.store(true, Ordering::Release);
             if initialized.protocol_version != ProtocolVersion::V1 {
                 return Err(acp::Error::invalid_params());
             }
             let caps = serde_json::to_value(initialized.agent_capabilities).unwrap();
-            let session =
-                open_session(&cx, &caps, &cwd, existing_native.as_deref(), json!([])).await;
+            let session = open_session(
+                &cx,
+                brand,
+                &caps,
+                &cwd,
+                existing_native.as_deref(),
+                json!([]),
+            )
+            .await;
             let session = match session {
                 Ok(value) => value,
                 Err(error) => {
@@ -139,6 +149,7 @@ pub async fn prepare_cancellable(
 
 pub(super) async fn open_session(
     cx: &ConnectionTo<Agent>,
+    brand: Brand,
     caps: &Value,
     cwd: &std::path::Path,
     native: Option<&str>,
@@ -146,6 +157,9 @@ pub(super) async fn open_session(
 ) -> Result<Value, acp::Error> {
     if let Some(native) = native {
         let params = json!({"sessionId":native,"cwd":cwd,"mcpServers":servers});
+        if brand == Brand::Hermes {
+            return load_hermes_session(cx, caps, cwd, native, params).await;
+        }
         if caps["sessionCapabilities"]["resume"].is_object() {
             let inner = serde_json::from_value(params).map_err(|_| acp::Error::invalid_params())?;
             cx.send_request(ResumeSessionWithModels { inner })
@@ -166,6 +180,57 @@ pub(super) async fn open_session(
             .block_task()
             .await
     }
+}
+
+// Hermes resume can silently create a new session. A successful load must
+// describe the requested ACP identity (internal compression heads may differ),
+// or be independently confirmed by its advertised native session inventory.
+async fn load_hermes_session(
+    cx: &ConnectionTo<Agent>,
+    caps: &Value,
+    cwd: &std::path::Path,
+    native: &str,
+    params: Value,
+) -> Result<Value, acp::Error> {
+    if caps["loadSession"] != true {
+        return Err(acp::Error::invalid_params());
+    }
+    let inner = serde_json::from_value(params).map_err(|_| acp::Error::invalid_params())?;
+    let response = cx
+        .send_request(LoadSessionWithModels { inner })
+        .block_task()
+        .await;
+    if let Ok(value) = &response {
+        if value.is_object() {
+            let returned = value.get("sessionId");
+            let provenance = value.pointer("/_meta/hermes/sessionProvenance/acpSessionId");
+            for claimed in [returned, provenance].into_iter().flatten() {
+                if claimed.as_str() != Some(native) {
+                    return Err(acp::Error::invalid_params());
+                }
+            }
+            if returned.is_some() || provenance.is_some() {
+                return response;
+            }
+            if caps["sessionCapabilities"]["list"].is_object() {
+                return match session_exists(cx, cwd, native).await {
+                    Some(true) => response,
+                    Some(false) => Err(acp::Error::new(
+                        ErrorCode::ResourceNotFound.into(),
+                        "Session not found",
+                    )),
+                    None => Err(acp::Error::internal_error()),
+                };
+            }
+        }
+    }
+    if caps["sessionCapabilities"]["list"].is_object() && session_absent(cx, cwd, native).await {
+        return Err(acp::Error::new(
+            ErrorCode::ResourceNotFound.into(),
+            "Session not found",
+        ));
+    }
+    response.and_then(|_| Err(acp::Error::internal_error()))
 }
 
 pub(super) async fn configure_model(

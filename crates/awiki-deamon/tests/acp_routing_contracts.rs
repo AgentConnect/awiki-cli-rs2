@@ -1,17 +1,16 @@
 use std::time::Duration;
 
+use awiki_deamon::acp::PLUGIN_ID;
 use awiki_deamon::agent::resolve_runtime;
-use awiki_deamon::agent::runtime_plugin_id;
 use awiki_deamon::controller_scope::VerifiedControllerSender;
 use awiki_deamon::inbox::{
     route_controller_text_task, route_controller_text_task_with_verified_sender,
     ControllerTextMessage,
 };
-use awiki_deamon::plugins::hermes::{HERMES_RUNTIME_NAME, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::runtime::RuntimeAgentProfile;
 use awiki_deamon::security::runtime_token::{RpcMethod, RuntimeTokenScope};
 
-fn hermes_profile() -> RuntimeAgentProfile {
+fn profile() -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:hermes".to_string(),
         agent_handle: "alice-hermes".to_string(),
@@ -20,7 +19,7 @@ fn hermes_profile() -> RuntimeAgentProfile {
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_hermes_alice".to_string(),
-        runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+        runtime_plugin_id: PLUGIN_ID.to_string(),
         display_name: Some("Alice Hermes".to_string()),
         preferred_language: "zh-Hans".to_string(),
         workspace_id: None,
@@ -30,26 +29,28 @@ fn hermes_profile() -> RuntimeAgentProfile {
 }
 
 #[test]
-fn hermes_runtime_plugin_id_is_stable() {
-    assert_eq!(
-        runtime_plugin_id(HERMES_RUNTIME_NAME).unwrap(),
-        HERMES_RUNTIME_PLUGIN_ID
-    );
-    assert_eq!(
-        runtime_plugin_id(" hermes ").unwrap(),
-        HERMES_RUNTIME_PLUGIN_ID
-    );
-
-    let resolution = resolve_runtime(HERMES_RUNTIME_NAME, None).unwrap();
-    assert_eq!(resolution.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
-    assert_eq!(resolution.driver_id, None);
-    assert_eq!(resolution.legacy_runtime_plugin_id, None);
-    assert!(!resolution.defaulted_driver_id);
-    assert!(resolve_runtime(HERMES_RUNTIME_NAME, Some("codex")).is_err());
+fn all_product_types_resolve_to_acp_and_legacy_plugin_ids_cannot_create() {
+    for kind in awiki_deamon::acp::SUPPORTED_DRIVERS {
+        let resolution = resolve_runtime(kind, None).unwrap();
+        assert_eq!(resolution.runtime_plugin_id, PLUGIN_ID);
+        assert_eq!(resolution.driver_id.as_deref(), Some(kind));
+        assert!(!resolution.defaulted_driver_id);
+    }
+    for legacy in [
+        "runtime.hermes",
+        "generic-cli",
+        "runtime.cli.codex",
+        "runtime.cli.claude-code",
+    ] {
+        assert!(resolve_runtime(legacy, None)
+            .unwrap_err()
+            .to_string()
+            .contains("legacy_runtime_disabled"));
+    }
 }
 
 #[test]
-fn hermes_current_rpc_methods_keep_compatibility_names_without_new_message_aliases() {
+fn current_rpc_methods_keep_compatibility_names_without_new_message_aliases() {
     assert_eq!(
         RpcMethod::parse("task.status").unwrap().as_str(),
         "task.status"
@@ -66,7 +67,7 @@ fn hermes_current_rpc_methods_keep_compatibility_names_without_new_message_alias
 }
 
 #[test]
-fn hermes_msg_send_recipient_scope_is_controlled_by_runtime_token_scope() {
+fn acp_msg_send_recipient_scope_is_controlled_by_runtime_token_scope() {
     let scoped = RuntimeTokenScope::new(
         "did:agent:hermes",
         "profile_hermes_alice",
@@ -95,8 +96,8 @@ fn hermes_msg_send_recipient_scope_is_controlled_by_runtime_token_scope() {
 }
 
 #[test]
-fn hermes_controller_text_route_preserves_verified_sender_did() {
-    let profile = hermes_profile();
+fn acp_controller_text_route_preserves_verified_sender_did() {
+    let profile = profile();
     let routed = route_controller_text_task(
         &profile,
         ControllerTextMessage {
@@ -162,13 +163,21 @@ fn hermes_controller_text_route_preserves_verified_sender_did() {
 }
 
 #[test]
-fn hermes_implementation_contract_records_mvp_non_goals() {
-    let contract = include_str!("../docs/hermes-plugin/implementation-contract.md");
+fn workspace_modes_document_security_boundary() {
+    use awiki_deamon::workspace::WorkspaceMode;
+    assert!(!WorkspaceMode::SharedRoot.is_security_boundary());
+    assert!(!WorkspaceMode::WorktreePerTask.is_security_boundary());
+    assert!(WorkspaceMode::Container.is_security_boundary());
+    assert!(WorkspaceMode::Sandbox.is_security_boundary());
+}
 
-    assert!(contract.contains("不安装 Hermes Python plugin"));
-    assert!(contract.contains("不写 `plugin.yaml`"));
-    assert!(contract.contains("不持有 DID 私钥"));
-    assert!(contract.contains("`msg.send` 的目标契约是真实 ANP direct/group 普通消息"));
-    assert!(contract.contains("不新增 `task.result`"));
-    assert!(contract.contains("不新增 `application/vnd.awiki...`"));
+#[test]
+fn runtime_callback_debug_redacts_runtime_rpc_token() {
+    let request = awiki_deamon::local_rpc::RuntimeRpcRequest {
+        runtime_rpc_token: "rtok_debug_secret_value_123456789".to_string(),
+        method: "task.status".to_string(),
+        params: serde_json::json!({ "state": "running" }),
+        debug: None,
+    };
+    assert!(!format!("{request:?}").contains("rtok_debug_secret_value_123456789"));
 }

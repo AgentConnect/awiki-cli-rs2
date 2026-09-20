@@ -97,6 +97,7 @@ pub fn control(
         return Ok(result);
     }
     let cli = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let cli = super::hermes_profile::for_session(state, &cli, &session.key)?;
     if cli.driver_id == "gemini" && session.native_session_id.is_some() {
         if let Some(created) = session.native_created_at_ms {
             let remaining = (created / 60_000 + 1) * 60_000 + 1_000

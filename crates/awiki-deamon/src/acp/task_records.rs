@@ -13,6 +13,8 @@ pub struct TaskRecord {
     pub conversation_id: Option<String>,
     #[serde(default)]
     pub group: bool,
+    #[serde(default)]
+    pub background: bool,
     pub run_id: String,
     pub task_id: String,
     pub source_message_id: String,
@@ -47,6 +49,7 @@ impl TaskRecord {
             agent_did: session.agent_did.clone(),
             conversation_id: work.task.conversation_id.clone(),
             group: session.group,
+            background: session.is_background(),
             run_id: work.run_id.clone(),
             task_id: work.task.task_id.clone(),
             source_message_id: work.task.correlation().source_message_id,
@@ -203,6 +206,9 @@ pub(super) fn persist(db: &Connection, record: &TaskRecord) -> Result<()> {
 }
 
 fn queue(db: &Connection, record: &TaskRecord, id: &str) -> Result<()> {
+    if record.background {
+        return Ok(());
+    }
     db.execute("INSERT OR IGNORE INTO acp_events(event_id,session_key,run_id,snapshot,event_kind) VALUES(?1,?2,?3,?4,'task')",
         params![id, record.session_key, record.run_id, serde_json::to_string(record)?])?;
     Ok(())

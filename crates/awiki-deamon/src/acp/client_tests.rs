@@ -1,6 +1,10 @@
 use super::*;
+#[path = "client_tests/background.rs"]
+mod background;
 #[path = "client_tests/gemini.rs"]
 mod gemini;
+#[path = "client_tests/hermes.rs"]
+mod hermes;
 #[path = "client_tests/model_refresh.rs"]
 mod model_refresh;
 #[path = "client_tests/models.rs"]

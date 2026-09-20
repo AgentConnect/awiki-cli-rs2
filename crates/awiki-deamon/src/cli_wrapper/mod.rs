@@ -178,6 +178,10 @@ pub enum OutboundMessageTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliWrapperCommand {
+    AppAction {
+        socket_path: std::path::PathBuf,
+        runtime_rpc_token: String,
+    },
     Send {
         socket_path: std::path::PathBuf,
         runtime_rpc_token: String,
@@ -204,6 +208,20 @@ pub enum CliWrapperCommand {
 
 pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcResponse> {
     match command {
+        CliWrapperCommand::AppAction {
+            socket_path,
+            runtime_rpc_token,
+        } => {
+            let params = read_app_action(std::io::stdin().lock())?;
+            call(
+                &socket_path,
+                CliWrapperRequest {
+                    runtime_rpc_token,
+                    method: "app.action.request".into(),
+                    params,
+                },
+            )
+        }
         CliWrapperCommand::Send {
             socket_path,
             runtime_rpc_token,
@@ -263,6 +281,26 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
         ),
     }
 }
+
+fn read_app_action(reader: impl std::io::Read) -> Result<Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 64 * 1024 {
+        bail!("app_action_request_too_large");
+    }
+    // Do not include raw request content in parse errors or logs.
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid_app_action_json"))?;
+    if !value.is_object() {
+        bail!("invalid_app_action_json");
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod input_tests;
 
 fn normalize_outbound_target(target: OutboundMessageTarget) -> Result<OutboundMessageTarget> {
     match target {

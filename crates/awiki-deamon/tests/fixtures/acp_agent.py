@@ -6,6 +6,9 @@ if '--version' in sys.argv:
     print('1.0.0')
     raise SystemExit(0)
 
+if '--check' in sys.argv:
+    raise SystemExit(0)
+
 sid = 'native-exact-session'
 mode_file = pathlib.Path.cwd()/'recovery-mode'
 recovery = mode_file.read_text() if mode_file.exists() else ''
@@ -52,17 +55,28 @@ for line in sys.stdin:
     params=request.get('params',{})
     id=request.get('id')
     if method=='initialize':
-        reply(id,{'protocolVersion':1,'agentInfo':{'name':'fixture','version':'1.0.0'},'agentCapabilities':{'mcpCapabilities':{'http':True},'promptCapabilities':{'image':True},'sessionCapabilities':{'resume':{},'close':{},'list':{}}}})
+        client_capabilities = params.get('clientCapabilities',{})
+        reply(id,{'protocolVersion':1,'agentInfo':{'name':'fixture','version':'1.0.0'},'agentCapabilities':{'loadSession':True,'mcpCapabilities':{'http':True},'promptCapabilities':{'image':True},'sessionCapabilities':{'resume':{},'close':{},'list':{}}}})
     elif method in ('session/new','session/resume','session/load'):
         cwd=pathlib.Path(params['cwd']);cwd.mkdir(parents=True,exist_ok=True)
+        (cwd/'client-capabilities.json').write_text(json.dumps(client_capabilities))
         assert cwd.resolve() == pathlib.Path.cwd().resolve(), 'process cwd must match the ACP session cwd'
-        with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'sessionId':params.get('sessionId')})+'\n')
+        with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'sessionId':params.get('sessionId'),'mcp_count':len(params.get('mcpServers',[]))})+'\n')
         if (cwd/'slow-catalog').exists():
             import time
             child=subprocess.Popen(['sleep','120'])
             (cwd/'catalog-child.pid').write_text(str(child.pid))
             (cwd/'catalog.pid').write_text(str(os.getpid()))
             time.sleep(1 if (cwd/'slow-catalog').read_text() == 'short' else 120)
+        if method=='session/load' and recovery.startswith('hermes-'):
+            assert params['sessionId']==sid
+            if recovery == 'hermes-null': reply(id,None)
+            elif recovery == 'hermes-wrong': reply(id,{'_meta':{'hermes':{'sessionProvenance':{'acpSessionId':'wrong'}}}})
+            elif recovery == 'hermes-provenance':
+                chunk('REPLAY_MUST_NOT_APPEAR')
+                reply(id,{'configOptions':config_options(),'_meta':{'hermes':{'sessionProvenance':{'acpSessionId':sid,'currentHermesSessionId':'rotated-internal-id'}}}})
+            else: reply(id,{'configOptions':config_options()})
+            continue
         if method!='session/new' and recovery:
             error = {'code':-32603,'message':'Internal error: OpenCode service failure','data':{'service':'session'}}
             if recovery == 'kimi': error = {'code':-32602,'message':f'Invalid params: Unknown sessionId: {sid}'}
@@ -89,7 +103,7 @@ for line in sys.stdin:
         elif recovery == 'list-bad-cursor': reply(id,{'sessions':[],'nextCursor':123})
         elif recovery == 'list-loop': reply(id,{'sessions':[],'nextCursor':'loop'})
         elif not params.get('cursor'): reply(id,{'sessions':[],'nextCursor':'page2'})
-        else: reply(id,{'sessions':[{'sessionId':sid,'cwd':str(cwd)}] if recovery=='list-present' else []})
+        else: reply(id,{'sessions':[{'sessionId':sid,'cwd':str(cwd)}] if recovery in ('list-present','hermes-listed') else []})
     elif method=='session/prompt':
         prompt_id=id
         with (cwd/'prompts.jsonl').open('a') as log:

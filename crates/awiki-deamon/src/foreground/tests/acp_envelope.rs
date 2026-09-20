@@ -37,7 +37,6 @@ async fn acp_control_validates_the_common_json_envelope_before_dispatch() {
     let client = im_core
         .client_for_agent(&config, &state, &created.agent_did)
         .unwrap();
-    let hermes_gateway = StdioHermesGateway::default();
     for (content_type, expected) in [
         (
             Some("text/plain"),
@@ -62,7 +61,6 @@ async fn acp_control_validates_the_common_json_envelope_before_dispatch() {
             &config,
             &state,
             &im_core,
-            &hermes_gateway,
             &registration,
             &client,
             &created.agent_did,

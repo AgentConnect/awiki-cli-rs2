@@ -171,7 +171,8 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
 Would run: ${cargo_cmd[*]} build -p awiki-deamon --bin awiki-deamon --release --locked --target ${TARGET_TRIPLE}
 Would archive: ${build_bin} -> ${archive_path}
-Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
+Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt acp/
+Would prepare: pinned ACP adapters and private Node for ${OS_NAME}/${ARCH_NAME}
 EOF
   exit 0
 fi
@@ -194,6 +195,9 @@ if ln -s awiki-deamon "${stage_dir}/awiki-deamon-runtime" 2>/dev/null; then
 else
   cp "${stage_dir}/awiki-deamon" "${stage_dir}/awiki-deamon-runtime"
 fi
+
+python3 scripts/release/daemon/prepare-acp-components.py \
+  --os "${OS_NAME}" --arch "${ARCH_NAME}" --output "${stage_dir}/acp"
 
 cat >"${stage_dir}/README.txt" <<EOF
 Awiki Daemon Agent Runtime Host ${VERSION}
@@ -227,11 +231,27 @@ if [[ "${LOCAL_CORE}" == "1" ]]; then
   cat "${provenance_path}" >> "${stage_dir}/SOURCE.md"
 fi
 
-(cd "${stage_dir}" && shasum -a 256 \
-  awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
-  COMMERCIAL-LICENSING.md SOURCE.md > checksums.txt)
+python3 - "${stage_dir}" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+with (root / "checksums.txt").open("w") as output:
+    for path in sorted(root.rglob("*")):
+        if path.name == "checksums.txt" and path.parent == root or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(character in relative for character in "\r\n\\\0"):
+            raise SystemExit("invalid package checksum path")
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        output.write(f"{digest.hexdigest()}  {relative}\n")
+PY
 rm -f "${archive_path}"
-tar -C "${stage_dir}" -czf "${archive_path}" \
+COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${archive_path}" \
   awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
-  COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
+  COMMERCIAL-LICENSING.md SOURCE.md checksums.txt acp
 echo "daemon release archive created: ${archive_path}"

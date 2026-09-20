@@ -92,6 +92,7 @@ pub fn control(
         )?;
     }
     let cli = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let cli = super::hermes_profile::for_session(state, &cli, &session.key)?;
     let cwd = super::host::workspace(profile, &session.key)?;
     let native = session.native_session_id.clone();
     // Reapply the last confirmed model too: a failed/uncertain native switch

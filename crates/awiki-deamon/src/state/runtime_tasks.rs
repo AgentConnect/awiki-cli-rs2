@@ -195,6 +195,7 @@ INSERT OR IGNORE INTO runtime_run (
         command_id: &str,
         next_attempt_at_ms: i64,
     ) -> Result<RuntimeRetryQueueRecord> {
+        self.require_runtime_not_retired(&original_run.agent_did)?;
         if original_run.status != RuntimeRunStatus::Failed {
             bail!("only failed runs can be retried");
         }

@@ -10,16 +10,13 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::{
-    drain_cli_route_message_queue_once_limited, drain_runtime_retry_queue_once_limited,
     flush_message_sync_outbox, flush_runtime_final_outbox, sanitize_error_message,
-    RuntimeCallbackOutbox, StdioHermesGateway,
+    RuntimeCallbackOutbox,
 };
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 const MESSAGE_SYNC_OUTBOX_BATCH_LIMIT: usize = 20;
 const RUNTIME_FINAL_OUTBOX_BATCH_LIMIT: usize = 20;
-const CLI_ROUTE_MESSAGE_QUEUE_BATCH_LIMIT: usize = 10;
-const RUNTIME_RETRY_QUEUE_BATCH_LIMIT: usize = 10;
 const DEFAULT_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 const DUE_RECHECK_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,8 +25,6 @@ const STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) enum QueueKind {
     MessageSyncOutbox,
     RuntimeFinalOutbox,
-    CliRouteMessageQueue,
-    RuntimeRetryQueue,
 }
 
 impl QueueKind {
@@ -37,8 +32,6 @@ impl QueueKind {
         match self {
             Self::MessageSyncOutbox => "message_sync_outbox.scheduler.failed",
             Self::RuntimeFinalOutbox => "runtime.final_outbox.scheduler.failed",
-            Self::CliRouteMessageQueue => "cli_route_message_queue.scheduler.failed",
-            Self::RuntimeRetryQueue => "runtime.run.retry.scheduler.failed",
         }
     }
 }
@@ -51,8 +44,6 @@ pub(super) struct QueueSchedulerNotifier {
 struct QueueSchedulerNotifyInner {
     message_sync_outbox: Notify,
     runtime_final_outbox: Notify,
-    cli_route_message_queue: Notify,
-    runtime_retry_queue: Notify,
 }
 
 impl QueueSchedulerNotifier {
@@ -61,8 +52,6 @@ impl QueueSchedulerNotifier {
             inner: Arc::new(QueueSchedulerNotifyInner {
                 message_sync_outbox: Notify::new(),
                 runtime_final_outbox: Notify::new(),
-                cli_route_message_queue: Notify::new(),
-                runtime_retry_queue: Notify::new(),
             }),
         }
     }
@@ -74,16 +63,12 @@ impl QueueSchedulerNotifier {
     pub(super) fn notify_all(&self) {
         self.notify_ref(QueueKind::MessageSyncOutbox);
         self.notify_ref(QueueKind::RuntimeFinalOutbox);
-        self.notify_ref(QueueKind::CliRouteMessageQueue);
-        self.notify_ref(QueueKind::RuntimeRetryQueue);
     }
 
     fn notify_handle(&self, kind: QueueKind) -> &Notify {
         match kind {
             QueueKind::MessageSyncOutbox => &self.inner.message_sync_outbox,
             QueueKind::RuntimeFinalOutbox => &self.inner.runtime_final_outbox,
-            QueueKind::CliRouteMessageQueue => &self.inner.cli_route_message_queue,
-            QueueKind::RuntimeRetryQueue => &self.inner.runtime_retry_queue,
         }
     }
 }
@@ -100,7 +85,6 @@ impl QueueScheduler {
         state: DaemonState,
         im_core: ImCoreAdapter,
         rpc_outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
-        hermes_gateway: StdioHermesGateway,
         notifier: QueueSchedulerNotifier,
     ) -> Self {
         Self::start_with_reconciliation_interval(
@@ -108,7 +92,6 @@ impl QueueScheduler {
             state,
             im_core,
             rpc_outbox,
-            hermes_gateway,
             notifier,
             DEFAULT_RECONCILIATION_INTERVAL,
         )
@@ -119,7 +102,6 @@ impl QueueScheduler {
         state: DaemonState,
         im_core: ImCoreAdapter,
         rpc_outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
-        hermes_gateway: StdioHermesGateway,
         notifier: QueueSchedulerNotifier,
         reconciliation_interval: Duration,
     ) -> Self {
@@ -150,23 +132,6 @@ impl QueueScheduler {
                 state.clone(),
                 Arc::clone(&rpc_outbox),
                 Arc::clone(&stop),
-                notifier.clone(),
-                reconciliation_interval,
-            ),
-            spawn_cli_route_message_queue_scheduler(
-                config.clone(),
-                state.clone(),
-                Arc::clone(&rpc_outbox),
-                Arc::clone(&stop),
-                notifier.clone(),
-                reconciliation_interval,
-            ),
-            spawn_runtime_retry_queue_scheduler(
-                config,
-                state,
-                rpc_outbox,
-                hermes_gateway,
-                stop.clone(),
                 notifier.clone(),
                 reconciliation_interval,
             ),
@@ -272,76 +237,6 @@ fn spawn_runtime_final_outbox_scheduler(
                 flush_runtime_final_outbox(&drain_state, &*outbox, RUNTIME_FINAL_OUTBOX_BATCH_LIMIT)
             },
             |state| state.next_pending_runtime_final_outbox_due_ms(),
-        )
-        .await;
-    })
-}
-
-fn spawn_cli_route_message_queue_scheduler(
-    config: DaemonConfig,
-    state: DaemonState,
-    rpc_outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
-    stop: Arc<AtomicBool>,
-    notifier: QueueSchedulerNotifier,
-    reconciliation_interval: Duration,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let scheduler_state = state.clone();
-        let drain_state = state.clone();
-        run_queue_scheduler(
-            QueueKind::CliRouteMessageQueue,
-            scheduler_state,
-            stop,
-            notifier,
-            reconciliation_interval,
-            move || {
-                let outbox = rpc_outbox
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-                drain_cli_route_message_queue_once_limited(
-                    &config,
-                    &drain_state,
-                    &*outbox,
-                    CLI_ROUTE_MESSAGE_QUEUE_BATCH_LIMIT,
-                )
-            },
-            |state| state.next_queued_cli_route_message_queue_due_ms(),
-        )
-        .await;
-    })
-}
-
-fn spawn_runtime_retry_queue_scheduler(
-    config: DaemonConfig,
-    state: DaemonState,
-    rpc_outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
-    hermes_gateway: StdioHermesGateway,
-    stop: Arc<AtomicBool>,
-    notifier: QueueSchedulerNotifier,
-    reconciliation_interval: Duration,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let scheduler_state = state.clone();
-        let drain_state = state.clone();
-        run_queue_scheduler(
-            QueueKind::RuntimeRetryQueue,
-            scheduler_state,
-            stop,
-            notifier,
-            reconciliation_interval,
-            move || {
-                let outbox = rpc_outbox
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-                drain_runtime_retry_queue_once_limited(
-                    &config,
-                    &drain_state,
-                    &*outbox,
-                    &hermes_gateway,
-                    RUNTIME_RETRY_QUEUE_BATCH_LIMIT,
-                )
-            },
-            |state| state.next_queued_runtime_retry_due_ms(),
         )
         .await;
     })
@@ -498,7 +393,7 @@ mod tests {
         let calls_for_drain = Arc::clone(&calls);
         let startup = crate::security::runtime_token::current_time_millis().unwrap();
         let handle = tokio::spawn(run_queue_scheduler(
-            QueueKind::RuntimeRetryQueue,
+            QueueKind::RuntimeFinalOutbox,
             state,
             Arc::clone(&stop),
             notifier.clone(),
@@ -533,7 +428,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_drain = Arc::clone(&calls);
         let handle = tokio::spawn(run_queue_scheduler(
-            QueueKind::CliRouteMessageQueue,
+            QueueKind::MessageSyncOutbox,
             state,
             Arc::clone(&stop),
             notifier.clone(),

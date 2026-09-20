@@ -371,6 +371,9 @@ validate_archive_entries() {
   "$PYTHON_BIN" - "$ARCHIVE_PATH" <<'PY' || die "daemon package validation failed"
 import sys
 import tarfile
+import hashlib
+import json
+import re
 
 archive_path = sys.argv[1]
 expected = {
@@ -384,13 +387,19 @@ expected = {
     "checksums.txt": "file",
 }
 seen = set()
+digests = {}
+checksums = None
+components = None
+runtime_link = False
+total_size = 0
 
 try:
-    with tarfile.open(archive_path, "r:gz") as archive:
-        for member in archive.getmembers():
+    with tarfile.open(archive_path, "r|gz") as archive:
+        for member in archive:
             name = member.name
             while name.startswith("./"):
                 name = name[2:]
+            name = name.rstrip("/") if member.isdir() else name
             if (
                 not name
                 or name.startswith("/")
@@ -399,27 +408,88 @@ try:
                 or "/../" in name
                 or name.endswith("/..")
                 or "//" in name
+                or any(part in {".", ".."} for part in name.split("/"))
+                or any(ord(character) < 32 or character == "\\" for character in name)
+                or len(name) > 4096
             ):
                 raise SystemExit(f"unsafe daemon package path: {name or member.name}")
-            if name not in expected:
+            is_component = name == "acp" or name.startswith("acp/")
+            if name not in expected and not is_component:
                 raise SystemExit(f"unexpected daemon package entry: {name}")
             if name in seen:
                 raise SystemExit(f"duplicate daemon package entry: {name}")
             seen.add(name)
+            total_size += member.size
+            if len(seen) > 50000 or total_size > 1024 * 1024 * 1024:
+                raise SystemExit("daemon package exceeds size or entry budget")
 
-            expected_kind = expected[name]
+            expected_kind = expected.get(name)
+            if is_component:
+                if name == "acp" and not member.isdir():
+                    raise SystemExit("acp component root must be a directory")
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise SystemExit("ACP components must not contain links or special files")
+                expected_kind = "file"
             if expected_kind == "file":
                 if not member.isfile():
                     raise SystemExit(f"daemon package entry must be a regular file: {name}")
             elif member.issym():
                 if member.linkname != "awiki-deamon":
                     raise SystemExit("awiki-deamon-runtime symlink target is unsupported")
+                runtime_link = True
             elif not member.isfile():
                 raise SystemExit("awiki-deamon-runtime must be a regular file or symlink")
+
+            if member.isfile():
+                digest = hashlib.sha256()
+                content = bytearray()
+                capture = name in {"checksums.txt", "acp/manifest.json"}
+                if capture and member.size > 2 * 1024 * 1024:
+                    raise SystemExit("daemon package metadata is too large")
+                with archive.extractfile(member) as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                        if capture:
+                            content.extend(chunk)
+                if name == "checksums.txt":
+                    checksums = bytes(content).decode("utf-8")
+                else:
+                    digests[name] = digest.hexdigest()
+                if name == "acp/manifest.json":
+                    components = json.loads(content)
 
         missing = sorted(set(expected) - seen)
         if missing:
             raise SystemExit(f"daemon package missing {', '.join(missing)}")
+        if runtime_link:
+            digests["awiki-deamon-runtime"] = digests["awiki-deamon"]
+        recorded = {}
+        for line in (checksums or "").splitlines():
+            match = re.fullmatch(r"([a-fA-F0-9]{64}) [ *](.+)", line)
+            if not match or match[2] in recorded:
+                raise SystemExit("invalid or duplicate daemon package checksum")
+            recorded[match[2]] = match[1].lower()
+        if recorded != digests:
+            raise SystemExit("daemon package file checksums do not match its complete contents")
+        if any(name == "acp" or name.startswith("acp/") for name in seen):
+            if not isinstance(components, dict) or components.get("schema_version") != 1:
+                raise SystemExit("invalid ACP component manifest")
+            actual = {name[4:]: digest for name, digest in digests.items()
+                      if name.startswith("acp/") and name != "acp/manifest.json"}
+            if components.get("files") != actual:
+                raise SystemExit("ACP component manifest checksums do not match")
+            if components.get("available") is True:
+                required = {"node", "LICENSE.node", "package.json", "package-lock.json"}
+                adapters = components.get("adapters", {})
+                if set(adapters) != {"codex", "claude-code"}:
+                    raise SystemExit("ACP adapter declarations are incomplete")
+                required.update(adapter.get("entry", "") for adapter in adapters.values())
+                if not required <= set(actual) or components.get("package_lock_sha256") != actual["package-lock.json"]:
+                    raise SystemExit("ACP component payload is incomplete")
+            elif components.get("available") is not False or actual:
+                raise SystemExit("invalid unsupported-platform ACP component payload")
 except tarfile.TarError as exc:
     raise SystemExit(f"daemon package listing failed: {exc}") from exc
 PY

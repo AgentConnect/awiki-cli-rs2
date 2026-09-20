@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 36;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 37;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -706,6 +706,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_user_delegated_identity_vault_refs_v33(connection)?;
     migrate_legacy_message_agent_binding_v34(connection)?;
     migrate_agent_device_identity_v35(connection)?;
+    super::runtime_retirement::initialize(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],

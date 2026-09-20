@@ -9,7 +9,6 @@ use crate::commands::{
     create_runtime_agent_from_request_with_readiness, RuntimeAgentCreateOutcome,
     RuntimeAgentCreateRequest, RuntimeAgentMessageReadiness,
 };
-use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::registration::AgentRegistrationClient;
 use crate::runtime::normalize_preferred_language;
 use crate::state::{AppPersonalAgentBindingRecord, DaemonState, UserDelegatedIdentityRecord};
@@ -126,6 +125,19 @@ where
 {
     identity.validate()?;
     let desired = parse_desired_personal_agent(desired_personal_agent)?;
+    // New enabling is explicit and uses a separate, stable generation. An old
+    // bootstrap replay must never create a replacement identity automatically.
+    if desired.ensure_once_key.as_deref()
+        != Some(
+            format!(
+                "app-personal-agent:acp-v1:{}:{}",
+                identity.user_did, identity.app_instance_id
+            )
+            .as_str(),
+        )
+    {
+        bail!("personal_agent_legacy_bootstrap_retired");
+    }
     let role = desired
         .role
         .as_deref()
@@ -173,6 +185,7 @@ where
         .clone()
         .unwrap_or_else(|| default_binding_id(&identity.user_did, &identity.app_instance_id));
     let binding_id = canonical_binding_id(&requested_binding_id);
+    state.require_personal_binding_not_retired(&binding_id)?;
     if let Some(existing) = state.load_active_app_personal_agent_binding(
         &identity.user_did,
         &identity.app_instance_id,
@@ -181,9 +194,17 @@ where
         if !binding_ids_are_compatible(&existing.binding_id, &binding_id) {
             bail!("active app personal agent binding conflicts with ensure_once_key");
         }
-        let _profile = state
+        let profile = state
             .load_runtime_agent_profile(&existing.runtime_agent_did)
             .context("load existing app personal agent runtime profile")?;
+        if profile.runtime_plugin_id != crate::acp::PLUGIN_ID
+            || state
+                .load_cli_runtime_profile(&profile.runtime_profile_id)?
+                .driver_id
+                != "hermes"
+        {
+            bail!("legacy_runtime_disabled_recreate_required");
+        }
         revoke_superseded_bindings(
             state,
             daemon_agent,
@@ -219,9 +240,9 @@ where
                 &identity.user_did,
                 &identity.app_instance_id,
             )),
-            runtime: APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES.to_string(),
+            runtime: crate::acp::PLUGIN_ID.to_string(),
             display_name: Some(canonical_display_name(desired.display_name.as_deref())),
-            driver_id: None,
+            driver_id: Some("hermes".into()),
             driver_config: None,
             recipient_policy: Some(personal_agent_recipient_policy(&identity.user_did)),
             workspace: None,
@@ -328,8 +349,10 @@ fn parse_desired_personal_agent(value: &Value) -> Result<DesiredPersonalAgent> {
 }
 
 fn validate_created_runtime(outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
-    if outcome.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID {
-        bail!("created app personal agent must use Hermes runtime");
+    if outcome.runtime_plugin_id != crate::acp::PLUGIN_ID
+        || outcome.driver_id.as_deref() != Some("hermes")
+    {
+        bail!("created app personal agent must use Hermes ACP runtime");
     }
     Ok(())
 }
@@ -421,7 +444,7 @@ fn canonical_display_name(display_name: Option<&str>) -> String {
 fn default_handle(user_did: &str, app_instance_id: &str) -> String {
     const PREFIX: &str = "hermes-personal";
     const MAX_HANDLE_LENGTH: usize = 48;
-    let seed = format!("{}|{}", user_did.trim(), app_instance_id.trim());
+    let seed = format!("acp-v1|{}|{}", user_did.trim(), app_instance_id.trim());
     let digest = Sha256::digest(seed.as_bytes());
     let hash = digest[..6]
         .iter()
@@ -595,7 +618,7 @@ mod tests {
     fn default_handle_keeps_app_instance_entropy_under_handle_limit() {
         assert_eq!(
             default_handle("did:human:me", "app_1"),
-            "hermes-personal-app-1-334c10a06052"
+            "hermes-personal-app-1-12e59855bf38"
         );
         assert_eq!(
             personal_agent_runtime_handle_for_system_test("did:human:me", "app_1"),
