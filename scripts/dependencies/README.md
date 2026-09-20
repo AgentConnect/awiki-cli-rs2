@@ -167,3 +167,8 @@ python3 scripts/dependencies/build.py --deps source --source-manifest dependenci
 ```
 
 仅允许 build/check/test 和精确数字 toolchain，强制 --locked，禁止覆盖 manifest/config/target-dir。输出仍在 .artifacts/dependencies/source/target；成功后 command-result.json 记录实际命令、解析来源、consumer/source SHA 和清单/锁摘要，失败前删除旧成功记录。Windows 原生构建在显式 source 模式读取该输出目录，仍执行 PE 架构与 FRB 实际导出校验；正式 registry 模式与 source 互斥。优化编译不代表发布，正式发布入口与保护不变。
+
+
+### 注册开发 PR 的 Node 构建门禁
+
+本 feature 的 dependency-check 使用提交的 source manifest/lock 检查依赖图；其他分支仍检查 registry。Node Tier 1 PR 构建仅在 Feature/registration-account-first → release/0910 时使用隔离 source builder，保留五个平台编译、manylinux/macOS ABI 基线检查、打包审计与 packed-install。源码模式不用于 main 或手动正式构建。source builder 记录实际 Cargo metadata 摘要；Node 包 SBOM 从同一解析图生成，provenance 标记 source-development，并校验干净 consumer、清单、锁与 metadata 摘要，拒绝过期证据。正式 registry 入口及 source manifest release 拒绝规则保持不变，不发布 npm/crates 版本。

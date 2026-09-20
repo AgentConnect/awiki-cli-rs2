@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readSourceEvidence } from './source-evidence.mjs'
 import { exactDependencyVersion } from './registry-version.mjs'
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -70,8 +71,8 @@ function sourceRevision() {
   }
 }
 
-function cargoSbom(manifest) {
-  const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
+function cargoSbom(manifest, sourceMetadata) {
+  const metadata = sourceMetadata || JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
   const cargoComponents = metadata.packages
     .map(pkg => ({
       type: 'library',
@@ -111,6 +112,8 @@ function cargoSbom(manifest) {
 
 async function writeCommonFiles(output, manifest, target, binary) {
   const source = sourceRevision()
+  const development = process.env.AWIKI_NODE_SOURCE_INTEGRATION === '1'
+    ? await readSourceEvidence(repositoryRoot, source.commit) : null
   const binaryDigest = binary ? await sha256(binary) : undefined
   const releaseConfig = await json(join(repositoryRoot, 'scripts/release/cli/release-config.json'))
   const imCoreVersion = packageVersion(join(repositoryRoot, 'crates/im-core/Cargo.toml'))
@@ -139,8 +142,9 @@ async function writeCommonFiles(output, manifest, target, binary) {
     },
     ...(binaryDigest ? { binarySha256: binaryDigest } : {}),
     distributionPolicy: 'apache-2.0',
+    ...(development ? { dependencyMode: 'source-development', dependencyEvidence: development.receipt } : {}),
   }
-  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nANP commit: ${releaseConfig.anp_commit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
+  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nDependency mode: ${development ? "source-development (not a registry release)" : "workspace/registry"}\nANP commit: ${releaseConfig.anp_commit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
   const notice = `# Notices\n\nThis package is AWiki CLI S2 software distributed under Apache-2.0. Corresponding source and build provenance are identified in SOURCE.md and provenance.json. Third-party components and their declared licenses are enumerated in sbom.cdx.json. The verified GitHub Actions artifact is the approved test channel; npm publication is a separate release action.\n`
 
   await copyFile(join(repositoryRoot, 'LICENSE'), join(output, 'LICENSE'))
@@ -150,7 +154,7 @@ async function writeCommonFiles(output, manifest, target, binary) {
   await writeFile(join(output, 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`)
   await writeFile(
     join(output, 'sbom.cdx.json'),
-    `${JSON.stringify(cargoSbom(manifest), null, 2)}\n`,
+    `${JSON.stringify(cargoSbom(manifest, development?.metadata), null, 2)}\n`,
   )
 }
 

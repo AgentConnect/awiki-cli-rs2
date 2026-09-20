@@ -250,6 +250,12 @@ def main(argv=None):
             shutil.copy2(checkout / 'Cargo.lock', lock)
         evidence['resolved'] = [{'name': p['name'], 'version': p['version'], 'source': p['source']}
                                 for p in metadata['packages'] if p['name'] in versions]
+        if args.deps == 'source':
+            evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+            evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+            metadata_bytes = (json.dumps(metadata, sort_keys=True) + '\n').encode('utf-8')
+            (artifacts / 'metadata.json').write_bytes(metadata_bytes)
+            evidence['metadata_sha256'] = hashlib.sha256(metadata_bytes).hexdigest()
         (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
         if not args.refresh_lock and not args.resolve_only:
             run(command if '--locked' in command else [*command, '--locked'], checkout, env=env)
