@@ -597,6 +597,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_device_join_authorized_device_summary(dynamic raw);
 
   @protected
+  DartDeviceJoinManagementStatus dco_decode_dart_device_join_management_status(
+    dynamic raw,
+  );
+
+  @protected
   DartDeviceJoinPhase dco_decode_dart_device_join_phase(dynamic raw);
 
   @protected
@@ -1204,6 +1209,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartConversationSnapshotItem>
   dco_decode_list_dart_conversation_snapshot_item(dynamic raw);
+
+  @protected
+  List<DartDeviceJoinManagementStatus>
+  dco_decode_list_dart_device_join_management_status(dynamic raw);
 
   @protected
   List<DartDeviceJoinRequestNotice>
@@ -2091,6 +2100,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceJoinManagementStatus sse_decode_dart_device_join_management_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDeviceJoinPhase sse_decode_dart_device_join_phase(
     SseDeserializer deserializer,
   );
@@ -2870,6 +2884,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartConversationSnapshotItem>
   sse_decode_list_dart_conversation_snapshot_item(SseDeserializer deserializer);
+
+  @protected
+  List<DartDeviceJoinManagementStatus>
+  sse_decode_list_dart_device_join_management_status(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<DartDeviceJoinRequestNotice>
@@ -3903,6 +3923,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_device_join_management_status(
+    DartDeviceJoinManagementStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_device_join_phase(
     DartDeviceJoinPhase self,
     SseSerializer serializer,
@@ -4856,6 +4882,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_conversation_snapshot_item(
     List<DartConversationSnapshotItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_join_management_status(
+    List<DartDeviceJoinManagementStatus> self,
     SseSerializer serializer,
   );
 

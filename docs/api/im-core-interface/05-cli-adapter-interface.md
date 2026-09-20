@@ -133,12 +133,10 @@ SAS, or internal Document/Registry/auth versions and hashes.
 
 ### 4.2 Root-key transfer adapter
 
-`id device root-key send --device <id>` is the only V1 CLI command for this
-operation. It rejects dry-run and keeps the selected identity in the
+`id device root-key send --device <id>` remains the independent explicitly authorized manual operation. Normal App/CLI Join uses the Join-bound Core task. This command rejects dry-run and keeps the selected identity in the
 identity-scoped `ImClient`; the CLI does not accept a message ID, PreKey,
 session, proof, checkpoint, payload, retry selector, or user-presence override.
-This is a low-level, explicit single-target operation used by the current Join
-handoff and focused verification. It does not discover or list eligible
+This is a low-level, explicit single-target operation for existing-member grants and independent-transfer verification. It does not discover or list eligible
 devices, choose a target on the user's behalf, support batch transfer, or create
 a general resend workflow. AWiki Me exposes it only for the exact device held by
 the still-open admin-side Join context.
@@ -359,3 +357,9 @@ CLI 输入兼容规则：
 - `display_name`、`avatar_uri`、`profile_uri`、`subject_type`、`name`、`avatar` 不得用于路由、身份认证、授权、服务发现、E2EE 绑定或安全 profile 协商。
 - Daemon runtime inbox 返回的 `title` 和 `display` 对象只是 UI fallback metadata；响应必须同时保留 `peer_did` 或 `group_did`，App 可以用这些 DID 从 SDK profile cache 进行后续水化。
 - Daemon runtime agent 的 `display_name` 是本机 runtime 管理名，不是公开 DID Subject Profile；公开联系人或 Agent 展示资料仍应来自 WNS / User Service profile。
+
+### 自动管理配置的 CLI 生命周期
+
+`id device join approve` 的一次 APPROVE 明确授权“加入并成为管理设备”。该命令观察 Core 有界尝试，到发送接受或配置失败后返回；原 result 字段保留，新增无秘密 `management_configuration`。成功退出只证明加入命令完成，必须读取新增 phase 判断配置状态，不能把发送接受当管理就绪。
+
+`id device join management-status` 读取并触发 Core 恢复；`management-resume` 使用同一持久预算继续；`management-retry --session <id>` 是显式新轮次，Core 先验证原 Join 绑定并对账接受/登记。Ctrl-C 或退出保留任务和已计数尝试，不后台常驻。接收设备保持 listener/sync 运行以完成既有 Root 导入链路。独立 root-key send 仍要求 TRANSFER，不扩大一次 Join 授权。

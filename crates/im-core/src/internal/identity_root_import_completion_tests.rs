@@ -4,6 +4,7 @@ fn fixture() -> (rusqlite::Connection, CompletionRecord, CompletionSuccess) {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
     let record = CompletionRecord {
+        v2_timing: None,
         did: "did:example:owner".to_owned(),
         local_device_id: "device-b".to_owned(),
         message_id: "transfer-a".to_owned(),
@@ -317,6 +318,7 @@ fn queued_root_handoff_and_receipt_commit_together_and_reject_evicted_attempts()
         .unwrap()
         .remove(0);
     let plan = RootImportSealedPlan {
+        v2_timing: None,
         owner_identity_id: binding.owner_identity_id.clone(),
         owner_did: record.did.clone(),
         local_device_id: record.local_device_id.clone(),

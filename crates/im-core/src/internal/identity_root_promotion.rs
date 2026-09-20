@@ -79,9 +79,49 @@ async fn converge_root_import_promotion(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    let mut state = entry
+        .device_state
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    state.validate_for_did(client.did())?;
+    let authorization = state
+        .authorization
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if authorization.status
+        != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        || authorization.protocol_device_id.as_str() != local_device_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let current = state
+        .checkpoint
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let checkpoint = if current.document_version > request.checkpoint.document_version
+        || current.registry_version > request.checkpoint.registry_version
+    {
+        // A completed import is replayed by normal Inbox reads. A later Join or
+        // revoke may already have advanced this administrator's verified local
+        // document. Preserve that state instead of restoring the import receipt.
+        if authorization.role
+            != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            || !authorization.management_ready
+            || authorization.auth_generation != request.auth_generation
+            || current.document_version < request.checkpoint.document_version
+            || current.registry_version < request.checkpoint.registry_version
+            || (current.document_version == request.checkpoint.document_version
+                && current.document_hash != request.checkpoint.document_hash)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        current.clone()
+    } else {
+        request.checkpoint.clone()
+    };
     let document = client.runtime().key_provider.did_document()?;
     if crate::internal::identity_wire::document::document_hash(&document)?
-        != request.checkpoint.document_hash
+        != checkpoint.document_hash
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -89,13 +129,9 @@ async fn converge_root_import_promotion(
         core,
         &request.pending_root_ref,
         &document,
-        &request.checkpoint,
+        &checkpoint,
     )
     .await?;
-    let mut state = entry
-        .device_state
-        .clone()
-        .ok_or(crate::ImError::PermissionDenied)?;
     let authorization = state
         .authorization
         .as_mut()
@@ -103,9 +139,13 @@ async fn converge_root_import_promotion(
     authorization.role = crate::internal::identity_device_state::DeviceAuthorizationRole::Admin;
     authorization.management_ready = true;
     authorization.auth_generation = request.auth_generation;
-    state.checkpoint = Some(request.checkpoint.clone());
+    state.checkpoint = Some(checkpoint);
     state.validate_for_did(client.did())?;
-    store.save_device_state(&local_alias, state)?;
+    if entry.device_state.as_ref() != Some(&state) {
+        // Publication and revocation share this CAS boundary. Never overwrite
+        // an identity projection advanced while custody confirmation awaited.
+        store.commit_converged_admin_document(&local_alias, entry, state, &document)?;
+    }
     if let Some(session) = client.runtime().identity_session.as_ref() {
         session
             .recover()

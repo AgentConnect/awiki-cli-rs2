@@ -1027,3 +1027,24 @@ test('External Provider bridge rejects malformed binary arity without calling th
   assert.equal(reply.errorCode, 'invalid_request')
   assert.equal(signCalls, 0)
 })
+
+
+test('sibling adoption uses the strict provider method and never falls back to legacy adoption', async () => {
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const remote = { document: { id: identity.did } }
+  let legacy = 0
+  let strict = 0
+  const request = [{ operation: 'adoptVerifiedSiblingDocument', payloadJson: JSON.stringify({ identity, remote }), buffers: [] }]
+  const absent = createIdentityProviderDispatch(provider({ adoptVerifiedDocument: async () => { legacy++; return 'updated' } }))
+  assert.equal((await absent(request)).ok, false)
+  assert.equal(legacy, 0)
+  const present = createIdentityProviderDispatch(provider({
+    adoptVerifiedDocument: async () => { legacy++; return 'updated' },
+    adoptVerifiedSiblingDocument: async (reference, value) => {
+      strict++; assert.deepEqual(reference, identity); assert.deepEqual(value, remote); return 'updated'
+    },
+  }))
+  assert.equal((await present(request)).ok, true)
+  assert.equal(strict, 1)
+  assert.equal(legacy, 0)
+})

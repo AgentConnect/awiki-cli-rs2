@@ -163,18 +163,81 @@ where
     let core = super::build_im_core_async(resolved).await?;
     let prompt = core
         .device_join()
-        .prepare_device_join_approval(selector, &join_session_id, true)
+        .prepare_device_join_approval(selector.clone(), &join_session_id, true)
         .map_err(|err| super::map_im_error(err, "id device join approve"))?;
     confirm(&prompt.sas)?;
     let approved = core
         .device_join()
-        .confirm_device_join_approval(DeviceJoinConfirmApprovalRequest {
+        .confirm_device_join_with_management(DeviceJoinConfirmApprovalRequest {
             approval_handle: prompt.approval_handle,
             user_presence_confirmed: true,
         })
         .await
         .map_err(|err| super::map_im_error(err, "id device join approve"))?;
-    progress_result("device_join_approve", approved, "Device Join approved")
+    let management = loop {
+        let statuses = core
+            .device_join()
+            .device_join_management_status(selector.clone())
+            .await
+            .map_err(|err| super::map_im_error(err, "id device join approve"))?;
+        let status = statuses
+            .into_iter()
+            .find(|status| status.join_session_id == join_session_id)
+            .ok_or_else(|| {
+                super::map_im_error(im_core::ImError::PermissionDenied, "id device join approve")
+            })?;
+        if !matches!(
+            status.phase,
+            im_core::identity::DeviceJoinManagementPhase::AwaitingJoin
+                | im_core::identity::DeviceJoinManagementPhase::Scheduled
+                | im_core::identity::DeviceJoinManagementPhase::Attempting
+        ) {
+            break status;
+        }
+        // Observation only: Core owns the retry clock, budget and transport.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    let mut value = remove_sas(serde_json::to_value(approved).map_err(serialization_error)?);
+    value["management_configuration"] =
+        serde_json::to_value(&management).map_err(serialization_error)?;
+    let summary = match management.phase {
+        im_core::identity::DeviceJoinManagementPhase::Failed => "Device joined; management configuration failed. Resume with an explicit management retry.",
+        im_core::identity::DeviceJoinManagementPhase::ManagementRegistered => "Device joined; management registered. Recipient local activation must be verified on that device.",
+        _ => "Device joined; waiting for recipient management configuration. Pending state is durable.",
+    };
+    command_value_result("device_join_approve", value, summary.to_owned())
+}
+
+pub async fn management_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    selector: IdentitySelector,
+    action: &str,
+    session: &str,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    if action == "id.device.join.management-retry" {
+        core.device_join()
+            .retry_device_join_management(selector.clone(), &required_value(session, "--session")?)
+            .await
+            .map_err(|e| super::map_im_error(e, "id device join management-retry"))?;
+    }
+    if action != "id.device.join.management-status" {
+        core.device_join()
+            .resume_device_join_management(selector.clone())
+            .await
+            .map_err(|e| super::map_im_error(e, "id device join management-resume"))?;
+    }
+    let statuses = core
+        .device_join()
+        .device_join_management_status(selector)
+        .await
+        .map_err(|e| super::map_im_error(e, "id device join management-status"))?;
+    command_result(
+        "device_join_management",
+        &statuses,
+        "Management configuration state; recipient-local activation is independently verified"
+            .to_owned(),
+    )
 }
 
 pub async fn cancel_via_im_core_async(

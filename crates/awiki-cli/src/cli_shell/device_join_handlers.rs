@@ -81,6 +81,22 @@ impl App {
         self.render_identity_result("awiki-cli id device join verify", &resolved, result)
     }
 
+    pub async fn run_id_device_join_management_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        reject_dry_run(self, "id device join management")?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = crate::m_core_cli_adapter::device_join::management_via_im_core_async(
+            &resolved,
+            identity_selector(self),
+            &command.name,
+            flag(command, "session"),
+        )
+        .await?;
+        self.render_identity_result("awiki-cli id device join management", &resolved, result)
+    }
+
     pub async fn run_id_device_join_approve_async(
         &self,
         command: &ParsedCommand,
@@ -193,7 +209,7 @@ fn confirm_sas_and_user_presence(sas: &str) -> Result<(), ExitError> {
 
     write!(
         stderr,
-        "Type APPROVE to confirm local user presence and authorize this device: "
+        "Type APPROVE to allow this device to join and become a management device: "
     )
     .map_err(io_error)?;
     stderr.flush().map_err(io_error)?;

@@ -7734,3 +7734,49 @@ fn unique_temp_root() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[cfg(feature = "secure-direct")]
+#[tokio::test]
+async fn upgraded_empty_lane_negotiation_blocks_legacy_inbox_before_sync() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let db = client.core_inner().local_state_db().await.unwrap();
+    let binding = crate::internal::local_state::sync_v2::IdentityAccountBinding {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        account_id: "read-cache-user".to_owned(),
+        handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+        current_did: client.did().as_str().to_owned(),
+        protocol_device_id: fixture.device_id.clone(),
+        identity_generation: "1".to_owned(),
+        device_auth_generation: "1".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+    let installation = db
+        .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+        .await
+        .unwrap();
+    db.record_sync_lane_capability_negotiation_v1a(
+        binding.owner_identity_id.clone(),
+        binding.device_auth_generation.clone(),
+        installation,
+        "[]".to_owned(),
+    )
+    .await
+    .unwrap();
+    // A saved empty negotiation from an older build is not a reason to choose
+    // legacy inbox while the newly enabled P5 root-delivery lane is pending.
+    assert!(sync_lane_capability_enabled_async(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    )
+    .await
+    .unwrap());
+    assert!(sync_lane_capability_enabled_blocking(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    ));
+}

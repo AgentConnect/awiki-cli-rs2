@@ -1889,6 +1889,56 @@ impl<'a> IdentityStore<'a> {
         self.save_index_locked(&lock, index)
     }
 
+    /// Commit a converged document only while the original identity projection
+    /// still matches. All authorization writers share this index mutation lock.
+    pub(crate) fn commit_converged_admin_document(
+        &self,
+        local_alias: &str,
+        expected: &IndexEntry,
+        state: crate::internal::identity_device_state::IdentityDeviceState,
+        document: &Value,
+    ) -> crate::ImResult<()> {
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let entry = index
+            .credentials
+            .get_mut(local_alias)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let serialize = |entry: &IndexEntry| {
+            serde_json::to_value(entry).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })
+        };
+        if serialize(entry)? != serialize(expected)? {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let did = crate::ids::Did::parse(&entry.did)?;
+        state.validate_for_did(&did)?;
+        let checkpoint = state
+            .checkpoint
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if document.get("id").and_then(Value::as_str) != Some(did.as_str())
+            || crate::internal::identity_wire::document::document_hash(document)?
+                != checkpoint.document_hash
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let path = self
+            .paths
+            .identity_root_dir
+            .join(&entry.dir_name)
+            .join(DID_DOCUMENT_FILE_NAME);
+        let raw =
+            serde_json::to_vec_pretty(document).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })?;
+        write_secure_bytes_atomic(&path, &raw)?;
+        entry.device_state = Some(state);
+        refresh_index_schema(&mut index);
+        self.save_index_locked(&lock, index)
+    }
+
     pub(crate) fn save_binding_generation(
         &self,
         local_alias: &str,

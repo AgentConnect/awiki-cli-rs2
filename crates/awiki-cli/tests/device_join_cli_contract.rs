@@ -210,3 +210,25 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+#[test]
+fn management_recovery_commands_have_safe_schemas_and_reject_dry_run() {
+    let workspace = TempDir::new("join-management-schema").unwrap();
+    for command in ["management-status", "management-resume", "management-retry"] {
+        let schema = awiki_cmd(
+            &["schema", "id", "device", "join", command],
+            workspace.path(),
+        );
+        assert!(schema.status.success());
+        let text = String::from_utf8_lossy(&schema.stdout);
+        assert!(!text.contains("authorization-handle"));
+        assert!(!text.contains("root-private-key"));
+        let mut args = vec!["--dry-run", "id", "device", "join", command];
+        if command == "management-retry" {
+            args.extend(["--session", "join-not-authorized"]);
+        }
+        let result = awiki_cmd(&args, workspace.path());
+        assert_eq!(result.status.code(), Some(2));
+        assert!(!workspace.path().join("tenants").exists());
+    }
+}

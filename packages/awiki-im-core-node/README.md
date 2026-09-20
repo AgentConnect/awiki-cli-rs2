@@ -60,6 +60,8 @@ finally {
 }
 ```
 
+`listConversations` 的 Direct 会话在没有最后一条消息时，仍可从已解析的 Direct 路由提供 `peerDid`，包括发送给自己的空会话；未解析的路由仍返回错误。
+
 `getLocalConversationTimeline` 只读取 Core 已提交的本地 conversation projection，不发起
 同步、远端 history 或 Directory RPC。它适合首屏显示；远端刷新应在后台进行，并在 Core
 提交后重新读取该 local timeline。它返回的 local cursor 不得传给 `getHistory`。

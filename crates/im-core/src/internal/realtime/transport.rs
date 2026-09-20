@@ -446,9 +446,16 @@ async fn prepare_p6_delivery_session_once_async(
     }
     let db = client.core_inner().local_state_db().await?;
     if db
-        .lane_capability_negotiation_required(
+        .lane_capability_negotiation_required_with_lanes(
             owner_identity_id.to_owned(),
             binding.device_auth_generation.clone(),
+            Some(
+                crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                    &db,
+                    owner_identity_id,
+                )
+                .await?,
+            ),
         )
         .await?
     {
