@@ -291,11 +291,13 @@ pub(super) async fn configure_model(
         options: options.clone(),
         changed: false,
     };
+    let response_has_configuration;
     if let Some(option) = options.as_array().and_then(|items| {
         items
             .iter()
             .find(|v| v["category"] == "model" || v["id"] == "model")
     }) {
+        response_has_configuration = true;
         let request: SetSessionConfigOptionRequest = serde_json::from_value(json!({
             "sessionId":sid,"configId":option["id"],"value":desired,
         }))
@@ -315,6 +317,7 @@ pub(super) async fn configure_model(
             })
             .block_task()
             .await?;
+        response_has_configuration = response.get("models").is_some();
         // An empty legacy acknowledgement is valid, but cannot override an
         // explicit current-model notification from the same operation.
         let returned = response
@@ -330,15 +333,13 @@ pub(super) async fn configure_model(
         return Err(acp::Error::invalid_params());
     }
     let observed = std::mem::take(&mut *changes.lock().unwrap());
-    if observed.changed {
+    // An explicit response is newer than notifications dispatched before it.
+    // Only an empty legacy acknowledgement needs the separate notification.
+    if !response_has_configuration && observed.changed {
         if current_model(&observed.options).as_deref() != Some(desired) {
             return Err(acp::Error::invalid_params());
         }
-        // Modern responses carry the full authoritative configuration. Legacy
-        // responses may contain no configuration at all.
-        if options.is_object() {
-            options = observed.options;
-        }
+        options = observed.options;
     }
     Ok(options)
 }

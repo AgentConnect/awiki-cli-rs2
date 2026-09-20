@@ -222,6 +222,7 @@ async fn selected_model_requires_native_confirmation_before_prompt() {
 async fn configuration_notifications_are_session_scoped_and_cannot_be_replaced_by_empty_ack() {
     for (mode, succeeds) in [
         ("legacy-notify", true),
+        ("modern-stale-notify", true),
         ("legacy-notify-wrong-current", false),
         ("legacy-config-notify", true),
         ("legacy-config-notify-wrong-current", false),

@@ -154,6 +154,7 @@ for line in sys.stdin:
             if 'wrong-current' not in model_mode: current_model=params.get('value',params.get('modelId'))
             if 'notify' in model_mode:
                 update = {'sessionUpdate':'config_option_update','configOptions':config_options()} if 'config' in model_mode else {'sessionUpdate':'current_model_update','currentModelId':current_model}
+                if model_mode == 'modern-stale-notify': update['currentModelId']='flash'
                 emit({'method':'session/update','params':{'sessionId':'foreign' if 'foreign' in model_mode else sid,'update':update}})
                 chunk('CONFIGURATION_TEXT_MUST_NOT_APPEAR')
             if model_mode == 'persistent': current_model_file.write_text(current_model)
