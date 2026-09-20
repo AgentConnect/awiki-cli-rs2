@@ -23,7 +23,7 @@ if ($SourceIntegration -and $env:AWIKI_RELEASE_REGISTRY -eq '1') {
     throw 'Source integration and registry release mode are mutually exclusive.'
 }
 $OutputRoot = if ($SourceIntegration) { '.artifacts/dependencies/source/target' } else { 'target' }
-$SourceDll = Join-Path $RootDir "$OutputRoot/$Target/release/awiki_im_core.dll
+$SourceDll = Join-Path $RootDir "$OutputRoot/$Target/release/awiki_im_core.dll"
 $DestinationDir = Join-Path $RootDir 'packages\awiki_im_core\windows\bin'
 $DestinationDll = Join-Path $DestinationDir 'awiki_im_core.dll'
 $GeneratedDart = Join-Path $RootDir 'packages\awiki_im_core\lib\src\generated\frb_generated.dart'
