@@ -23,14 +23,14 @@ def prepare_acp_clients(repo: Path, root: Path) -> dict[str, str]:
     components.mkdir()
     host = ('darwin' if sys.platform == 'darwin' else 'linux') + '-' + ('arm64' if platform.machine() in ('aarch64', 'arm64') else 'amd64')
     manifest = {'schema_version': 1, 'platform': host, 'available': True,
-                'node_version': specification['node_version'], 'adapters': specification['adapters']}
+                'runtime': specification['runtime'], 'adapters': specification['adapters']}
     (components / 'manifest.json').write_text(json.dumps(manifest))
     for entry in specification['adapters'].values():
         path = components / entry['entry']
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('offline fixture entry')
-    node = components / 'node'
-    node.write_text(source.replace("print('1.0.0')", "print('v" + specification['node_version'] + "')"))
+    node = binary_dir / 'node'
+    node.write_text(source.replace("print('1.0.0')", "print('v24.0.0')"))
     node.chmod(0o700)
     return {'HOME': str(root), 'AWIKI_ACP_TEST_COMPONENTS_DIR': str(components), 'AWIKI_DAEMON_AGENT_PROXY_MODE': 'inherit'}
 

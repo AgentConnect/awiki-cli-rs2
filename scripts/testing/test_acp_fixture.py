@@ -18,7 +18,7 @@ class AcpFixtureTests(unittest.TestCase):
             spec = json.loads((ROOT / 'scripts/release/daemon/acp/components.json').read_text())
             components = Path(env['AWIKI_ACP_TEST_COMPONENTS_DIR'])
             self.assertEqual(json.loads((components / 'manifest.json').read_text())['adapters'], spec['adapters'])
-            for executable in [home / '.local/bin/codex', home / '.local/bin/claude', components / 'node']:
+            for executable in [home / '.local/bin/codex', home / '.local/bin/claude', home / '.local/bin/node']:
                 response = subprocess.run([str(executable)], input=json.dumps({'jsonrpc': '2.0', 'id': 7, 'method': 'initialize', 'params': {}})+'\n', capture_output=True, text=True, env=env, timeout=5, check=True)
                 self.assertEqual(json.loads(response.stdout)['id'], 7)
                 self.assertTrue(json.loads(response.stdout)['result']['agentCapabilities']['loadSession'])

@@ -2,7 +2,7 @@
 """Initialize packaged upstream adapters using a fake native CLI and empty HOME.
 
 This is an artifact smoke check, not model acceptance. It needs a prepared bundle
-and Python, but never a host Agent CLI, model API key or user configuration.
+and Python plus host Node ≥22, but never a host Agent CLI, model API key or user configuration.
 """
 import argparse
 import json
@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import selectors
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,9 +37,12 @@ def smoke(bundle):
     manifest = json.loads((bundle / "manifest.json").read_text())
     if not manifest["available"]:
         raise ValueError("This artifact has no runnable adapter components")
-    version = subprocess.check_output([str(bundle / "node"), "--version"], text=True).strip()
-    if version != "v" + manifest["node_version"]:
-        raise ValueError("Unexpected packaged Node version")
+    node = shutil.which("node")
+    if not node:
+        raise ValueError("Host Node is required")
+    version = subprocess.check_output([node, "--version"], text=True).strip()
+    if int(version.removeprefix("v").split(".")[0]) < manifest["runtime"]["minimum_major"]:
+        raise ValueError("Host Node version is incompatible")
     with tempfile.TemporaryDirectory(prefix="acp-package-smoke-", dir=bundle.parent) as temporary:
         root = Path(temporary)
         native = root / "native-fixture"
@@ -50,7 +54,7 @@ def smoke(bundle):
                            "XDG_CONFIG_HOME": str(root / "config"), "XDG_DATA_HOME": str(root / "data"),
                            "XDG_CACHE_HOME": str(root / "cache"), adapter["executable_env"]: str(native)}
             with (root / f"{name}.stderr").open("w+b") as errors:
-                process = subprocess.Popen([str(bundle / "node"), str(bundle / adapter["entry"])],
+                process = subprocess.Popen([node, str(bundle / adapter["entry"])],
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
                                            env=environment, cwd=root, start_new_session=True)
                 try:

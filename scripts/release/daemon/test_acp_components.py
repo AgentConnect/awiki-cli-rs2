@@ -1,8 +1,6 @@
 import importlib.util
-import io
 import json
 from pathlib import Path
-import tarfile
 import tempfile
 import unittest
 
@@ -31,34 +29,26 @@ class AcpComponentTests(unittest.TestCase):
             with self.subTest(package=package), self.assertRaises(ValueError):
                 builder.validate_lock({"lockfileVersion": 3, "packages": {"node_modules/a": package}})
 
-    def test_extracts_only_runtime_and_notices(self):
+    def test_prunes_auxiliary_files_preserving_runtime_and_licenses(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            archive = root / "node-test.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar:
-                for name, data in [("node-test/bin/node", b"node"), ("node-test/LICENSE", b"notice"), ("../outside", b"bad")]:
-                    member = tarfile.TarInfo(name)
-                    member.size = len(data)
-                    tar.addfile(member, io.BytesIO(data))
-            output = root / "out"
-            output.mkdir()
-            builder.extract_node(archive, output)
-            self.assertEqual((output / "node").read_bytes(), b"node")
-            self.assertEqual((output / "LICENSE.node").read_bytes(), b"notice")
-            self.assertEqual((output / "node").stat().st_mode & 0o777, 0o755)
-            self.assertFalse((root / "outside").exists())
+            keep = ["sdk/index.js", "sdk/config.json", "sdk/src/index.ts", "sdk/LICENSE.md", "sdk/tests/NOTICE.txt", "sdk/package.json"]
+            remove = ["sdk/index.js.map", "sdk/index.d.ts", "sdk/index.d.mts", "sdk/test/spec.js", "sdk/dist/acp.test.js", "sdk/README.md", "sdk/examples/demo.js"]
+            for name in keep + remove:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            self.assertGreater(builder.prune_development_assets(root), 0)
+            self.assertTrue(all((root / name).is_file() for name in keep))
+            self.assertTrue(all(not (root / name).exists() for name in remove))
 
-    def test_rejects_symlinked_node_and_missing_notices(self):
+    def test_upgrade_compatibility_launcher_is_not_a_node_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            archive = root / "node-test.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar:
-                member = tarfile.TarInfo("node-test/bin/node")
-                member.type = tarfile.SYMTYPE
-                member.linkname = "../../outside"
-                tar.addfile(member)
-            with self.assertRaises(ValueError):
-                builder.extract_node(archive, root)
+            builder.write_legacy_upgrade_launcher(root)
+            self.assertTrue((root / "node").read_text().startswith("#!/bin/sh"))
+            self.assertLess((root / "node").stat().st_size, 1024)
+            self.assertIn("No Node.js binary", (root / "LICENSE.node").read_text())
 
     def test_inventory_rejects_symlinks_and_checksum_line_injection(self):
         with tempfile.TemporaryDirectory() as temporary:

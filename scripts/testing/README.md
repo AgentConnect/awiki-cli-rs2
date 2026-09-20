@@ -28,7 +28,7 @@ APP 的无模型组件与聊天回归：在 `awiki-me` 执行 `dart run tests/un
 System 聚合入口与归属见 [ACP 测试说明](../../../awiki-system-test/docs/acp-testing.md)。
 
 宿主机安装检测与创建准入也由此入口覆盖：使用临时可执行脚本模拟已安装／缺失／异常客户端，不读取日常安装或模型配置。
-Hermes 使用临时原生 ACP 可执行脚本覆盖版本、依赖检查、超时与退出；Codex/Claude 额外验证私有适配器清单和 Node。
+Hermes 使用临时原生 ACP 可执行脚本覆盖版本、依赖检查、超时与退出；Codex/Claude 额外验证固定适配器清单和隔离的宿主机 Node 替身。
 
 
 ### 2026-09-20 三种旧接入迁移

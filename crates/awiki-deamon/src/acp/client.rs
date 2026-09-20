@@ -72,7 +72,7 @@ pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig
         .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command()));
     let mut config = match brand {
         Brand::Codex | Brand::ClaudeCode => {
-            super::components::Adapter::discover(brand)?.launch(&binary)
+            super::components::Adapter::discover(brand)?.launch(&binary)?
         }
         _ => AcpAgentConfig::new(binary).args(brand.args().iter().copied()),
     };

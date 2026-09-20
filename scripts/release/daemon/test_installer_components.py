@@ -19,13 +19,18 @@ def digest(value):
 
 
 class InstallerComponentTests(unittest.TestCase):
-    def archive(self, root, components=True, mutate=None, extra=None, link_runtime=False):
+    def archive(self, root, components=True, mutate=None, extra=None, link_runtime=False, host_node=False):
         files = {name: b"fixture" for name in ["awiki-deamon", "awiki-deamon-runtime", "README.txt", "LICENSE", "LICENSE-APACHE", "COMMERCIAL-LICENSING.md", "SOURCE.md"]}
         if components:
             payload = {"node": b"private node", "LICENSE.node": b"upstream notices", "package.json": b"{}", "package-lock.json": b"{}", "node_modules/codex/index.js": b"codex", "node_modules/claude/index.js": b"claude"}
             manifest = {"schema_version": 1, "available": True, "package_lock_sha256": digest(b"{}"),
                         "adapters": {"codex": {"entry": "node_modules/codex/index.js"}, "claude-code": {"entry": "node_modules/claude/index.js"}},
                         "files": {name: digest(value) for name, value in payload.items()}}
+            if host_node:
+                payload["node"] = b'#!/bin/sh\nexec /usr/bin/env node "$@"\n'
+                payload["LICENSE.node"] = b'No Node binary is distributed.'
+                manifest["runtime"] = {"kind": "host-node", "minimum_major": 22, "recommended_major": 24}
+                manifest["files"] = {name: digest(value) for name, value in payload.items()}
             files.update({"acp/" + name: value for name, value in payload.items()})
             files["acp/manifest.json"] = json.dumps(manifest).encode()
         files["checksums.txt"] = "".join(f"{digest(data)}  {name}\n" for name, data in sorted(files.items())).encode()
@@ -45,6 +50,9 @@ class InstallerComponentTests(unittest.TestCase):
             if extra:
                 tar.addfile(extra)
         return archive
+
+    def test_host_node_package_preserves_legacy_installer_validation(self):
+        self.assertEqual(self.validate(host_node=True)[0], 0)
 
     def validate(self, **kwargs):
         with tempfile.TemporaryDirectory() as temporary:

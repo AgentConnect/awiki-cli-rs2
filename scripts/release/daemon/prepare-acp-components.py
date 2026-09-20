@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build pinned ACP components without installing or changing any host Agent CLI.
 
-Build-time network access is limited to locked npm artifacts and a checksummed
-official Node archive. Runtime installation never invokes this builder.
+Build-time network access is limited to locked npm artifacts. Host Node is
+resolved and validated by the daemon. Runtime installation never invokes this builder.
 """
 import argparse
 import hashlib
@@ -11,10 +11,8 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import urllib.parse
-import urllib.request
 
 SOURCE = Path(__file__).resolve().parent / "acp"
 ROOT = SOURCE.parents[3]
@@ -41,44 +39,41 @@ def validate_lock(lock):
             raise ValueError(f"ACP component is not a fixed registry artifact: {name}")
 
 
-def download_node(spec, version, cache):
-    cache.mkdir(parents=True, exist_ok=True)
-    destination = cache / spec["filename"]
-    if destination.is_file() and sha256(destination) == spec["sha256"]:
-        return destination
-    url = f"https://nodejs.org/dist/v{version}/{spec['filename']}"
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=cache, prefix="node-download-", delete=False) as output:
-            temporary = Path(output.name)
-            with urllib.request.urlopen(url, timeout=60) as source:
-                shutil.copyfileobj(source, output)
-        if sha256(temporary) != spec["sha256"]:
-            raise ValueError("Official Node artifact checksum mismatch")
-        temporary.replace(destination)
-        return destination
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+def prune_development_assets(root):
+    """Remove non-runtime assets only; retain all JS, JSON, source TS and legal notices."""
+    import re
+    removed = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Unexpected component symlink")
+        if not path.is_file():
+            continue
+        parts = path.relative_to(root).parts
+        if any(part.lower().startswith(("license", "notice", "copying", "copyright")) for part in parts):
+            continue
+        name = path.name
+        auxiliary = (name.endswith((".map", ".d.ts", ".d.mts", ".d.cts", ".md", ".mdx"))
+            or any(part in {"test", "tests", "__tests__", "example", "examples", "benchmark", "benchmarks"} for part in parts)
+            or re.search(r"\.(test|spec)\.(js|ts|cjs|mjs)$", name))
+        if auxiliary:
+            removed += path.stat().st_size
+            path.unlink()
+    # Empty directories are not payload and need not enter the archive.
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+    return removed
 
 
-def extract_node(archive, destination):
-    """Extract exactly node and its notices; do not unpack an arbitrary archive."""
-    expected_root = archive.name.removesuffix(".tar.gz")
-    wanted = {f"{expected_root}/bin/node": "node", f"{expected_root}/LICENSE": "LICENSE.node"}
-    found = set()
-    with tarfile.open(archive, "r:gz") as package:
-        for member in package:
-            if member.name not in wanted:
-                continue
-            if member.name in found or not member.isfile():
-                raise ValueError("Invalid or duplicate Node runtime entry")
-            found.add(member.name)
-            with package.extractfile(member) as source, (destination / wanted[member.name]).open("wb") as output:
-                shutil.copyfileobj(source, output)
-    if found != set(wanted):
-        raise ValueError("Node runtime or license is missing")
-    (destination / "node").chmod(0o755)
+def write_legacy_upgrade_launcher(bundle):
+    # 0.1.101's updater requires these filenames before it can launch a newer
+    # daemon. Keep a tiny host-Node launcher, never a bundled Node binary.
+    (bundle / "node").write_text('#!/bin/sh\n# Compatibility launcher; Node.js is supplied by the host.\nexec /usr/bin/env node "$@"\n')
+    (bundle / "node").chmod(0o755)
+    (bundle / "LICENSE.node").write_text(
+        "No Node.js binary is distributed in this package.\n"
+        "The compatibility launcher is covered by the package root licenses.\n"
+        "These filenames preserve upgrades from Daemon 0.1.101.\n")
 
 
 def component_files(root):
@@ -125,8 +120,8 @@ def prepare(platform, output, cache):
         manifest = {
             "schema_version": 1,
             "platform": platform,
-            "available": platform in specification["node_archives"],
-            "node_version": specification["node_version"],
+            "available": platform in specification["platforms"],
+            "runtime": specification["runtime"],
             "package_lock_sha256": sha256(lock_path),
             "adapters": specification["adapters"],
         }
@@ -141,10 +136,8 @@ def prepare(platform, output, cache):
             shutil.copytree(install / "node_modules", bundle / "node_modules", symlinks=True,
                             ignore=lambda _directory, names: {".bin"} & set(names))
             verify_adapters(bundle, specification)
-            node = specification["node_archives"][platform]
-            archive = download_node(node, specification["node_version"], cache)
-            extract_node(archive, bundle)
-            manifest["node_archive_sha256"] = node["sha256"]
+            prune_development_assets(bundle / "node_modules")
+            write_legacy_upgrade_launcher(bundle)
         else:
             manifest["unavailable_reason"] = "adapter_platform_unsupported"
         manifest["files"] = component_files(bundle)

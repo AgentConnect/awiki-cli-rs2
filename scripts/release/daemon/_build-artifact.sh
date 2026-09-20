@@ -172,7 +172,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 Would run: ${cargo_cmd[*]} build -p awiki-deamon --bin awiki-deamon --release --locked --target ${TARGET_TRIPLE}
 Would archive: ${build_bin} -> ${archive_path}
 Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt acp/
-Would prepare: pinned ACP adapters and private Node for ${OS_NAME}/${ARCH_NAME}
+Would prepare: pinned ACP adapters for host Node for ${OS_NAME}/${ARCH_NAME}
 EOF
   exit 0
 fi

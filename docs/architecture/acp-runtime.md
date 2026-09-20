@@ -1,6 +1,6 @@
 # ACP Runtime 合同
 
-七种智能体统一使用官方 Rust SDK、稳定 ACP v1 与 stdio 子进程。Hermes 使用官方原生 ACP；Codex、Claude Code 使用 Daemon 随包分发的固定版本上游 ACP 适配器和私有 Node，调用宿主机已有客户端。OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness 沿用原有 ACP 启动方式。
+七种智能体统一使用官方 Rust SDK、稳定 ACP v1 与 stdio 子进程。Hermes 使用官方原生 ACP；Codex、Claude Code 使用 Daemon 随包分发的固定版本上游 ACP 适配器和宿主机 Node.js（≥22，推荐 24 LTS），调用宿主机已有客户端。OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness 沿用原有 ACP 启动方式。
 
 ## 2026-09-20 统一迁移合同
 
@@ -46,7 +46,7 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 `status` 为 `ready/missing/unavailable/unknown`，只表示安装和启动条件，不验证账号或模型。
 七种客户端复用实际运行的程序/PATH。Hermes 使用官方 `hermes acp --version` 与
 `hermes acp --check` 检查 ACP 安装依赖；其余客户端执行版本命令。Codex、Claude Code
-还检查随 Daemon 分发的适配器清单、入口与私有 Node 版本。结果包含 `execution_protocol=acp`，
+还检查随 Daemon 分发的适配器清单、入口与宿主机 Node.js（≥22，推荐 24 LTS） 版本。结果包含 `execution_protocol=acp`，
 适配器类型另带 `adapter_version`。不访问模型、账号登录或执行 prompt；原始输出、环境、路径不回传。
 创建前先复核所选客户端，再注册；ACP 继续协议校验。幂等命中已创建结果时不重复检查。
 APP 对所有类型都要求 Daemon 的 ACP supported_drivers 声明；旧 Daemon 只声明四种时，另三种提示升级且禁止创建。安装检测未声明时沿用已声明 ACP 能力的创建检查；已声明但未知的检测结果不放行。
@@ -113,3 +113,9 @@ schema 37 的 `runtime_retirement` 永久记录旧接入的 DID、profile 与原
 绑定和独立 handle 哈希，bootstrap 重试复用同一代次。旧 bootstrap 不能创建替代身份。
 后台角色只获得 `rpc.ping / app.action.request`，不获得消息发送或问答工具；最终投递
 与执行中都校验当前绑定。停用/撤权后取消运行，最终结果不投递给来信者。
+
+### 宿主机 Node 与分发体积（0.1.102）
+
+Codex、Claude Code 的固定适配器复用宿主机 Node；检测与执行共用程序发现和版本校验，支持常规安装符号链接。缺失、版本不兼容、启动失败、超时使用独立 reason_code；每次启动复核，清除 NODE_OPTIONS/NODE_PATH，避免与进程注入配置耦合。其他五种客户端不新增此要求。APP 提供官方安装入口与重新检测，不自动安装或修改宿主机。
+
+组件构建删除 source map、声明文件、测试、示例与非法律 Markdown，保留运行时源码、锁文件和许可声明；禁止捆绑原生 Agent CLI。为兼容 0.1.101 升级器，schema_version 保持 1，新增 runtime=host-node 描述；保留极小的 acp/node shell 转发器与说明文件 LICENSE.node，不包含 Node 二进制。新 Daemon 直接发现宿主机 Node，不调用兼容转发器。全部分发文件仍进入清单哈希校验。

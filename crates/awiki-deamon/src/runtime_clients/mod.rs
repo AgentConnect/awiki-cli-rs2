@@ -223,20 +223,17 @@ fn inspect_adapter(brand: crate::acp::Brand, deadline: Instant) -> Result<String
         "acp_adapter_missing" => "adapter_missing",
         _ => "adapter_invalid",
     })?;
-    let output =
-        probe_version(&adapter.node, deadline).map_err(|_| "adapter_runtime_unavailable")?;
-    if version(&output).as_deref() != Some(adapter.node_version.as_str()) {
-        return Err("adapter_invalid");
-    }
+    adapter.validate_node(deadline)?;
     Ok(adapter.version)
 }
 
-fn probe_version(binary: &Path, deadline: Instant) -> Result<String, &'static str> {
+pub(crate) fn probe_version(binary: &Path, deadline: Instant) -> Result<String, &'static str> {
     if !binary.is_file() {
         return Err("not_found");
     }
     let mut command = Command::new(binary);
     command.arg("--version");
+    command.env_remove("NODE_OPTIONS").env_remove("NODE_PATH");
     if let Some(path) = crate::cli_runtime_env::cli_child_path() {
         command.env("PATH", path);
     }

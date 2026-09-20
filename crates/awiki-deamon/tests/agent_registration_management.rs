@@ -243,7 +243,7 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
             components.join("manifest.json"),
             serde_json::to_vec(&json!({
                 "schema_version":1,"platform":platform,"available":true,
-                "node_version":spec["node_version"],"adapters":spec["adapters"],
+                "runtime":spec["runtime"],"adapters":spec["adapters"],
             }))
             .unwrap(),
         )
@@ -253,15 +253,8 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
             std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
             std::fs::write(entry, "fixture entry").unwrap();
         }
-        let node = components.join("node");
-        std::fs::write(
-            &node,
-            source.replace(
-                "print('1.0.0')",
-                &format!("print('v{}')", spec["node_version"].as_str().unwrap()),
-            ),
-        )
-        .unwrap();
+        let node = bin.join("node");
+        std::fs::write(&node, source.replace("print('1.0.0')", "print('v24.0.0')")).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::env::set_var("AWIKI_ACP_TEST_COMPONENTS_DIR", components);

@@ -6,6 +6,7 @@ use agent_client_protocol::AcpAgentConfig;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const SPECIFICATION: &str = include_str!("../../../../scripts/release/daemon/acp/components.json");
 
@@ -13,7 +14,7 @@ pub(crate) struct Adapter {
     pub node: PathBuf,
     pub entry: PathBuf,
     pub version: String,
-    pub node_version: String,
+    minimum_node_major: u64,
     executable_env: String,
 }
 
@@ -66,7 +67,10 @@ impl Adapter {
 
     pub(crate) fn from_directory(root: &Path, brand: Brand, platform: &str) -> Result<Self> {
         let spec: Value = serde_json::from_str(SPECIFICATION)?;
-        if spec["node_archives"].get(platform).is_none() {
+        if !spec["platforms"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|v| v == platform))
+        {
             bail!("acp_adapter_platform_unsupported");
         }
         let configured = &spec["adapters"][brand.id()];
@@ -80,21 +84,21 @@ impl Adapter {
         if manifest["schema_version"] != 1
             || manifest["platform"] != platform
             || manifest["available"] != true
-            || manifest["node_version"] != spec["node_version"]
+            || manifest["runtime"] != spec["runtime"]
             || manifest["adapters"][brand.id()] != *configured
         {
             bail!("acp_adapter_incompatible");
         }
-        let node = root.join("node");
+        let node = crate::cli_runtime_env::resolve_cli_binary("node");
         let entry = root.join(
             configured["entry"]
                 .as_str()
                 .context("acp_adapter_entry_missing")?,
         );
         // Full hashes are checked at installation, not on every conversation.
-        // Neither executable may escape the versioned component directory.
+        // The adapter cannot escape its package. Host Node may be a normal installation symlink.
         let canonical_root = root.canonicalize()?;
-        for path in [&node, &entry] {
+        for path in [&entry] {
             let metadata = std::fs::symlink_metadata(path).context("acp_adapter_file_missing")?;
             if !metadata.is_file() || !path.canonicalize()?.starts_with(&canonical_root) {
                 bail!("acp_adapter_file_invalid");
@@ -107,10 +111,9 @@ impl Adapter {
                 .as_str()
                 .context("acp_adapter_version_missing")?
                 .into(),
-            node_version: spec["node_version"]
-                .as_str()
-                .context("acp_node_version_missing")?
-                .into(),
+            minimum_node_major: spec["runtime"]["minimum_major"]
+                .as_u64()
+                .context("acp_node_requirement_missing")?,
             executable_env: configured["executable_env"]
                 .as_str()
                 .context("acp_adapter_override_missing")?
@@ -118,10 +121,34 @@ impl Adapter {
         })
     }
 
-    pub(crate) fn launch(&self, client: &Path) -> AcpAgentConfig {
-        AcpAgentConfig::new(&self.node)
+    pub(crate) fn validate_node(&self, deadline: Instant) -> Result<(), &'static str> {
+        let output = crate::runtime_clients::probe_version(&self.node, deadline).map_err(
+            |code| match code {
+                "not_found" => "node_missing",
+                "timeout" => "node_timeout",
+                _ => "node_unavailable",
+            },
+        )?;
+        let raw = output.trim().strip_prefix('v').ok_or("node_incompatible")?;
+        let parts: Vec<_> = raw.split('.').collect();
+        if parts.len() != 3
+            || parts.iter().any(|v| v.parse::<u64>().is_err())
+            || parts[0].parse::<u64>().map_err(|_| "node_incompatible")? < self.minimum_node_major
+        {
+            return Err("node_incompatible");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn launch(&self, client: &Path) -> Result<AcpAgentConfig> {
+        // Recheck at launch: the host can remove/upgrade Node after inspection.
+        self.validate_node(Instant::now() + Duration::from_secs(3))
+            .map_err(anyhow::Error::msg)?;
+        Ok(AcpAgentConfig::new(&self.node)
             .arg(self.entry.to_string_lossy())
-            .env(&self.executable_env, client.to_string_lossy())
+            .env("NODE_OPTIONS", "")
+            .env("NODE_PATH", "")
+            .env(&self.executable_env, client.to_string_lossy()))
     }
 }
 
