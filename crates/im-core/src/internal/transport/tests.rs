@@ -1032,7 +1032,7 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
         did: crate::ids::Did::parse(&public.reference.did).unwrap(),
         did_document: public.document.into_value(),
         protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
-        root_key_id: format!("{}#key-1", public.reference.did),
+        root_key_id: Some(format!("{}#key-1", public.reference.did)),
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
         legacy_daemon_authorization: false,
@@ -1214,4 +1214,20 @@ async fn caller_owned_retry_budget_never_resubmits_after_authentication_rejectio
         assert!(result.is_err());
         assert_eq!(server.join().unwrap(), 1);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn web_sync_resolution_inside_current_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_sync_resolution_inside_multi_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
 }

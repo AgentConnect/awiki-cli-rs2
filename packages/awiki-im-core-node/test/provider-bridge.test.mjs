@@ -1048,3 +1048,25 @@ test('sibling adoption uses the strict provider method and never falls back to l
   assert.equal(strict, 1)
   assert.equal(legacy, 0)
 })
+
+test('External Provider reconciles a terminal rejection and retires its session handle', async () => {
+  const observations = []
+  const dispatch = createIdentityProviderDispatch(provider({
+    prepareDocumentChange: async () => ({
+      candidate: async () => ({ operationId: 'rejected-web', candidateDocument: { id: 'did:web:example.test:a' }, candidateDigest: 'digest' }),
+      reconcileRejected: async observation => { observations.push(observation); return { outcome: 'aborted' } },
+    }),
+  }))
+  const prepared = await dispatch([{ operation: 'prepareDocumentChange', payloadJson: JSON.stringify({
+    identity: { storeId: 's', identityId: 'i', did: 'did:web:example.test:a' }, request: { changes: [] },
+  }), buffers: [] }])
+  assert.equal(prepared.ok, true)
+  const { sessionId } = JSON.parse(prepared.payloadJson)
+  const observation = { document: { id: 'did:web:example.test:a' }, evidence: { documentVersion: 2, registryVersion: 2, documentDigest: 'digest' } }
+  const call = { operation: 'documentChangeReconcileRejected', payloadJson: JSON.stringify({ sessionId, observation }), buffers: [] }
+  const outcome = await dispatch([call])
+  assert.equal(outcome.ok, true)
+  assert.deepEqual(JSON.parse(outcome.payloadJson), { outcome: 'aborted' })
+  assert.deepEqual(observations, [observation])
+  assert.equal((await dispatch([call])).ok, false)
+})

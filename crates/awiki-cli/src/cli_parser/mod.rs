@@ -176,6 +176,9 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         | "id.device.join.management-retry"
         | "id.device.join.reject"
         | "id.device.join.cancel"
+        | "id.services.show"
+        | "id.services.update"
+        | "id.services.resume"
         | "id.device.revoke" => Err(async_only_error(&command.name)),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
@@ -333,6 +336,9 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.reject" => app.run_id_device_join_reject_async(command).await,
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "id.device.revoke" => app.run_id_device_revoke_async(command).await,
+        "id.services.show" | "id.services.update" | "id.services.resume" => {
+            app.run_id_services_async(command).await
+        }
         "id.device.root-key.send" => app.run_id_device_root_key_send_async(command).await,
         "group.create" => app.run_group_create_async(command).await,
         "group.get" => app.run_group_get_async(command).await,

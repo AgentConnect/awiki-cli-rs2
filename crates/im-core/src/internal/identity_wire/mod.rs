@@ -9,6 +9,26 @@ pub(crate) mod profile;
 pub(crate) mod registration;
 pub(crate) mod relationships;
 pub(crate) mod update_document;
+pub(crate) mod web_registration;
+pub(crate) mod web_registration_result;
+
+#[cfg(test)]
+mod web_control_tests;
+
+/// Deployment audience is mandatory only for the hosted Web DeviceProof branch.
+pub(crate) fn bind_device_proof_audience(
+    signing_object: &mut serde_json::Value,
+    key_id: &str,
+    audience: Option<&str>,
+) -> crate::ImResult<()> {
+    if key_id.starts_with("did:web:") {
+        let audience = audience
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        signing_object["audience"] = serde_json::json!(audience);
+    }
+    Ok(())
+}
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

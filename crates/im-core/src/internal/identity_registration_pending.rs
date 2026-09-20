@@ -14,7 +14,7 @@ use crate::internal::secret_vault::policy::SecretAccessPolicy;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const KEY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +29,12 @@ pub(crate) enum PendingRegistrationPhase {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingRegistration {
     schema_version: u32,
+    #[serde(default)]
+    pub(crate) did_method: crate::identity::DidMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) registration_operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) registration_request_hash: Option<String>,
     pub(crate) target_handle: String,
     pub(crate) target_domain: String,
     pub(crate) local_alias: String,
@@ -56,7 +62,8 @@ pub(crate) struct PendingRegistrationIdentity {
     pub(crate) did: crate::ids::Did,
     pub(crate) did_document: serde_json::Value,
     pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
-    pub(crate) root_key_id: String,
+    #[serde(default)]
+    pub(crate) root_key_id: Option<String>,
     pub(crate) device_signing_key_id: String,
     pub(crate) device_e2ee_key_id: String,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -68,6 +75,10 @@ pub(crate) struct PendingRegistrationIdentity {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingRegistrationRemoteResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) current: Option<
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+    >,
     pub(crate) did: String,
     pub(crate) user_id: String,
     pub(crate) handle: String,
@@ -115,6 +126,10 @@ impl PendingRegistration {
             crate::internal::identity_wire::document::document_hash(&identity.did_document)?;
         let pending = Self {
             schema_version: SCHEMA_VERSION,
+            did_method: identity.did_method()?,
+            registration_operation_id: (identity.did_method()? == crate::identity::DidMethod::Web)
+                .then(|| uuid::Uuid::new_v4().to_string()),
+            registration_request_hash: None,
             target_handle,
             target_domain,
             local_alias,
@@ -134,7 +149,31 @@ impl PendingRegistration {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
-        if self.schema_version != SCHEMA_VERSION
+        if !matches!(self.schema_version, 2 | SCHEMA_VERSION)
+            || self.did_method != self.identity.did_method()?
+            || match self.did_method {
+                crate::identity::DidMethod::Wba => {
+                    self.registration_operation_id.is_some()
+                        || self.registration_request_hash.is_some()
+                }
+                crate::identity::DidMethod::Web => {
+                    self.schema_version != SCHEMA_VERSION
+                        || !self.registration_operation_id.as_ref().is_some_and(|id| {
+                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| {
+                                uuid.get_version_num() == 4 && uuid.to_string() == *id
+                            })
+                        })
+                }
+            }
+            || self.registration_request_hash.as_ref().is_some_and(|hash| {
+                hash.len() != 64
+                    || !hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            || (self.did_method == crate::identity::DidMethod::Web
+                && self.remote_attempted
+                && self.registration_request_hash.is_none())
             || self.target_handle.trim().is_empty()
             || self.target_domain.trim().is_empty()
             || self.local_alias.trim().is_empty()
@@ -160,6 +199,9 @@ impl PendingRegistration {
             _ => return Err(crate::ImError::PermissionDenied),
         }
         if let Some(remote) = &self.remote_result {
+            if let Some(current) = &remote.current {
+                current.validate(self)?;
+            }
             if !self.remote_attempted
                 || remote.did != self.identity.did.as_str()
                 || remote.user_id.trim().is_empty()
@@ -196,7 +238,29 @@ impl PendingRegistration {
 }
 
 impl PendingRegistrationIdentity {
+    pub(crate) fn did_method(&self) -> crate::ImResult<crate::identity::DidMethod> {
+        if self.did.as_str().starts_with("did:web:") {
+            anp::authentication::build_did_web_resolution_url(self.did.as_str())
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            Ok(crate::identity::DidMethod::Web)
+        } else if self.did.as_str().starts_with("did:wba:") {
+            Ok(crate::identity::DidMethod::Wba)
+        } else {
+            Err(crate::ImError::PermissionDenied)
+        }
+    }
+
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        let root_valid = match self.did_method()? {
+            crate::identity::DidMethod::Wba => {
+                self.root_key_id.as_deref() == Some(format!("{}#key-1", self.did.as_str()).as_str())
+            }
+            crate::identity::DidMethod::Web => {
+                self.root_key_id.is_none()
+                    && self.did_document.get("proof").is_none()
+                    && !self.legacy_daemon_authorization
+            }
+        };
         let daemon_kid = format!("{}#daemon-key-1", self.did.as_str());
         let daemon_method_present =
             anp::authentication::find_verification_method(&self.did_document, &daemon_kid)
@@ -217,7 +281,7 @@ impl PendingRegistrationIdentity {
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 != Some(self.did.as_str())
-            || self.root_key_id != format!("{}#key-1", self.did.as_str())
+            || !root_valid
             || self.device_signing_key_id
                 != format!(
                     "{}#{}-sign",
@@ -312,6 +376,49 @@ impl PendingRegistrationStore {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(Some((secret_ref, pending)))
+    }
+
+    pub(crate) fn summaries(
+        &self,
+        domain: &str,
+    ) -> crate::ImResult<Vec<crate::identity::PendingIdentityRegistration>> {
+        let mut results = std::collections::BTreeMap::new();
+        for reference in self.vault.list()?.into_iter().filter(|reference| {
+            reference.workspace_id == self.workspace_id
+                && reference.device_id == self.device_id
+                && reference.kind == SecretKind::IdentityRegistrationPending
+        }) {
+            let plaintext = self.vault.open(&reference)?;
+            let pending: PendingRegistration = serde_json::from_slice(plaintext.expose_secret())
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            pending.validate()?;
+            if reference.key_id != pending_key_id(&pending.target_handle, &pending.target_domain) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if pending.target_domain != domain {
+                continue;
+            }
+            let summary = crate::identity::PendingIdentityRegistration {
+                did: pending.identity.did.as_str().to_owned(),
+                full_handle: format!("{}.{}", pending.target_handle, pending.target_domain),
+                method: pending.did_method,
+                display_name: pending.display_name,
+                verification_kind: pending.verification_kind,
+                phase: match pending.phase {
+                    PendingRegistrationPhase::Prepared => "prepared",
+                    PendingRegistrationPhase::RemoteCommitted => "remote_committed",
+                    PendingRegistrationPhase::LocalCommitted => "local_committed",
+                }
+                .to_owned(),
+            };
+            if results
+                .insert(summary.full_handle.clone(), summary)
+                .is_some()
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        Ok(results.into_values().collect())
     }
 
     pub(crate) fn save(&self, pending: &PendingRegistration) -> crate::ImResult<SecretRef> {
@@ -458,7 +565,7 @@ mod tests {
             did: crate::ids::Did::parse(&public.reference.did).unwrap(),
             did_document: public.document.into_value(),
             protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
-            root_key_id: format!("{}#key-1", public.reference.did),
+            root_key_id: Some(format!("{}#key-1", public.reference.did)),
             device_signing_key_id: device.signing_key_id.clone(),
             device_e2ee_key_id: device.e2ee_key_id.clone(),
             legacy_daemon_authorization: false,

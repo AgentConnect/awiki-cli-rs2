@@ -1118,6 +1118,27 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
         }
         Ok(outcome)
     }
+
+    async fn reconcile_rejected(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let outcome: WireDocumentChangeOutcome = call_json(
+            &self.dispatch,
+            "documentChangeReconcileRejected",
+            &ReconcileDocumentChangePayload {
+                session_id: &self.session_id,
+                observation: &observation,
+            },
+            Vec::new(),
+        )
+        .await?;
+        let outcome = ProviderDocumentChangeOutcome::try_from(outcome)?;
+        if matches!(outcome, ProviderDocumentChangeOutcome::Committed { .. }) {
+            *self.public_cache.write().await = None;
+        }
+        Ok(outcome)
+    }
 }
 
 #[async_trait::async_trait]

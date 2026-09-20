@@ -29,6 +29,8 @@ use crate::internal::identity_wire::device_revoke::{
 };
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport};
 
+mod web;
+
 const USER_PRESENCE_MAX_AGE_SECONDS: i64 = 120;
 const USER_PRESENCE_FUTURE_SKEW_SECONDS: i64 = 30;
 
@@ -110,6 +112,9 @@ where
     R: DeviceRevokeRemote,
     D: DeviceRevokeDocumentResolver,
 {
+    if client.did().as_str().starts_with("did:web:") {
+        return web::recover(core, client, store, remote, resolver).await;
+    }
     let (completed, pending_records) =
         converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
             .await?;
@@ -133,6 +138,12 @@ async fn recover_pending_locked<D>(
 where
     D: DeviceRevokeDocumentResolver,
 {
+    if client.did().as_str().starts_with("did:web:") {
+        let mut remote = DeviceRevokeHttpAdapter::new(
+            crate::internal::transport::CoreHttpTransport::new(client),
+        );
+        return web::recover(core, client, store, &mut remote, resolver).await;
+    }
     let (completed, pending_records) =
         converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
             .await?;
@@ -226,7 +237,7 @@ fn recover_remote_result_from_authority(
         || registry.checkpoint.document_hash
             != crate::internal::identity_wire::document::document_hash(document)?
         || document.get("id").and_then(Value::as_str) != Some(pending.did.as_str())
-        || !anp::authentication::validate_did_document_binding(document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -409,6 +420,14 @@ where
         }
     };
 
+    if pending.rejected {
+        web::finish_rejected(core, client, &pending, remote, resolver)
+            .await
+            .map_err(unknown_outcome)?;
+        store.delete(&secret_ref).map_err(unknown_outcome)?;
+        return Err(rejected_before_commit(web::rejected_error()));
+    }
+
     if pending.remote_result.is_none() {
         let prepared = prepare_revoke_async(
             client,
@@ -435,7 +454,18 @@ where
         {
             Ok(result) => result,
             Err(error) => {
-                if stale_intent_error(&error) {
+                if did.as_str().starts_with("did:web:")
+                    && crate::internal::identity_services_update::checkpoint_conflict(&error)
+                {
+                    pending.rejected = true;
+                    store.save(&pending).map_err(unknown_outcome)?;
+                    web::finish_rejected(core, client, &pending, remote, resolver)
+                        .await
+                        .map_err(unknown_outcome)?;
+                    store.delete(&secret_ref).map_err(unknown_outcome)?;
+                    return Err(rejected_before_commit(redact_remote_error(error)));
+                }
+                if !did.as_str().starts_with("did:web:") && stale_intent_error(&error) {
                     abort_rejected_provider_change(client, &pending.new_document)
                         .await
                         .map_err(unknown_outcome)?;
@@ -463,9 +493,15 @@ where
         .remote_result
         .as_ref()
         .ok_or_else(|| unknown_outcome(crate::ImError::PermissionDenied))?;
-    converge_local_state(core, client, &pending, remote_result)
-        .await
-        .map_err(unknown_outcome)?;
+    if did.as_str().starts_with("did:web:") {
+        web::converge_current(core, client, &pending, remote_result, remote, resolver)
+            .await
+            .map_err(unknown_outcome)?;
+    } else {
+        converge_local_state(core, client, &pending, remote_result)
+            .await
+            .map_err(unknown_outcome)?;
+    }
     let target_device_id =
         crate::ids::ProtocolDeviceId::parse(&pending.target_device_id).map_err(unknown_outcome)?;
     store.delete(&secret_ref).map_err(unknown_outcome)?;
@@ -494,6 +530,7 @@ async fn prepare_revoke_async(
         new_document,
         authorizing_device_id,
         authorizing_signing_key_id,
+        client.core_inner().multi_device_audience(),
         now,
     )?;
     let signature = match client.runtime().identity_session.as_ref() {
@@ -579,7 +616,7 @@ pub(super) async fn prepare_initial_intent(
         || registry.checkpoint.document_hash
             != crate::internal::identity_wire::document::document_hash(&document)?
         || document.get("id").and_then(Value::as_str) != Some(did.as_str())
-        || !anp::authentication::validate_did_document_binding(&document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(&document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -672,17 +709,23 @@ pub(super) async fn prepare_initial_intent(
         .document
     } else {
         let root_key_id = format!("{}#key-1", did.as_str());
-        let mut new_document = anp::authentication::remove_device_from_did_document(
-            &document,
-            &root_key_id,
-            target_device_id,
-        )
+        let mut new_document = if did.as_str().starts_with("did:web:") {
+            anp::authentication::remove_device_from_web_did_document(&document, target_device_id)
+        } else {
+            anp::authentication::remove_device_from_did_document(
+                &document,
+                &root_key_id,
+                target_device_id,
+            )
+        }
         .map_err(|_| crate::ImError::PermissionDenied)?;
-        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-            &mut new_document,
-            did,
-            client.runtime().key_provider.as_ref(),
-        )?;
+        if !did.as_str().starts_with("did:web:") {
+            crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
+                &mut new_document,
+                did,
+                client.runtime().key_provider.as_ref(),
+            )?;
+        }
         new_document
     };
     validate_manifest_device(&new_document, &authorizing)?;
@@ -706,7 +749,7 @@ pub(super) async fn prepare_initial_intent(
     )
 }
 
-fn validate_manifest_device(
+pub(crate) fn validate_manifest_device(
     document: &Value,
     expected: &DeviceJoinRemoteDeviceSummary,
 ) -> crate::ImResult<()> {
@@ -787,7 +830,10 @@ async fn converge_local_state(
         )
 }
 
-fn write_document_atomic(path: &std::path::Path, document: &Value) -> crate::ImResult<()> {
+pub(crate) fn write_document_atomic(
+    path: &std::path::Path,
+    document: &Value,
+) -> crate::ImResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| crate::ImError::PathUnavailable {
@@ -914,4 +960,4 @@ fn unknown_outcome(_error: crate::ImError) -> crate::ImError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

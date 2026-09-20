@@ -373,11 +373,31 @@ pub(crate) struct DeviceJoinRemoteApproveResult {
 pub(crate) struct DeviceJoinAccessResult {
     pub(crate) user_id: String,
     pub(crate) access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) handle_binding: Option<DeviceJoinHandleBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeviceJoinHandleBinding {
+    pub(crate) full_handle: String,
+    pub(crate) binding_generation: String,
 }
 
 /// New-device RPC seam. This intentionally cannot issue authenticated admin
 /// calls, so a pending device never gains an ambient device credential.
 pub(crate) trait DeviceJoinNewDeviceRemote {
+    async fn observe_web_activation(
+        &mut self,
+        _join_session_id: &str,
+        _document: Value,
+    ) -> crate::ImResult<crate::internal::identity_device_join::web_activation::WebJoinObservation>
+    {
+        Err(crate::ImError::unsupported(
+            "web-join-current-device-query-not-configured",
+        ))
+    }
+
     async fn create(
         &mut self,
         request: DeviceJoinRemoteCreateRequest<'_>,
@@ -454,6 +474,22 @@ impl<P> DeviceJoinNewDeviceRemote for DeviceJoinNewDeviceHttpAdapter<'_, P>
 where
     P: AsyncRpcTransport,
 {
+    async fn observe_web_activation(
+        &mut self,
+        join_session_id: &str,
+        document: Value,
+    ) -> crate::ImResult<crate::internal::identity_device_join::web_activation::WebJoinObservation>
+    {
+        let core = self.core.ok_or(crate::ImError::PermissionDenied)?;
+        crate::internal::identity_device_join::web_activation::observe(
+            core,
+            join_session_id,
+            document,
+        )
+        .await
+        .map_err(redact_device_join_access_error)
+    }
+
     async fn create(
         &mut self,
         request: DeviceJoinRemoteCreateRequest<'_>,
@@ -704,6 +740,7 @@ async fn refresh_join_device_access(
     Ok(DeviceJoinAccessResult {
         user_id: transport.pending_device_user_id()?,
         access_token,
+        handle_binding: None,
     })
 }
 
@@ -1005,6 +1042,11 @@ where
                 join_session_id,
             )?
         {
+            if pending.did.as_str().starts_with("did:web:") {
+                return self
+                    .complete_web_activation(join_session_id, &pending.did)
+                    .await;
+            }
             return self.complete_new_device_activation(pending).await;
         }
         if local.phase == crate::identity::DeviceJoinLocalPhase::Cancelled {
@@ -1014,12 +1056,30 @@ where
             self.core,
             join_session_id,
         )?;
-        let status = self.remote.status(join_session_id, &token).await?;
+        let status = match self.remote.status(join_session_id, &token).await {
+            Ok(status) => status,
+            Err(_)
+                if local.did.as_str().starts_with("did:web:")
+                    && local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared =>
+            {
+                return self
+                    .complete_web_activation(join_session_id, &local.did)
+                    .await;
+            }
+            Err(error) => return Err(error),
+        };
         if status.expires_at != local.expires_at {
             return Err(crate::ImError::PermissionDenied);
         }
         match status.state {
             DeviceJoinRemoteState::Expired => {
+                if local.did.as_str().starts_with("did:web:")
+                    && local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared
+                {
+                    return self
+                        .complete_web_activation(join_session_id, &local.did)
+                        .await;
+                }
                 let session = crate::internal::identity_device_join::mark_join_expired(
                     self.core,
                     join_session_id,
@@ -1103,6 +1163,11 @@ where
                 ),
             }),
             DeviceJoinRemoteState::Consumed => {
+                if local.did.as_str().starts_with("did:web:") {
+                    return self
+                        .complete_web_activation(join_session_id, &local.did)
+                        .await;
+                }
                 let authorization = status
                     .authorization
                     .ok_or_else(|| invalid_remote_state("new-device authorization missing"))?;
@@ -1132,6 +1197,25 @@ where
                 sas: None,
             }),
         }
+    }
+
+    async fn complete_web_activation(
+        &mut self,
+        join_session_id: &str,
+        did: &crate::ids::Did,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        let document = self.resolver.resolve(did).await?;
+        let observation = self
+            .remote
+            .observe_web_activation(join_session_id, document)
+            .await?;
+        let pending = crate::internal::identity_device_join::web_activation::prepare(
+            self.core,
+            join_session_id,
+            observation,
+        )
+        .await?;
+        self.complete_new_device_activation(pending).await
     }
 
     async fn complete_new_device_activation(

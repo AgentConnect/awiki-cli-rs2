@@ -616,6 +616,86 @@ impl NativeImCoreNodeClient {
         napi_result(self.request_registration_otp_inner(input).await)
     }
 
+    #[napi(catch_unwind)]
+    pub async fn resolve_handle_for_device_join(&self, handle: String) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let did = self
+                    .inner
+                    .wait_im(
+                        environment
+                            .core
+                            .identities()
+                            .resolve_handle_for_device_join_async(&handle),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(did.as_str().to_owned())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_method_capabilities(&self, did: String) -> napi::Result<String> {
+        napi_result(
+            async {
+                let _operation = self.inner.operation().await?;
+                im_core::identity::identity_method_capabilities(&did)
+                    .map(|value| serde_json::json!(value).to_string())
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn pending_identity_registrations(&self) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let pending = self
+                    .inner
+                    .wait_im(
+                        environment.core.identities().pending_registrations_async(),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(serde_json::json!(pending).to_string())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_creation_methods(&self) -> napi::Result<Vec<String>> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let capabilities = self
+                    .inner
+                    .wait_im(
+                        environment.core.identities().creation_capabilities_async(),
+                        self.inner.operation_timeout,
+                    )
+                    .await?;
+                Ok(capabilities
+                    .did_methods
+                    .into_iter()
+                    .map(|method| match method {
+                        im_core::identity::DidMethod::Wba => "wba".to_owned(),
+                        im_core::identity::DidMethod::Web => "web".to_owned(),
+                    })
+                    .collect())
+            }
+            .await,
+        )
+    }
+
     async fn request_registration_otp_inner(
         &self,
         input: NodeRegistrationInput,
@@ -624,7 +704,7 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, None)?;
+        let request = registration_request(input.handle, input.phone, None, input.did_method)?;
         let challenge = self
             .inner
             .wait_im(
@@ -689,7 +769,12 @@ impl NativeImCoreNodeClient {
         let mut operation = self.inner.write_operation().await?;
         let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, Some(otp.to_owned()))?;
+        let request = registration_request(
+            input.handle,
+            input.phone,
+            Some(otp.to_owned()),
+            input.did_method,
+        )?;
         let result = self
             .inner
             .wait_im(
@@ -1260,6 +1345,91 @@ impl NativeImCoreNodeClient {
             )
             .await
             .map(crate::dto::admin_device_join_progress)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_document(&self) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                environment
+                    .core
+                    .identities()
+                    .identity_document_async(im_core::identity::IdentitySelector::Default)
+                    .await
+                    .map(|value| value.to_string())
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_services_update_pending(&self) -> napi::Result<bool> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                environment
+                    .core
+                    .identities()
+                    .services_update_pending_async(im_core::identity::IdentitySelector::Default)
+                    .await
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    /// None resumes the existing local intent; it never starts a new update.
+    #[napi(catch_unwind)]
+    pub async fn update_identity_services(
+        &self,
+        services_json: Option<String>,
+    ) -> napi::Result<String> {
+        napi_result(
+            async {
+                let services = services_json
+                    .map(|value| {
+                        serde_json::from_str::<Vec<im_core::identity::DidDocumentService>>(&value)
+                            .map_err(|_| invalid_input("The service list is invalid."))
+                    })
+                    .transpose()?;
+                let _mutation = self.inner.mutation.lock().await;
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                operation.client()?;
+                let registry = environment.core.identities();
+                let document = match services {
+                    Some(services) => {
+                        self.inner
+                            .wait_im(
+                                registry.update_services_async(
+                                    im_core::identity::IdentitySelector::Default,
+                                    services,
+                                ),
+                                self.inner.operation_timeout,
+                            )
+                            .await?
+                    }
+                    None => {
+                        self.inner
+                            .wait_im(
+                                registry.resume_services_update_async(
+                                    im_core::identity::IdentitySelector::Default,
+                                ),
+                                self.inner.operation_timeout,
+                            )
+                            .await?
+                    }
+                };
+                Ok(document.to_string())
+            }
+            .await,
+        )
     }
 
     #[napi(catch_unwind)]
@@ -3144,9 +3314,15 @@ fn registration_request(
     handle: String,
     phone: String,
     otp: Option<String>,
+    did_method: Option<String>,
 ) -> SafeResult<im_core::identity::RegisterHandleRequest> {
     let requested_handle = im_core::ids::Handle::parse(handle, "").map_err(SafeError::from_im)?;
     Ok(im_core::identity::RegisterHandleRequest {
+        did_method: did_method
+            .as_deref()
+            .unwrap_or("wba")
+            .parse()
+            .map_err(SafeError::from_im)?,
         local_alias: Some("default".to_owned()),
         requested_handle,
         verification: im_core::identity::VerificationInput::Phone { phone, otp },

@@ -22,6 +22,7 @@ use anp::proof::{
     generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
     PROOF_TYPE_DATA_INTEGRITY,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
 use super::*;
@@ -189,8 +190,40 @@ impl crate::internal::transport::AsyncAuthenticatedRpcTransport for LoopbackTran
 
 #[tokio::test]
 async fn v1b_p6_product_orchestrates_application_welcome_commit_and_replay() {
+    p6_product_lifecycle(make_did_fixture("alice-product", &["alice-a1", "alice-a2"])).await;
+}
+
+#[tokio::test]
+async fn web_p6_product_keeps_welcome_attachment_replay_and_exact_device_removal() {
+    let mut fixture = make_did_fixture("alice-web-product", &["alice-a1", "alice-a2"]);
+    let did = "did:web:p6-core.example:alice-product";
+    fixture.document.as_object_mut().unwrap().remove("proof");
+    fixture.document = serde_json::from_str(
+        &serde_json::to_string(&fixture.document)
+            .unwrap()
+            .replace(&fixture.did, did),
+    )
+    .unwrap();
+    for device in &mut fixture.devices {
+        device.signing_key_id = device.signing_key_id.replace(&fixture.did, did);
+    }
+    for device in fixture.document["deviceManifest"]["devices"]
+        .as_array_mut()
+        .unwrap()
+    {
+        device["profiles"] = json!(crate::internal::identity_generation::web_device_profiles());
+    }
+    fixture.did = did.to_owned();
+    assert!(anp::authentication::validate_did_document_method(
+        &fixture.document,
+        true
+    ));
+    validate_device_manifest(&fixture.document).unwrap();
+    p6_product_lifecycle(fixture).await;
+}
+
+async fn p6_product_lifecycle(fixture: DidFixture) {
     let directory = TestDirectory::new("im-core-p6-v2-product");
-    let fixture = make_did_fixture("alice-product", &["alice-a1", "alice-a2"]);
     let a1 = &fixture.devices[0];
     let a2 = &fixture.devices[1];
     let transport = LoopbackTransport::default();
@@ -445,6 +478,37 @@ async fn v1b_p6_product_orchestrates_application_welcome_commit_and_replay() {
         .await
         .expect("submit exact prepared MLS ciphertext");
     assert_eq!(sent.message_id, send.meta.message_id);
+    for tamper_aad in [true, false] {
+        let mut modified = send.clone();
+        if tamper_aad {
+            modified.meta.message_id.push_str("-tampered");
+            modified.meta.operation_id = modified.meta.message_id.clone();
+        } else {
+            let mut ciphertext = URL_SAFE_NO_PAD
+                .decode(&modified.cipher.private_message_b64u)
+                .unwrap();
+            let last = ciphertext.len() - 1;
+            ciphertext[last] ^= 1;
+            modified.cipher.private_message_b64u = URL_SAFE_NO_PAD.encode(&ciphertext);
+        }
+        // Re-sign the outer proof so rejection exercises MLS authentication itself.
+        let error = a2_product
+            .decrypt_incoming_application(incoming_input(
+                &fixture,
+                a1,
+                a2,
+                &modified,
+                "req-reject-modified-a2",
+            ))
+            .expect_err("modified P6 AAD/ciphertext must not produce plaintext");
+        assert!(
+            error
+                .to_string()
+                .contains("group.e2ee.private_message_invalid"),
+            "{error:?}"
+        );
+    }
+    // The valid packet must still decrypt after both rejected inputs.
     let decrypted = a2_product
         .decrypt_incoming_application(incoming_input(&fixture, a1, a2, &send, "req-decrypt-a2"))
         .expect("A2 decrypts application delivery");

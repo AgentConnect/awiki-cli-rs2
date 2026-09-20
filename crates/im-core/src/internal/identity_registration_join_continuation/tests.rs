@@ -93,7 +93,7 @@ async fn fixture(root: &Path) -> Fixture {
                 jwt_token: "access-token".to_owned(),
                 did_document: Some(old.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: old.root_key_id.clone(),
+                    root_key_id: Some(old.root_key_id.clone()),
                     device_signing_key_id: old.device_signing_key_id.clone(),
                     device_e2ee_key_id: old.device_e2ee_key_id.clone(),
                 },

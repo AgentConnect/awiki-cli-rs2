@@ -417,7 +417,7 @@ fn open_ready_admin_core_with_config(
                 jwt_token: "access-token".to_owned(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },

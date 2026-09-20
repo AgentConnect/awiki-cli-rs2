@@ -20,6 +20,61 @@ use crate::dto::{
     },
 };
 
+pub async fn identity_document(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<String, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .identity_document_async(selector.try_into()?)
+        .await
+        .map(|value| value.to_string())
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_services_update_pending(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<bool, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .services_update_pending_async(selector.try_into()?)
+        .await
+        .map_err(DartImError::from)
+}
+
+/// None resumes the existing durable operation.
+pub async fn update_identity_services(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    services_json: Option<String>,
+) -> Result<String, DartImError> {
+    let core = core.clone_inner()?;
+    let registry = core.identities();
+    let document = match services_json {
+        Some(value) => {
+            let services =
+                serde_json::from_str::<Vec<im_core::identity::DidDocumentService>>(&value)
+                    .map_err(|_| {
+                        DartImError::from(im_core::ImError::invalid_input(
+                            Some("services".into()),
+                            "The service list is invalid",
+                        ))
+                    })?;
+            registry
+                .update_services_async(selector.try_into()?, services)
+                .await
+        }
+        None => {
+            registry
+                .resume_services_update_async(selector.try_into()?)
+                .await
+        }
+    }
+    .map_err(DartImError::from)?;
+    Ok(document.to_string())
+}
+
 pub async fn has_pending_local_identity_recovery(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -768,11 +823,17 @@ pub async fn register_handle_with_phone(
     invite_code: Option<String>,
     profile: DartInitialProfile,
     make_default: bool,
+    did_method: Option<String>,
 ) -> Result<DartHandleRegistrationResult, DartImError> {
     let inner = core.clone_inner()?;
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -795,11 +856,17 @@ pub async fn register_handle_with_email(
     invite_code: Option<String>,
     profile: DartInitialProfile,
     make_default: bool,
+    did_method: Option<String>,
 ) -> Result<DartHandleRegistrationResult, DartImError> {
     let inner = core.clone_inner()?;
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -818,6 +885,7 @@ pub async fn register_handle_with_email(
 
 pub async fn register_handle_without_contact_verification(
     core: &Arc<crate::api::core::DartImCore>,
+    did_method: Option<String>,
     local_alias: Option<String>,
     requested_handle: String,
     invite_code: Option<String>,
@@ -828,6 +896,11 @@ pub async fn register_handle_without_contact_verification(
     inner
         .identities()
         .register_handle_async(im_core::identity::RegisterHandleRequest {
+            did_method: did_method
+                .as_deref()
+                .unwrap_or("wba")
+                .parse()
+                .map_err(DartImError::from)?,
             local_alias,
             requested_handle: im_core::ids::Handle::parse(requested_handle, "")
                 .map_err(DartImError::from)?,
@@ -839,6 +912,56 @@ pub async fn register_handle_without_contact_verification(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+pub async fn identity_method_capabilities(did: String) -> Result<String, DartImError> {
+    let capabilities =
+        im_core::identity::identity_method_capabilities(&did).map_err(DartImError::from)?;
+    // This public projection contains no authority or local key material.
+    Ok(serde_json::json!(capabilities).to_string())
+}
+
+pub async fn resolve_handle_for_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    handle: String,
+) -> Result<String, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .resolve_handle_for_device_join_async(&handle)
+        .await
+        .map(|did| did.as_str().to_owned())
+        .map_err(DartImError::from)
+}
+
+pub async fn pending_identity_registrations(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<String, DartImError> {
+    let pending = core
+        .clone_inner()?
+        .identities()
+        .pending_registrations_async()
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(pending).to_string())
+}
+
+pub async fn identity_creation_methods(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<String>, DartImError> {
+    let capabilities = core
+        .clone_inner()?
+        .identities()
+        .creation_capabilities_async()
+        .await
+        .map_err(DartImError::from)?;
+    Ok(capabilities
+        .did_methods
+        .into_iter()
+        .map(|method| match method {
+            im_core::identity::DidMethod::Wba => "wba".to_owned(),
+            im_core::identity::DidMethod::Web => "web".to_owned(),
+        })
+        .collect())
 }
 
 impl From<DartInitialProfile> for im_core::identity::InitialProfile {

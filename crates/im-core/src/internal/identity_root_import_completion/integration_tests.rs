@@ -557,7 +557,7 @@ async fn fixture_extension(delay: i64, completion_v2: bool, extended: bool) -> F
                     jwt_token: super::tests::test_access_token(&expected),
                     did_document: Some(document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: a.root_key_id.clone(),
+                        root_key_id: Some(a.root_key_id.clone()),
                         device_signing_key_id: signing.clone(),
                         device_e2ee_key_id: e2ee.clone(),
                     },
