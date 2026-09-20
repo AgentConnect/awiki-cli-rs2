@@ -11,6 +11,27 @@ spec.loader.exec_module(deps)
 VERSIONS = {'anp': '1.0.1', 'anp-identity': '0.2.1', 'awiki-im-core': '0.1.1'}
 
 class BuildDependencyTests(unittest.TestCase):
+    def test_source_cargo_keeps_exact_toolchain_features_and_locked_graph(self):
+        command = deps.source_cargo_command(['+1.88.0', 'test', '-p', 'im-core-dart', '--no-default-features', '--features', 'windows,sqlite'])
+        self.assertEqual(command[1:4], ['+1.88.0', 'test', '-p'])
+        self.assertIn('--locked', command)
+        self.assertEqual(command[-3:-1], ['--features', 'windows,sqlite'])
+        self.assertEqual(deps.source_cargo_command(['build', '--locked']).count('--locked'), 1)
+
+    def test_source_cargo_rejects_release_actions_and_workspace_escape(self):
+        for command in [['publish'], ['install'], ['+stable', 'build'], ['build', '--manifest-path=/tmp/other.toml'], ['test', '--target-dir', '/tmp/cache'], ['build', '--config=x'], ['build', '--profile=release'], ['test', '--', '--ignored']]:
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                deps.source_cargo_command(command)
+
+    def test_source_cargo_cannot_enter_registry_or_release_modes(self):
+        for args in [['--cargo-command', 'build'], ['--profile', 'release', '--deps', 'source', '--source-manifest', 'dependencies.source.json', '--cargo-command', 'build']]:
+            with patch.object(deps, 'run') as run, self.assertRaises(SystemExit):
+                deps.main(args)
+            run.assert_not_called()
+        with patch.dict(deps.os.environ, {'AWIKI_RELEASE_REGISTRY': '1'}), patch.object(deps, 'run') as run, self.assertRaises(SystemExit):
+            deps.main(['--deps', 'source', '--source-manifest', 'dependencies.source.json', '--cargo-command', 'build'])
+        run.assert_not_called()
+
     def test_fetched_sha_mismatch_is_rejected_before_checkout(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(deps, 'run', side_effect=[None, None, 'b' * 40 + '\n']) as run:
             with self.assertRaises(ValueError):

@@ -129,6 +129,23 @@ def verify_resolution(metadata, versions, roots):
             raise ValueError(f'{name}: unselected SDK must resolve from crates.io')
 
 
+def source_cargo_command(arguments):
+    """Accept only locked development build/check/test operations."""
+    args = list(arguments)
+    prefix = []
+    if args and args[0].startswith('+'):
+        if not re.fullmatch(r'\+[0-9]+\.[0-9]+(?:\.[0-9]+)?', args[0]):
+            raise ValueError('Source Cargo toolchain must be an exact numeric version')
+        prefix.append(args.pop(0))
+    if not args or args[0] not in ('build', 'check', 'test'):
+        raise ValueError('Source Cargo accepts only build, check or test')
+    # These would escape the audited workspace, dependency graph or output root.
+    forbidden = ('--manifest-path', '--lockfile-path', '--target-dir', '--config', '--profile')
+    if any(arg == '--' or arg.split('=')[0] in forbidden or arg.startswith('-Z') for arg in args):
+        raise ValueError('Source Cargo cannot override workspace, configuration or output ownership')
+    return [os.environ.get('CARGO', 'cargo'), *prefix, *args, *([] if '--locked' in args else ['--locked'])]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', choices=['debug', 'release'], default='debug')
@@ -136,6 +153,7 @@ def main(argv=None):
     parser.add_argument('--local-config', type=Path)
     parser.add_argument('--source-manifest', type=Path)
     parser.add_argument('--package', default='awiki-cli', choices=['awiki-cli', 'awiki-deamon', 'im-core-dart', 'awiki-im-core-node'])
+    parser.add_argument('--cargo-command', nargs=argparse.REMAINDER, help='Locked source-only build/check/test command, including optional numeric toolchain')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--resolve-only', action='store_true', help='只校验实际依赖图，不编译')
     parser.add_argument('--refresh-lock', action='store_true', help='仅刷新提交用的源码联调锁文件')
@@ -159,7 +177,11 @@ def main(argv=None):
         parser.error('Select exactly one matching local config or source manifest')
     if args.refresh_lock and args.deps != 'source':
         parser.error('--refresh-lock is only for source dependencies')
-    command = [os.environ.get('CARGO', 'cargo'), 'check' if args.check else 'build', '-p', args.package]
+    if args.cargo_command is not None and (args.deps != 'source' or args.profile != 'debug' or args.check or args.resolve_only or args.refresh_lock or args.target or args.features or args.no_default_features or args.optimized):
+        parser.error('--cargo-command requires source development mode without fixed build options')
+    if args.cargo_command is not None and os.environ.get('AWIKI_RELEASE_REGISTRY') == '1':
+        parser.error('Source Cargo and registry release mode are mutually exclusive')
+    command = source_cargo_command(args.cargo_command) if args.cargo_command is not None else [os.environ.get('CARGO', 'cargo'), 'check' if args.check else 'build', '-p', args.package]
     if args.target:
         command += ['--target', args.target]
     if args.features:
@@ -176,6 +198,8 @@ def main(argv=None):
     entries = read_selection(selection.resolve(), args.deps) if selection else {}
     artifacts = ROOT / '.artifacts/dependencies' / args.deps
     artifacts.mkdir(parents=True, exist_ok=True)
+    if args.cargo_command is not None:
+        (artifacts / 'command-result.json').unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix='awiki-deps-') as temporary:
         layout = Path(temporary)
         checkout = layout / 'consumer'
@@ -209,7 +233,7 @@ def main(argv=None):
             shutil.copy2(lock, checkout / 'Cargo.lock')
         env = os.environ.copy()
         env['CARGO_TARGET_DIR'] = str(artifacts / 'target')
-        metadata_cmd = [command[0], 'metadata', '--format-version', '1']
+        metadata_cmd = [command[0], *([command[1]] if len(command) > 1 and command[1].startswith('+') else []), 'metadata', '--format-version', '1']
         if args.deps != 'local' and not args.refresh_lock:
             metadata_cmd.append('--locked')
         metadata = json.loads(run(metadata_cmd, checkout, True, env))
@@ -220,7 +244,12 @@ def main(argv=None):
                                 for p in metadata['packages'] if p['name'] in versions]
         (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n')
         if not args.refresh_lock and not args.resolve_only:
-            run([*command, '--locked'], checkout, env=env)
+            run(command if '--locked' in command else [*command, '--locked'], checkout, env=env)
+            if args.cargo_command is not None:
+                evidence['command'] = command
+                evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+                evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+                (artifacts / 'command-result.json').write_text(json.dumps(evidence, indent=2) + '\n')
             if args.target and not args.check:
                 evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
                 evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()

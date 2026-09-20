@@ -18,7 +18,12 @@ $Toolchain = if ([string]::IsNullOrWhiteSpace($env:AWIKI_IM_CORE_RUST_TOOLCHAIN)
     $env:AWIKI_IM_CORE_RUST_TOOLCHAIN.Trim()
 }
 $Features = 'blocking,sqlite,http,windows,group-e2ee,secure-direct,identity-native-anp'
-$SourceDll = Join-Path $RootDir "target\$Target\release\awiki_im_core.dll"
+$SourceIntegration = $env:AWIKI_SOURCE_INTEGRATION -eq '1'
+if ($SourceIntegration -and $env:AWIKI_RELEASE_REGISTRY -eq '1') {
+    throw 'Source integration and registry release mode are mutually exclusive.'
+}
+$OutputRoot = if ($SourceIntegration) { '.artifacts/dependencies/source/target' } else { 'target' }
+$SourceDll = Join-Path $RootDir "$OutputRoot/$Target/release/awiki_im_core.dll
 $DestinationDir = Join-Path $RootDir 'packages\awiki_im_core\windows\bin'
 $DestinationDll = Join-Path $DestinationDir 'awiki_im_core.dll'
 $GeneratedDart = Join-Path $RootDir 'packages\awiki_im_core\lib\src\generated\frb_generated.dart'
@@ -51,7 +56,9 @@ try {
     }
 
     $BuildCommand = @("+$Toolchain", "build", "-p", "im-core-dart", "--release", "--locked", "--target", $Target, "--no-default-features", "--features", $Features)
-    if ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
+    if ($SourceIntegration) {
+        & python3 (Join-Path $RootDir "scripts/dependencies/build.py") --deps source --source-manifest dependencies.source.json --cargo-command @BuildCommand
+    } elseif ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
         & python3 (Join-Path $RootDir "scripts/release/registry-build.py") -- cargo @BuildCommand
     } else {
         & cargo @BuildCommand

@@ -156,3 +156,14 @@ verification rejects changed inputs or native bytes without requiring a mode fla
 Retain these ignored provenance records together with the local build for verification.
 Publishing still requires removing the temporary source manifest/lock and rebuilding
 through the registry entrypoint.
+
+## App 开发 CI 的源码构建与宿主测试
+
+开发阶段不要求先发布正式 SDK。App 显式设置 AWIKI_SOURCE_INTEGRATION=1，并固定已提交的 consumer SHA、dependencies.source.json 与配套锁。通用开发命令复用相同隔离和来源验证：
+
+```bash
+python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command build -p im-core-dart -p awiki-cli
+python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command +1.88.0 test -p im-core-dart --no-default-features --features blocking,sqlite,http,windows,identity-native-anp
+```
+
+仅允许 build/check/test 和精确数字 toolchain，强制 --locked，禁止覆盖 manifest/config/target-dir。输出仍在 .artifacts/dependencies/source/target；成功后 command-result.json 记录实际命令、解析来源、consumer/source SHA 和清单/锁摘要，失败前删除旧成功记录。Windows 原生构建在显式 source 模式读取该输出目录，仍执行 PE 架构与 FRB 实际导出校验；正式 registry 模式与 source 互斥。优化编译不代表发布，正式发布入口与保护不变。
