@@ -436,6 +436,9 @@ where
             Ok(result) => result,
             Err(error) => {
                 if stale_intent_error(&error) {
+                    abort_rejected_provider_change(client, &pending.new_document)
+                        .await
+                        .map_err(unknown_outcome)?;
                     store
                         .delete(&secret_ref)
                         .map_err(|_| unknown_outcome(crate::ImError::PermissionDenied))?;
@@ -522,7 +525,48 @@ async fn prepare_revoke_async(
     Ok(crate::internal::identity_wire::device_revoke::complete_revoke(unsigned, &signature))
 }
 
-async fn prepare_initial_intent(
+// A definitive stale-intent rejection permits discarding only this exact
+// unpublished candidate. Unknown outcomes and other pending changes survive.
+pub(super) async fn abort_rejected_provider_change(
+    client: &crate::core::ImClient,
+    rejected_document: &Value,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_provider::{
+        map_provider_error, ProviderDocumentChangePhase, ProviderPublicationResult,
+    };
+    let Some(identity) = client.runtime().identity_session.as_ref() else {
+        return Ok(());
+    };
+    let Some(change) = identity
+        .resume_document_change()
+        .await
+        .map_err(map_provider_error)?
+    else {
+        return Ok(());
+    };
+    if change
+        .candidate()
+        .await
+        .map_err(map_provider_error)?
+        .candidate_document
+        != *rejected_document
+        || change.host_phase().await.map_err(map_provider_error)?
+            != ProviderDocumentChangePhase::Prepared
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let attempt = change
+        .begin_publication()
+        .await
+        .map_err(map_provider_error)?;
+    change
+        .complete(attempt, ProviderPublicationResult::RejectedBeforeAcceptance)
+        .await
+        .map_err(map_provider_error)?;
+    Ok(())
+}
+
+pub(super) async fn prepare_initial_intent(
     client: &crate::core::ImClient,
     target_device_id: &str,
     authorizing_device_id: &str,
@@ -590,6 +634,30 @@ async fn prepare_initial_intent(
     validate_manifest_device(&document, &target)?;
 
     let new_document = if client.runtime().identity_session.is_some() {
+        // Build the removal against the verified sibling document, not the
+        // provider's potentially older local revision. Convergence preserves
+        // root/key pins and refuses to replace any pending publication.
+        let core = client.core_handle();
+        if crate::internal::identity_device_join::document_convergence::needs_refresh(
+            &core,
+            client,
+            &registry.checkpoint,
+        )? {
+            crate::internal::identity_device_join::document_convergence::refresh_admin_document(
+                &core, client, &document, &registry,
+            )
+            .await?;
+            // Adoption advances the provider generation; refresh this existing
+            // session without recursively opening a client under the revoke lock.
+            client
+                .runtime()
+                .identity_session
+                .as_ref()
+                .unwrap()
+                .recover()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+        }
         crate::internal::identity_device_join::provider_document_change_candidate(
             client,
             serde_json::json!({

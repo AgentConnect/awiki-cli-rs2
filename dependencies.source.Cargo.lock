@@ -78,9 +78,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e8d5f32208cdc11238004bec4e4229d68fb937598f900e153468ca084865fa5"
+checksum = "f4893bfb11e0e193aa5a64611a126ee87567acb1879556519c902722899229de"
 dependencies = [
  "quote",
  "syn 3.0.3",
@@ -203,8 +203,6 @@ dependencies = [
 [[package]]
 name = "anp-identity"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d3c4524c520777547a3673f2438011fa1471138ccd02beee55c73890eb34828"
 dependencies = [
  "anp",
  "base64 0.22.1",
@@ -2072,7 +2070,6 @@ name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "apple-native-keyring-store",
  "awiki-im-core",
  "chrono",
  "flutter_rust_bridge",

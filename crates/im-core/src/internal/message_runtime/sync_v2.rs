@@ -1584,10 +1584,15 @@ where
                     .await?
             }
         };
+        // An already-negotiated empty set can come from an older client build.
+        // Re-negotiate changed consumer capabilities before attempting any delta;
+        // authorization generation alone cannot detect a newly enabled P5 lane.
+        let desired_lanes = desired_v1b_lanes(&db, &owner_identity_id).await?;
         if db
-            .lane_capability_negotiation_required(
+            .lane_capability_negotiation_required_with_lanes(
                 owner_identity_id.clone(),
                 binding.device_auth_generation.clone(),
+                Some(desired_lanes),
             )
             .await?
         {
@@ -2912,10 +2917,19 @@ async fn reconcile_explicit_lane_negotiation(
     .await
 }
 
-async fn desired_v1b_lanes(
+pub(crate) async fn desired_v1b_lanes(
     db: &crate::internal::local_state::actor::LocalStateDb,
     owner_identity_id: &str,
 ) -> crate::ImResult<BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>> {
+    Ok(desired_v1b_lanes_from_transport_states(
+        db.load_lane_transport_states(owner_identity_id.to_owned())
+            .await?,
+    ))
+}
+
+pub(crate) fn desired_v1b_lanes_from_transport_states(
+    states: Vec<crate::internal::local_state::sync_v2::SyncLaneTransportState>,
+) -> BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3> {
     use crate::internal::wire::sync_v2::SyncLaneV3;
     // Compile-time features declare what this Core implementation can consume;
     // they do not activate a lane or bypass explicit Service negotiation. The
@@ -2929,10 +2943,7 @@ async fn desired_v1b_lanes(
     lanes.insert(SyncLaneV3::P5Device);
     #[cfg(feature = "group-e2ee")]
     lanes.insert(SyncLaneV3::P6Group);
-    for state in db
-        .load_lane_transport_states(owner_identity_id.to_owned())
-        .await?
-    {
+    for state in states {
         let not_ready = state.last_transport_error.as_deref() == Some("lane_consumer_not_ready")
             || (state.lane == SyncLaneV3::P6Group
                 && state.last_transport_error.as_deref() == Some("lane_migration_repair_required"));
@@ -2940,7 +2951,7 @@ async fn desired_v1b_lanes(
             lanes.remove(&state.lane);
         }
     }
-    Ok(lanes)
+    lanes
 }
 
 fn negotiated_lane_capabilities_json(
@@ -6527,11 +6538,41 @@ mod tests {
             .unwrap();
     }
 
+    // Tests selecting only ordinary/P5/P6 traffic model the other consumers as
+    // unavailable, rather than silently negotiating less than the build supports.
+    async fn seed_lane_consumers(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        enabled: BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+    ) {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+        let owner = binding.owner_identity_id.clone();
+        client.core_inner().local_state_db().await.unwrap().run_local(move |connection| {
+            for (lane, name) in [(SyncLaneV3::P5Device, "p5_device"), (SyncLaneV3::P6Group, "p6_group")] {
+                if !enabled.contains(&lane) {
+                    connection.execute(
+                        "INSERT INTO sync_lane_transport_state(owner_identity_id,lane,last_transport_error,updated_at)
+                         VALUES (?1,?2,'lane_consumer_not_ready',1)
+                         ON CONFLICT(owner_identity_id,lane) DO UPDATE SET last_transport_error='lane_consumer_not_ready'",
+                        rusqlite::params![owner, name],
+                    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+                }
+            }
+            Ok(())
+        }).await.unwrap();
+    }
+
     async fn seed_lane_states(
         client: &crate::core::ImClient,
         binding: &crate::identity::ActiveSyncAccountBinding,
         lanes: &[(crate::internal::wire::sync_v2::SyncLaneV3, &str)],
     ) {
+        seed_lane_consumers(
+            client,
+            binding,
+            lanes.iter().map(|(lane, _)| *lane).collect(),
+        )
+        .await;
         let db = client.core_inner().local_state_db().await.unwrap();
         db.replace_lane_sync_states(
             &binding.owner_identity_id,
@@ -6720,6 +6761,8 @@ mod tests {
         );
     }
 
+    // This cross-stream contract requires a negotiable P5 consumer.
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn v1a_v1b_cross_stream_malformed_lane_does_not_rollback_ordinary_delta() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -6782,7 +6825,7 @@ mod tests {
         assert_eq!(lane_states[0].scan_seq, "0");
     }
 
-    #[cfg(feature = "group-e2ee")]
+    #[cfg(all(feature = "secure-direct", feature = "group-e2ee"))]
     #[tokio::test]
     async fn v1b_cross_stream_ordinary_failure_keeps_p5_and_p6_handoffs_committed() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -6874,6 +6917,8 @@ mod tests {
         );
     }
 
+    // This cross-stream contract requires a negotiable P5 consumer.
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn v1b_cross_stream_shared_sqlite_failure_is_a_global_fence() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -7500,6 +7545,21 @@ END;
             .await
             .unwrap();
         seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        // Reproduce a Node client that already completed an empty negotiation
+        // before upgrading to a build that can receive device root deliveries.
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .record_sync_lane_capability_negotiation_v1a(
+                binding.owner_identity_id.clone(),
+                binding.device_auth_generation.clone(),
+                client_instance_id.clone(),
+                "[]".to_owned(),
+            )
+            .await
+            .unwrap();
         let mut bootstrap = json!({
             "mode": "tail_only",
             "account_id": binding.account_id,
@@ -7567,7 +7627,7 @@ END;
         assert!(!db
             .lane_capability_negotiation_required(
                 binding.owner_identity_id.clone(),
-                binding.device_auth_generation,
+                binding.device_auth_generation.clone(),
             )
             .await
             .unwrap());
@@ -9961,7 +10021,12 @@ END;
             .await
             .unwrap();
         seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
-        seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+        seed_lane_states(
+            &client,
+            &binding,
+            &[(SyncLaneV3::P5Device, "41"), (SyncLaneV3::P6Group, "42")],
+        )
+        .await;
         let calls = Rc::new(RefCell::new(Vec::new()));
         let refresh_calls = Rc::new(RefCell::new(0));
         let authentication_reloads = Rc::new(RefCell::new(0));

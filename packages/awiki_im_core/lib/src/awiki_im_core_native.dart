@@ -43,6 +43,7 @@ import 'models/profile.dart';
 import 'models/realtime.dart';
 import 'models/secure.dart';
 import 'native_library_loader.dart';
+import 'native_session_stream.dart';
 
 bool _rustLibInitialized = false;
 
@@ -619,6 +620,44 @@ class AwikiImCore {
     return prompt._toModel();
   }
 
+  Future<List<DeviceJoinManagementStatus>> deviceJoinManagementStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final statuses = await _mapNativeErrors(
+      () => gen_identity_api.deviceJoinManagementStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return statuses
+        .map(
+          (value) => DeviceJoinManagementStatus(
+            joinSessionId: value.joinSessionId,
+            recipientDeviceId: value.recipientDeviceId,
+            phase: value.phase,
+            attempts: value.attempts,
+            nextAttemptAtMs: value.nextAttemptAtMs.toInt(),
+            failureCode: value.failureCode,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> retryDeviceJoinManagement({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    _ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_identity_api.retryDeviceJoinManagement(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+      ),
+    );
+  }
+
   Future<DeviceJoinProgress> confirmDeviceJoinApproval({
     required String approvalHandle,
     required bool userPresenceConfirmed,
@@ -626,6 +665,21 @@ class AwikiImCore {
     _ensureNotDisposed();
     final progress = await _mapNativeErrors(
       () => gen_identity_api.confirmDeviceJoinApproval(
+        core: _inner,
+        approvalHandle: approvalHandle,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinWithManagement({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.confirmDeviceJoinWithManagement(
         core: _inner,
         approvalHandle: approvalHandle,
         userPresenceConfirmed: userPresenceConfirmed,
@@ -1655,20 +1709,22 @@ class MessageApi {
     );
   }
 
-  Stream<ConversationStorePatch> watchConversationPatches() async* {
+  Stream<ConversationStorePatch> watchConversationPatches() {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchConversationPatches(client: _client._inner),
-    );
-    try {
-      yield* gen_messages
+    return nativeSessionStream<
+      gen_messages.ArcDartConversationPatchSession,
+      ConversationStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchConversationPatches(client: _client._inner),
+      ),
+      events: (session) => gen_messages
           .conversationPatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
         () => gen_messages.stopConversationPatchSession(session: session),
-      );
-    }
+      ),
+    );
   }
 
   Future<ConversationStorePatch> repairConversationStore() async {
@@ -1682,47 +1738,51 @@ class MessageApi {
   Stream<ThreadMessageStorePatch> watchThreadPatches(
     ThreadRef thread, {
     int limit = 100,
-  }) async* {
+  }) {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchThreadPatches(
-        client: _client._inner,
-        thread: thread._toGen(),
-        limit: limit,
+    return nativeSessionStream<
+      gen_messages.ArcDartThreadMessagePatchSession,
+      ThreadMessageStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchThreadPatches(
+          client: _client._inner,
+          thread: thread._toGen(),
+          limit: limit,
+        ),
+      ),
+      events: (session) => gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
       ),
     );
-    try {
-      yield* gen_messages
-          .threadMessagePatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
-        () => gen_messages.stopThreadMessagePatchSession(session: session),
-      );
-    }
   }
 
   Stream<ThreadMessageStorePatch> watchConversationTimelinePatches(
     ConversationReadRef conversation, {
     int limit = 100,
-  }) async* {
+  }) {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchConversationTimelinePatches(
-        client: _client._inner,
-        conversation: conversation._toGen(),
-        limit: limit,
+    return nativeSessionStream<
+      gen_messages.ArcDartThreadMessagePatchSession,
+      ThreadMessageStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchConversationTimelinePatches(
+          client: _client._inner,
+          conversation: conversation._toGen(),
+          limit: limit,
+        ),
+      ),
+      events: (session) => gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
       ),
     );
-    try {
-      yield* gen_messages
-          .threadMessagePatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
-        () => gen_messages.stopThreadMessagePatchSession(session: session),
-      );
-    }
   }
 
   Future<ThreadMessageStorePatch> repairThreadStore(

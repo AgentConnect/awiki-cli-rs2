@@ -1122,6 +1122,114 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn confirm_device_join_with_management(
+        &self,
+        input: NodeConfirmDeviceJoinApprovalInput,
+    ) -> napi::Result<NodeAdminDeviceJoinProgress> {
+        napi_result(self.confirm_device_join_with_management_inner(input).await)
+    }
+
+    async fn confirm_device_join_with_management_inner(
+        &self,
+        input: NodeConfirmDeviceJoinApprovalInput,
+    ) -> SafeResult<NodeAdminDeviceJoinProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .confirm_device_join_with_management(
+                        im_core::identity::DeviceJoinConfirmApprovalRequest {
+                            approval_handle: input.approval_handle,
+                            user_presence_confirmed: input.user_presence_confirmed,
+                        },
+                    ),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::admin_device_join_progress)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn device_join_management_status(
+        &self,
+    ) -> napi::Result<Vec<NodeDeviceJoinManagementStatus>> {
+        napi_result(self.device_join_management_status_inner().await)
+    }
+
+    async fn device_join_management_status_inner(
+        &self,
+    ) -> SafeResult<Vec<NodeDeviceJoinManagementStatus>> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        let statuses = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .device_join_management_status(im_core::identity::IdentitySelector::Default),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(statuses
+            .into_iter()
+            .map(|status| NodeDeviceJoinManagementStatus {
+                next_attempt_at_ms: status.next_attempt_at_ms,
+                failure_code: status.failure_code,
+                join_session_id: status.join_session_id,
+                recipient_device_id: status.recipient_device_id,
+                phase: match status.phase {
+                    im_core::identity::DeviceJoinManagementPhase::AwaitingJoin => "awaiting_join",
+                    im_core::identity::DeviceJoinManagementPhase::Scheduled => "scheduled",
+                    im_core::identity::DeviceJoinManagementPhase::Attempting => "attempting",
+                    im_core::identity::DeviceJoinManagementPhase::WaitingForRecipient => {
+                        "waiting_for_recipient"
+                    }
+                    im_core::identity::DeviceJoinManagementPhase::ManagementRegistered => {
+                        "management_registered"
+                    }
+                    im_core::identity::DeviceJoinManagementPhase::Failed => "failed",
+                }
+                .to_owned(),
+                attempts: u32::from(status.attempts),
+            })
+            .collect())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn retry_device_join_management(
+        &self,
+        input: NodeDeviceJoinSessionInput,
+    ) -> napi::Result<()> {
+        napi_result(self.retry_device_join_management_inner(input).await)
+    }
+
+    async fn retry_device_join_management_inner(
+        &self,
+        input: NodeDeviceJoinSessionInput,
+    ) -> SafeResult<()> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment.core.device_join().retry_device_join_management(
+                    im_core::identity::IdentitySelector::Default,
+                    &input.join_session_id,
+                ),
+                self.inner.operation_timeout,
+            )
+            .await
+    }
+
+    #[napi(catch_unwind)]
     pub async fn reject_device_join(
         &self,
         input: NodeRejectDeviceJoinInput,

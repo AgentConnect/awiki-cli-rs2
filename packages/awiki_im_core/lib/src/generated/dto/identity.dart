@@ -298,6 +298,45 @@ class DartDeviceJoinAuthorizedDeviceSummary {
           isCurrent == other.isCurrent;
 }
 
+class DartDeviceJoinManagementStatus {
+  final String joinSessionId;
+  final String recipientDeviceId;
+  final String phase;
+  final int attempts;
+  final PlatformInt64 nextAttemptAtMs;
+  final String? failureCode;
+
+  const DartDeviceJoinManagementStatus({
+    required this.joinSessionId,
+    required this.recipientDeviceId,
+    required this.phase,
+    required this.attempts,
+    required this.nextAttemptAtMs,
+    this.failureCode,
+  });
+
+  @override
+  int get hashCode =>
+      joinSessionId.hashCode ^
+      recipientDeviceId.hashCode ^
+      phase.hashCode ^
+      attempts.hashCode ^
+      nextAttemptAtMs.hashCode ^
+      failureCode.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinManagementStatus &&
+          runtimeType == other.runtimeType &&
+          joinSessionId == other.joinSessionId &&
+          recipientDeviceId == other.recipientDeviceId &&
+          phase == other.phase &&
+          attempts == other.attempts &&
+          nextAttemptAtMs == other.nextAttemptAtMs &&
+          failureCode == other.failureCode;
+}
+
 enum DartDeviceJoinPhase {
   pending,
   challengePrepared,

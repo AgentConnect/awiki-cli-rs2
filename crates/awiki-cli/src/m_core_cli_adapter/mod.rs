@@ -22,6 +22,7 @@ pub mod email;
 pub mod error;
 pub mod groups;
 pub mod identity;
+pub mod identity_logout;
 pub mod message_result;
 pub mod messages;
 pub mod paths;

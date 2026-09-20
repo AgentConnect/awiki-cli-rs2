@@ -11,9 +11,9 @@
   },
   "candidateVersion": "1.0.3",
   "identity": {
-    "commit": "9b6309e0d7776b3fb606e52b2b44c61e5d768af4",
+    "commit": "bef7757603b004bf4a54873040da49480272738f",
     "repository": "https://github.com/agent-network-protocol/anp-identity.git",
-    "rustTreeSha256": "70efeee7b8ce617f7ea724eec7c8c7167968062927ce10ddac45094e8e26908a",
+    "rustTreeSha256": "5f9bdfd5d0781fef0913fe5223f940471ff2e59d14f15946d9f62408b4b81133",
     "version": "0.2.3"
   },
   "schemaVersion": 1,

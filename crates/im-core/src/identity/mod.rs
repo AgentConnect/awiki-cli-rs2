@@ -48,9 +48,10 @@ pub use self::handle_recovery::{
 pub use self::join::{
     DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus,
     DeviceJoinAuthorizedDeviceSummary, DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest,
-    DeviceJoinLocalPhase, DeviceJoinProgress, DeviceJoinRegistrySnapshot, DeviceJoinRejectReason,
-    DeviceJoinRemoteState, DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinService,
-    DeviceJoinSessionView, DeviceJoinSide, DeviceRegistryAuthorizedDeviceSummary,
+    DeviceJoinLocalPhase, DeviceJoinManagementPhase, DeviceJoinManagementStatus,
+    DeviceJoinProgress, DeviceJoinRegistrySnapshot, DeviceJoinRejectReason, DeviceJoinRemoteState,
+    DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinService, DeviceJoinSessionView,
+    DeviceJoinSide, DeviceRegistryAuthorizedDeviceSummary,
 };
 pub(crate) use self::join::{
     DeviceJoinAdminPrepareRequest, DeviceJoinAdminPrepareResult, DeviceJoinAdminVerifyRequest,

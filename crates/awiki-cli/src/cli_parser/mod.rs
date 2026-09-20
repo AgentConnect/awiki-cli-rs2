@@ -159,6 +159,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.vault.cleanup-plaintext" => app.run_id_vault_cleanup_plaintext(),
         "id.import-v1" => app.run_id_import_v1(command),
         "id.bind" => app.run_id_bind(command),
+        "id.logout" => app.run_id_logout(),
         "id.refresh-token" => app.run_id_refresh_token(),
         "id.resolve" => app.run_id_resolve(command),
         "id.profile.get" => app.run_id_profile_get(command),
@@ -170,6 +171,9 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         | "id.device.join.poll"
         | "id.device.join.verify"
         | "id.device.join.approve"
+        | "id.device.join.management-status"
+        | "id.device.join.management-resume"
+        | "id.device.join.management-retry"
         | "id.device.join.reject"
         | "id.device.join.cancel"
         | "id.device.revoke" => Err(async_only_error(&command.name)),
@@ -307,6 +311,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.vault.migrate" => app.run_id_vault_migrate_async().await,
         "id.vault.cleanup-plaintext" => app.run_id_vault_cleanup_plaintext_async().await,
         "id.bind" => app.run_id_bind_async(command).await,
+        "id.logout" => app.run_id_logout_async().await,
         "id.refresh-token" => app.run_id_refresh_token_async().await,
         "id.resolve" => app.run_id_resolve_async(command).await,
         "id.profile.get" => app.run_id_profile_get_async(command).await,
@@ -318,6 +323,13 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.poll" => app.run_id_device_join_poll_async(command).await,
         "id.device.join.verify" => app.run_id_device_join_verify_async(command).await,
         "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
+        "id.device.join.management-status" => {
+            app.run_id_device_join_management_async(command).await
+        }
+        "id.device.join.management-resume" => {
+            app.run_id_device_join_management_async(command).await
+        }
+        "id.device.join.management-retry" => app.run_id_device_join_management_async(command).await,
         "id.device.join.reject" => app.run_id_device_join_reject_async(command).await,
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "id.device.revoke" => app.run_id_device_revoke_async(command).await,

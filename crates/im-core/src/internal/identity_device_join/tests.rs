@@ -126,18 +126,24 @@ fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crat
 }
 
 fn open_empty_vault_core(root: &Path) -> crate::ImCore {
+    open_empty_vault_core_with_revoke(root, false)
+}
+
+fn open_empty_vault_core_with_revoke(root: &Path, revoke_enabled: bool) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
         test_paths(root),
-        crate::ImCoreOpenOptions::default().with_identity_secret_vault(
-            crate::IdentitySecretStoragePolicy::VaultRequired,
-            crate::ImCoreSecretVaultOptions::new(
-                crate::vault::DeviceVaultRootKey::from_bytes([53_u8; 32]),
-                root.join("vault"),
-                "join-candidate-workspace",
-                "join-candidate-vault-device",
-            ),
-        ),
+        crate::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([53_u8; 32]),
+                    root.join("vault"),
+                    "join-candidate-workspace",
+                    "join-candidate-vault-device",
+                ),
+            )
+            .with_multi_device_device_revoke_enabled(revoke_enabled),
     )
     .unwrap()
 }
@@ -1187,6 +1193,55 @@ async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     );
     assert_eq!(progress.sas.as_deref(), Some(verified.sas.as_str()));
     assert!(progress.authorized_device.is_none());
+
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash: canonical_hash(
+            &core
+                .client(crate::identity::IdentitySelector::Default)
+                .unwrap()
+                .runtime()
+                .key_provider
+                .did_document()
+                .unwrap(),
+        )
+        .unwrap(),
+        registry_version: 3,
+    };
+    let presence = format_time(OffsetDateTime::now_utc()).unwrap();
+    let error = prepare_admin_approval_with_management_async(
+        &core,
+        "unsupported-auto-approval",
+        &started.session.join_session_id,
+        &checkpoint,
+        &presence,
+        true,
+        true,
+    )
+    .await
+    .expect_err("automatic management must not downgrade to ordinary Join");
+    assert!(matches!(
+        error,
+        crate::ImError::UnsupportedCapability { .. }
+    ));
+    let unchanged = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged, before);
+    // The legacy explicit member API remains available, with no root authority.
+    let ordinary = prepare_admin_approval_with_management_async(
+        &core,
+        "ordinary-approval",
+        &started.session.join_session_id,
+        &checkpoint,
+        &presence,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!ordinary.new_document.is_null());
 }
 
 #[cfg(feature = "provider-traits")]
@@ -1201,6 +1256,15 @@ struct ExternalProviderAdminJoinFixture {
 async fn prepare_external_provider_admin_join(
     admin_root: &Path,
     candidate_root: &Path,
+) -> ExternalProviderAdminJoinFixture {
+    prepare_external_provider_admin_join_policy(admin_root, candidate_root, false).await
+}
+
+#[cfg(feature = "provider-traits")]
+async fn prepare_external_provider_admin_join_policy(
+    admin_root: &Path,
+    candidate_root: &Path,
+    management: bool,
 ) -> ExternalProviderAdminJoinFixture {
     let (admin, document, did, mut checkpoint) =
         open_external_provider_ready_admin_core(admin_root);
@@ -1254,13 +1318,14 @@ async fn prepare_external_provider_admin_join(
         },
     )
     .unwrap();
-    let prepared = prepare_admin_approval_async(
+    let prepared = prepare_admin_approval_with_management_async(
         &admin,
         "approve-external-admin",
         &started.session.join_session_id,
         &checkpoint,
         &format_time(OffsetDateTime::now_utc()).unwrap(),
         true,
+        management,
     )
     .await
     .unwrap();
@@ -3121,4 +3186,879 @@ async fn retired_registration_join_recovers_fault_after_registry_save_before_bin
         .unwrap(),
         format!("{}|{}|8", current_did.as_str(), authorization.device.device_id)
     );
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn automatic_management_grant_survives_lost_approval_response_and_restart_once() {
+    use crate::internal::identity_join_management::ManagementPhase;
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let notification = completed_admin_notification(&fixture);
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let before = management::tasks(&fixture.admin, &client).unwrap();
+    assert_eq!(before.len(), 1);
+    assert!(!before[0].join_authorized);
+    assert_eq!(before[0].task.phase, ManagementPhase::AwaitingJoin);
+    assert_eq!(before[0].task.attempts, 0);
+    complete_provider_document_change(
+        &client,
+        &fixture.prepared.new_document,
+        &fixture.authorization.checkpoint,
+    )
+    .await
+    .unwrap();
+    drop(client);
+    drop(fixture.admin);
+    let admin = reopen_external_provider_core(admin_root.path());
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert!(
+        recover_confirmed_admin_join_async(&admin, &client, &notification)
+            .await
+            .unwrap()
+    );
+    let mut joins = management::tasks(&admin, &client).unwrap();
+    assert_eq!(joins.len(), 1);
+    assert!(joins[0].join_authorized);
+    joins[0].task.activate();
+    assert!(joins[0].task.claim(0));
+    management::save_task(&admin, &client, &joins[0]).unwrap();
+    let reloaded = management::tasks(&admin, &client).unwrap();
+    assert_eq!(reloaded[0].task.attempts, 1);
+    assert_eq!(reloaded[0].task.phase, ManagementPhase::Attempting);
+    recover_confirmed_admin_join_async(&admin, &client, &notification)
+        .await
+        .unwrap();
+    assert_eq!(
+        management::tasks(&admin, &client).unwrap()[0].task,
+        reloaded[0].task
+    );
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn ordinary_join_does_not_acquire_automatic_root_authority() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert!(management::tasks(&fixture.admin, &client)
+        .unwrap()
+        .is_empty());
+    let error = prepare_admin_approval_with_management_async(
+        &fixture.admin,
+        &fixture.prepared.operation_id,
+        &fixture.prepared.join_session_id,
+        &fixture.prepared.expected_checkpoint,
+        &fixture.prepared.pairing_confirmation.user_presence_at,
+        true,
+        true,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("idempotency"));
+    assert!(management::tasks(&fixture.admin, &client)
+        .unwrap()
+        .is_empty());
+}
+
+#[cfg(all(feature = "provider-traits", feature = "sqlite"))]
+#[tokio::test]
+async fn foreground_management_resume_waits_for_existing_worker_lock() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let lock = crate::internal::identity_join_management::test_hold_worker_lock(&client)
+        .unwrap()
+        .unwrap();
+    let worker_client = client.clone();
+    let mut resumed = tokio::spawn(async move {
+        crate::internal::identity_join_management::run(&worker_client).await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut resumed)
+            .await
+            .is_err()
+    );
+    drop(lock);
+    tokio::time::timeout(std::time::Duration::from_secs(2), resumed)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // The locally prepared, not-yet-remotely-authorized grant cannot send.
+    assert_eq!(
+        management::tasks(&fixture.admin, &client).unwrap()[0]
+            .task
+            .attempts,
+        0
+    );
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn frozen_join_key_binding_rejects_same_id_key_rotation_before_prekey() {
+    use crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary;
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus,
+    };
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let approved = &fixture.prepared.new_document;
+    let manifest = anp::authentication::find_eligible_device(
+        approved,
+        &fixture.prepared.authorizing_device_id,
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    )
+    .unwrap()
+    .unwrap();
+    let sender = DeviceJoinRemoteDeviceSummary {
+        device_id: fixture.prepared.authorizing_device_id.clone(),
+        signing_key_id: manifest.signing_key_id,
+        e2ee_key_id: manifest.e2ee_key_id,
+        status: DeviceAuthorizationStatus::Active,
+        role: DeviceAuthorizationRole::Admin,
+        management_ready: true,
+        auth_generation: 1,
+    };
+    let recipient = &fixture.authorization.device;
+    let did = crate::ids::Did::parse(&fixture.started.join_request.did).unwrap();
+    crate::internal::identity_root_transfer_runtime::validate_join_key_binding(
+        approved, approved, &did, &sender, recipient,
+    )
+    .unwrap();
+    for key_id in [&sender.signing_key_id, &recipient.e2ee_key_id] {
+        let mut changed = approved.clone();
+        let methods = changed
+            .get_mut("verificationMethod")
+            .unwrap()
+            .as_array_mut()
+            .unwrap();
+        let method = methods
+            .iter_mut()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(key_id.as_str()))
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        method.remove("publicKeyMultibase");
+        method.insert("publicKeyJwk".to_owned(), json!({"kty":"OKP","crv": if key_id == &recipient.e2ee_key_id {"X25519"} else {"Ed25519"}, "x": URL_SAFE_NO_PAD.encode([99_u8;32])}));
+        assert_eq!(
+            crate::internal::identity_root_transfer_runtime::validate_join_key_binding(
+                approved, &changed, &did, &sender, recipient
+            )
+            .unwrap_err()
+            .code,
+            crate::identity::RootKeyTransferErrorCode::StateChanged
+        );
+    }
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn editing_an_old_member_approval_cannot_create_automatic_root_authority() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let store = JoinStateStore::new(&fixture.admin);
+    let mut stored = store
+        .load(&fixture.prepared.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    stored.approval.as_mut().unwrap().management_task =
+        Some(crate::internal::identity_join_management::ManagementTask::authorized());
+    // Model a disk edit bypassing the API's validated atomic-save boundary.
+    write_private_atomic(
+        &store.path(&fixture.prepared.join_session_id, DeviceJoinSide::Admin),
+        &serde_json::to_vec(&stored).unwrap(),
+    )
+    .unwrap();
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert!(matches!(
+        management::tasks(&fixture.admin, &client),
+        Err(crate::ImError::PermissionDenied)
+    ));
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn denied_join_confirmation_never_creates_automatic_management_authority() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let prompt = fixture
+        .admin
+        .device_join()
+        .prepare_device_join_approval(
+            crate::identity::IdentitySelector::Default,
+            &fixture.prepared.join_session_id,
+            true,
+        )
+        .unwrap();
+    assert!(matches!(
+        fixture
+            .admin
+            .device_join()
+            .confirm_device_join_with_management(
+                crate::identity::DeviceJoinConfirmApprovalRequest {
+                    approval_handle: prompt.approval_handle,
+                    user_presence_confirmed: false
+                }
+            )
+            .await,
+        Err(crate::ImError::PermissionDenied)
+    ));
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert!(management::tasks(&fixture.admin, &client)
+        .unwrap()
+        .is_empty());
+}
+
+#[cfg(all(feature = "provider-traits", feature = "sqlite"))]
+#[tokio::test]
+async fn management_registry_repair_preserves_exact_confirmed_document_and_rejects_rollback() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    mark_join_authorized_async(
+        &fixture.admin,
+        &fixture.prepared.join_session_id,
+        &fixture.authorization,
+        &fixture.prepared.new_document,
+    )
+    .await
+    .unwrap();
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let join = management::tasks(&fixture.admin, &client)
+        .unwrap()
+        .remove(0);
+    let mut checkpoint = fixture.authorization.checkpoint.clone();
+    checkpoint.registry_version += 1;
+    let store = crate::internal::identity_store::IdentityStore::new(
+        &fixture.admin.inner().sdk_paths().identities,
+    );
+    let alias = client.current_identity().local_alias.as_ref().unwrap();
+    let initial = store.load_index().unwrap().credentials[alias]
+        .device_state
+        .clone()
+        .unwrap();
+    let auth = initial.authorization.as_ref().unwrap();
+    let source = crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+        device_id: auth.protocol_device_id.as_str().to_owned(),
+        signing_key_id: auth.signing_key_id.clone(),
+        e2ee_key_id: auth.e2ee_key_id.clone(),
+        status: auth.status,
+        role: auth.role,
+        management_ready: auth.management_ready,
+        auth_generation: auth.auth_generation,
+    };
+    let mut registry = crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry {
+        did: client.did().clone(),
+        checkpoint,
+        devices: vec![source, fixture.authorization.device.clone()],
+    };
+    management::refresh_confirmed_registry_checkpoint(
+        &fixture.admin,
+        &client,
+        &join,
+        &fixture.prepared.new_document,
+        &registry,
+    )
+    .await
+    .unwrap();
+    let store = crate::internal::identity_store::IdentityStore::new(
+        &fixture.admin.inner().sdk_paths().identities,
+    );
+    let alias = client.current_identity().local_alias.as_ref().unwrap();
+    let refreshed = store.load_index().unwrap().credentials[alias]
+        .device_state
+        .clone()
+        .unwrap();
+    assert_eq!(refreshed.checkpoint.as_ref(), Some(&registry.checkpoint));
+    assert_eq!(
+        management::tasks(&fixture.admin, &client).unwrap()[0]
+            .task
+            .attempts,
+        0
+    );
+    let mut changed_document = fixture.prepared.new_document.clone();
+    changed_document["name"] = json!("not-the-confirmed-document");
+    assert!(management::refresh_confirmed_registry_checkpoint(
+        &fixture.admin,
+        &client,
+        &join,
+        &changed_document,
+        &registry
+    )
+    .await
+    .is_err());
+    registry.checkpoint.registry_version -= 1;
+    assert!(management::refresh_confirmed_registry_checkpoint(
+        &fixture.admin,
+        &client,
+        &join,
+        &fixture.prepared.new_document,
+        &registry
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        store.load_index().unwrap().credentials[alias]
+            .device_state
+            .as_ref(),
+        Some(&refreshed)
+    );
+}
+
+#[cfg(all(feature = "provider-traits", feature = "sqlite"))]
+#[tokio::test]
+async fn cancelled_join_cannot_resume_or_retry_automatic_management() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let store = JoinStateStore::new(&fixture.admin);
+    let mut stored = store
+        .load(&fixture.prepared.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    stored.phase = DeviceJoinLocalPhase::Cancelled;
+    stored.terminal_evidence = Some(JoinTerminalEvidence::RemoteRejected);
+    store.save(&stored).unwrap();
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    crate::internal::identity_join_management::run(&client)
+        .await
+        .unwrap();
+    let task = management::tasks(&fixture.admin, &client)
+        .unwrap()
+        .remove(0);
+    assert!(!task.join_authorized);
+    assert_eq!(
+        task.task.phase,
+        crate::internal::identity_join_management::ManagementPhase::Failed
+    );
+    assert_eq!(task.task.failure_code.as_deref(), Some("join_cancelled"));
+    assert_eq!(task.task.attempts, 0);
+    assert!(fixture
+        .admin
+        .device_join()
+        .retry_device_join_management(
+            crate::identity::IdentitySelector::Default,
+            &fixture.prepared.join_session_id
+        )
+        .await
+        .is_err());
+}
+
+#[cfg(all(feature = "provider-traits", feature = "sqlite"))]
+#[tokio::test]
+async fn management_retry_waits_for_status_worker_before_checking_authority() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let lock = crate::internal::identity_join_management::test_hold_worker_lock(&client)
+        .unwrap()
+        .unwrap();
+    let other = client.clone();
+    let session = fixture.prepared.join_session_id.clone();
+    let mut retry = tokio::spawn(async move {
+        crate::internal::identity_join_management::retry(&other, &session).await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut retry)
+            .await
+            .is_err()
+    );
+    drop(lock);
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), retry)
+        .await
+        .unwrap()
+        .unwrap();
+    // This fixture is only locally prepared. Waiting never fabricates remote Join acceptance.
+    assert!(matches!(outcome, Err(crate::ImError::PermissionDenied)));
+    assert_eq!(
+        management::tasks(&fixture.admin, &client).unwrap()[0]
+            .task
+            .attempts,
+        0
+    );
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn sibling_document_fixture(
+    root: &Path,
+    keep_pending: bool,
+) -> (
+    crate::ImCore,
+    Value,
+    crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry,
+) {
+    let (core, projected) = open_anp_ready_admin_core(root);
+    let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == projected.did.as_str())
+        .unwrap();
+    let mut identity = manager.get(&descriptor.reference).unwrap();
+    let current = anp_identity::host::IdentityStatusPort::host_status(&identity)
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    let signing_private = ed25519_dalek::SigningKey::from_bytes(&[91_u8; 32]);
+    let mut signing_multikey = vec![0xed, 0x01];
+    signing_multikey.extend_from_slice(&signing_private.verifying_key().to_bytes());
+    let agreement_private = x25519_dalek::StaticSecret::from([92_u8; 32]);
+    let mut agreement_multikey = vec![0xec, 0x01];
+    agreement_multikey
+        .extend_from_slice(&x25519_dalek::PublicKey::from(&agreement_private).to_bytes());
+    let mut change = identity
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::AddDevice {
+                device: anp_identity::DeviceInput {
+                    device_id: "peer-device".to_owned(),
+                    signing_key: anp_identity::PublicKeyInput {
+                        kid: format!("{}#peer-sign", projected.did.as_str()),
+                        public_key_multibase: format!(
+                            "z{}",
+                            bs58::encode(signing_multikey).into_string()
+                        ),
+                    },
+                    agreement_key: anp_identity::PublicKeyInput {
+                        kid: format!("{}#peer-e2ee", projected.did.as_str()),
+                        public_key_multibase: format!(
+                            "z{}",
+                            bs58::encode(agreement_multikey).into_string()
+                        ),
+                    },
+                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                },
+            }],
+        })
+        .unwrap();
+    let updated_document = change.candidate().candidate_document.clone().into_value();
+    if !keep_pending {
+        let attempt = change.begin_publication().unwrap();
+        change
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::RejectedBeforeAcceptance,
+            )
+            .unwrap();
+    }
+    drop(change);
+    drop(identity);
+    drop(manager);
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: current.document_version + 1,
+        document_hash: canonical_hash(&updated_document).unwrap(),
+        registry_version: current.registry_version + 1,
+    };
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let context = prepare_admin_projection_context_for_client(&core, &client, &checkpoint).unwrap();
+    let auth = context.state.authorization.unwrap();
+    let registry = crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry {
+        did: projected.did,
+        checkpoint,
+        devices: vec![
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: auth.protocol_device_id.as_str().to_owned(),
+                signing_key_id: auth.signing_key_id,
+                e2ee_key_id: auth.e2ee_key_id,
+                status: auth.status,
+                role: auth.role,
+                management_ready: auth.management_ready,
+                auth_generation: auth.auth_generation,
+            },
+        ],
+    };
+    (core, updated_document, registry)
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn sibling_document_convergence_allows_next_join_and_repairs_projection_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, registry) = sibling_document_fixture(root.path(), false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let old_document = client.runtime().key_provider.did_document().unwrap();
+    let old_index = fs::read(core.inner().sdk_paths().identities.registry_path.clone()).unwrap();
+    assert_ne!(old_document, document);
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
+    // Simulate the provider commit surviving while the Core projection did not.
+    write_private_atomic(
+        &client.runtime().did_document_path,
+        &serde_json::to_vec(&old_document).unwrap(),
+    )
+    .unwrap();
+    write_private_atomic(
+        &core.inner().sdk_paths().identities.registry_path.clone(),
+        &old_index,
+    )
+    .unwrap();
+    drop(client);
+    drop(core);
+    let core = open_empty_vault_core(root.path());
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
+    // A second crash window leaves only the index old, while document and
+    // provider already match. Runtime must still schedule projection repair.
+    write_private_atomic(
+        &core.inner().sdk_paths().identities.registry_path,
+        &old_index,
+    )
+    .unwrap();
+    assert!(document_convergence::needs_refresh(&core, &client, &registry.checkpoint).unwrap());
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
+    assert!(!document_convergence::needs_refresh(&core, &client, &registry.checkpoint).unwrap());
+    let candidate_root = tempfile::tempdir().unwrap();
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let started = candidate
+        .device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "sibling-next-start".to_owned(),
+                did: registry.did.clone(),
+                ttl_seconds: 300,
+            },
+            &document,
+        )
+        .await
+        .unwrap();
+    let challenged = prepare_admin_challenge_async(
+        &core,
+        DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "sibling-next-challenge".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: registry.checkpoint.document_version,
+            document_hash: registry.checkpoint.document_hash,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        challenged.session.phase,
+        DeviceJoinLocalPhase::ChallengePrepared
+    );
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn sibling_document_convergence_rejects_pending_and_invalid_remote_authority() {
+    for case in [
+        "pending",
+        "hash",
+        "generation",
+        "demoted",
+        "revoked",
+        "key",
+        "rollback",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (core, document, mut registry) =
+            sibling_document_fixture(root.path(), case == "pending");
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Default)
+            .await
+            .unwrap();
+        let before = fs::read(&client.runtime().did_document_path).unwrap();
+        match case {
+            "hash" => registry.checkpoint.document_hash = "sha256:wrong".to_owned(),
+            "generation" => registry.devices[0].auth_generation += 1,
+            "demoted" => {
+                registry.devices[0].role =
+                    crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+            }
+            "revoked" => {
+                registry.devices[0].status =
+                    crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked
+            }
+            "key" => registry.devices[0].signing_key_id.push_str("-other"),
+            "rollback" => registry.checkpoint.registry_version = 0,
+            _ => {}
+        }
+        assert!(
+            document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+                .await
+                .is_err(),
+            "{case}"
+        );
+        assert_eq!(
+            fs::read(&client.runtime().did_document_path).unwrap(),
+            before,
+            "{case}"
+        );
+    }
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn sibling_document_convergence_cas_preserves_concurrent_revocation() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, registry) = sibling_document_fixture(root.path(), false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let alias = client.current_identity().local_alias.as_ref().unwrap();
+    let expected = store.load_index().unwrap().credentials[alias].clone();
+    let mut converged = expected.device_state.clone().unwrap();
+    converged.checkpoint = Some(registry.checkpoint);
+    let mut revoked = expected.device_state.clone().unwrap();
+    revoked.authorization.as_mut().unwrap().status =
+        crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked;
+    revoked.authorization.as_mut().unwrap().management_ready = false;
+    store.save_device_state(alias, revoked.clone()).unwrap();
+    let before = fs::read(&client.runtime().did_document_path).unwrap();
+    assert!(store
+        .commit_converged_admin_document(alias, &expected, converged, &document)
+        .is_err());
+    assert_eq!(
+        store.load_index().unwrap().credentials[alias]
+            .device_state
+            .as_ref(),
+        Some(&revoked)
+    );
+    assert_eq!(
+        fs::read(&client.runtime().did_document_path).unwrap(),
+        before
+    );
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn revoke_refreshes_sibling_document_but_preserves_pending_publication() {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus,
+    };
+    for pending in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (core, document, mut registry) = sibling_document_fixture(root.path(), pending);
+        drop(core);
+        let core = open_empty_vault_core_with_revoke(root.path(), true);
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Default)
+            .await
+            .unwrap();
+        let source = registry.devices[0].clone();
+        registry.devices.push(
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: "peer-device".to_owned(),
+                signing_key_id: format!("{}#peer-sign", client.did().as_str()),
+                e2ee_key_id: format!("{}#peer-e2ee", client.did().as_str()),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        );
+        let old_document = client.runtime().key_provider.did_document().unwrap();
+        assert_ne!(old_document, document);
+        // Match the real revoke path: convergence runs under the revoke mutex.
+        let _revoke_guard = core.inner().device_revoke_lock.lock().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::internal::identity_device_revoke::prepare_initial_intent(
+                &client,
+                "peer-device",
+                &source.device_id,
+                &source.signing_key_id,
+                registry.clone(),
+                document,
+            ),
+        )
+        .await
+        .expect("sibling convergence must not reenter the revoke lock");
+        if pending {
+            assert!(result.is_err());
+            assert_eq!(
+                client.runtime().key_provider.did_document().unwrap(),
+                old_document
+            );
+        } else {
+            let prepared = result.unwrap();
+            assert_eq!(prepared.expected_checkpoint, registry.checkpoint);
+            let manifest = anp::authentication::validate_device_manifest(&prepared.new_document)
+                .unwrap()
+                .unwrap();
+            assert!(manifest
+                .devices
+                .iter()
+                .any(|d| d.device_id == source.device_id));
+            assert!(!manifest
+                .devices
+                .iter()
+                .any(|d| d.device_id == "peer-device"));
+        }
+    }
+}
+
+#[cfg(feature = "identity-native-anp")]
+#[tokio::test]
+async fn stale_revoke_rejection_aborts_only_exact_prepared_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, registry) = sibling_document_fixture(root.path(), true);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let old = client.runtime().key_provider.did_document().unwrap();
+    assert!(
+        crate::internal::identity_device_revoke::abort_rejected_provider_change(&client, &old)
+            .await
+            .is_err()
+    );
+    assert!(
+        document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+            .await
+            .is_err()
+    );
+    crate::internal::identity_device_revoke::abort_rejected_provider_change(&client, &document)
+        .await
+        .unwrap();
+    document_convergence::refresh_admin_document(&core, &client, &document, &registry)
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn management_budget_is_signed_and_legacy_authorization_survives_upgrade() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join_policy(admin_root.path(), candidate_root.path(), true)
+            .await;
+    let store = JoinStateStore::new(&fixture.admin);
+    let mut stored = store
+        .load(&fixture.prepared.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    management::validate_authority(&stored).unwrap();
+    assert_eq!(
+        stored
+            .approval
+            .as_ref()
+            .unwrap()
+            .management_task
+            .as_ref()
+            .unwrap()
+            .max_attempts,
+        4
+    );
+    stored
+        .approval
+        .as_mut()
+        .unwrap()
+        .management_task
+        .as_mut()
+        .unwrap()
+        .max_attempts = 3;
+    assert!(management::validate_authority(&stored).is_err());
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let approval = stored.approval.as_ref().unwrap();
+    let proof = sign_object_proof_async(
+        &client,
+        &approval
+            .management_proof
+            .as_ref()
+            .unwrap()
+            .verification_method,
+        &management::authorization_payload(&stored, approval).unwrap(),
+        &approval.pairing_confirmation.user_presence_at,
+    )
+    .await
+    .unwrap();
+    stored.approval.as_mut().unwrap().management_proof = Some(proof);
+    let mut legacy = serde_json::to_value(&stored).unwrap();
+    legacy["approval"]["management_task"]
+        .as_object_mut()
+        .unwrap()
+        .remove("max_attempts");
+    let mut restored: StoredJoinSession = serde_json::from_value(legacy).unwrap();
+    management::validate_authority(&restored).unwrap();
+    restored
+        .approval
+        .as_mut()
+        .unwrap()
+        .management_task
+        .as_mut()
+        .unwrap()
+        .max_attempts = 4;
+    assert!(management::validate_authority(&restored).is_err());
 }
