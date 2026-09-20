@@ -133,7 +133,7 @@ SAS, or internal Document/Registry/auth versions and hashes.
 
 ### 4.2 Root-key transfer adapter
 
-`id device root-key send --device <id>` remains the independent explicitly authorized manual operation. Normal App/CLI Join uses the Join-bound Core task. This command It rejects dry-run and keeps the selected identity in the
+`id device root-key send --device <id>` remains the independent explicitly authorized manual operation. Normal App/CLI Join uses the Join-bound Core task. This command rejects dry-run and keeps the selected identity in the
 identity-scoped `ImClient`; the CLI does not accept a message ID, PreKey,
 session, proof, checkpoint, payload, retry selector, or user-presence override.
 This is a low-level, explicit single-target operation for existing-member grants and independent-transfer verification. It does not discover or list eligible
