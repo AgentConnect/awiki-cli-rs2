@@ -2070,6 +2070,7 @@ name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apple-native-keyring-store",
  "awiki-im-core",
  "chrono",
  "flutter_rust_bridge",
