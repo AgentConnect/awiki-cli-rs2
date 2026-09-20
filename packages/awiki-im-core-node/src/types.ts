@@ -1,5 +1,7 @@
 /** State and service configuration owned by the Node host. */
 export interface ImCoreNodeOpenOptions {
+  /** Additional trusted CA bundle; certificate verification remains enabled. */
+  readonly caBundle?: string
   /** Absolute, process-exclusive root for identities, SQLite, cache, and metadata. */
   readonly stateRoot: string
   readonly serviceBaseUrl: string

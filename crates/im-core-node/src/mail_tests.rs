@@ -9,6 +9,7 @@ fn open_options() -> NodeOpenOptions {
     NodeOpenOptions {
         state_root: "/tmp/awiki-im-core-node-mail-tests".to_owned(),
         service_base_url: "https://example.test".to_owned(),
+        ca_bundle: None,
         did_domain: "example.test".to_owned(),
         user_service_endpoint: None,
         message_service_endpoint: None,
@@ -300,4 +301,11 @@ fn python_naive_mail_timestamp_is_canonicalized_as_utc() {
         page.items[0].sent_at.as_deref(),
         Some("2026-08-19T09:30:34.123456Z")
     );
+}
+
+#[test]
+fn custom_ca_is_preserved_for_verified_core_transport() {
+    let mut options = open_options();
+    options.ca_bundle = Some("/tmp/acceptance-ca.pem".to_owned());
+    assert_eq!(core_config(&options.clone()).unwrap().ca_bundle.as_deref(), Some("/tmp/acceptance-ca.pem"));
 }

@@ -2819,6 +2819,7 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
         options.did_domain.clone(),
     )
     .map_err(SafeError::from_im)?;
+    config.ca_bundle = options.ca_bundle.clone();
     config.user_service_endpoint = optional_endpoint(options.user_service_endpoint.clone())?;
     config.message_service_endpoint = optional_endpoint(options.message_service_endpoint.clone())?;
     config.mail_service_endpoint = optional_endpoint(options.mail_service_endpoint.clone())?;
@@ -3452,6 +3453,7 @@ mod tests {
         NodeOpenOptions {
             state_root: state_root.display().to_string(),
             service_base_url: "https://example.test".to_owned(),
+            ca_bundle: None,
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,

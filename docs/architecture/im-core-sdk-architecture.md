@@ -61,6 +61,8 @@ The CLI handler target shape is:
 parse flags -> build ImCore/ImClient -> call SDK -> render output
 ```
 
+注册入口允许一项只读 Host 预检查：CLI 在调用 SDK 注册前，通过 User Service 的 `registration_check` 判定已有账号与新账号的邀请码要求。此检查与 App/DSH 的表单准入一致，不能生成身份、写入 pending、消费邀请码或代替服务端最终注册校验；已有账号必须继续进入 SDK 的 Login/Join/Recovery。缺失、无效或无法确认的邀请在进入 SDK 前返回可重试的输入错误，避免无效输入形成不可变的 pending 注册请求。SDK 仍独占注册、重试协调和身份状态。
+
 CLI may parse `--to`, `--group`, `--text-file`, `--file`, and `--secure`; it passes `MessageTarget`, `MessageBody`, `AttachmentInput`, and `MessageSecurityMode` to SDK services.
 
 ## 4. Identity Model
