@@ -1691,7 +1691,10 @@ async fn register_handle_plan_command_result_async(
     })
 }
 
-pub(crate) fn register_plan_target(raw: &str, did_domain: &str) -> Result<RegisterPlanTarget, ExitError> {
+pub(crate) fn register_plan_target(
+    raw: &str,
+    did_domain: &str,
+) -> Result<RegisterPlanTarget, ExitError> {
     let trimmed = raw.trim().trim_start_matches('@').to_ascii_lowercase();
     if trimmed.is_empty() {
         return Err(ExitError::new(

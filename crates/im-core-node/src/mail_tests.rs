@@ -307,5 +307,8 @@ fn python_naive_mail_timestamp_is_canonicalized_as_utc() {
 fn custom_ca_is_preserved_for_verified_core_transport() {
     let mut options = open_options();
     options.ca_bundle = Some("/tmp/acceptance-ca.pem".to_owned());
-    assert_eq!(core_config(&options.clone()).unwrap().ca_bundle.as_deref(), Some("/tmp/acceptance-ca.pem"));
+    assert_eq!(
+        core_config(&options.clone()).unwrap().ca_bundle.as_deref(),
+        Some("/tmp/acceptance-ca.pem")
+    );
 }
