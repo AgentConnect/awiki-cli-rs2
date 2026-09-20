@@ -26,12 +26,12 @@ spec.loader.exec_module(registry)
 
 
 def run(args, cwd=None, capture=False, env=None):
-    return subprocess.run(args, cwd=cwd, env=env, check=True, text=True,
+    return subprocess.run(args, cwd=cwd, env=env, check=True, text=True, encoding="utf-8",
                           stdout=subprocess.PIPE if capture else None).stdout
 
 
 def read_selection(path, mode):
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     entries = data.get('dependencies')
     if data.get('schema_version') != 1 or not isinstance(entries, dict) or not entries:
         raise ValueError('Expected schema_version=1 and nonempty dependencies')
@@ -98,10 +98,10 @@ def normalize_sdk_roots(roots, versions):
         if name not in roots:
             continue
         manifest = roots[name] / 'Cargo.toml'
-        text = manifest.read_text()
+        text = manifest.read_text(encoding="utf-8")
         for dependency in ('anp', 'anp-identity') if name == 'awiki-im-core' else ('anp',):
             text = registry.registry_dependency(text, dependency, versions[dependency])
-        manifest.write_text(text)
+        manifest.write_text(text, encoding="utf-8")
 
 
 def apply_patches(checkout, roots):
@@ -111,7 +111,7 @@ def apply_patches(checkout, roots):
     for name, root in roots.items():
         directory = root / SPECS[name][1]
         text += f'{json.dumps(name)} = {{ path = {json.dumps(str(directory))} }}\n'
-    with (checkout / 'Cargo.toml').open('a') as stream:
+    with (checkout / 'Cargo.toml').open('a', encoding='utf-8') as stream:
         stream.write(text)
 
 
@@ -216,7 +216,7 @@ def main(argv=None):
         # Apply that exact version only inside this isolated consumer snapshot.
         versions = dict(versions)
         for name, root in roots.items():
-            text = (root / SPECS[name][1] / 'Cargo.toml').read_text()
+            text = (root / SPECS[name][1] / 'Cargo.toml').read_text(encoding="utf-8")
             match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
             if not match:
                 raise ValueError(f'{name}: SDK must declare its package version')
@@ -242,21 +242,21 @@ def main(argv=None):
             shutil.copy2(checkout / 'Cargo.lock', lock)
         evidence['resolved'] = [{'name': p['name'], 'version': p['version'], 'source': p['source']}
                                 for p in metadata['packages'] if p['name'] in versions]
-        (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
         if not args.refresh_lock and not args.resolve_only:
             run(command if '--locked' in command else [*command, '--locked'], checkout, env=env)
             if args.cargo_command is not None:
                 evidence['command'] = command
                 evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
                 evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
-                (artifacts / 'command-result.json').write_text(json.dumps(evidence, indent=2) + '\n')
+                (artifacts / 'command-result.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
             if args.target and not args.check:
                 evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
                 evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
                 evidence['build'] = {'target': args.target, 'features': sorted((args.features or '').split(',')), 'optimized': args.optimized, 'no_default_features': args.no_default_features}
                 archive = artifacts / 'target' / args.target / ('release' if args.optimized else 'debug') / 'libawiki_im_core.a'
                 evidence['archive_sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
-                (artifacts / (args.target + '.json')).write_text(json.dumps(evidence, indent=2) + '\n')
+                (artifacts / (args.target + '.json')).write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
     return 0
 
 

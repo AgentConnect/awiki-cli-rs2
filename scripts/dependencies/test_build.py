@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import json
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,11 @@ spec.loader.exec_module(deps)
 VERSIONS = {'anp': '1.0.1', 'anp-identity': '0.2.1', 'awiki-im-core': '0.1.1'}
 
 class BuildDependencyTests(unittest.TestCase):
+    def test_source_process_output_uses_utf8_for_non_ascii_git_paths(self):
+        text = '路径/”source.rs'
+        output = deps.run([sys.executable, '-c', "import sys; sys.stdout.buffer.write(bytes.fromhex('" + text.encode('utf-8').hex() + "'))"], capture=True)
+        self.assertEqual(output, text)
+
     def test_source_cargo_keeps_exact_toolchain_features_and_locked_graph(self):
         command = deps.source_cargo_command(['+1.88.0', 'test', '-p', 'im-core-dart', '--no-default-features', '--features', 'windows,sqlite'])
         self.assertEqual(command[1:4], ['+1.88.0', 'test', '-p'])
