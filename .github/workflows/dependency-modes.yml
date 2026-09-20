@@ -24,3 +24,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - if: hashFiles('dependencies.source.json') != ''
         run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package awiki-cli
+      - if: hashFiles('dependencies.source.json') != ''
+        run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package im-core-dart

@@ -119,3 +119,16 @@ registry-build.py使用指定提交的Git归档构建输入，不再创建worktr
 不会带入dirty文件，registry pin/lock与实际metadata检查保持。构建输入的
 `.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
 归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。
+
+
+### 2026-09-20 注册候选源码联调
+
+注册分支提交临时 `dependencies.source.json` 与联调锁，固定 Core PR #39 的
+`527146e3d74437bb3b74f064b50def8d22f4b7e0`，用于未发布的 Core 0.1.5。
+ANP 1.0.3、Identity 0.2.3 仍从 registry 解析。联调 CI 分别检查 CLI 和 Dart native
+adapter；本地复现使用上文 source 入口及 `--package im-core-dart`。
+此检查只证明隔离源码依赖解析和 Rust 编译，不产生 Apple XCFramework，也不证明
+Flutter 产品验收。Apple 制品仍需明确消费相同源码与锁，独立记录来源。
+
+registry-check 保持独立，正式 Release 仍拒绝存在临时 source 清单；发布 0.1.5
+并刷新正式锁之后须移除临时清单和锁，重新通过 registry 检查。
