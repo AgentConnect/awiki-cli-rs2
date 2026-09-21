@@ -108,3 +108,16 @@ registry 来源验证或真实账号恢复验收。
 更新清单后，按 `--deps source --source-manifest dependencies.source.json --refresh-lock`
 重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
 Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。
+
+### Notify PR #43 开发源码联调
+
+本候选 CLI 使用新增的 typed Notify Core API，而正式 Core 0.1.4 尚未包含该能力。
+`dependencies.source.json` 显式锁定同一 PR 中 Core 候选
+`7a2d0ce138d328112527e5359ac8079a5bbda506`，配套 source Cargo lock；
+source-integration-check 因此会真正执行，不再因缺少清单而跳过。
+ANP 1.0.3 和 Identity 0.2.3 继续使用固定 registry 来源。
+
+使用上文的 source `--check --package awiki-cli` 入口验证本候选。
+这不修复或跳过独立 registry 检查；正式 registry 仍缺新 API，保持合并/发布阻塞。
+未来获得对应发布授权并满足依赖门禁后，更新正式 pin/lock、删除 source 清单和锁，
+再验证 registry。开发 PR 不授权发布依赖或任何版本。
