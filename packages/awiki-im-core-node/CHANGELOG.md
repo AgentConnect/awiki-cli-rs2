@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add typed ordinary DID service updates and durable resume/pending inspection.
+  Native API v18 requires rebuilding the JavaScript wrapper and native addon together.
+
 - Map the exact User Service `identity.short_handle_invite_required` registration
   code to the secret-free, non-retryable `short_handle_invite_required` Node error.
 

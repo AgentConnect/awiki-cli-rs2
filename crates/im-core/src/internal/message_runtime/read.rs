@@ -5647,6 +5647,17 @@ pub(crate) fn attachment_manifest_cache_record(
         ("direct", peer_did)
     };
     let message_id = attachment_manifest_cache_message_id(object, &thread_id)?;
+    let wire_message_id = first_non_empty_owned([
+        string_value(object.get("raw_message_id")),
+        if thread_kind == "group" {
+            // P4 history carries its logical grant id in message_id, alongside
+            // the canonical timeline id. Preserve it before cache projection.
+            string_value(object.get("message_id"))
+        } else {
+            String::new()
+        },
+    ])
+    .unwrap_or_default();
     Some(
         crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -5654,20 +5665,9 @@ pub(crate) fn attachment_manifest_cache_record(
             thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
-            wire_message_id: string_value(object.get("raw_message_id")),
+            wire_message_id,
             sender_did: string_value(object.get("sender_did")),
-            // Ordinary history/Sync projections may omit the profile. Only
-            // secure messages can use the secure lane's inferred default;
-            // otherwise the download ticket must match the plain send grant.
-            message_security_profile: if object.get("secure").and_then(Value::as_bool) == Some(true)
-                || ["message_security_profile", "security_profile", "security"]
-                    .iter()
-                    .any(|key| !string_value(object.get(*key)).trim().is_empty())
-            {
-                secure_message_security_profile(object)
-            } else {
-                "transport-protected".to_owned()
-            },
+            message_security_profile: attachment_cache_security_profile(object, &content),
             content: serde_json::to_string(&content).ok()?,
             stored_at: first_non_empty_owned([
                 string_value(object.get("stored_at")),
@@ -5679,6 +5679,36 @@ pub(crate) fn attachment_manifest_cache_record(
             .to_owned(),
         },
     )
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_cache_security_profile(
+    object: &serde_json::Map<String, Value>,
+    content: &Value,
+) -> String {
+    let explicit_profile = ["message_security_profile", "security_profile", "security"]
+        .iter()
+        .any(|key| {
+            object.get(*key).and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        });
+    let encrypted_object = content.get("attachments").and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                attachment.pointer("/encryption_info/mode").and_then(Value::as_str)
+                    == Some(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE)
+            })
+        });
+    if explicit_profile
+        || object.get("secure").and_then(Value::as_bool) == Some(true)
+        || encrypted_object
+    {
+        secure_message_security_profile(object)
+    } else {
+        // Plain P4 history has no security profile; group membership alone does
+        // not make an attachment an encrypted P6 message.
+        "transport-protected".to_owned()
+    }
 }
 
 #[cfg(feature = "sqlite")]

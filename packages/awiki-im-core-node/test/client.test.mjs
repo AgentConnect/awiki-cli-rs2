@@ -21,6 +21,24 @@ function options(stateRoot) {
   }
 }
 
+test('method capabilities and pending registration hints use the current native binding', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-methods-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient(options(root))
+  t.after(() => client.close())
+  assert.deepEqual(await client.identityMethodCapabilities('did:web:identity.example:awiki:web:alice'), {
+    method: 'web', handleRecovery: false, rootImport: false, rootTransfer: false, servicesUpdate: true,
+  })
+  assert.deepEqual(await client.identityMethodCapabilities('did:wba:provider.example:users:alice'), {
+    method: 'wba', handleRecovery: true, rootImport: true, rootTransfer: true, servicesUpdate: false,
+  })
+  await assert.rejects(client.identityMethodCapabilities('did:web:localhost'))
+  await assert.rejects(client.resolveHandleForDeviceJoin(''), error => error instanceof ImCoreNodeError && error.code === 'invalid_input')
+  assert.deepEqual(await client.pendingIdentityRegistrations(), [])
+  await client.close()
+  await assert.rejects(client.identityMethodCapabilities('did:web:identity.example'))
+})
+
 async function startRecoveryService(t) {
   const requests = []
   const server = createServer((request, response) => {

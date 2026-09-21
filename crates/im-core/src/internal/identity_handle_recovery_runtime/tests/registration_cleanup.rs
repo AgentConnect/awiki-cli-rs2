@@ -339,6 +339,7 @@ async fn recovery_registration_cleanup_preserves_committed_registration() {
     candidate.remote_attempted = true;
     candidate.phase = PendingRegistrationPhase::RemoteCommitted;
     candidate.remote_result = Some(PendingRegistrationRemoteResult {
+        current: None,
         did: candidate.identity.did.as_str().into(),
         user_id: "user-v4-1".into(),
         handle: "alice".into(),

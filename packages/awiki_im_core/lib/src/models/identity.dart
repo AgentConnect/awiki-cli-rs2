@@ -4,6 +4,44 @@ import 'dart:typed_data';
 import 'config.dart';
 import 'error.dart';
 
+/// Public DID service fields accepted by Core's ordinary update operation.
+class DidDocumentService {
+  const DidDocumentService({
+    required this.id,
+    required this.type,
+    required this.serviceEndpoint,
+    this.serviceDid,
+    this.profiles = const [],
+    this.securityProfiles = const [],
+  });
+  final String id;
+  final String type;
+  final String serviceEndpoint;
+  final String? serviceDid;
+  final List<String> profiles;
+  final List<String> securityProfiles;
+
+  factory DidDocumentService.fromJson(Map<String, Object?> value) =>
+      DidDocumentService(
+        id: value['id'] as String,
+        type: value['type'] as String,
+        serviceEndpoint: value['serviceEndpoint'] as String,
+        serviceDid: value['serviceDid'] as String?,
+        profiles: (value['profiles'] as List?)?.cast<String>() ?? const [],
+        securityProfiles:
+            (value['securityProfiles'] as List?)?.cast<String>() ?? const [],
+      );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'type': type,
+    'serviceEndpoint': serviceEndpoint,
+    if (serviceDid != null) 'serviceDid': serviceDid,
+    if (profiles.isNotEmpty) 'profiles': profiles,
+    if (securityProfiles.isNotEmpty) 'securityProfiles': securityProfiles,
+  };
+}
+
 /// Single-use, write-only account-verification grant for device Join.
 class DeviceJoinAccountVerificationGrant {
   factory DeviceJoinAccountVerificationGrant.fromToken(String token) {
@@ -523,6 +561,8 @@ class IdentityVaultVerificationReport {
   final List<String> warnings;
 }
 
+enum DidMethod { wba, web }
+
 class InitialProfile {
   const InitialProfile({this.displayName, this.avatarUrl});
 
@@ -926,4 +966,59 @@ class DeviceJoinManagementStatus {
   final int attempts;
   final int nextAttemptAtMs;
   final String? failureCode;
+}
+
+/// Method support; this does not grant current device management authority.
+class IdentityMethodCapabilities {
+  const IdentityMethodCapabilities({
+    required this.method,
+    required this.handleRecovery,
+    required this.rootImport,
+    required this.rootTransfer,
+    required this.servicesUpdate,
+  });
+
+  factory IdentityMethodCapabilities.fromJson(Map<String, Object?> json) =>
+      IdentityMethodCapabilities(
+        method: DidMethod.values.byName(json['method'] as String),
+        handleRecovery: json['handleRecovery'] as bool,
+        rootImport: json['rootImport'] as bool,
+        rootTransfer: json['rootTransfer'] as bool,
+        servicesUpdate: json['servicesUpdate'] as bool,
+      );
+
+  final DidMethod method;
+  final bool handleRecovery;
+  final bool rootImport;
+  final bool rootTransfer;
+  final bool servicesUpdate;
+}
+
+/// Read-only resume hint; the durable operation and contact values stay in Core.
+class PendingIdentityRegistration {
+  const PendingIdentityRegistration({
+    required this.did,
+    required this.fullHandle,
+    required this.method,
+    required this.displayName,
+    required this.verificationKind,
+    required this.phase,
+  });
+
+  factory PendingIdentityRegistration.fromJson(Map<String, Object?> value) =>
+      PendingIdentityRegistration(
+        did: value['did'] as String,
+        fullHandle: value['fullHandle'] as String,
+        method: DidMethod.values.byName(value['method'] as String),
+        displayName: value['displayName'] as String,
+        verificationKind: value['verificationKind'] as String,
+        phase: value['phase'] as String,
+      );
+
+  final String did;
+  final String fullHandle;
+  final DidMethod method;
+  final String displayName;
+  final String verificationKind;
+  final String phase;
 }

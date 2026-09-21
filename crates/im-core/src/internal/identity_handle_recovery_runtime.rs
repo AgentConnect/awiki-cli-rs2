@@ -2253,7 +2253,7 @@ async fn apply_local_transition_v4(
                 jwt_token: String::new(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -4026,7 +4026,7 @@ mod tests {
                 jwt_token: String::new(),
                 did_document: Some(predecessor.did_document),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: format!("{predecessor_did}#fixture-root"),
+                    root_key_id: Some(format!("{predecessor_did}#fixture-root")),
                     device_signing_key_id: format!("{predecessor_did}#fixture-sign"),
                     device_e2ee_key_id: format!("{predecessor_did}#fixture-e2ee"),
                 },

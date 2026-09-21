@@ -2,6 +2,35 @@ use super::build_agent_anp_message_service;
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 
 #[test]
+fn web_creation_and_join_profiles_match_frozen_hosted_contract() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../testdata/did_web_registration_v1.json"
+    ))
+    .unwrap();
+    let expected = &fixture["did_document"]["deviceManifest"]["devices"][0]["profiles"];
+    assert_eq!(serde_json::json!(super::web_device_profiles()), *expected);
+    let created = super::handle_anp_identity_create_spec(
+        "identity.example",
+        "alice",
+        None,
+        None,
+        crate::identity::DidMethod::Web,
+    )
+    .unwrap();
+    let message = created
+        .spec
+        .services
+        .iter()
+        .find(|s| s.service_type == "ANPMessageService")
+        .unwrap();
+    assert_eq!(serde_json::json!(message.profiles), *expected);
+    let crate::internal::identity_provider::ProviderIdentityExtension::DeviceManifest { devices } =
+        &created.spec.extensions[0];
+    assert_eq!(serde_json::json!(devices[0].profiles), *expected);
+    assert_eq!(super::vnext_device_profiles()[4], "anp.group.base.v1");
+}
+
+#[test]
 fn agent_message_service_advertises_group_profile() {
     let service = build_agent_anp_message_service(
         "https://community.example/anp-im/rpc",

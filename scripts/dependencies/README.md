@@ -172,3 +172,11 @@ python3 scripts/dependencies/build.py --deps source --source-manifest dependenci
 ### 注册开发 PR 的 Node 构建门禁
 
 本 feature 的 dependency-check 使用提交的 source manifest/lock 检查依赖图；其他分支仍检查 registry。Node Tier 1 PR 构建仅在 Feature/registration-account-first → release/0910 时使用隔离 source builder，保留五个平台编译、manylinux/macOS ABI 基线检查、打包审计与 packed-install。源码模式不用于 main 或手动正式构建。source builder 记录实际 Cargo metadata 摘要；Node 包 SBOM 从同一解析图生成，provenance 标记 source-development，并校验干净 consumer、清单、锁与 metadata 摘要，拒绝过期证据。正式 registry 入口及 source manifest release 拒绝规则保持不变，不发布 npm/crates 版本。
+
+### 2026-09-21 DID Web 基线接续
+
+注册候选的源码清单固定 Core `4023161`、ANP `6bd11e0`、Identity `65a79d2`，
+以同时支持邀请码透传与 DID Web。三个条目的 review 链接指向协调集成的 Core PR #41；
+ANP/Identity 的上述基线合并提交没有独立关联 PR，不将该链接表述为它们各自的 PR。
+Node 来源记录与 SBOM 消费同一隔离解析图；source 与 local-candidate 模式互斥。
+这些仅为未发布源码集成，不证明 registry、正式包或设备验收通过。

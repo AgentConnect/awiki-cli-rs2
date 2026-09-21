@@ -36,6 +36,24 @@ pub struct CliVaultOpenPlan {
 pub fn build_im_core_open_options(
     resolved: &crate::workspace_config::Resolved,
 ) -> Result<ImCoreOpenOptions, ExitError> {
+    let multi_device_audience = match std::env::var("AWIKI_MULTI_DEVICE_AUDIENCE") {
+        Err(std::env::VarError::NotPresent) => None,
+        Ok(value) if !value.is_empty() && value.trim() == value && value.len() <= 256 => {
+            Some(value)
+        }
+        _ => {
+            return Err(ExitError::new(
+                "invalid_config",
+                2,
+                "AWIKI_MULTI_DEVICE_AUDIENCE is invalid.",
+                "Set the exact multi-device audience configured by the selected deployment.",
+            ))
+        }
+    };
+    let with_audience = |mut options: ImCoreOpenOptions| {
+        options.multi_device_audience = multi_device_audience.clone();
+        options
+    };
     let multi_device_device_revoke_enabled = multi_device_device_revoke_enabled()?;
     let multi_device_direct_e2ee_enabled = multi_device_direct_e2ee_enabled()?;
     let multi_device_group_e2ee_enabled = multi_device_group_e2ee_enabled()?;
@@ -43,35 +61,39 @@ pub fn build_im_core_open_options(
         did_transition_vnext_hidden_rollout_enabled()?;
     let plan = cli_vault_open_plan(resolved)?;
     if !plan.vault_enabled {
-        return Ok(ImCoreOpenOptions::file_compat()
-            .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
-            .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-            .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
-            .with_did_transition_vnext_hidden_rollout_enabled(
-                did_transition_vnext_hidden_rollout_enabled,
-            ));
+        return Ok(with_audience(
+            ImCoreOpenOptions::file_compat()
+                .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
+                .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
+                .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
+                .with_did_transition_vnext_hidden_rollout_enabled(
+                    did_transition_vnext_hidden_rollout_enabled,
+                ),
+        ));
     }
     if !plan.root_key_available {
         return Err(missing_root_key_error("build im-core"));
     }
     let root_key = load_or_create_cli_vault_root_key(&plan)
         .map_err(|err| super::error::map_im_error(err, "build im-core identity vault"))?;
-    Ok(ImCoreOpenOptions::default()
-        .with_identity_secret_vault(
-            plan.mode,
-            ImCoreSecretVaultOptions::new(
-                root_key,
-                plan.vault_dir,
-                plan.workspace_id,
-                plan.device_id,
+    Ok(with_audience(
+        ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                plan.mode,
+                ImCoreSecretVaultOptions::new(
+                    root_key,
+                    plan.vault_dir,
+                    plan.workspace_id,
+                    plan.device_id,
+                ),
+            )
+            .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
+            .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
+            .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
+            .with_did_transition_vnext_hidden_rollout_enabled(
+                did_transition_vnext_hidden_rollout_enabled,
             ),
-        )
-        .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
-        .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-        .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
-        .with_did_transition_vnext_hidden_rollout_enabled(
-            did_transition_vnext_hidden_rollout_enabled,
-        ))
+    ))
 }
 
 pub(crate) fn multi_device_device_revoke_enabled() -> Result<bool, ExitError> {

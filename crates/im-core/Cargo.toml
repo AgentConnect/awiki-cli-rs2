@@ -15,9 +15,9 @@ categories = ["api-bindings", "authentication", "network-programming"]
 default = ["sqlite", "http", "identity-native-anp"]
 blocking = []
 sqlite = ["dep:rusqlite"]
-http = []
+http = ["anp/network"]
 internal-test-helpers = []
-service-trusted-registration = ["dep:uuid"]
+service-trusted-registration = []
 mcp-trusted-registration = ["service-trusted-registration"]
 
 # Reserved for later phases.
@@ -53,7 +53,7 @@ serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 time.workspace = true
-uuid = { workspace = true, optional = true }
+uuid = { workspace = true, features = ["v4"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true

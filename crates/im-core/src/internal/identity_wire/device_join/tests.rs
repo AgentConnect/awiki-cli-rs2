@@ -26,6 +26,18 @@ fn registry_request_never_exposes_pending_join_projection() {
 }
 
 #[test]
+fn current_device_status_uses_only_session_id_on_the_existing_endpoint() {
+    let call = build_current_device_status_call("join-web-1").unwrap();
+    assert_eq!(
+        call.endpoint,
+        crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT
+    );
+    assert_eq!(call.method, DEVICE_JOIN_STATUS_METHOD);
+    assert_eq!(call.params, json!({"join_session_id":"join-web-1"}));
+    assert!(build_current_device_status_call("  ").is_err());
+}
+
+#[test]
 fn reject_reason_is_a_closed_set() {
     let proof = proof();
     let accepted = build_reject_call(DeviceJoinRemoteRejectRequest {

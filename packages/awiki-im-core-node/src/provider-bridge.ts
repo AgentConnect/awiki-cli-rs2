@@ -319,6 +319,14 @@ export function createIdentityProviderDispatch(
           if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
           return success(outcome)
         }
+        case 'documentChangeReconcileRejected': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await documentSession(documentSessions, sessionId).reconcileRejected(
+            object(payload.observation),
+          )
+          if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
+          return success(outcome)
+        }
         case 'identityTransitionBeginPublication':
           return success(await transitionSession(
             transitionSessions,

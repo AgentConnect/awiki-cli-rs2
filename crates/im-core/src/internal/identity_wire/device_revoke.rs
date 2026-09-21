@@ -81,6 +81,7 @@ pub(crate) fn prepare_revoke(
     new_document: Value,
     authorizing_device_id: String,
     authorizing_signing_key_id: &str,
+    audience: Option<&str>,
     signer: &dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
     now: OffsetDateTime,
 ) -> crate::ImResult<PreparedDeviceRevoke> {
@@ -91,6 +92,7 @@ pub(crate) fn prepare_revoke(
         new_document,
         authorizing_device_id,
         authorizing_signing_key_id,
+        audience,
         now,
     )?;
     let signature = signer(&unsigned.signing_key_id, &unsigned.signing_input)?;
@@ -105,6 +107,7 @@ pub(crate) fn prepare_revoke_unsigned(
     new_document: Value,
     authorizing_device_id: String,
     authorizing_signing_key_id: &str,
+    audience: Option<&str>,
     now: OffsetDateTime,
 ) -> crate::ImResult<UnsignedDeviceRevoke> {
     required("operation_id", &operation_id)?;
@@ -140,7 +143,7 @@ pub(crate) fn prepare_revoke_unsigned(
         nonce: URL_SAFE_NO_PAD.encode(nonce),
         signature: String::new(),
     };
-    let signing_object = json!({
+    let mut signing_object = json!({
         "type": proof.proof_type,
         "purpose": DEVICE_REVOKE_PURPOSE,
         "method": DEVICE_REVOKE_METHOD,
@@ -150,6 +153,7 @@ pub(crate) fn prepare_revoke_unsigned(
         "nonce": proof.nonce,
         "params": params,
     });
+    super::bind_device_proof_audience(&mut signing_object, &proof.key_id, audience)?;
     let signing_input = serde_json_canonicalizer::to_vec(&signing_object).map_err(|error| {
         crate::ImError::Serialization {
             detail: error.to_string(),
@@ -388,6 +392,7 @@ mod tests {
             }),
             "dev-admin".to_owned(),
             "did:wba:awiki.test:user:alice:e1_test#dev-admin-sign",
+            None,
             &|_, message| {
                 private
                     .sign_message(message)

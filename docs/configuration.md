@@ -54,6 +54,7 @@ configuration fails before any state is moved.
 | `secret_storage.mode` | `config.yaml` | Secret storage | empty → `vault_required` |
 | `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` | env | Vault root key | required in vault mode |
 | `AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED` | env | Device revoke | unset = **on**; `0` off |
+| `AWIKI_MULTI_DEVICE_AUDIENCE` | env | Web registration and device management proof audience | Exact selected deployment value; never inferred from DID or Handle |
 | `AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED` | env | Direct E2EE capability | unset = **on**; `0` off |
 | `AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` | env | Group E2EE capability | unset = **on**; `0` off |
 | `AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED` | env | DID transition client path | unset = **on**; `0` off |

@@ -17,20 +17,13 @@ const JOIN_REQUEST_PROOF_INPUT_TYPE: &str = "awiki.device.join-request-proof-inp
 const MAX_ACTIVE_TTL_SECONDS: i64 = 600;
 const MAX_TERMINAL_TTL_SECONDS: i64 = 86_400;
 const CLOCK_SKEW_SECONDS: i64 = 30;
+#[cfg(test)]
 const EXPECTED_PROFILES: [&str; 6] = [
     "anp.core.binding.v1",
     "anp.identity.discovery.v1",
     "anp.direct.base.v1",
     "anp.direct.e2ee.v2",
     "anp.group.base.v1",
-    "anp.group.e2ee.v2",
-];
-const LEGACY_DRAFT_PROFILES: [&str; 6] = [
-    "anp.core.binding.v2",
-    "anp.identity.discovery.v2",
-    "anp.direct.base.v2",
-    "anp.direct.e2ee.v2",
-    "anp.group.base.v2",
     "anp.group.e2ee.v2",
 ];
 
@@ -85,6 +78,12 @@ fn resolve_did_document<T>(transport: &mut T, did: &str) -> crate::ImResult<Valu
 where
     T: crate::internal::transport::RpcTransport,
 {
+    if did.starts_with("did:web:") {
+        let document = transport.directory_resolve_web_document(did)?;
+        return crate::internal::discovery::did_document::validate_resolved_did_document(
+            did, document,
+        );
+    }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
     let document = transport.directory_get_json_url(
         &url,
@@ -97,6 +96,12 @@ async fn resolve_did_document_async<T>(transport: &mut T, did: &str) -> crate::I
 where
     T: crate::internal::transport::AsyncRpcTransport,
 {
+    if did.starts_with("did:web:") {
+        let document = transport.directory_resolve_web_document(did).await?;
+        return crate::internal::discovery::did_document::validate_resolved_did_document(
+            did, document,
+        );
+    }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
     let document = transport
         .directory_get_json_url(
@@ -284,7 +289,10 @@ fn verify_join_request(
         || request.did != expected_did
         || request.join_session_id != expected_session
         || request.requested_role != "member"
-        || !matches_join_profiles(&request.profiles)
+        || !crate::internal::identity_device_join::join_profiles_are_supported(
+            expected_did,
+            &request.profiles,
+        )
     {
         return Err(invalid_join_request());
     }
@@ -356,10 +364,6 @@ fn verify_join_request(
         .map_err(|_| invalid_join_request())?
         .verify(&canonical, &Signature::from_bytes(&signature))
         .map_err(|_| invalid_join_request())
-}
-
-fn matches_join_profiles(profiles: &[String]) -> bool {
-    profiles == EXPECTED_PROFILES || profiles == LEGACY_DRAFT_PROFILES
 }
 
 fn validate_key(
@@ -636,7 +640,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    fn fixture_incoming() -> Value {
+    pub(super) fn fixture_incoming() -> Value {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
@@ -646,7 +650,7 @@ mod tests {
         incoming
     }
 
-    fn resign_join_request(request: &mut Value) {
+    pub(super) fn resign_join_request(request: &mut Value) {
         let mut unsigned_request = request.clone();
         let proof = unsigned_request
             .as_object_mut()
@@ -670,7 +674,7 @@ mod tests {
             Value::String(URL_SAFE_NO_PAD.encode(signature.to_bytes()));
     }
 
-    fn resign_origin_proof(request: &mut Value, fixture: &Value) {
+    pub(super) fn resign_origin_proof(request: &mut Value, fixture: &Value) {
         let seed: [u8; 32] = URL_SAFE_NO_PAD
             .decode(
                 fixture["p3_vector"]["origin_signing_private_seed_b64u"]
@@ -868,3 +872,7 @@ mod tests {
         assert!(parse_time("2026-07-23T10:00:00+08:00").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "verify_web_tests.rs"]
+mod web_tests;

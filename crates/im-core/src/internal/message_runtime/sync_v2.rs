@@ -5192,7 +5192,7 @@ mod tests {
                         jwt_token: "test-device-token".to_owned(),
                         did_document: Some(json!({"id": did.as_str()})),
                         key_mode: SaveIdentityKeyMode::VNext {
-                            root_key_id: format!("{}#key-1", did.as_str()),
+                            root_key_id: Some(format!("{}#key-1", did.as_str())),
                             device_signing_key_id: signing_key_id.clone(),
                             device_e2ee_key_id: e2ee_key_id.clone(),
                         },

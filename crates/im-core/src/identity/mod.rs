@@ -1,20 +1,25 @@
+mod creation;
 mod device_revoke;
+mod document;
 mod dto;
 mod handle_recovery;
 mod join;
+mod method_capabilities;
 mod profile;
 mod registry;
 mod root_key_transfer;
 mod service;
 
+pub use self::creation::{IdentityCreationCapabilities, PendingIdentityRegistration};
 pub use self::device_revoke::{
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
 };
+pub use self::document::DidDocumentService;
 pub use self::dto::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingMethodKind,
     ContactBindingRequest, ContactBindingResult, ContactBindingState,
     DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPublicPackage, DaemonSubkeyPublicProposal,
-    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationJoinMode,
+    DefaultIdentityChange, DeleteLocalIdentityResult, DidMethod, HandleRegistrationJoinMode,
     HandleRegistrationJoinRequiredPreparation, HandleRegistrationResult, HandleRegistrationState,
     HostBackedAuthTokenPersistence, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
     IdentityCustodyBackend, IdentityCustodyMigrationIdentityReport, IdentityCustodyMigrationPhase,
@@ -65,6 +70,7 @@ pub(crate) use self::join::{
     DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES, DEVICE_PROOF_TYPE,
 };
 pub use self::registry::IdentityRegistry;
+pub use self::method_capabilities::{identity_method_capabilities, IdentityMethodCapabilities};
 pub use self::root_key_transfer::{
     RootKeyTransferAuthorizationHandle, RootKeyTransferError, RootKeyTransferErrorCode,
     RootKeyTransferPreparation, RootKeyTransferPrepareRequest, RootKeyTransferRecipientSummary,

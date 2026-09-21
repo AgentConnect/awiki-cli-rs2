@@ -652,7 +652,7 @@ mod tests {
             let mut frozen = plan();
             frozen.owner_did = initial.reference.did.clone();
             frozen.root_key_id = root_kid;
-            frozen.root_fingerprint = proposal.root_key_fingerprint.clone();
+            frozen.root_fingerprint = proposal.root_key_fingerprint.clone().expect("WBA fixture root fingerprint");
             frozen.sender_e2ee_key_id = format!("{}#sender-e2ee", initial.reference.did);
             frozen.recipient_e2ee_key_id = agreement_key.kid.clone();
             frozen.document_version = 2;

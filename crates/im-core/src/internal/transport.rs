@@ -251,6 +251,14 @@ impl From<AttachmentObjectResponse> for AsyncAttachmentObjectResponse {
 }
 
 pub(crate) trait RawJsonTransport {
+    fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        let url = crate::internal::discovery::did_document::did_document_url(did)?;
+        self.get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+        )
+    }
+
     fn get_json_url(
         &mut self,
         url: &str,
@@ -259,6 +267,15 @@ pub(crate) trait RawJsonTransport {
 }
 
 pub(crate) trait AsyncRawJsonTransport {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        let url = crate::internal::discovery::did_document::did_document_url(did)?;
+        self.get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
+        )
+        .await
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,
@@ -268,6 +285,10 @@ pub(crate) trait AsyncRawJsonTransport {
 
 pub(crate) trait RpcTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
+
+    fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
 
     fn directory_get_json_url(
         &mut self,
@@ -289,6 +310,10 @@ pub(crate) trait RpcTransport {
 
 pub(crate) trait AsyncRpcTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
+
+    async fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
 
     async fn directory_get_json_url(
         &mut self,
@@ -312,6 +337,9 @@ pub(crate) trait AsyncRpcTransport {
 pub(crate) enum PendingRegistrationReconciliation {
     Absent,
     Committed {
+        current: Option<
+            crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        >,
         user_id: String,
         binding_generation: String,
         access_token: String,
@@ -533,7 +561,9 @@ impl<'a> CoreHttpTransport<'a> {
     ) -> Self {
         Self {
             client,
-            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
+            http: crate::internal::http::HttpClient::from_config_no_redirect(
+                client.core_inner().sdk_config(),
+            ),
             auth: crate::internal::key_provider::ProviderBackedDidAuth::new(
                 provider,
                 anp::authentication::AuthMode::HttpSignatures,
@@ -1782,6 +1812,10 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
 }
 
 impl RawJsonTransport for CoreHttpTransport<'_> {
+    fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        resolve_web_document_blocking(did)
+    }
+
     fn get_json_url(
         &mut self,
         url: &str,
@@ -1805,7 +1839,39 @@ impl RawJsonTransport for CoreHttpTransport<'_> {
     }
 }
 
+fn resolve_web_document_blocking(did: &str) -> crate::ImResult<Value> {
+    // P6's synchronous document read is also used by async registration and
+    // messaging. The SDK sync resolver owns a Tokio runtime; run that boundary
+    // on a scoped worker so it cannot nest inside the caller's runtime.
+    let unavailable = || crate::ImError::TransportUnavailable {
+        detail: "secure Web DID resolution failed".to_owned(),
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("im-core-web-resolution".to_owned())
+                .spawn_scoped(scope, || {
+                    anp::authentication::resolve_did_document_sync(did, true)
+                })
+                .map_err(|_| unavailable())?
+                .join()
+                .map_err(|_| unavailable())?
+                .map_err(|_| unavailable())
+        })
+    } else {
+        anp::authentication::resolve_did_document_sync(did, true).map_err(|_| unavailable())
+    }
+}
+
 impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        anp::authentication::resolve_did_document(did, true)
+            .await
+            .map_err(|_| crate::ImError::TransportUnavailable {
+                detail: "secure Web DID resolution failed".to_owned(),
+            })
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,
@@ -1833,6 +1899,14 @@ impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRawJsonTransport for CorePlainTransport<'_> {
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        anp::authentication::resolve_did_document(did, true)
+            .await
+            .map_err(|_| crate::ImError::TransportUnavailable {
+                detail: "secure Web DID resolution failed".to_owned(),
+            })
+    }
+
     async fn get_json_url(
         &mut self,
         url: &str,
@@ -1888,6 +1962,10 @@ where
 }
 
 impl RpcTransport for CoreHttpTransport<'_> {
+    fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        RawJsonTransport::resolve_web_document(self, did)
+    }
+
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc(endpoint, method, params)
     }
@@ -1902,6 +1980,10 @@ impl RpcTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRpcTransport for CoreHttpTransport<'_> {
+    async fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        AsyncRawJsonTransport::resolve_web_document(self, did).await
+    }
+
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc_async(endpoint, method, params).await
     }
@@ -2339,7 +2421,7 @@ fn reconcile_pending_registration(
         }
         Err(error) => return Err(error),
     };
-    validate_pending_registration_registry(&mut transport, pending)?;
+    let observation = validate_pending_registration_registry(&mut transport, pending)?;
     let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding(
         &client,
         &format!("{}.{}", pending.target_handle, pending.target_domain),
@@ -2350,7 +2432,14 @@ fn reconcile_pending_registration(
     let binding_generation = lookup
         .binding_generation
         .ok_or(crate::ImError::PermissionDenied)?;
+    if observation
+        .as_ref()
+        .is_some_and(|(_, generation)| generation != &binding_generation)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     Ok(PendingRegistrationReconciliation::Committed {
+        current: observation.map(|(current, _)| current),
         user_id: transport.pending_device_user_id()?,
         binding_generation,
         access_token,
@@ -2370,7 +2459,7 @@ async fn reconcile_pending_registration_async(
         }
         Err(error) => return Err(error),
     };
-    validate_pending_registration_registry_async(&mut transport, pending).await?;
+    let observation = validate_pending_registration_registry_async(&mut transport, pending).await?;
     let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
         &client,
         &format!("{}.{}", pending.target_handle, pending.target_domain),
@@ -2382,7 +2471,14 @@ async fn reconcile_pending_registration_async(
     let binding_generation = lookup
         .binding_generation
         .ok_or(crate::ImError::PermissionDenied)?;
+    if observation
+        .as_ref()
+        .is_some_and(|(_, generation)| generation != &binding_generation)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     Ok(PendingRegistrationReconciliation::Committed {
+        current: observation.map(|(current, _)| current),
         user_id: transport.pending_device_user_id()?,
         binding_generation,
         access_token,
@@ -2469,42 +2565,109 @@ fn pending_registration_transport<'a>(
 fn validate_pending_registration_registry(
     transport: &mut CoreHttpTransport<'_>,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
-) -> crate::ImResult<()> {
-    let call = crate::internal::identity_wire::device_join::build_registry_call(
+) -> crate::ImResult<
+    Option<(
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        String,
+    )>,
+> {
+    let mut call = crate::internal::identity_wire::device_join::build_registry_call(
         &pending.identity.did,
         false,
     );
-    let raw = AuthenticatedRpcTransport::authenticated_rpc(
+    if pending.did_method == crate::identity::DidMethod::Web {
+        call.params["registration_result"] =
+            crate::internal::identity_wire::web_registration_result::query(pending)?;
+    }
+    let mut raw = AuthenticatedRpcTransport::authenticated_rpc(
         transport,
         call.endpoint,
         call.method,
         call.params,
     )?;
-    validate_pending_registration_registry_value(pending, raw)
+    let historical_generation = if pending.did_method == crate::identity::DidMethod::Web {
+        Some(
+            crate::internal::identity_wire::web_registration_result::take_result(
+                pending,
+                &mut raw,
+                &transport.pending_device_user_id()?,
+            )?,
+        )
+    } else {
+        None
+    };
+    let registry = validate_pending_registration_registry_value(pending, raw)?;
+    let Some(generation) = historical_generation else {
+        return Ok(None);
+    };
+    let current =
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument {
+            document: crate::internal::discovery::did_document::resolve_did_document(
+                transport,
+                pending.identity.did.as_str(),
+            )?,
+            checkpoint: registry.checkpoint,
+        };
+    current.validate(pending)?;
+    Ok(Some((current, generation)))
 }
 
 async fn validate_pending_registration_registry_async(
     transport: &mut CoreHttpTransport<'_>,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
-) -> crate::ImResult<()> {
-    let call = crate::internal::identity_wire::device_join::build_registry_call(
+) -> crate::ImResult<
+    Option<(
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+        String,
+    )>,
+> {
+    let mut call = crate::internal::identity_wire::device_join::build_registry_call(
         &pending.identity.did,
         false,
     );
-    let raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+    if pending.did_method == crate::identity::DidMethod::Web {
+        call.params["registration_result"] =
+            crate::internal::identity_wire::web_registration_result::query(pending)?;
+    }
+    let mut raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
         transport,
         call.endpoint,
         call.method,
         call.params,
     )
     .await?;
-    validate_pending_registration_registry_value(pending, raw)
+    let historical_generation = if pending.did_method == crate::identity::DidMethod::Web {
+        Some(
+            crate::internal::identity_wire::web_registration_result::take_result(
+                pending,
+                &mut raw,
+                &transport.pending_device_user_id()?,
+            )?,
+        )
+    } else {
+        None
+    };
+    let registry = validate_pending_registration_registry_value(pending, raw)?;
+    let Some(generation) = historical_generation else {
+        return Ok(None);
+    };
+    let current =
+        crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument {
+            document: crate::internal::discovery::did_document::resolve_did_document_async(
+                transport,
+                pending.identity.did.as_str(),
+            )
+            .await?,
+            checkpoint: registry.checkpoint,
+        };
+    current.validate(pending)?;
+    Ok(Some((current, generation)))
 }
 
 fn validate_pending_registration_registry_value(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
     raw: Value,
-) -> crate::ImResult<()> {
+) -> crate::ImResult<crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry> {
     let registry = crate::internal::identity_wire::device_join::parse_registry_result(
         raw,
         &pending.identity.did,
@@ -2515,7 +2678,9 @@ fn validate_pending_registration_registry_value(
         .iter()
         .find(|device| device.device_id == pending.identity.protocol_device_id.as_str())
         .filter(|device| {
-            device.signing_key_id == pending.identity.device_signing_key_id
+            device.status
+                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+                && device.signing_key_id == pending.identity.device_signing_key_id
                 && device.e2ee_key_id == pending.identity.device_e2ee_key_id
                 && device.role
                     == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
@@ -2524,14 +2689,15 @@ fn validate_pending_registration_registry_value(
         })
         .ok_or(crate::ImError::PermissionDenied)?;
     let _ = device;
-    if registry.devices.len() != 1
-        || registry.checkpoint.document_version != 1
-        || registry.checkpoint.registry_version != 1
-        || registry.checkpoint.document_hash != pending.document_hash
+    if pending.did_method == crate::identity::DidMethod::Wba
+        && (registry.devices.len() != 1
+            || registry.checkpoint.document_version != 1
+            || registry.checkpoint.registry_version != 1
+            || registry.checkpoint.document_hash != pending.document_hash)
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    Ok(registry)
 }
 
 fn registration_is_explicitly_absent(error: &crate::ImError) -> bool {

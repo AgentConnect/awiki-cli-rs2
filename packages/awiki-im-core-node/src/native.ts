@@ -116,6 +116,10 @@ export interface NativeImCoreNodeClient {
     },
   ): Promise<NativeExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  resolveHandleForDeviceJoin(handle: string): Promise<string>
+  pendingIdentityRegistrations(): Promise<string>
+  identityMethodCapabilities(did: string): Promise<string>
+  identityCreationMethods(): Promise<readonly ('wba' | 'web')[]>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   completeRegistrationWithOutcome(input: RegistrationWithOtp): Promise<RegistrationOutcome>
@@ -134,6 +138,9 @@ export interface NativeImCoreNodeClient {
   deviceJoinManagementStatus(): Promise<ReadonlyArray<{ readonly joinSessionId: string; readonly recipientDeviceId: string; readonly phase: string; readonly attempts: number; readonly nextAttemptAtMs: number; readonly failureCode?: string }>>
   retryDeviceJoinManagement(input: { readonly joinSessionId: string }): Promise<void>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  identityDocument(): Promise<string>
+  identityServicesUpdatePending(): Promise<boolean>
+  updateIdentityServices(servicesJson?: string): Promise<string>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
   confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>

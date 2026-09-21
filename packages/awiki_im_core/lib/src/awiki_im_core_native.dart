@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
@@ -432,6 +433,57 @@ class AwikiImCore {
       ),
     );
     return result._toModel();
+  }
+
+  Future<Map<String, Object?>> identityDocument(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.identityDocument(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<bool> identityServicesUpdatePending(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.identityServicesUpdatePending(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+  }
+
+  Future<Map<String, Object?>> updateIdentityServices(
+    IdentitySelector selector,
+    List<DidDocumentService> services,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+        servicesJson: jsonEncode(services.map((s) => s.toJson()).toList()),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<Map<String, Object?>> resumeIdentityServicesUpdate(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
   }
 
   Future<DeviceRevokeResult> revokeDevice({
@@ -874,7 +926,55 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<String> resolveHandleForDeviceJoin(String handle) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.resolveHandleForDeviceJoin(
+        core: _inner,
+        handle: handle,
+      ),
+    );
+  }
+
+  Future<List<PendingIdentityRegistration>>
+  pendingIdentityRegistrations() async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.pendingIdentityRegistrations(core: _inner),
+    );
+    return (jsonDecode(value) as List)
+        .map(
+          (item) => PendingIdentityRegistration.fromJson(
+            item as Map<String, Object?>,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<IdentityMethodCapabilities> identityMethodCapabilities(
+    String did,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.identityMethodCapabilities(did: did),
+    );
+    return IdentityMethodCapabilities.fromJson(
+      jsonDecode(value) as Map<String, Object?>,
+    );
+  }
+
+  Future<List<DidMethod>> identityCreationMethods() async {
+    _ensureNotDisposed();
+    final methods = await _mapNativeErrors(
+      () => gen_identity_api.identityCreationMethods(core: _inner),
+    );
+    return methods
+        .map((method) => DidMethod.values.byName(method))
+        .toList(growable: false);
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String phone,
@@ -887,6 +987,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithPhone(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         phone: phone,
@@ -900,6 +1001,7 @@ class AwikiImCore {
   }
 
   Future<HandleRegistrationResult> registerHandleWithEmail({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String email,
@@ -912,6 +1014,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithEmail(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         email: email,
@@ -925,6 +1028,7 @@ class AwikiImCore {
   }
 
   Future<HandleRegistrationResult> registerHandleWithoutContactVerification({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     String? inviteCode,
@@ -935,6 +1039,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithoutContactVerification(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         inviteCode: inviteCode,
