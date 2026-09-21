@@ -14,6 +14,8 @@ on:
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
       - 'scripts/release/cli/config.test.js'
+      - 'scripts/release/cli/node-ci-refs.js'
+      - 'dependencies.source.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
   push:
@@ -29,6 +31,8 @@ on:
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
       - 'scripts/release/cli/config.test.js'
+      - 'scripts/release/cli/node-ci-refs.js'
+      - 'dependencies.source.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
 
@@ -48,10 +52,10 @@ jobs:
         id: release
         working-directory: awiki-cli-rs2
         shell: bash
+        env:
+          AWIKI_NODE_SOURCE_REFS: ${{ github.event_name == 'pull_request' && github.base_ref == 'release/0910' && github.head_ref == 'Feature/registration-account-first' && '1' || '0' }}
         run: |
-          echo "anp_repository=$(node -p 'require("./scripts/release/cli/release-config.json").anp_repository')" >> "${GITHUB_OUTPUT}"
-          echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
-          echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
+          node scripts/release/cli/node-ci-refs.js >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6

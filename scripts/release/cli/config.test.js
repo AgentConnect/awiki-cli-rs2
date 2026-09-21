@@ -335,3 +335,20 @@ test('CLI release uses the canonical nested ANP workspace layout', () => {
   assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
   assert.doesNotMatch(workflow, /path: anp-identity(?:\s|$)/);
 });
+
+
+test('Node CI source refs are exact and scoped without changing release defaults', () => {
+  const { selectRefs } = require('./node-ci-refs.js');
+  const release = { anp_repository: 'release/repo', anp_commit: 'release-anp', anp_identity_commit: 'release-identity' };
+  const source = { dependencies: {
+    anp: { repository: 'https://github.com/agent-network-protocol/anp.git', commit: 'a'.repeat(40) },
+    'anp-identity': { repository: 'https://github.com/agent-network-protocol/anp-identity.git', commit: 'b'.repeat(40) },
+  } };
+  assert.deepEqual(selectRefs(false, release), release);
+  assert.equal(selectRefs(true, release, source).anp_commit, 'a'.repeat(40));
+  assert.equal(selectRefs(true, release, source).anp_identity_commit, 'b'.repeat(40));
+  source.dependencies.anp.commit = 'main';
+  assert.throws(() => selectRefs(true, release, source));
+  const step = workflowStep(readImCoreNodeCiWorkflow(), 'Read pinned ANP SDK commit');
+  assert.equal(step.env.AWIKI_NODE_SOURCE_REFS, "${{ github.event_name == 'pull_request' && github.base_ref == 'release/0910' && github.head_ref == 'Feature/registration-account-first' && '1' || '0' }}");
+});
