@@ -284,6 +284,9 @@ impl OutgoingGroupBody {
 
 fn outgoing_body(body: &crate::messages::MessageBody) -> crate::ImResult<OutgoingGroupBody> {
     match body {
+        crate::messages::MessageBody::NotifyText { .. } => {
+            Err(crate::ImError::unsupported("notify-requires-plain-direct"))
+        }
         crate::messages::MessageBody::Text { text, kind: _ } if text.trim().is_empty() => {
             Err(crate::ImError::invalid_input(
                 Some("text".to_string()),
@@ -313,6 +316,9 @@ pub(crate) fn text_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<(&str, crate::messages::MessageKind)> {
     match body {
+        crate::messages::MessageBody::NotifyText { .. } => {
+            Err(crate::ImError::unsupported("notify-requires-plain-direct"))
+        }
         crate::messages::MessageBody::Text { text, kind: _ } if text.trim().is_empty() => {
             Err(crate::ImError::invalid_input(
                 Some("text".to_string()),

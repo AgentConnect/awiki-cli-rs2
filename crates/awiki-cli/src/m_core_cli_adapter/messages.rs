@@ -29,6 +29,7 @@ pub fn send_message_request(
     command: &ParsedCommand,
     default_domain: &str,
 ) -> Result<(SendMessageRequest, Vec<String>), ExitError> {
+    validate_notify_flags(command)?;
     let target = message_target(command, default_domain)?;
     let body = message_body(command)?;
     let (security, warnings) = message_security(command, &target)?;
@@ -62,6 +63,7 @@ pub fn send_attachment_request(
     ),
     ExitError,
 > {
+    validate_notify_flags(command)?;
     let target = message_target(command, default_domain)?;
     let (security, warnings) = message_security(command, &target)?;
     let client_message_id = optional_message_id_flag(command, "client-message-id")?;
@@ -604,13 +606,11 @@ pub(super) fn require_foreground_message_sync(
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message recovery did not complete".to_owned(),
         )),
-        MessageSyncStatus::RetryableFailure => {
-            Err(MessageAdapterError::ForegroundSyncPending {
-                budget_exhausted: false,
-                error_code: outcome.error_code.clone(),
-                warnings: outcome.warnings.clone(),
-            })
-        }
+        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: false,
+            error_code: outcome.error_code.clone(),
+            warnings: outcome.warnings.clone(),
+        }),
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),
         )),
@@ -1044,6 +1044,28 @@ fn message_target(
     }
 }
 
+fn validate_notify_flags(command: &ParsedCommand) -> Result<(), ExitError> {
+    let level = string_flag(command, "notify");
+    if level.is_empty() {
+        return Ok(());
+    }
+    if im_core::messages::NotifyLevel::parse(&level).is_none()
+        || !string_flag(command, "group").is_empty()
+        || has_payload_input(command)
+        || !string_flag(command, "file").is_empty()
+        || !matches!(string_flag(command, "type").as_str(), "" | "text")
+        || !matches!(string_flag(command, "secure").as_str(), "" | "off")
+    {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "Notify requires --to, plaintext, and --notify normal|urgent.",
+            "Do not combine Notify with group, payload, attachment, markdown, or secure modes.",
+        ));
+    }
+    Ok(())
+}
+
 fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
     if has_payload_input(command) {
         reject_payload_conflicts(command)?;
@@ -1064,6 +1086,9 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
         });
     }
     let text = message_text(command, false)?;
+    if let Some(level) = im_core::messages::NotifyLevel::parse(&string_flag(command, "notify")) {
+        return Ok(MessageBody::NotifyText { text, level });
+    }
     Ok(MessageBody::Text {
         text,
         kind: message_kind(&string_flag(command, "type"))?,

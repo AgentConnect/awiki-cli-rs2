@@ -2068,3 +2068,9 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
 不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
 CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。
+
+## 文本 Notify v1（开发候选）
+
+`MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
+
+读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。接收授权和实际声振属于 User Service / App，不由注解授予；旧客户端仍可读正文。

@@ -824,3 +824,42 @@ fn command_with_flags<const N: usize>(flags: [(&str, &str); N]) -> ParsedCommand
         ..ParsedCommand::default()
     }
 }
+
+#[test]
+fn notify_request_keeps_stable_message_identity_and_rejects_other_body_types() {
+    let command = command_with_flags([
+        ("to", "bob"),
+        ("text", "Task complete"),
+        ("notify", "urgent"),
+        ("client-message-id", "notify-id"),
+        ("idempotency-key", "notify-key"),
+    ]);
+    let (request, _) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(matches!(
+        request.body,
+        MessageBody::NotifyText {
+            level: im_core::messages::NotifyLevel::Urgent,
+            ..
+        }
+    ));
+    assert_eq!(request.client_message_id.unwrap().as_str(), "notify-id");
+    assert_eq!(
+        request.delivery.idempotency_key.as_deref(),
+        Some("notify-key")
+    );
+    for (flag, value) in [
+        ("notify", "alarm"),
+        ("group", "did:example:g"),
+        ("payload", "{}"),
+        ("file", "/tmp/a"),
+        ("secure", "required"),
+        ("type", "markdown"),
+    ] {
+        let mut command = command.clone();
+        command.flags.insert(flag.into(), value.into());
+        assert!(
+            messages::send_message_request(&command, "awiki.test").is_err(),
+            "{flag}"
+        );
+    }
+}

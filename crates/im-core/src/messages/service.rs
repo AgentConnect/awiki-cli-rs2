@@ -4833,13 +4833,15 @@ fn validate_send_mode(
 
 fn validate_body(body: &super::MessageBody) -> crate::ImResult<()> {
     match body {
-        super::MessageBody::Text { text, .. } if text.trim().is_empty() => {
+        super::MessageBody::Text { text, .. } | super::MessageBody::NotifyText { text, .. }
+            if text.trim().is_empty() =>
+        {
             Err(crate::ImError::invalid_input(
                 Some("text".to_string()),
                 "text message must not be empty",
             ))
         }
-        super::MessageBody::Text { .. } => Ok(()),
+        super::MessageBody::Text { .. } | super::MessageBody::NotifyText { .. } => Ok(()),
         super::MessageBody::Payload { payload } if !payload.is_object() => {
             Err(crate::ImError::invalid_input(
                 Some("payload".to_string()),
@@ -4868,6 +4870,18 @@ fn validate_attachment_security(
 }
 
 fn validate_delegated_send_scope(request: &super::SendMessageRequest) -> crate::ImResult<()> {
+    if matches!(request.body, super::MessageBody::NotifyText { .. })
+        && (!matches!(request.target, super::MessageTarget::Direct(_))
+            || !matches!(
+                request.security,
+                super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain
+            ))
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("notify".into()),
+            "Notify requires a transport-protected direct text message",
+        ));
+    }
     if request.delegated_signing.is_none() {
         return Ok(());
     }

@@ -7700,3 +7700,90 @@ fn unique_temp_root() -> PathBuf {
         std::process::id()
     ))
 }
+
+// Notify intent must preserve ordinary message identity, text and durable local projection.
+#[test]
+fn notify_text_annotation_projects_intent_without_changing_plain_message() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let text = "[Coding Agent][action_required] Review\n请回电脑处理。";
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({"messages": [{
+                "id": "notify-compat-1", "sender_did": "did:example:bob",
+                "receiver_did": "did:example:alice", "content": text,
+                "content_type": "text/plain", "server_seq": 7,
+                "accepted_at": "2026-09-21T01:00:00Z",
+                "meta": {"profile": "anp.direct.base.v1", "content_type": "text/plain"},
+                "body": {"text": text, "annotations": {"awiki.notify.v1": {"level": "urgent"}}}
+            }], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    );
+    let result = runtime
+        .inbox(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .expect("Core projects optional annotation");
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(message.id.as_str(), "notify-compat-1");
+    assert_eq!(message.sender.as_str(), "did:example:bob");
+    assert_eq!(message.metadata.server_sequence, Some(7));
+    assert_eq!(
+        message.body,
+        crate::messages::MessageBodyView::Text {
+            text: text.to_owned(),
+            kind: crate::messages::MessageKind::Text,
+        }
+    );
+    assert!(message
+        .metadata
+        .attributes
+        .iter()
+        .any(|a| a.key == "notify_level" && a.value == "urgent"));
+    crate::internal::message_runtime::local_projection::persist_messages(
+        &client,
+        &result.page.items,
+    )
+    .expect("persist Notify projection");
+    let reopened = fixture.client();
+    let local = MessageReadRuntime::new(
+        &reopened,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({}),
+        },
+        NoopDirectoryTransport,
+    )
+    .local_history(LocalHistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::LocalHistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+        },
+    })
+    .expect("reopen local Notify history without network");
+    assert_eq!(local.page.items.len(), 1);
+    assert_eq!(local.page.items[0].id, message.id);
+    assert_eq!(local.page.items[0].body, message.body);
+    assert!(local.page.items[0]
+        .metadata
+        .attributes
+        .iter()
+        .any(|a| a.key == "notify_level" && a.value == "urgent"));
+    assert_eq!(calls.borrow().len(), 1);
+}

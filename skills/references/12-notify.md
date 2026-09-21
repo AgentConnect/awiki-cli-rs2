@@ -10,7 +10,8 @@ This file is a **workflow reference**, not an entry Skill. Load it only when the
 
 - Status: **partially implemented**
 - Implemented in this workflow:
-  - plain direct-message notification through `awiki-cli msg send`
+  - typed plain direct-message notification through `awiki-cli msg send --notify normal|urgent`
+  - one-shot persisted runner in `scripts/notify.py`, without a listener or Daemon
   - terminal states `completed`, `blocked`, `action_required`, and `failed`
   - dry-run, structured success checks, and one-send-per-state rules
 - Not implemented:
@@ -138,13 +139,13 @@ one-send-per-state rule.
 Always inspect the plan first:
 
 ```text
-["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--dry-run", "--format", "json"]
+["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--notify", "normal", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--dry-run", "--format", "json"]
 ```
 
 Only after the dry-run succeeds, send the message:
 
 ```text
-["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--format", "json"]
+["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--notify", "normal", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--format", "json"]
 ```
 
 When no stable trusted notification key exists, remove both idempotency arguments from both arrays.
@@ -202,3 +203,23 @@ For guaranteed terminal-event production, add a Coding Agent lifecycle hook or D
 - `03-messaging.md`
 - `01-onboarding.md`
 - `05-runtime.md` only when distinguishing host notification from user notification
+
+
+## Text Notify level and persistent one-shot runner
+
+This candidate CLI supports `--notify normal|urgent` only for transport-protected direct text.
+Use `normal` by default; use `urgent` only when the user requests call-like task reminders.
+The level is a delivery intent, not permission to override recipient settings, mute, DND or account scope.
+Existing recipients without the capability receive ordinary text. Supported Android recipients can opt in
+using task notification settings. Eligible urgent reminders stop on View/Close or after 60 seconds.
+
+The one-shot `scripts/notify.py` runner accepts a private task binding with `task_id`, absolute `workspace`,
+`identity`, `sender_did`, `receiver_did`, `allowed_states`, `authorized: true`, and optional `notify_level`.
+It uses `enable|send|status|disable --context <private-file> --input <binding-or-event-json> --cli <binary>`.
+Events contain `task_id`, opaque `event_id`, terminal `status`, `title`, `summary`, and `next_action`.
+A new question needs a new event ID. It claims an event durably before network I/O and does not retry unknown
+outcomes. Reusing the same context/event never starts another send. Disable retains receipts.
+
+Inspect `schema msg.send` and the dry-run `data.plan.notify_level` before sending. The server separately
+checks that the Skill Agent is owned by the receiver. Provider acceptance is not device presentation proof.
+The runner requires a live agent invocation and does not install lifecycle hooks or a background listener.

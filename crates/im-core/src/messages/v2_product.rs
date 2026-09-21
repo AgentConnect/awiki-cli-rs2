@@ -338,6 +338,7 @@ async fn persist_direct_projection_async(
         .await;
     }
     match &resolved.request.body {
+        crate::messages::MessageBody::NotifyText { .. } => return Err(crate::ImError::unsupported("notify-requires-plain-direct")),
         crate::messages::MessageBody::Text { text, kind } => {
             crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing_async(
                 client,
@@ -468,6 +469,9 @@ async fn send_group_async_impl(
         created_at: Some(created_at.clone()),
     };
     let (application, attachment_projection) = match &request.body {
+        crate::messages::MessageBody::NotifyText { .. } => {
+            return Err(crate::ImError::unsupported("notify-requires-plain-direct"))
+        }
         crate::messages::MessageBody::Text { text, kind } => (
             crate::internal::group_e2ee::v2_application::V2ProductApplication::text(
                 group_did,
@@ -823,6 +827,7 @@ async fn persist_group_projection_async(
         .await;
     }
     match &request.body {
+        crate::messages::MessageBody::NotifyText { .. } => return Err(crate::ImError::unsupported("notify-requires-plain-direct")),
         crate::messages::MessageBody::Text { text, kind } => {
             crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
                 client, group_did, text, kind, result,
