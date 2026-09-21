@@ -7,9 +7,9 @@ pub(crate) mod read;
 pub(crate) mod state;
 pub(crate) mod sync;
 pub(crate) mod sync_coordinator;
-mod sync_receive_lock;
 #[cfg(test)]
 mod sync_coordinator_tests;
-pub(crate) mod sync_v2;
-pub(crate) mod sync_processing;
 pub(crate) mod sync_dispatcher;
+pub(crate) mod sync_processing;
+mod sync_receive_lock;
+pub(crate) mod sync_v2;

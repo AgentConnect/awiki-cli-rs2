@@ -33,9 +33,9 @@ pub(crate) mod peer_personas;
 #[cfg(feature = "sqlite")]
 pub(crate) mod peer_profiles;
 pub(crate) mod read_state;
+pub(crate) mod sync_baseline;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sync_inbox;
-pub(crate) mod sync_baseline;
 #[cfg(all(test, feature = "sqlite"))]
 mod sync_inbox_tests;
 pub(crate) mod sync_state;

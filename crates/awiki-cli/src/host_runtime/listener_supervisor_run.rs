@@ -516,7 +516,11 @@ fn listener_local_inbox_transport_or_warning(
         Err(
             crate::m_core_cli_adapter::message_result::MessageAdapterError::TransportUnavailable(_),
         )
-        | Err(crate::m_core_cli_adapter::message_result::MessageAdapterError::ForegroundSyncPending { .. }) => Ok(vec![warning.to_owned()]),
+        | Err(
+            crate::m_core_cli_adapter::message_result::MessageAdapterError::ForegroundSyncPending {
+                ..
+            },
+        ) => Ok(vec![warning.to_owned()]),
         Err(error) => Err(error),
     }
 }
@@ -1335,7 +1339,8 @@ mod tests {
                     warnings: vec!["sync.budget_exhausted".into()],
                 }),
                 "sync.foreground_reconcile_deferred",
-            ).unwrap(),
+            )
+            .unwrap(),
             vec!["sync.foreground_reconcile_deferred"]
         );
         assert!(matches!(
