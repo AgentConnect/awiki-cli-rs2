@@ -1236,3 +1236,27 @@ fn dsh_file_wrapper_restores_only_the_managed_task_credential_after_scrub() {
         );
     }
 }
+
+#[test]
+fn default_client_is_resolved_again_but_explicit_path_never_falls_back() {
+    let fixture = Fixture::new();
+    let mut profile = CliRuntimeProfileRecord::for_driver("moving-client", "opencode").unwrap();
+    let old = fixture.root.path().join("old/opencode");
+    let new = fixture.root.path().join("new/opencode");
+    crate::cli_runtime_env::set_test_client("opencode", old.clone());
+    assert_eq!(
+        serde_json::to_value(launch_config(&profile).unwrap()).unwrap()["command"],
+        old.to_str().unwrap()
+    );
+    crate::cli_runtime_env::set_test_client("opencode", new.clone());
+    assert_eq!(
+        serde_json::to_value(launch_config(&profile).unwrap()).unwrap()["command"],
+        new.to_str().unwrap()
+    );
+    profile.binary_path = Some(old.clone());
+    assert!(!old.exists());
+    assert_eq!(
+        serde_json::to_value(launch_config(&profile).unwrap()).unwrap()["command"],
+        old.to_str().unwrap()
+    );
+}

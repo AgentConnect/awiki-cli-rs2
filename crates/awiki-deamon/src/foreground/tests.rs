@@ -12,6 +12,7 @@ use im_core::messages::{
 
 use super::*;
 mod acp_envelope;
+mod bootstrap_fixture;
 use crate::app_bridge::bootstrap::{
     encrypt_secure_bootstrap_payload_for_test, encrypt_secure_bootstrap_payload_for_test_with_hash,
     BootstrapProcessOutcome,
@@ -41,6 +42,7 @@ use crate::security::runtime_token::{
 };
 use crate::state::HermesProfileRecord;
 use crate::workspace::WorkspaceMode;
+use bootstrap_fixture::FixtureRoot;
 
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient;
@@ -91,7 +93,7 @@ impl AgentInventoryClient for MockRegistrationClient {
             "agent_did": daemon_agent_did,
             "controller_user_id": "user-alice",
             "controller_full_handle": "alice.anpclaw.com",
-            "controller_did": "did:human:alice",
+            "controller_did": "did:wba:example.test:user:alice",
             "updated_count": 1,
         }))
     }
@@ -102,7 +104,9 @@ impl AgentInventoryClient for MockRegistrationClient {
         sender_did: &str,
         _auth: &DidAuthMaterial,
     ) -> Result<ControllerSenderScope> {
-        if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+        if sender_did == "did:wba:example.test:user:alice"
+            || sender_did == "did:wba:example.test:user:alice-new"
+        {
             Ok(ControllerSenderScope {
                 controller_user_id: "user-alice".to_string(),
                 controller_full_handle: "alice.anpclaw.com".to_string(),
@@ -239,7 +243,7 @@ impl RuntimeWelcomeSender for MockWelcomeSender {
     }
 }
 
-fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
+fn fixture() -> (FixtureRoot, DaemonConfig, DaemonState) {
     let root = tempfile::tempdir().unwrap();
     let executable = root.path().join("fake-agent.py");
     std::fs::write(
@@ -253,7 +257,10 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
         crate::cli_runtime_env::set_test_client(name, executable.clone());
     }
 
-    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let root = FixtureRoot::new(root, config.identity_root_dir.join("alice/did.json"));
+    config.did_domain = "example.test".into();
+    config.user_service_base_url = root.base_url();
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open_with_root_key_bytes(&config, [22_u8; 32]);
     state.initialize().unwrap();
@@ -292,7 +299,7 @@ fn create_runtime_with_alias(
         state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -310,7 +317,7 @@ fn create_runtime_with_alias(
         IncomingAgentPayloadMessage {
             message_id,
             conversation_id: Some(conversation_id),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload: json!({
@@ -322,7 +329,7 @@ fn create_runtime_with_alias(
                     "handle": handle,
                     "runtime": runtime,
                     "workspace": root.join("workspace").display().to_string(),
-                    "controller_did": "did:human:alice",
+                    "controller_did": "did:wba:example.test:user:alice",
                     "registration_token": "tok_runtime_secret_value",
                     "display_name": display_name
                 }
@@ -418,13 +425,13 @@ fn bootstrap_payload_fixture() -> Value {
     json!({
         "schema": "awiki.daemon.bootstrap.v1",
         "bootstrap_id": "boot_1",
-        "idempotency_key": "personal-agent-bootstrap:did:human:alice:app_1",
+        "idempotency_key": "personal-agent-bootstrap:did:wba:example.test:user:alice:app_1",
         "app_instance_id": "app_1",
-        "controller_did": "did:human:alice",
+        "controller_did": "did:wba:example.test:user:alice",
         "user_subkey_package": {
             "schema": "awiki.daemon.user_subkey_package.v2",
-            "user_did": "did:human:alice",
-            "verification_method": "did:human:alice#daemon-key-1",
+            "user_did": "did:wba:example.test:user:alice",
+            "verification_method": "did:wba:example.test:user:alice#daemon-key-1",
             "key_type": "Multikey/Ed25519",
             "key_algorithm": "Ed25519",
             "public_key_multibase": public_key,
@@ -443,7 +450,7 @@ fn bootstrap_payload_fixture() -> Value {
             "runtime_profile": "personal_agent",
             "display_name": "Hermes Personal Agent",
             "preferred_language": "zh-Hans",
-            "ensure_once_key": "app-personal-agent:acp-v1:did:human:alice:app_1",
+            "ensure_once_key": "app-personal-agent:acp-v1:did:wba:example.test:user:alice:app_1",
             "runtime_registration_token": "tok_runtime_secret_value"
         },
         "capability_policy": {
@@ -470,7 +477,7 @@ fn secure_bootstrap_payload_fixture(
         state,
         daemon_agent_did,
         daemon_agent_did,
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         payload,
         [7_u8; 12],
         now.format(&time::format_description::well_known::Rfc3339)
@@ -499,7 +506,7 @@ fn secure_bootstrap_payload_fixture_with_options(
     let aad = json!({
         "human_did": sender_human_did,
         "daemon_agent_did": envelope_recipient_daemon_did,
-        "binding_id": format!("app-personal-agent:{sender_human_did}:app_1")
+        "binding_id": payload["desired_personal_agent"]["ensure_once_key"]
     });
     if let Some(payload_sha256_override) = payload_sha256_override {
         encrypt_secure_bootstrap_payload_for_test_with_hash(
@@ -564,32 +571,37 @@ fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
     let root_method = format!("{user_did}#key-1");
     let identity_dir = config.identity_root_dir.join("alice");
     std::fs::create_dir_all(&identity_dir).unwrap();
+    // Use a supported DID method and a real offline proof, not an invented DID
+    // or placeholder signature that bypasses current Identity SDK validation.
+    let document = json!({
+        "id": user_did,
+        "verificationMethod": [
+            {"id": root_method, "type": "Multikey", "controller": user_did,
+             "publicKeyMultibase": root_public},
+            {"id": method, "type": "Multikey", "controller": user_did,
+             "publicKeyMultibase": public_key}
+        ],
+        "authentication": [method],
+        "assertionMethod": [root_method]
+    });
+    let signed = anp::proof::generate_w3c_proof(
+        &document,
+        &anp::PrivateKeyMaterial::from_pem(&root_private).unwrap(),
+        &root_method,
+        anp::proof::ProofGenerationOptions {
+            proof_purpose: Some("assertionMethod".into()),
+            proof_type: Some("DataIntegrityProof".into()),
+            cryptosuite: Some("eddsa-jcs-2022".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(anp::authentication::validate_did_document_method(
+        &signed, true
+    ));
     std::fs::write(
         identity_dir.join("did.json"),
-        serde_json::to_vec_pretty(&json!({
-            "id": user_did,
-            "verificationMethod": [
-                {
-                    "id": root_method,
-                    "type": "Multikey",
-                    "controller": user_did,
-                    "publicKeyMultibase": root_public
-                },
-                {
-                    "id": method,
-                    "type": "Multikey",
-                    "controller": user_did,
-                    "publicKeyMultibase": public_key
-                }
-            ],
-            "authentication": [method],
-            "proof": {
-                "type": "DataIntegrityProof",
-                "verificationMethod": root_method,
-                "proofValue": "zTestFixtureOnly"
-            }
-        }))
-        .unwrap(),
+        serde_json::to_vec_pretty(&signed).unwrap(),
     )
     .unwrap();
     if let Some(parent) = config.identity_registry_path.parent() {
@@ -633,7 +645,7 @@ fn runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_did, created.agent_did);
     assert_eq!(calls[0].jwt_token, None);
-    assert_eq!(calls[0].controller_did, "did:human:alice");
+    assert_eq!(calls[0].controller_did, "did:wba:example.test:user:alice");
     assert_eq!(calls[0].text, "Agent 已准备好。");
     assert_eq!(calls[0].security, RuntimeMessageSecurity::DefaultPlain);
     assert_eq!(
@@ -670,7 +682,7 @@ fn acp_runtime_welcome_is_sent_after_create() {
     let calls = sender.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_did, created.agent_did);
-    assert_eq!(calls[0].controller_did, "did:human:alice");
+    assert_eq!(calls[0].controller_did, "did:wba:example.test:user:alice");
     assert_eq!(calls[0].text, "Agent 已准备好。");
     assert!(calls[0]
         .delivery
@@ -744,10 +756,10 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
         runtime_sender,
         daemon_sender,
         Some("did:agent:daemon-control".to_string()),
-        "did:human:alice",
-        Some("did:human:alice".to_string()),
+        "did:wba:example.test:user:alice",
+        Some("did:wba:example.test:user:alice".to_string()),
         "task_identity_split",
-        Some("direct:did:human:alice".to_string()),
+        Some("direct:did:wba:example.test:user:alice".to_string()),
         Arc::clone(&sent_counter),
         Arc::clone(&sent_message_ids),
     );
@@ -770,9 +782,9 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
             &context,
             &RuntimeMessageSend {
                 target: crate::outbox::RuntimeMessageTarget::Direct {
-                    recipient: "did:human:alice".to_string(),
-                    raw_recipient: "did:human:alice".to_string(),
-                    resolved_did: Some("did:human:alice".to_string()),
+                    recipient: "did:wba:example.test:user:alice".to_string(),
+                    raw_recipient: "did:wba:example.test:user:alice".to_string(),
+                    resolved_did: Some("did:wba:example.test:user:alice".to_string()),
                 },
                 text: "Hermes 已准备好。".to_string(),
                 payload: None,
@@ -789,7 +801,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
             &context,
             &RuntimeAttachmentSend {
                 target: "current_conversation".to_string(),
-                target_did: Some("did:human:alice".to_string()),
+                target_did: Some("did:wba:example.test:user:alice".to_string()),
                 file_path: attachment_path.path().to_path_buf(),
                 display_filename: Some("report.txt".to_string()),
                 caption: Some("report".to_string()),
@@ -797,17 +809,17 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
         )
         .unwrap();
     let resolved = outbox
-        .resolve_recipient_did(&context, "did:human:alice")
+        .resolve_recipient_did(&context, "did:wba:example.test:user:alice")
         .unwrap();
 
-    assert_eq!(resolved.as_deref(), Some("did:human:alice"));
+    assert_eq!(resolved.as_deref(), Some("did:wba:example.test:user:alice"));
     assert_eq!(sent_counter.load(Ordering::Relaxed), 3);
     let calls = calls.lock().expect("recorded calls lock poisoned").clone();
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].sender_id, "daemon");
     assert_eq!(calls[0].kind, "payload");
     assert_eq!(calls[0].state.as_deref(), Some("succeeded"));
-    assert_eq!(calls[0].recipient_did, "did:human:alice");
+    assert_eq!(calls[0].recipient_did, "did:wba:example.test:user:alice");
     let run_status_payload = calls[0].payload.as_ref().expect("status payload recorded");
     assert_eq!(run_status_payload["schema"], "awiki.agent.status.v1");
     assert_eq!(run_status_payload["status_scope"], "run");
@@ -817,7 +829,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     );
     assert_eq!(
         run_status_payload["conversation_id"],
-        "direct:did:human:alice"
+        "direct:did:wba:example.test:user:alice"
     );
     assert_eq!(run_status_payload["daemon"], Value::Null);
     assert_eq!(run_status_payload["runtimes"], json!([]));
@@ -827,7 +839,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     );
     assert_eq!(
         run_status_payload["runs"][0]["conversation_id"],
-        "direct:did:human:alice"
+        "direct:did:wba:example.test:user:alice"
     );
     assert_eq!(run_status_payload["runs"][0]["status"], "succeeded");
     assert_eq!(
@@ -854,7 +866,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     );
     assert_eq!(calls[3].sender_id, "runtime");
     assert_eq!(calls[3].kind, "attachment");
-    assert_eq!(calls[3].recipient_did, "did:human:alice");
+    assert_eq!(calls[3].recipient_did, "did:wba:example.test:user:alice");
     assert_eq!(calls[3].text.as_deref(), Some("report"));
     let message_ids = sent_message_ids
         .lock()
@@ -884,7 +896,7 @@ fn controller_runtime_outbox_emits_owner_activity_for_external_runs() {
         daemon_sender,
         Some("did:agent:daemon-control".to_string()),
         "did:human:bob",
-        Some("did:human:alice".to_string()),
+        Some("did:wba:example.test:user:alice".to_string()),
         "task_external",
         Some("direct:did:human:bob".to_string()),
         Some("msg_bob_1".to_string()),
@@ -929,7 +941,7 @@ fn controller_runtime_outbox_emits_owner_activity_for_external_runs() {
     );
 
     let owner_activity = calls[1].payload.as_ref().expect("owner activity");
-    assert_eq!(calls[1].recipient_did, "did:human:alice");
+    assert_eq!(calls[1].recipient_did, "did:wba:example.test:user:alice");
     assert_eq!(owner_activity["schema"], "awiki.agent.status.v1");
     assert_eq!(owner_activity["status_scope"], "runtime_activity");
     assert_eq!(owner_activity["message"], Value::Null);
@@ -964,7 +976,7 @@ fn controller_runtime_outbox_group_final_sends_structured_mention_reply() {
         daemon_sender,
         Some("did:agent:daemon-control".to_string()),
         "did:human:bob",
-        Some("did:human:alice".to_string()),
+        Some("did:wba:example.test:user:alice".to_string()),
         "task_group_mention_1",
         Some("group:did:group:team".to_string()),
         Some("msg_group_1".to_string()),
@@ -1035,13 +1047,13 @@ fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_ru
         runtime_sender,
         daemon_sender,
         Some("did:agent:daemon-control".to_string()),
-        "did:human:alice",
-        Some("did:human:alice".to_string()),
+        "did:wba:example.test:user:alice",
+        Some("did:wba:example.test:user:alice".to_string()),
         "task_controller",
-        Some("direct:did:human:alice".to_string()),
+        Some("direct:did:wba:example.test:user:alice".to_string()),
         Some("msg_alice_1".to_string()),
         None,
-        Some("did:human:alice".to_string()),
+        Some("did:wba:example.test:user:alice".to_string()),
         Some("alice.anpclaw.com".to_string()),
         Some("controller_direct".to_string()),
         Arc::clone(&sent_counter),
@@ -1062,7 +1074,7 @@ fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_ru
     assert_eq!(sent_counter.load(Ordering::Relaxed), 1);
     let calls = calls.lock().expect("recorded calls lock poisoned").clone();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].recipient_did, "did:human:alice");
+    assert_eq!(calls[0].recipient_did, "did:wba:example.test:user:alice");
     let payload = calls[0].payload.as_ref().expect("requester payload");
     assert_eq!(payload["status_scope"], "run");
 }
@@ -1185,7 +1197,7 @@ fn profile(root: &Path) -> RuntimeAgentProfile {
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
-        controller_did: "did:human:alice".to_string(),
+        controller_did: "did:wba:example.test:user:alice".to_string(),
         runtime_profile_id: "profile_hermes_alice".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
         display_name: Some("Alice Hermes".to_string()),
@@ -1215,7 +1227,7 @@ fn generic_cli_profile(root: &Path) -> RuntimeAgentProfile {
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
-        controller_did: "did:human:alice".to_string(),
+        controller_did: "did:wba:example.test:user:alice".to_string(),
         runtime_profile_id: "profile_codex_alice".to_string(),
         runtime_plugin_id: GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string(),
         display_name: Some("Alice Codex".to_string()),
@@ -1686,7 +1698,7 @@ fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
-        controller_did: "did:human:alice".to_string(),
+        controller_did: "did:wba:example.test:user:alice".to_string(),
         sender_did: "did:human:bob".to_string(),
         requester_did: "did:human:bob".to_string(),
         requester_user_id: Some("user-bob".to_string()),
@@ -1714,9 +1726,9 @@ fn runtime_task_status_correlation_falls_back_to_task_message_id() {
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
-        controller_did: "did:human:alice".to_string(),
-        sender_did: "did:human:alice".to_string(),
-        requester_did: "did:human:alice".to_string(),
+        controller_did: "did:wba:example.test:user:alice".to_string(),
+        sender_did: "did:wba:example.test:user:alice".to_string(),
+        requester_did: "did:wba:example.test:user:alice".to_string(),
         requester_user_id: Some("user-alice".to_string()),
         requester_full_handle: Some("alice.anpclaw.com".to_string()),
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
@@ -1724,8 +1736,8 @@ fn runtime_task_status_correlation_falls_back_to_task_message_id() {
             "controller-scope:v1:test-alice-anpclaw-com",
         ),
         invocation_authority: RuntimeInvocationAuthority::Controller,
-        reply_recipient_did: "did:human:alice".to_string(),
-        conversation_id: Some("direct:did:human:alice".to_string()),
+        reply_recipient_did: "did:wba:example.test:user:alice".to_string(),
+        conversation_id: Some("direct:did:wba:example.test:user:alice".to_string()),
         text: "direct prompt".to_string(),
     };
 
@@ -1973,8 +1985,8 @@ fn controller_rebind_retired_sender_is_terminal_without_unroutable_feedback() {
         "did:agent:daemon",
         "controller-scope:v1:test-alice-anpclaw-com",
         "msg_retired_controller",
-        Some("direct:did:human:alice-old"),
-        "did:human:alice-old",
+        Some("direct:did:wba:example.test:user:alice-old"),
+        "did:wba:example.test:user:alice-old",
         None,
         "sender_handle_not_found",
         "blacklist",
@@ -2014,7 +2026,10 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
         .upsert_hermes_profile(&hermes_record(root.path()))
         .unwrap();
     state
-        .update_controller_did_for_agent_family("did:agent:hermes", "did:human:alice-new")
+        .update_controller_did_for_agent_family(
+            "did:agent:hermes",
+            "did:wba:example.test:user:alice-new",
+        )
         .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     install_acp_test_client(root.path(), &state, &profile);
@@ -2022,8 +2037,8 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
-        controller_did: "did:human:alice-new".to_string(),
-        sender_did: "did:human:alice-new".to_string(),
+        controller_did: "did:wba:example.test:user:alice-new".to_string(),
+        sender_did: "did:wba:example.test:user:alice-new".to_string(),
     };
 
     let result = run_runtime_text_message(
@@ -2032,8 +2047,8 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
         &outbox,
         ControllerTextMessage {
             message_id: "msg_foreground_rotated_controller".to_string(),
-            conversation_id: Some("direct:did:human:alice-new".to_string()),
-            sender_did: "did:human:alice-new".to_string(),
+            conversation_id: Some("direct:did:wba:example.test:user:alice-new".to_string()),
+            sender_did: "did:wba:example.test:user:alice-new".to_string(),
             requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
@@ -2053,7 +2068,7 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
         .expect("final Hermes message should be emitted");
     assert_eq!(
         final_message.recipient.as_deref(),
-        Some("did:human:alice-new")
+        Some("did:wba:example.test:user:alice-new")
     );
 }
 
@@ -2077,11 +2092,14 @@ fn foreground_authoritative_controller_identity_change_rebinds_agent_family() {
         &state,
         &registration,
         &created.agent_did,
-        "did:human:alice-new",
+        "did:wba:example.test:user:alice-new",
     )
     .unwrap();
-    assert_eq!(verified.controller_did, "did:human:alice-new");
-    assert_eq!(verified.sender_did, "did:human:alice-new");
+    assert_eq!(
+        verified.controller_did,
+        "did:wba:example.test:user:alice-new"
+    );
+    assert_eq!(verified.sender_did, "did:wba:example.test:user:alice-new");
     assert_eq!(
         verified.controller_user_id,
         daemon_before.controller_user_id
@@ -2103,9 +2121,18 @@ fn foreground_authoritative_controller_identity_change_rebinds_agent_family() {
         .load_runtime_daemon_binding(&created.agent_did)
         .unwrap()
         .unwrap();
-    assert_eq!(daemon_after.controller_did, "did:human:alice-new");
-    assert_eq!(runtime_after.controller_did, "did:human:alice-new");
-    assert_eq!(binding_after.controller_did, "did:human:alice-new");
+    assert_eq!(
+        daemon_after.controller_did,
+        "did:wba:example.test:user:alice-new"
+    );
+    assert_eq!(
+        runtime_after.controller_did,
+        "did:wba:example.test:user:alice-new"
+    );
+    assert_eq!(
+        binding_after.controller_did,
+        "did:wba:example.test:user:alice-new"
+    );
     assert_eq!(
         daemon_after.controller_scope_key,
         daemon_before.controller_scope_key
@@ -2131,9 +2158,9 @@ fn foreground_authoritative_controller_identity_change_rebinds_agent_family() {
 fn conversation_id_projects_direct_peer_without_message_content() {
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Text {
@@ -2147,7 +2174,7 @@ fn conversation_id_projects_direct_peer_without_message_content() {
 
     assert_eq!(
         conversation_id(&message).as_deref(),
-        Some("direct:did:human:alice")
+        Some("direct:did:wba:example.test:user:alice")
     );
 }
 
@@ -2158,9 +2185,9 @@ async fn direct_websocket_payload_only_marks_dirty_and_never_executes_business_r
     let message_id = "ws-uncommitted-message";
     let message = Message {
         id: im_core::ids::MessageId::parse(message_id).unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse(agent_did, "").unwrap()),
         group: None,
         body: MessageBodyView::Text {
@@ -2271,9 +2298,9 @@ fn hydrated_group_recovery_keeps_core_logical_id_separate_from_daemon_dedupe_key
 fn hydrated_recovery_rejects_a_core_logical_id_message_mismatch() {
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Text {
@@ -2296,9 +2323,9 @@ fn hydrated_recovery_rejects_a_core_logical_id_message_mismatch() {
 fn runtime_processed_message_id_falls_back_to_message_id() {
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Text {
@@ -2507,9 +2534,9 @@ fn unsupported_attachment_manifest_projection_is_retryable_not_ignored() {
 fn unsupported_attachment_manifest_message(message_id: &str) -> Message {
     Message {
         id: im_core::ids::MessageId::parse(message_id).unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Unsupported {
@@ -2701,7 +2728,7 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -2718,7 +2745,7 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         IncomingAppControlPayload {
             message_id: "msg_bootstrap".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload,
@@ -2731,12 +2758,12 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
     assert!(personal_agent.created_runtime_agent);
     assert_eq!(
         personal_agent.binding.binding_id,
-        "app-personal-agent:acp-v1:did:human:alice:app_1"
+        "app-personal-agent:acp-v1:did:wba:example.test:user:alice:app_1"
     );
     assert_eq!(personal_agent.binding.role, "app_message_handler");
     assert_eq!(
         personal_agent.binding.inbox_auth_verification_method,
-        "did:human:alice#daemon-key-1"
+        "did:wba:example.test:user:alice#daemon-key-1"
     );
     assert!(!personal_agent
         .binding
@@ -2745,10 +2772,10 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         .contains("tok_runtime_secret_value"));
 
     let loaded = state
-        .load_user_delegated_identity("did:human:alice#daemon-key-1")
+        .load_user_delegated_identity("did:wba:example.test:user:alice#daemon-key-1")
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.user_did, "did:human:alice");
+    assert_eq!(loaded.user_did, "did:wba:example.test:user:alice");
     assert_eq!(loaded.daemon_agent_did, daemon.agent_did);
     assert_eq!(loaded.private_key_material, "<awiki-secret-vault-ref>");
     let custody: crate::identity_custody::DaemonIdentityRef =
@@ -2763,7 +2790,11 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         .unwrap();
     assert!(!format!("{loaded:?}").contains("BEGIN PRIVATE KEY"));
     let binding = state
-        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .load_active_app_personal_agent_binding(
+            "did:wba:example.test:user:alice",
+            "app_1",
+            "app_message_handler",
+        )
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -2782,7 +2813,9 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         )
         .unwrap());
     assert!(state
-        .load_secure_bootstrap_replay("personal-agent-bootstrap:did:human:alice:app_1")
+        .load_secure_bootstrap_replay(
+            "personal-agent-bootstrap:did:wba:example.test:user:alice:app_1"
+        )
         .unwrap()
         .is_some());
 }
@@ -2796,7 +2829,7 @@ fn personal_agent_ensure_rejects_legacy_binding_without_creating_runtime() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -2811,7 +2844,7 @@ fn personal_agent_ensure_rejects_legacy_binding_without_creating_runtime() {
         IncomingAppControlPayload {
             message_id: "msg_bootstrap_before_legacy_migration".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload,
@@ -2827,13 +2860,13 @@ fn personal_agent_ensure_rejects_legacy_binding_without_creating_runtime() {
         .execute(
             "UPDATE app_personal_agent_binding SET binding_id = ?1 WHERE binding_id = ?2",
             rusqlite::params![
-                "app-message-agent:did:human:alice:app_1",
-                "app-personal-agent:acp-v1:did:human:alice:app_1"
+                "app-message-agent:did:wba:example.test:user:alice:app_1",
+                "app-personal-agent:acp-v1:did:wba:example.test:user:alice:app_1"
             ],
         )
         .unwrap();
     let identity = state
-        .load_user_delegated_identity("did:human:alice#daemon-key-1")
+        .load_user_delegated_identity("did:wba:example.test:user:alice#daemon-key-1")
         .unwrap()
         .unwrap();
     let mut desired = inner_payload["desired_personal_agent"].clone();
@@ -2867,7 +2900,8 @@ fn personal_agent_ensure_rejects_legacy_binding_without_creating_runtime() {
         .unwrap();
     assert_eq!(binding_count, 1);
     assert!(state.load_runtime_agent_profile(&runtime_agent_did).is_ok());
-    desired["ensure_once_key"] = serde_json::json!("app-personal-agent:did:human:alice:app_1");
+    desired["ensure_once_key"] =
+        serde_json::json!("app-personal-agent:did:wba:example.test:user:alice:app_1");
     let old_replay = ensure_app_personal_agent(
         &config,
         &state,
@@ -2892,7 +2926,7 @@ fn plain_daemon_bootstrap_payload_is_rejected_in_production() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -2907,7 +2941,7 @@ fn plain_daemon_bootstrap_payload_is_rejected_in_production() {
         IncomingAppControlPayload {
             message_id: "msg_plain_bootstrap".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload,
@@ -2927,7 +2961,7 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -2944,7 +2978,7 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
         IncomingAppControlPayload {
             message_id: "msg_app_capabilities".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: capabilities_payload,
@@ -2979,7 +3013,7 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
         IncomingAppControlPayload {
             message_id: "msg_app_action_result".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: result_payload,
@@ -3029,7 +3063,7 @@ fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_gu
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3047,7 +3081,7 @@ fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_gu
         IncomingAppControlPayload {
             message_id: "msg_after_controller_change".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice-new".to_string(),
+            sender_did: "did:wba:example.test:user:alice-new".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: json!({
@@ -3068,7 +3102,7 @@ fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_gu
             .load_agent_definition(&daemon.agent_did)
             .unwrap()
             .controller_did,
-        "did:human:alice-new"
+        "did:wba:example.test:user:alice-new"
     );
     assert!(state
         .audit_event_exists("app.capabilities.received", Some(&daemon.agent_did), None,)
@@ -3091,7 +3125,7 @@ fn app_action_result_from_non_controller_is_rejected_by_authoritative_scope_with
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3133,7 +3167,7 @@ fn daemon_secure_bootstrap_replay_reuses_personal_agent() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3149,7 +3183,7 @@ fn daemon_secure_bootstrap_replay_reuses_personal_agent() {
         IncomingAppControlPayload {
             message_id: "msg_bootstrap_first".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: first_payload.clone(),
@@ -3169,7 +3203,7 @@ fn daemon_secure_bootstrap_replay_reuses_personal_agent() {
         IncomingAppControlPayload {
             message_id: "msg_bootstrap_replay".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: replay_payload,
@@ -3241,7 +3275,7 @@ fn daemon_secure_bootstrap_rejects_wrong_recipient_daemon() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3252,7 +3286,7 @@ fn daemon_secure_bootstrap_rejects_wrong_recipient_daemon() {
         &state,
         &daemon.agent_did,
         "did:agent:other-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         inner_payload,
         [8_u8; 12],
         now.format(&time::format_description::well_known::Rfc3339)
@@ -3270,7 +3304,7 @@ fn daemon_secure_bootstrap_rejects_wrong_recipient_daemon() {
         IncomingAppControlPayload {
             message_id: "msg_wrong_recipient".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload,
@@ -3292,7 +3326,7 @@ fn daemon_secure_bootstrap_rejects_wrong_recipient_key_id() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3308,7 +3342,7 @@ fn daemon_secure_bootstrap_rejects_wrong_recipient_key_id() {
         IncomingAppControlPayload {
             message_id: "msg_wrong_key".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload,
@@ -3330,7 +3364,7 @@ fn daemon_secure_bootstrap_rejects_expired_envelope() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3341,7 +3375,7 @@ fn daemon_secure_bootstrap_rejects_expired_envelope() {
         &state,
         &daemon.agent_did,
         &daemon.agent_did,
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         inner_payload,
         [9_u8; 12],
         (now - time::Duration::minutes(10))
@@ -3360,7 +3394,7 @@ fn daemon_secure_bootstrap_rejects_expired_envelope() {
         IncomingAppControlPayload {
             message_id: "msg_expired_bootstrap".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload,
@@ -3380,7 +3414,7 @@ fn daemon_secure_bootstrap_rejects_payload_hash_mismatch() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3391,7 +3425,7 @@ fn daemon_secure_bootstrap_rejects_payload_hash_mismatch() {
         &state,
         &daemon.agent_did,
         &daemon.agent_did,
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         inner_payload,
         [10_u8; 12],
         now.format(&time::format_description::well_known::Rfc3339)
@@ -3409,7 +3443,7 @@ fn daemon_secure_bootstrap_rejects_payload_hash_mismatch() {
         IncomingAppControlPayload {
             message_id: "msg_hash_mismatch".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload,
@@ -3429,7 +3463,7 @@ fn daemon_secure_bootstrap_rejects_nonce_replay_for_different_operation() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3444,7 +3478,7 @@ fn daemon_secure_bootstrap_rejects_nonce_replay_for_different_operation() {
         IncomingAppControlPayload {
             message_id: "msg_nonce_replay_first".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: first_payload,
@@ -3455,7 +3489,7 @@ fn daemon_secure_bootstrap_rejects_nonce_replay_for_different_operation() {
     let mut second_inner_payload = bootstrap_payload_fixture();
     second_inner_payload["bootstrap_id"] = json!("boot_2");
     second_inner_payload["idempotency_key"] =
-        json!("personal-agent-bootstrap:did:human:alice:app_1:second");
+        json!("personal-agent-bootstrap:did:wba:example.test:user:alice:app_1:second");
     write_bootstrap_did_document_cache(&config, &second_inner_payload);
     let second_payload =
         secure_bootstrap_payload_fixture(&state, &daemon.agent_did, second_inner_payload);
@@ -3466,7 +3500,7 @@ fn daemon_secure_bootstrap_rejects_nonce_replay_for_different_operation() {
         IncomingAppControlPayload {
             message_id: "msg_nonce_replay_second".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload: second_payload,
@@ -3488,7 +3522,7 @@ fn daemon_secure_bootstrap_rejects_operation_replay_with_different_payload() {
         &state,
         &registration,
         "alice-mac-daemon",
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         RegistrationToken::new("tok_daemon_secret_value").unwrap(),
     )
     .unwrap();
@@ -3503,7 +3537,7 @@ fn daemon_secure_bootstrap_rejects_operation_replay_with_different_payload() {
         IncomingAppControlPayload {
             message_id: "msg_operation_replay_first".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: first_payload,
@@ -3519,7 +3553,7 @@ fn daemon_secure_bootstrap_rejects_operation_replay_with_different_payload() {
         &state,
         &daemon.agent_did,
         &daemon.agent_did,
-        "did:human:alice",
+        "did:wba:example.test:user:alice",
         second_inner_payload,
         [11_u8; 12],
         now.format(&time::format_description::well_known::Rfc3339)
@@ -3536,7 +3570,7 @@ fn daemon_secure_bootstrap_rejects_operation_replay_with_different_payload() {
         IncomingAppControlPayload {
             message_id: "msg_operation_replay_second".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:wba:example.test:user:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload: second_payload,
@@ -3564,9 +3598,9 @@ fn attachment_manifest_payload_is_ignored_without_auditing_content() {
     });
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Payload {
@@ -3607,7 +3641,7 @@ fn attachment_manifest_payload_is_ignored_without_auditing_content() {
         .unwrap();
     assert!(detail_json.contains("not_awiki_agent_command"));
     assert!(detail_json.contains("msg_attachment_manifest"));
-    assert!(detail_json.contains("did:human:alice"));
+    assert!(detail_json.contains("did:wba:example.test:user:alice"));
     assert!(detail_json.contains("did:agent:hermes"));
     assert!(detail_json.contains(im_core::attachments::attachment_manifest_content_type()));
     assert!(detail_json.contains("anp.attachment.manifest.v1"));
@@ -3740,7 +3774,7 @@ fn scoped_thread_attachment_download_uses_sender_direct_thread() {
             im_core::ids::ThreadId::parse("dm:peer-scope:v1:user-alice:alice.anpclaw.com").unwrap(),
         ),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Payload {
@@ -3751,11 +3785,11 @@ fn scoped_thread_attachment_download_uses_sender_direct_thread() {
         metadata: im_core::messages::MessageMetadata::default(),
     };
 
-    let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+    let thread = attachment_download_thread(&message, "did:wba:example.test:user:alice").unwrap();
 
     assert_eq!(
         thread,
-        ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap())
+        ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap())
     );
 }
 
@@ -3767,7 +3801,7 @@ fn group_thread_attachment_download_uses_group_thread() {
             im_core::ids::ThreadId::parse("group:did:example:group").unwrap(),
         ),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: None,
         group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
         body: MessageBodyView::Payload {
@@ -3778,7 +3812,7 @@ fn group_thread_attachment_download_uses_group_thread() {
         metadata: im_core::messages::MessageMetadata::default(),
     };
 
-    let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+    let thread = attachment_download_thread(&message, "did:wba:example.test:user:alice").unwrap();
 
     assert_eq!(
         thread,
@@ -3796,9 +3830,9 @@ fn metadata_attribute_content_type_marks_attachment_manifest() {
     });
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Payload {
@@ -3829,9 +3863,9 @@ fn inbound_attachment_path_sanitizes_segments_under_state_root() {
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let message = Message {
         id: im_core::ids::MessageId::parse("msg/unsafe").unwrap(),
-        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        thread: ThreadRef::Direct(PeerRef::parse("did:wba:example.test:user:alice", "").unwrap()),
         direction: MessageDirection::Incoming,
-        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        sender: PeerRef::parse("did:wba:example.test:user:alice", "").unwrap(),
         receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
         group: None,
         body: MessageBodyView::Payload {

@@ -1220,6 +1220,7 @@ fn runtime_agent_create_accepts_acp_driver_contract_fields() {
         .load_cli_runtime_profile(&created.runtime_profile_id)
         .unwrap();
     assert_eq!(cli_profile.driver_id, "codex");
+    assert_eq!(cli_profile.binary_path, None);
     assert_eq!(cli_profile.config_home, None);
     assert_eq!(
         cli_profile.driver_config_json,
@@ -2792,4 +2793,64 @@ fn unavailable_client_rejects_creation_before_registration_exchange() {
         statuses[0].payload["result"]["error_code"],
         "runtime_client_not_found"
     );
+}
+
+#[test]
+fn acp_create_persists_only_explicit_client_paths_for_all_brands() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "path-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    for (index, driver) in [
+        "hermes",
+        "codex",
+        "claude-code",
+        "opencode",
+        "gemini",
+        "kimi",
+        "deepseek-harness",
+    ]
+    .iter()
+    .enumerate()
+    {
+        for explicit in [false, true] {
+            let binary = awiki_deamon::cli_runtime_env::resolve_cli_binary(
+                awiki_deamon::acp::Brand::parse(driver).unwrap().command(),
+            );
+            let driver_config = if explicit {
+                json!({"binary_path": binary})
+            } else {
+                json!({})
+            };
+            let suffix = format!("{index}-{}", if explicit { "explicit" } else { "default" });
+            let result = handle_agent_payload_message(&config, &state, &registration,
+                &MemoryRuntimeOutbox::default(), IncomingAgentPayloadMessage {
+                    message_id: format!("msg-path-{suffix}"), conversation_id: None,
+                    sender_did: "did:human:alice".into(), target_agent_did: daemon.agent_did.clone(),
+                    content_type: "application/json".into(),
+                    payload: json!({"schema":"awiki.agent.command.v1", "command_id":format!("cmd-path-{suffix}"),
+                        "command":"runtime.agent.create", "target_agent_kind":"runtime", "args":{
+                            "handle":format!("path-{suffix}"), "display_name":"Path contract",
+                            "runtime":"acp", "driver_id":driver, "driver_config": driver_config,
+                            "controller_did":"did:human:alice", "registration_token":"tok_runtime_secret_value"}}),
+                }).unwrap();
+            let created = expect_created(result);
+            let profile = state
+                .load_cli_runtime_profile(&created.runtime_profile_id)
+                .unwrap();
+            assert_eq!(
+                profile.binary_path,
+                explicit.then_some(binary),
+                "{driver} explicit={explicit}"
+            );
+            assert_eq!(profile.driver_config_json, driver_config);
+        }
+    }
 }

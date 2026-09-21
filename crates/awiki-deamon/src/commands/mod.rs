@@ -940,17 +940,22 @@ where
             prepared_cli.binary_path = Some(path.into());
         }
     }
-    if prepared_cli.binary_path.is_none() {
-        prepared_cli.binary_path = Some(crate::cli_runtime_env::resolve_cli_binary(
-            crate::acp::Brand::parse(driver_id)?.command(),
-        ));
-    }
+    // Resolve once for this preflight, but persist only an explicit override.
+    // Default clients may move when the host's package manager is upgraded.
+    let brand = crate::acp::Brand::parse(driver_id)?;
+    let mut probe_cli = prepared_cli.clone();
+    probe_cli.binary_path = Some(
+        prepared_cli
+            .binary_path
+            .clone()
+            .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command())),
+    );
     crate::runtime_clients::require_installed(
         config,
         driver_id,
-        prepared_cli.binary_path.as_ref().and_then(|p| p.to_str()),
+        probe_cli.binary_path.as_ref().and_then(|p| p.to_str()),
     )?;
-    let report = crate::acp::host::inspect_sync(&prepared_cli)?;
+    let report = crate::acp::host::inspect_sync(&probe_cli)?;
     state.connection()?.execute("INSERT INTO acp_probes(profile_id,report,checked_at_ms) VALUES(?1,?2,?3) ON CONFLICT(profile_id) DO UPDATE SET report=excluded.report,checked_at_ms=excluded.checked_at_ms",rusqlite::params![profile_id,serde_json::to_string(&report)?,crate::security::runtime_token::current_time_millis()?])?;
     let workspace_mode = runtime_create_workspace_mode(&payload.args)?;
     let workspace_root = Some(

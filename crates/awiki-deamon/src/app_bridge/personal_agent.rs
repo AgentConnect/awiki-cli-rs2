@@ -27,6 +27,11 @@ const LEGACY_MESSAGE_AGENT_DISPLAY_NAME: &str = "Hermes Message Agent";
 const PERSONAL_AGENT_BINDING_PREFIX: &str = "app-personal-agent:";
 const LEGACY_MESSAGE_AGENT_BINDING_PREFIX: &str = "app-message-agent:";
 
+/// Stable generation shared by product validation and the System Test probe.
+pub fn personal_agent_ensure_once_key(user_did: &str, app_instance_id: &str) -> String {
+    format!("app-personal-agent:acp-v1:{user_did}:{app_instance_id}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnsureAppPersonalAgentOutcome {
     pub binding: AppPersonalAgentBindingRecord,
@@ -129,11 +134,7 @@ where
     // bootstrap replay must never create a replacement identity automatically.
     if desired.ensure_once_key.as_deref()
         != Some(
-            format!(
-                "app-personal-agent:acp-v1:{}:{}",
-                identity.user_did, identity.app_instance_id
-            )
-            .as_str(),
+            personal_agent_ensure_once_key(&identity.user_did, &identity.app_instance_id).as_str(),
         )
     {
         bail!("personal_agent_legacy_bootstrap_retired");

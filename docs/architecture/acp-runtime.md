@@ -123,3 +123,11 @@ schema 37 的 `runtime_retirement` 永久记录旧接入的 DID、profile 与原
 Codex、Claude Code 的固定适配器复用宿主机 Node；检测与执行共用程序发现和版本校验，支持常规安装符号链接。缺失、版本不兼容、启动失败、超时使用独立 reason_code；每次启动复核，清除 NODE_OPTIONS/NODE_PATH，避免与进程注入配置耦合。其他五种客户端不新增此要求。APP 提供官方安装入口与重新检测，不自动安装或修改宿主机。
 
 组件构建删除 source map、声明文件、测试、示例与非法律 Markdown，保留运行时源码、锁文件和许可声明；禁止捆绑原生 Agent CLI。为兼容 0.1.101 升级器，schema_version 保持 1，新增 runtime=host-node 描述；保留极小的 acp/node shell 转发器与说明文件 LICENSE.node，不包含 Node 二进制。新 Daemon 直接发现宿主机 Node，不调用兼容转发器。全部分发文件仍进入清单哈希校验。
+
+### 客户端路径与升级（2026-09-21）
+
+七种类型创建前仍执行安装检查和 ACP 探测。未显式提供 `driver_config.binary_path` 时，探测只临时使用当次解析结果，持久化的 `binary_path` 保持空；每次新建子进程从 Daemon 的有效 PATH 重新发现客户端。因此升级或替换宿主机客户端不需要重建 Agent。独立终端里的 `nvm use` 不会自动修改已运行 Daemon 的环境，仍以 Daemon 的实际发现规则为准。
+
+显式非空路径保存并优先使用；路径失效时明确失败，不静默调用另一份客户端。schema 38 仅一次性清除已保存成功创建探测、属于 ACP profile、原始配置明确未指定 `binary_path` 的绝对默认路径；显式配置（包括异常值）、旧运行时、缺少来源证据或无法解析的配置均保留。迁移不修改身份、工作目录、会话或模型设置。
+
+个人助理新建使用 `app-personal-agent:acp-v1:{userDid}:{appInstanceId}`，加密 envelope 的 `binding_id` 与 payload 的 `ensure_once_key` 相同。Daemon 与 Rust System Test 探针共用生成函数；旧代际请求继续拒绝，不自动创建替代身份。

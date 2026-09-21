@@ -2224,10 +2224,11 @@ impl Probe {
                 })?;
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
             let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
-            let ensure_once_key = format!(
-                "app-personal-agent:{}:{}",
-                self.local_did, params.app_instance_id
-            );
+            let ensure_once_key =
+                awiki_deamon::app_bridge::personal_agent::personal_agent_ensure_once_key(
+                    &self.local_did,
+                    &params.app_instance_id,
+                );
             let payload = ProbeBootstrapPayload {
                 schema: "awiki.daemon.bootstrap.v1",
                 bootstrap_id: &bootstrap_id,
@@ -2286,10 +2287,7 @@ impl Probe {
                 json!({
                     "human_did": self.local_did,
                     "daemon_agent_did": daemon_agent_did,
-                    "binding_id": format!(
-                        "app-personal-agent:{}:{}",
-                        self.local_did, params.app_instance_id
-                    ),
+                    "binding_id": ensure_once_key,
                 }),
                 plaintext.as_slice(),
             )
@@ -5385,6 +5383,13 @@ mod tests {
 
     #[test]
     fn probe_bootstrap_desired_personal_agent_includes_exact_preferred_language() {
+        let key = awiki_deamon::app_bridge::personal_agent::personal_agent_ensure_once_key(
+            LOCAL_DID, "app-test",
+        );
+        assert_eq!(
+            key,
+            format!("app-personal-agent:acp-v1:{LOCAL_DID}:app-test")
+        );
         let payload = ProbeBootstrapPayload {
             schema: "awiki.daemon.bootstrap.v1",
             bootstrap_id: "boot-test",
@@ -5407,7 +5412,7 @@ mod tests {
                 runtime_profile: "personal_agent",
                 display_name: "Recovery Continuity Agent",
                 preferred_language: "zh-Hans",
-                ensure_once_key: "app-personal-agent:test",
+                ensure_once_key: &key,
                 runtime_registration_token: "registration-test-token",
             },
             capability_policy: ProbeCapabilityPolicy {
@@ -5433,7 +5438,7 @@ mod tests {
                 "runtime_profile": "personal_agent",
                 "display_name": "Recovery Continuity Agent",
                 "preferred_language": "zh-Hans",
-                "ensure_once_key": "app-personal-agent:test",
+                "ensure_once_key": key,
                 "runtime_registration_token": "registration-test-token",
             })
         );
