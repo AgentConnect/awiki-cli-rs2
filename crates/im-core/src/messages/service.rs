@@ -4545,8 +4545,12 @@ fn conversation_send_request(
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
     ensure_conversation_registry(client, &conversation)?;
-    let conversation_id = conversation.conversation_id.clone();
     let resolved = resolve_service_conversation_thread(client, &conversation)?;
+    let conversation_id = resolved
+        .peer_scope
+        .as_ref()
+        .map(crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope)
+        .unwrap_or_else(|| conversation.conversation_id.clone());
     let client_message_id = match client_message_id {
         Some(id) => id,
         None => crate::ids::MessageId::parse(format!(

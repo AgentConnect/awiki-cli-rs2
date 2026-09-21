@@ -868,6 +868,13 @@ pub(crate) fn load_sync_thread_binding_for_conversation(
     conversation_id: &str,
     thread_kind: &str,
 ) -> crate::ImResult<Option<SyncThreadBinding>> {
+    let canonical = super::conversation_aliases::resolve(
+        connection,
+        owner_identity_id,
+        "verified_foreign_persona",
+        conversation_id,
+    )?;
+    let conversation_id = canonical.as_deref().unwrap_or(conversation_id);
     validate_required("owner_identity_id", owner_identity_id)?;
     validate_required("conversation_id", conversation_id)?;
     if !matches!(thread_kind, "direct" | "group") {

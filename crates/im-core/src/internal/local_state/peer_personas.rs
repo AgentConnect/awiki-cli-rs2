@@ -289,11 +289,27 @@ pub(crate) fn project_verified_handle(
     owner_did: &str,
     lookup: &crate::directory::HandleLookupResult,
 ) -> crate::ImResult<String> {
+    project_verified_handle_in_domain(connection, owner_identity_id, owner_did, lookup, None)
+}
+
+pub(crate) fn project_verified_handle_in_domain(
+    connection: &mut Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    lookup: &crate::directory::HandleLookupResult,
+    home_domain: Option<&str>,
+) -> crate::ImResult<String> {
     let persona = lookup.peer_persona()?;
     let verified_at = now();
     let transaction = connection
         .transaction()
         .map_err(super::local_state_unavailable)?;
+    let legacy = super::foreign_persona_migration::prepare(
+        &transaction,
+        owner_identity_id,
+        lookup,
+        home_domain,
+    )?;
     let binding_generation = validate_projection_generation(
         &transaction,
         owner_identity_id,
@@ -313,6 +329,16 @@ pub(crate) fn project_verified_handle(
             verified_at: verified_at.clone(),
         },
     )?;
+    if let Some(legacy) = legacy.as_ref() {
+        super::foreign_persona_migration::migrate(
+            &transaction,
+            owner_identity_id,
+            owner_did,
+            lookup,
+            legacy,
+            &verified_at,
+        )?;
+    }
     for (kind, value) in [
         ("handle", persona.full_handle.as_str()),
         ("did", lookup.did.as_str()),
@@ -439,7 +465,7 @@ WHERE owner_identity_id = ?2
     Ok(route.conversation_id)
 }
 
-fn validate_projection_generation(
+pub(super) fn validate_projection_generation(
     connection: &Connection,
     owner_identity_id: &str,
     peer_persona_id: &str,

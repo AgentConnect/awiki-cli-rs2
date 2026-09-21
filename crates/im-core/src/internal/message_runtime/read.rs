@@ -2352,20 +2352,19 @@ fn lookup_direct_peer_scope(
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
 ) -> VerifiedHandleScopeLookup {
-    let Ok(call) =
-        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-    else {
+    let Ok(did) = crate::ids::Did::parse(peer_did) else {
         return VerifiedHandleScopeLookup::Rejected;
     };
-    let raw = match directory_transport.rpc(call.endpoint, call.method, call.params) {
-        Ok(raw) => raw,
+    let lookup = match crate::internal::directory_runtime::lookup_handle_by_did_for_projection(
+        client,
+        directory_transport,
+        &did,
+    ) {
+        Ok(lookup) => lookup,
         Err(error) if is_legacy_handle_lookup_error(&error) => {
-            return VerifiedHandleScopeLookup::Unavailable;
+            return VerifiedHandleScopeLookup::Unavailable
         }
         Err(_) => return VerifiedHandleScopeLookup::Rejected,
-    };
-    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
-        return VerifiedHandleScopeLookup::Rejected;
     };
     if lookup.did.as_str() != peer_did {
         return VerifiedHandleScopeLookup::Rejected;
@@ -2414,24 +2413,23 @@ async fn lookup_direct_peer_scope_async(
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
 ) -> VerifiedHandleScopeLookup {
-    let Ok(call) =
-        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-    else {
+    let Ok(did) = crate::ids::Did::parse(peer_did) else {
         return VerifiedHandleScopeLookup::Rejected;
     };
-    let raw = match directory_transport
-        .rpc(call.endpoint, call.method, call.params)
+    let lookup =
+        match crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
+            client,
+            directory_transport,
+            &did,
+        )
         .await
-    {
-        Ok(raw) => raw,
-        Err(error) if is_legacy_handle_lookup_error(&error) => {
-            return VerifiedHandleScopeLookup::Unavailable;
-        }
-        Err(_) => return VerifiedHandleScopeLookup::Rejected,
-    };
-    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
-        return VerifiedHandleScopeLookup::Rejected;
-    };
+        {
+            Ok(lookup) => lookup,
+            Err(error) if is_legacy_handle_lookup_error(&error) => {
+                return VerifiedHandleScopeLookup::Unavailable
+            }
+            Err(_) => return VerifiedHandleScopeLookup::Rejected,
+        };
     if lookup.did.as_str() != peer_did {
         return VerifiedHandleScopeLookup::Rejected;
     }

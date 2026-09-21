@@ -185,7 +185,7 @@ async fn all_inbox_persists_direct_and_group_in_their_child_paths() {
     .unwrap();
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let direct = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
@@ -556,7 +556,7 @@ fn messages_read_runtime_annotates_delegated_inbox_peer_scope_from_handle_lookup
             .iter()
             .find(|attribute| attribute.key == "peer_full_handle")
             .map(|attribute| attribute.value.as_str()),
-        Some("bob.anpclaw.com")
+        Some("bob.awiki.test")
     );
     assert_eq!(
         message
@@ -810,7 +810,7 @@ fn messages_read_runtime_rejects_scoped_inbox_token_until_enabled() {
 #[test]
 fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     let fixture = Fixture::new();
-    fixture.seed_verified_peer_identity("user-bob", "bob.anpclaw.com", &["did:example:bob"]);
+    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,
@@ -877,7 +877,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
     let fixture = Fixture::new();
     fixture.seed_verified_peer_identity(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
         &["did:example:bob-old", "did:example:bob-new"],
     );
     let client = fixture.client();
@@ -941,7 +941,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
         crate::messages::ThreadRef::Thread(thread)
             if thread.as_str().starts_with("dm:peer-scope:v1:")
     ));
-    assert_eq!(conversation.participants[0].as_str(), "bob.anpclaw.com");
+    assert_eq!(conversation.participants[0].as_str(), "bob.awiki.test");
     assert_eq!(
         conversation
             .last_message
@@ -3552,7 +3552,7 @@ async fn direct_inbox_projects_verified_handle_before_persisting_message() {
     assert_eq!(result.page.items.len(), 1);
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let records = client
@@ -3631,7 +3631,7 @@ async fn direct_page_resolves_expected_peer_scope_once_for_all_messages() {
     assert_eq!(calls.borrow().as_slice(), ["lookup"]);
     for message in raw["messages"].as_array().unwrap() {
         assert_eq!(message["peer_user_id"], "user-bob");
-        assert_eq!(message["peer_full_handle"], "bob.anpclaw.com");
+        assert_eq!(message["peer_full_handle"], "bob.awiki.test");
         assert_eq!(message["peer_current_did"], "did:example:bob-new");
     }
 }
@@ -3649,7 +3649,7 @@ fn plain_direct_history_keeps_peer_wire_identity_after_canonical_thread_projecti
             "content_type": "text/plain",
             "server_seq": 37,
             "peer_user_id": "user-bob",
-            "peer_full_handle": "bob.anpclaw.com",
+            "peer_full_handle": "bob.awiki.test",
             "peer_current_did": "did:example:bob-new",
             "resolved_target_did": "did:example:bob-new"
         }],
@@ -3791,7 +3791,7 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
     );
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let records = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
@@ -4581,7 +4581,7 @@ async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() 
     .await;
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
@@ -5065,7 +5065,7 @@ async fn scoped_history_mixed_page_keeps_and_persists_requested_peer_once() {
     let requested_peer_did = "did:example:bob-new";
     let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let requested_wire = json!({
@@ -5234,7 +5234,7 @@ async fn history_and_sync_reject_authenticated_p5_for_unrequested_peer() {
     let requested_peer_did = "did:example:bob-new";
     let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     seed_sync_thread_binding_for_test(&client, &requested_scope, "conversation-ref-bob-new");
@@ -5472,7 +5472,7 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
     wire["thread_kind"] = json!("direct");
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let conversation_id =
@@ -6264,9 +6264,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
     let client = fixture.client();
     let mut first = FixedLookupDirectoryTransport(json!({
         "handle": "bob",
-        "full_handle": "bob.anpclaw.com",
+        "full_handle": "bob.awiki.test",
         "did": "did:example:bob-new",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-bob"
     }));
@@ -6277,9 +6277,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
 
     let mut missing = FixedLookupDirectoryTransport(json!({
         "handle": "bob",
-        "full_handle": "bob.anpclaw.com",
+        "full_handle": "bob.awiki.test",
         "did": "did:example:bob-missing-authority",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active"
     }));
     assert!(matches!(
@@ -6290,9 +6290,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
 
     let mismatched_response = json!({
         "handle": "mallory",
-        "full_handle": "mallory.anpclaw.com",
+        "full_handle": "mallory.awiki.test",
         "did": "did:example:mallory-response",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-mallory-response"
     });
@@ -6333,9 +6333,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
     drop(connection);
     let mut conflicting = FixedLookupDirectoryTransport(json!({
         "handle": "mallory",
-        "full_handle": "mallory.anpclaw.com",
+        "full_handle": "mallory.awiki.test",
         "did": "did:example:bob-new",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-mallory"
     }));
@@ -6877,9 +6877,9 @@ impl RpcTransport for StaticHandleDirectoryTransport {
         if method == "lookup" {
             return Ok(json!({
                 "handle": "bob",
-                "full_handle": "bob.anpclaw.com",
+                "full_handle": "bob.awiki.test",
                 "did": did,
-                "domain": "anpclaw.com",
+                "domain": "awiki.test",
                 "status": "active",
                 "user_id": "user-bob"
             }));
@@ -6910,9 +6910,9 @@ impl RpcTransport for CountingHandleDirectoryTransport {
             .unwrap_or("did:example:bob-new");
         Ok(json!({
             "handle": "bob",
-            "full_handle": "bob.anpclaw.com",
+            "full_handle": "bob.awiki.test",
             "did": did,
-            "domain": "anpclaw.com",
+            "domain": "awiki.test",
             "status": "active",
             "user_id": "user-bob"
         }))

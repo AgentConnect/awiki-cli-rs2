@@ -192,6 +192,92 @@ pub(crate) fn resolve_authoritative_direct_rebind(
     }
 }
 
+// Directory transports expose anonymous discovery separately from authenticated RPC.
+struct DirectoryDiscovery<'a, T>(&'a mut T);
+
+impl<T: crate::internal::transport::RpcTransport> crate::internal::transport::RawJsonTransport
+    for DirectoryDiscovery<'_, T>
+{
+    fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        self.0.directory_resolve_web_document(did)
+    }
+
+    fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.0.directory_get_json_url(url, headers)
+    }
+}
+
+impl<T: crate::internal::transport::AsyncRpcTransport>
+    crate::internal::transport::AsyncRawJsonTransport for DirectoryDiscovery<'_, T>
+{
+    async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        self.0.directory_resolve_web_document(did).await
+    }
+
+    async fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.0.directory_get_json_url(url, headers).await
+    }
+}
+
+/// None means the authenticated home Directory remains the authority.
+pub(crate) fn foreign_directory_lookup<T: crate::internal::transport::RpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    handle: &str,
+) -> crate::ImResult<Option<Value>> {
+    match resolution_route_for_client(client, handle)? {
+        HandleResolutionRoute::Local { .. } => Ok(None),
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let raw = fetch_public_binding_document(
+                &mut DirectoryDiscovery(transport),
+                &full_handle,
+                &url,
+            )?;
+            Ok(Some(public_directory_value(&full_handle, &raw)?))
+        }
+    }
+}
+
+pub(crate) async fn foreign_directory_lookup_async<
+    T: crate::internal::transport::AsyncRpcTransport,
+>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    handle: &str,
+) -> crate::ImResult<Option<Value>> {
+    match resolution_route_for_client(client, handle)? {
+        HandleResolutionRoute::Local { .. } => Ok(None),
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let raw = fetch_public_binding_document_async(
+                &mut DirectoryDiscovery(transport),
+                &full_handle,
+                &url,
+            )
+            .await?;
+            Ok(Some(public_directory_value(&full_handle, &raw)?))
+        }
+    }
+}
+
+fn public_directory_value(handle: &str, raw: &Value) -> crate::ImResult<Value> {
+    let lookup = authoritative_lookup_from_public_document(handle, raw)?;
+    // Only verified fields enter the identity projection. Provider-private IDs
+    // and the home Directory's foreign profile cannot become authority input.
+    Ok(serde_json::json!({
+        "handle": lookup.handle.as_str(), "did": lookup.did.as_str(),
+        "user_id": lookup.user_id, "domain": lookup.domain,
+        "status": lookup.status, "binding_generation": lookup.binding_generation,
+    }))
+}
+
 fn fetch_public_binding_document<T>(
     transport: &mut T,
     handle: &str,
@@ -455,7 +541,7 @@ fn validate_did_matches_handle_domain(handle: &str, did: &str) -> crate::ImResul
     })
 }
 
-fn is_local_handle(client: &crate::core::ImClient, full_handle: &str) -> bool {
+pub(crate) fn is_local_handle(client: &crate::core::ImClient, full_handle: &str) -> bool {
     let Ok(normalized) = normalize_handle(full_handle) else {
         return false;
     };
@@ -1104,3 +1190,7 @@ mod web_tests;
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "handle_discovery_projection_tests.rs"]
 mod projection_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "handle_discovery_directory_tests.rs"]
+mod directory_tests;
