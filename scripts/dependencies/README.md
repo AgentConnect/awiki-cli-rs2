@@ -121,3 +121,9 @@ ANP 1.0.3 和 Identity 0.2.3 继续使用固定 registry 来源。
 这不修复或跳过独立 registry 检查；正式 registry 仍缺新 API，保持合并/发布阻塞。
 未来获得对应发布授权并满足依赖门禁后，更新正式 pin/lock、删除 source 清单和锁，
 再验证 registry。开发 PR 不授权发布依赖或任何版本。
+
+Notify 后续 CI 修复将 ANP Identity 源码 pin 更新到已存在的
+`9b6309e0d7776b3fb606e52b2b44c61e5d768af4`，该提交修正 Node 0.2.2 的安装锁。
+与此前 `27b511bb` 相比，Rust crates、Cargo manifest/lock、Node manifest/build scripts
+没有差异，原 `rustTreeSha256` 保持不变；正式 registry 版本没有更新。
+本次只消费已经存在的上游修复，不运行任何发布流程。
