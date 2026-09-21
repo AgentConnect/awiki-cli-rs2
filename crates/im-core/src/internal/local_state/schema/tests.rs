@@ -2964,3 +2964,47 @@ PRAGMA user_version=35;
             .is_err()
     );
 }
+
+#[test]
+fn root_import_plan_rejects_existing_malformed_shapes_without_repair() {
+    let expected = ROOT_IMPORT_V2_PLAN_SQL;
+    let cases = [
+        expected.replace("    plan_json TEXT NOT NULL,\n", ""),
+        expected.replace("plan_json TEXT NOT NULL", "plan_json BLOB NOT NULL"),
+        expected.replace("plan_json TEXT NOT NULL", "plan_json TEXT"),
+        expected.replace(
+            "PRIMARY KEY(owner_identity_id, local_device_id, message_id)",
+            "PRIMARY KEY(owner_identity_id, message_id, local_device_id)",
+        ),
+        expected.replace(" CHECK(handoff IN (0, 1))", ""),
+        expected.replace("DEFAULT 0", "DEFAULT 1"),
+    ];
+    for ddl in cases {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        db.execute_batch("DROP TABLE identity_root_import_plan_v2")
+            .unwrap();
+        db.execute_batch(&ddl).unwrap();
+        let before: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='identity_root_import_plan_v2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let error = ensure_schema(&db).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::LocalStateUnavailable { .. }
+        ));
+        assert_eq!(current_schema_version(&db).unwrap(), 45);
+        let after: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='identity_root_import_plan_v2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+    }
+}
