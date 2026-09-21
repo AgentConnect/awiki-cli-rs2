@@ -3608,7 +3608,7 @@ pub(super) fn apply_delta_events_in_transaction(
     for mut event in events {
         let event_id = event.event_id.clone();
         let inserted = record_applied_event(
-            &transaction,
+            transaction,
             &AppliedEventReceipt {
                 owner_identity_id: input.owner_identity_id.clone(),
                 event_id: event.event_id.clone(),
@@ -3628,7 +3628,7 @@ pub(super) fn apply_delta_events_in_transaction(
             validate_message_owner(&event.messages[0], &input.owner_identity_id)?;
             message_event_thread_binding(&event, &input.owner_identity_id)?;
             if message_has_sync_event_id(
-                &transaction,
+                transaction,
                 &input.owner_identity_id,
                 &event.messages[0].msg_id,
                 &event.event_id,
@@ -3652,7 +3652,7 @@ pub(super) fn apply_delta_events_in_transaction(
             if let crate::internal::system_notification::store::SystemNotificationApplyOutcome::Applied(
                 snapshot,
             ) = crate::internal::system_notification::store::apply_transaction(
-                &transaction,
+                transaction,
                 &notification,
             )? {
                 committed_system_notifications.push(snapshot);
@@ -3666,7 +3666,7 @@ pub(super) fn apply_delta_events_in_transaction(
         for message in event.messages {
             validate_message_owner(&message, &input.owner_identity_id)?;
             match super::inbound_resolution_backlog::canonicalize_inbound_message(
-                &transaction,
+                transaction,
                 message.clone(),
             ) {
                 Ok(message) => {
@@ -3676,7 +3676,7 @@ pub(super) fn apply_delta_events_in_transaction(
                 }
                 Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
                     super::inbound_resolution_backlog::store_with_thread_binding(
-                        &transaction,
+                        transaction,
                         super::inbound_resolution_backlog::BacklogSource {
                             event_id: &event.event_id,
                             event_seq: &event.event_seq,
@@ -3699,7 +3699,7 @@ pub(super) fn apply_delta_events_in_transaction(
         )?;
         for group in event.groups {
             validate_group_owner(&group, &input.owner_identity_id)?;
-            if group_state_is_stale(&transaction, &group)? {
+            if group_state_is_stale(transaction, &group)? {
                 continue;
             }
             groups.push(group);
@@ -3715,10 +3715,10 @@ pub(super) fn apply_delta_events_in_transaction(
     }
 
     for binding in thread_bindings {
-        upsert_sync_thread_binding(&transaction, &binding)?;
+        upsert_sync_thread_binding(transaction, &binding)?;
     }
     let mut invalidation = v2_invalidation(
-        &transaction,
+        transaction,
         &input.owner_identity_id,
         &input.owner_did,
         &input.next_scan_seq,
@@ -3727,7 +3727,7 @@ pub(super) fn apply_delta_events_in_transaction(
         &read_states,
     )?;
     if !messages.is_empty() {
-        let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
+        let touched = super::messages::upsert_messages_with_touched(transaction, &messages)?;
         let mut conversation_ids = invalidation
             .conversation_ids
             .into_iter()
@@ -3743,11 +3743,11 @@ pub(super) fn apply_delta_events_in_transaction(
         invalidation.thread_ids = thread_ids.into_iter().collect();
     }
     for group in groups {
-        super::groups::upsert_group(&transaction, group)?;
+        super::groups::upsert_group(transaction, group)?;
     }
     for read_state in read_states {
         apply_remote_read_state(
-            &transaction,
+            transaction,
             &input.owner_identity_id,
             &input.owner_did,
             &read_state,
