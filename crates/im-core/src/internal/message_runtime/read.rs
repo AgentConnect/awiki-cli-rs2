@@ -5689,13 +5689,19 @@ fn attachment_cache_security_profile(
     let explicit_profile = ["message_security_profile", "security_profile", "security"]
         .iter()
         .any(|key| {
-            object.get(*key).and_then(Value::as_str)
+            object
+                .get(*key)
+                .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty())
         });
-    let encrypted_object = content.get("attachments").and_then(Value::as_array)
+    let encrypted_object = content
+        .get("attachments")
+        .and_then(Value::as_array)
         .is_some_and(|attachments| {
             attachments.iter().any(|attachment| {
-                attachment.pointer("/encryption_info/mode").and_then(Value::as_str)
+                attachment
+                    .pointer("/encryption_info/mode")
+                    .and_then(Value::as_str)
                     == Some(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE)
             })
         });

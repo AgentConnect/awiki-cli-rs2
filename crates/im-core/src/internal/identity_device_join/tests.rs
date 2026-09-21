@@ -1293,12 +1293,27 @@ async fn prepare_external_provider_admin_join(
 }
 
 #[cfg(feature = "provider-traits")]
-async fn prepare_external_provider_admin_join_policy(admin_root: &Path, candidate_root: &Path, management: bool) -> ExternalProviderAdminJoinFixture {
-    prepare_external_provider_admin_join_with_options(admin_root, candidate_root, crate::identity::DidMethod::Wba, management).await
+async fn prepare_external_provider_admin_join_policy(
+    admin_root: &Path,
+    candidate_root: &Path,
+    management: bool,
+) -> ExternalProviderAdminJoinFixture {
+    prepare_external_provider_admin_join_with_options(
+        admin_root,
+        candidate_root,
+        crate::identity::DidMethod::Wba,
+        management,
+    )
+    .await
 }
 
-async fn prepare_external_provider_admin_join_for_method(admin_root: &Path, candidate_root: &Path, method: crate::identity::DidMethod) -> ExternalProviderAdminJoinFixture {
-    prepare_external_provider_admin_join_with_options(admin_root, candidate_root, method, false).await
+async fn prepare_external_provider_admin_join_for_method(
+    admin_root: &Path,
+    candidate_root: &Path,
+    method: crate::identity::DidMethod,
+) -> ExternalProviderAdminJoinFixture {
+    prepare_external_provider_admin_join_with_options(admin_root, candidate_root, method, false)
+        .await
 }
 
 async fn prepare_external_provider_admin_join_with_options(

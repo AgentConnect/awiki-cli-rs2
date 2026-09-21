@@ -31,7 +31,6 @@ pub(crate) mod identity_device_revoke;
 pub(crate) mod identity_device_revoke_pending;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
-pub(crate) mod identity_services_update;
 pub(crate) mod identity_generation;
 pub(crate) mod identity_handle_recovery_authority;
 pub(crate) mod identity_handle_recovery_context;
@@ -62,6 +61,7 @@ pub(crate) mod identity_root_promotion;
 #[cfg(feature = "sqlite")]
 pub(crate) mod identity_root_transfer_runtime;
 pub(crate) mod identity_runtime;
+pub(crate) mod identity_services_update;
 pub(crate) mod identity_store;
 pub(crate) mod identity_transition_pending;
 pub(crate) mod identity_wire;

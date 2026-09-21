@@ -69,8 +69,8 @@ pub(crate) use self::join::{
     DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
     DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES, DEVICE_PROOF_TYPE,
 };
-pub use self::registry::IdentityRegistry;
 pub use self::method_capabilities::{identity_method_capabilities, IdentityMethodCapabilities};
+pub use self::registry::IdentityRegistry;
 pub use self::root_key_transfer::{
     RootKeyTransferAuthorizationHandle, RootKeyTransferError, RootKeyTransferErrorCode,
     RootKeyTransferPreparation, RootKeyTransferPrepareRequest, RootKeyTransferRecipientSummary,
