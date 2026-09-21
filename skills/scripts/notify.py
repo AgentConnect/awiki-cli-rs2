@@ -15,6 +15,8 @@ import tempfile
 import time
 
 STATES = {'completed', 'blocked', 'failed', 'action_required'}
+STATE_LABELS = {'completed': '已完成', 'blocked': '暂时受阻',
+                'failed': '执行失败', 'action_required': '需要你处理'}
 OPAQUE = re.compile(r'^[A-Za-z0-9_-]{1,96}$')
 
 
@@ -122,7 +124,7 @@ def send(context, event, persist, binary, timeout):
     next_action = event['next_action']
     if status in ('action_required', 'blocked'):
         next_action = '请回电脑的 Codex 任务处理。' + next_action
-    text = f"[Coding Agent][{status}] {event['title']}\n{event['summary']}\nNext: {next_action}"
+    text = f"{STATE_LABELS[status]} · {event['title']}\n{event['summary']}\n下一步：{next_action}"
     # Task identity, receiver and event define the key; never the text or status alone.
     key = hashlib.sha256(json.dumps([binding, event_id], sort_keys=True).encode()).hexdigest()[:40]
     message_id, idem = 'msg-notify-' + key, 'notify-' + key

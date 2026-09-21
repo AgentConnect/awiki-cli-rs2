@@ -99,16 +99,19 @@ below.
 Send one plain-text message using this format:
 
 ```text
-[Coding Agent][<status>] <task_title>
+<status_label> · <task_title>
 <summary>
-Next: <next_action>
+下一步：<next_action>
 ```
 
 Rules:
 
 - Keep `task_title` short and user recognizable.
 - Explain the result or blocker in plain language.
-- Use `Next: No action required` when the user does not need to do anything.
+- Use these display labels: `completed` → `已完成`, `blocked` → `暂时受阻`,
+  `failed` → `执行失败`, `action_required` → `需要你处理`.
+  Keep machine status values in the local event/receipt, not as bracketed body prefixes.
+- Use `下一步：无需处理。` when the user does not need to do anything.
 - Send exactly one terminal state per message.
 - Do not include secrets, Tokens, private keys, phone numbers, full logs, raw command output, or absolute local paths.
 - Do not attach files.
