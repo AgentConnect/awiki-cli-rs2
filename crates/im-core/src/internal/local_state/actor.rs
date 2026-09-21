@@ -350,6 +350,7 @@ enum LocalStateCommand {
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     ProjectVerifiedHandle {
+        home_domain: String,
         owner_identity_id: String,
         owner_did: String,
         lookup: crate::directory::HandleLookupResult,
@@ -1604,12 +1605,14 @@ impl LocalStateDb {
 
     pub(crate) async fn project_verified_handle(
         &self,
+        home_domain: &str,
         owner_identity_id: impl Into<String>,
         owner_did: impl Into<String>,
         lookup: crate::directory::HandleLookupResult,
     ) -> crate::ImResult<String> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ProjectVerifiedHandle {
+            home_domain: home_domain.to_owned(),
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             lookup,
@@ -3092,16 +3095,18 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::ProjectVerifiedHandle {
+                home_domain,
                 owner_identity_id,
                 owner_did,
                 lookup,
                 reply,
             } => {
-                let result = super::peer_personas::project_verified_handle(
+                let result = super::peer_personas::project_verified_handle_in_domain(
                     &mut connection,
                     &owner_identity_id,
                     &owner_did,
                     &lookup,
+                    Some(&home_domain),
                 );
                 let _ = reply.send(result);
             }

@@ -1,5 +1,7 @@
 #[cfg(feature = "sqlite")]
 pub(crate) mod actor;
+#[cfg(feature = "sqlite")]
+pub(crate) mod foreign_persona_migration;
 
 pub(crate) mod attachment_manifest_cache;
 #[cfg(feature = "sqlite")]

@@ -6265,9 +6265,9 @@ mod tests {
             *self.calls.borrow_mut() += 1;
             Ok(json!({
                 "did": self.expected_did,
-                "full_handle": "peer.awiki.info",
+                "full_handle": "peer.awiki.test",
                 "user_id": "user-peer",
-                "domain": "awiki.info",
+                "domain": "awiki.test",
                 "status": "active",
                 "binding_generation": "1"
             }))
@@ -8381,9 +8381,9 @@ END;
             .unwrap();
         let expected_conversation_id =
             crate::internal::canonical_identity::PeerPersona::from_verified_handle(
-                "awiki.info",
+                "awiki.test",
                 "user-peer",
-                "peer.awiki.info",
+                "peer.awiki.test",
                 Some("active"),
             )
             .unwrap()
@@ -8479,9 +8479,9 @@ END;
             .any(|warning| warning.starts_with("identity_unresolved_backlog:")));
         let expected_conversation_id =
             crate::internal::canonical_identity::PeerPersona::from_verified_handle(
-                "awiki.info",
+                "awiki.test",
                 "user-peer",
-                "peer.awiki.info",
+                "peer.awiki.test",
                 Some("active"),
             )
             .unwrap()
@@ -8631,9 +8631,9 @@ END;
         assert!(fixture.has_message_content("deferred direct body"));
         let expected_conversation_id =
             crate::internal::canonical_identity::PeerPersona::from_verified_handle(
-                "awiki.info",
+                "awiki.test",
                 "user-peer",
-                "peer.awiki.info",
+                "peer.awiki.test",
                 Some("active"),
             )
             .unwrap()

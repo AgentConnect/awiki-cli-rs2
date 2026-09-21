@@ -2916,7 +2916,15 @@ pub(crate) fn mark_thread_read_watermark_for_owner_identity(
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
     let owner_did = owner_did.trim().to_owned();
-    let thread_key = thread_read_state_key(&input.thread)?;
+    let mut thread_key = thread_read_state_key(&input.thread)?;
+    if let Some(canonical) = super::conversation_aliases::resolve(
+        connection,
+        &owner_identity_id,
+        "verified_foreign_persona",
+        &thread_key.thread_id,
+    )? {
+        thread_key.thread_id = canonical;
+    }
     let conversation_ids =
         conversation_ids_for_thread_ref(connection, &owner_identity_id, &owner_did, &input.thread)?;
     let conversation_id = conversation_ids.first().cloned().unwrap_or_default();
@@ -3835,7 +3843,13 @@ fn conversation_ids_for_thread_ref(
             }
         }
         crate::messages::ThreadRef::Thread(thread) => {
-            let raw = thread.as_str().trim();
+            let canonical = super::conversation_aliases::resolve(
+                connection,
+                owner_identity_id,
+                "verified_foreign_persona",
+                thread.as_str(),
+            )?;
+            let raw = canonical.as_deref().unwrap_or(thread.as_str()).trim();
             if !raw.is_empty() {
                 push_unique(&mut ids, raw.to_owned());
                 if raw.starts_with("dm:peer-scope:") {
@@ -4595,6 +4609,14 @@ fn cached_peer_scope_conversation_id_for_legacy_direct(
     owner_identity_id: &str,
     conversation_id: &str,
 ) -> crate::ImResult<Option<String>> {
+    if let Some(canonical) = super::conversation_aliases::resolve(
+        connection,
+        owner_identity_id,
+        "verified_foreign_persona",
+        conversation_id,
+    )? {
+        return Ok(Some(canonical));
+    }
     if !conversation_id.trim().starts_with("dm:did:wba:") {
         return Ok(None);
     }

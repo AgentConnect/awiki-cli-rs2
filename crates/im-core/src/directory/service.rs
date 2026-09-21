@@ -1093,11 +1093,12 @@ pub(crate) fn project_handle_lookup(
     let mut connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::peer_personas::project_verified_handle(
+    crate::internal::local_state::peer_personas::project_verified_handle_in_domain(
         &mut connection,
         &owner.owner_identity_id,
         &owner.owner_did,
         lookup,
+        Some(&client.core_inner().sdk_config().did_domain),
     )?;
     crate::internal::contact_store::projection::project_directory_resolution(client, &resolution);
     Ok(())
@@ -1114,7 +1115,12 @@ pub(crate) async fn project_handle_lookup_async(
         .core_inner()
         .local_state_db()
         .await?
-        .project_verified_handle(&owner.owner_identity_id, &owner.owner_did, lookup.clone())
+        .project_verified_handle(
+            &client.core_inner().sdk_config().did_domain,
+            &owner.owner_identity_id,
+            &owner.owner_did,
+            lookup.clone(),
+        )
         .await?;
     crate::internal::contact_store::projection::project_directory_resolution_async(
         client,
