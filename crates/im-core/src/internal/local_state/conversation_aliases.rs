@@ -1,4 +1,6 @@
-//! Append-only, conflict-visible mapping from verified legacy references to canonical conversations.
+//! Conflict-visible mapping from verified legacy references to canonical conversations.
+//! Normal insertion is append-only. The proof-checked foreign Persona repair
+//! may atomically flatten aliases of its superseded canonical target.
 
 use rusqlite::{Connection, OptionalExtension};
 

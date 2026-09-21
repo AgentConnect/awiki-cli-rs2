@@ -358,7 +358,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     let fixture = Fixture::new();
     fixture.write_attachment_service_document(
         "sender",
-        "did:web:example:alice",
+        "did:web:example.test:alice",
         "https://local-attachment.example/rpc",
         "did:example:local-message-service",
     );
@@ -377,7 +377,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:web:example:alice", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.test:alice", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-local-sender").unwrap(),
             attachment_id: Some("att-local".to_string()),
@@ -388,7 +388,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     })
     .unwrap();
 
-    assert_eq!(result.selection.sender_did, "did:web:example:alice");
+    assert_eq!(result.selection.sender_did, "did:web:example.test:alice");
     assert_eq!(result.ticket.download_ticket_b64u, "ticket-local");
     assert!(matches!(
         result.sdk_result.destination,
@@ -399,8 +399,11 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     let calls = calls.borrow();
     assert_eq!(calls.len(), 4);
     let history = calls[0].rpc("direct.get_history");
-    assert_eq!(history.params["body"]["peer_did"], "did:web:example:alice");
-    calls[1].get_json("https://example/alice/did.json");
+    assert_eq!(
+        history.params["body"]["peer_did"],
+        "did:web:example.test:alice"
+    );
+    calls[1].get_json("https://example.test/alice/did.json");
     let ticket = calls[2].rpc("attachment.get_download_ticket");
     assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
     assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
@@ -1564,7 +1567,7 @@ impl AuthenticatedRpcTransport for LocalFallbackTransport {
                 "messages": [{
                     "id": "msg-local-sender",
                     "message_id": "msg-local-sender",
-                    "sender_did": "did:web:example:alice",
+                    "sender_did": "did:web:example.test:alice",
                     "content": {
                         "attachments": [{
                             "attachment_id": "att-local",

@@ -79,6 +79,7 @@ pub(crate) async fn rebind_for_stale_error(
         .local_state_db()
         .await?
         .project_verified_handle(
+            &client.core_inner().sdk_config().did_domain,
             &context.owner.owner_identity_id,
             &context.owner.owner_did,
             lookup.clone(),
