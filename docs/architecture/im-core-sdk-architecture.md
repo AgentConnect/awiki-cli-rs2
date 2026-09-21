@@ -1818,6 +1818,12 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 
 `identity_root_import_plan_v2` 是历史 V2/extensions 接收恢复的无私钥伴随表，默认纯 V1 导入不冻结该计划。schema 45 的旧完整库可在打开时追加该表；已有计划和 handoff 标记重复重开后保留。它不改变既有必需表的字段含义，因此本轮不强制提升 schema 版本；未知更新版本仍在追加 DDL 前拒绝。此约定不表示旧二进制能续跑新完成合同；完整旧二进制回滚须另验，未来不兼容结构改动须进入版本迁移。
 
+每次打开本地库时，Core 在版本检查与缺表追加之后校验 `identity_root_import_plan_v2` 的必需列、类型、非空约束、复合主键，以及 `handoff` 的默认值 `0` 和 `CHECK (handoff IN (0, 1))` 约束。`CREATE TABLE IF NOT EXISTS` 不能证明已有同名表兼容；若结构不符合要求，打开失败并返回 `LocalStateUnavailable`（`incompatible root import plan table shape`），不能把该表当作已成功安装的计划存储继续使用。
+
+此校验不会自动修复、重建或删除不兼容的计划表，也不会清除已有计划或为此将 schema 45 升至 46。官方结构的已有表及计划可继续重开；缺表时按追加方式创建；未知更新 schema 版本在追加及结构校验前拒绝。非官方或损坏的同名表须保留现场并另行诊断，不能通过删除表或放宽校验掩盖不兼容。
+
+对应回归覆盖位于 `crates/im-core/src/internal/local_state/schema/tests.rs`：`root_import_plan_rejects_existing_malformed_shapes_without_repair` 验证异常结构拒绝且不修复；`root_import_plan_additive_schema_preserves_version_and_rows_across_reopen` 验证追加与重开保留版本和数据；`root_import_plan_is_not_installed_into_an_unknown_newer_schema` 验证未知更新版本不会追加该表。
+
 普通 Group 附件下载缓存保留 P4 history 的 `message_id` 作为授权 wire ID，公共时间线仍使用
 `group_did:group_event_seq`。若有显式 `raw_message_id` 则优先保留；P5 与 P6 的已有授权 ID
 规则不变。不能因缓存投影只留下时间线 ID，向服务端请求不存在的普通附件 grant。
