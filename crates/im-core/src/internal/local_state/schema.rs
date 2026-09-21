@@ -1112,11 +1112,68 @@ pub(crate) struct OwnerInvariantViolation {
     pub(crate) row_count: i64,
 }
 
+// This additive companion keeps schema 45 compatibility, but an existing
+// malformed table must not be treated as a successfully installed plan store.
+fn root_import_plan_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(identity_root_import_plan_v2)")
+        .map_err(super::local_state_unavailable)?;
+    let columns = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(super::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(super::local_state_unavailable)?;
+    for (name, kind, primary_key) in [
+        ("owner_identity_id", "TEXT", 1),
+        ("owner_did", "TEXT", 0),
+        ("local_device_id", "TEXT", 2),
+        ("message_id", "TEXT", 3),
+        ("plan_json", "TEXT", 0),
+        ("handoff", "INTEGER", 0),
+    ] {
+        let Some(column) = columns.iter().find(|column| column.0 == name) else {
+            return Ok(false);
+        };
+        if !column.1.eq_ignore_ascii_case(kind) || column.2 != 1 || column.4 != primary_key {
+            return Ok(false);
+        }
+        if name == "handoff" && column.3.as_deref() != Some("0") {
+            return Ok(false);
+        }
+    }
+    if columns.iter().filter(|column| column.4 != 0).count() != 3 {
+        return Ok(false);
+    }
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='identity_root_import_plan_v2'",
+        [], |row| row.get(0),
+    ).map_err(super::local_state_unavailable)?;
+    let normalized: String = sql
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    Ok(normalized.contains("check(handoffin(0,1))"))
+}
+
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     ensure_schema_version(connection)?;
     connection
         .execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
         .map_err(super::local_state_unavailable)?;
+    if !root_import_plan_shape_is_complete(connection)? {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "incompatible root import plan table shape".to_owned(),
+        });
+    }
     // Legacy P6 lane rows are intentionally migrated after the versioned DDL
     // transaction commits. The row migrator is idempotent and may create
     // per-row transactions, so it must not be nested inside a schema
