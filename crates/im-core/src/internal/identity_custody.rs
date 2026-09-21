@@ -55,6 +55,21 @@ pub(crate) fn provision_registration_identity(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
+    provision_registration_identity_for_method(
+        core,
+        domain,
+        local_part,
+        crate::identity::DidMethod::Wba,
+    )
+}
+
+#[cfg(feature = "identity-native-anp")]
+pub(crate) fn provision_registration_identity_for_method(
+    core: &crate::core::ImCore,
+    domain: &str,
+    local_part: &str,
+    method: crate::identity::DidMethod,
+) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
     crate::internal::identity_handle_recovery_context::require_registration_admission(
         core,
         &format!("{local_part}.{domain}"),
@@ -64,21 +79,19 @@ pub(crate) fn provision_registration_identity(
     remove_exact_retired_registration_identities(core, &mut manager, domain, local_part)
         .map_err(|error| registration_identity_stage_error(error, "native_retirement_cleanup"))?;
     let controller =
-        match find_unprojected_registration_identity(core, &manager, domain, local_part)
+        match find_unprojected_registration_identity(core, &manager, domain, local_part, method)
             .map_err(|error| registration_identity_stage_error(error, "native_candidate"))?
         {
             Some(identity) => identity,
             None => {
-                let create =
-                    crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
-                        domain,
-                        local_part,
-                        core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                        core.inner().sdk_config().anp_service_did.as_ref(),
-                    )
-                    .map_err(|error| {
-                        registration_identity_stage_error(error, "native_create_spec")
-                    })?;
+                let create = crate::internal::identity_generation::handle_anp_identity_create_spec(
+                    domain,
+                    local_part,
+                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                    core.inner().sdk_config().anp_service_did.as_ref(),
+                    method,
+                )
+                .map_err(|error| registration_identity_stage_error(error, "native_create_spec"))?;
                 manager
                     .create(native_create_spec(create.spec))
                     .map_err(map_facade_error)
@@ -117,10 +130,7 @@ pub(crate) fn provision_registration_identity(
             key.purposes
                 .contains(&anp_identity::KeyPurpose::RootControl)
         })
-        .map(|key| key.kid.clone())
-        .ok_or_else(|| {
-            registration_identity_stage_error(crate::ImError::PermissionDenied, "native_root_key")
-        })?;
+        .map(|key| key.kid.clone());
     let did = crate::ids::Did::parse(&public.reference.did)?;
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: public.reference.store_id,
@@ -214,6 +224,26 @@ pub(crate) async fn provision_registration_identity_with_transport<T>(
 where
     T: crate::internal::transport::AsyncRawJsonTransport,
 {
+    provision_registration_identity_for_method_with_transport(
+        core,
+        domain,
+        local_part,
+        crate::identity::DidMethod::Wba,
+        transport,
+    )
+    .await
+}
+
+pub(crate) async fn provision_registration_identity_for_method_with_transport<T>(
+    core: &crate::core::ImCore,
+    domain: &str,
+    local_part: &str,
+    method: crate::identity::DidMethod,
+    transport: &mut T,
+) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
     crate::internal::identity_handle_recovery_context::require_registration_admission(
         core,
         &format!("{local_part}.{domain}"),
@@ -236,7 +266,7 @@ where
         .map_err(|error| crate::ImError::Internal {
             message: error.to_string(),
         })??;
-        let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+        let did_prefix = registration_did_prefix(domain, local_part, method);
         let full_handle = format!("{local_part}.{domain}");
         let historical_dids = historical_handle_dids(core, &full_handle)
             .map_err(|error| registration_identity_stage_error(error, "historical_scan"))?;
@@ -328,14 +358,14 @@ where
         let session = match matches.pop() {
             Some(session) => session,
             None => {
-                let create =
-                    crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
-                        domain,
-                        local_part,
-                        core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                        core.inner().sdk_config().anp_service_did.as_ref(),
-                    )
-                    .map_err(|error| registration_identity_stage_error(error, "create_spec"))?;
+                let create = crate::internal::identity_generation::handle_anp_identity_create_spec(
+                    domain,
+                    local_part,
+                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                    core.inner().sdk_config().anp_service_did.as_ref(),
+                    method,
+                )
+                .map_err(|error| registration_identity_stage_error(error, "create_spec"))?;
                 custody
                     .create_identity(create.spec)
                     .await
@@ -358,7 +388,7 @@ where
         let domain = domain.to_owned();
         let local_part = local_part.to_owned();
         crate::internal::runtime::worker::run_blocking(move || {
-            provision_registration_identity(&core, &domain, &local_part)
+            provision_registration_identity_for_method(&core, &domain, &local_part, method)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
@@ -383,6 +413,11 @@ pub(crate) async fn registration_identity_is_remotely_retired<T>(
 where
     T: crate::internal::transport::AsyncRawJsonTransport,
 {
+    if did.starts_with("did:web:") {
+        // Web MVP has no remote DID recovery/transition tombstones. Keep the
+        // exact custody candidate; registration/Join confirms current facts.
+        return Ok(false);
+    }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
     let document = match transport
         .get_json_url(
@@ -509,8 +544,7 @@ fn pending_registration_from_provider(
             key.purposes
                 .contains(&crate::internal::identity_provider::ProviderKeyPurpose::RootControl)
         })
-        .map(|key| key.kid.clone())
-        .ok_or(crate::ImError::PermissionDenied)?;
+        .map(|key| key.kid.clone());
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: public.reference.store_id,
         controller_identity_id: public.reference.identity_id,
@@ -540,7 +574,9 @@ pub(crate) fn prepare_join_enrollment(
         .get("id")
         .and_then(serde_json::Value::as_str)
         != Some(did.as_str())
-        || !anp::authentication::validate_did_document_binding(resolved_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(
+            resolved_document,
+        )
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -607,7 +643,9 @@ pub(crate) fn prepare_join_enrollment(
                     device_id: device_id.as_str().to_owned(),
                     device_signing_fragment: signing_fragment,
                     device_agreement_fragment: e2ee_fragment,
-                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                    profiles: crate::internal::identity_device_join::join_device_profiles(
+                        did.as_str(),
+                    ),
                     capabilities: anp_identity::host::EnrollmentCapabilities { did_wba: true },
                 })
                 .map_err(map_facade_error)?
@@ -648,7 +686,9 @@ pub(crate) async fn prepare_join_enrollment_async(
         .get("id")
         .and_then(serde_json::Value::as_str)
         != Some(did.as_str())
-        || !anp::authentication::validate_did_document_binding(resolved_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(
+            resolved_document,
+        )
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -728,7 +768,9 @@ pub(crate) async fn prepare_join_enrollment_async(
                         device_id: device_id.as_str().to_owned(),
                         device_signing_fragment: format!("{}-sign", device_id.as_str()),
                         device_agreement_fragment: format!("{}-e2ee", device_id.as_str()),
-                        profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                        profiles: crate::internal::identity_device_join::join_device_profiles(
+                            did.as_str(),
+                        ),
                         capabilities: ProviderEnrollmentCapabilities { did_wba: true },
                     })
                     .await
@@ -1838,6 +1880,20 @@ pub(crate) async fn adopt_join_identity_async(
         return Err(crate::ImError::PermissionDenied);
     }
     if public.state == ProviderIdentityState::Active {
+        if did.as_str().starts_with("did:web:") {
+            identity
+                .adopt_verified_document(provider_verified_document(document, checkpoint))
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            let current = identity
+                .public_identity()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if current.reference != reference {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return validate_adopted_provider_identity(&current, document);
+        }
         return validate_adopted_provider_identity(&public, document);
     }
     if public.state != ProviderIdentityState::Enrolling
@@ -1952,6 +2008,69 @@ pub(crate) fn adopt_controller_document(
     Ok(())
 }
 
+/// The caller has authenticated the bootstrap device and confirmed its exact
+/// registration operation. Adopt the current observation after publication has
+/// converged; never require or manufacture a Web RootControl capability.
+pub(crate) async fn adopt_registered_web_document_async(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_registration_pending::PendingRegistration,
+    current: &crate::internal::identity_wire::web_registration_result::CurrentRegistrationDocument,
+) -> crate::ImResult<()> {
+    current.validate(pending)?;
+    let provider = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: pending.identity.controller_store_id.clone(),
+        identity_id: pending.identity.controller_identity_id.clone(),
+        did: pending.identity.did.as_str().to_owned(),
+    };
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let before = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if before.reference != reference
+        || before.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || identity
+            .resume_document_change()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let adopted = identity
+        .adopt_verified_document(provider_verified_document(
+            &current.document,
+            &current.checkpoint,
+        ))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let status = identity
+        .host_status()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if adopted.reference != reference
+        || adopted.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || adopted.document != current.document
+        || status.root_capability
+            != crate::internal::identity_provider::ProviderRootCapability::Absent
+        || status.checkpoint
+            != Some(
+                crate::internal::identity_provider::ProviderDocumentCheckpoint {
+                    document_version: current.checkpoint.document_version,
+                    registry_version: current.checkpoint.registry_version,
+                    document_digest: current.checkpoint.document_hash.clone(),
+                },
+            )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ControllerDocumentAdoption<'a> {
     HandleRecovery {
@@ -2038,8 +2157,12 @@ pub(crate) async fn adopt_controller_document_async(
         && checkpoint.document_version == 1
         && checkpoint.registry_version == 1
         && document_without_proof(&before.document)? == document_without_proof(document)?;
-    if before_status.root_capability
-        != crate::internal::identity_provider::ProviderRootCapability::Active
+    let expected_root_capability = if did.as_str().starts_with("did:web:") {
+        crate::internal::identity_provider::ProviderRootCapability::Absent
+    } else {
+        crate::internal::identity_provider::ProviderRootCapability::Active
+    };
+    if before_status.root_capability != expected_root_capability
         || checkpoint.document_version == 0
         || checkpoint.registry_version == 0
         || before_status.checkpoint.as_ref().is_some_and(|current| {
@@ -2154,6 +2277,80 @@ pub(crate) async fn adopt_controller_document_async(
     validate_exact_adopted_controller_document(&identity, &adopted, document, checkpoint).await
 }
 
+/// Separate convergence authority for a verified sibling publication. Never
+/// reconcile a local pending operation using another device's publication.
+pub(crate) async fn adopt_sibling_controller_document_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    store_id: &str,
+    identity_id: &str,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_provider::*;
+    if document.get("id").and_then(serde_json::Value::as_str) != Some(did.as_str())
+        || !anp::authentication::validate_did_document_binding(document, true)
+        || crate::internal::identity_wire::document::document_hash(document)?
+            != checkpoint.document_hash
+        || checkpoint.document_version == 0
+        || checkpoint.registry_version == 0
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let provider = controller_custody_provider(core).await?;
+    let reference = ProviderIdentityRef {
+        store_id: store_id.to_owned(),
+        identity_id: identity_id.to_owned(),
+        did: did.as_str().to_owned(),
+    };
+    if provider
+        .resume_identity_transition(did.as_str())
+        .await
+        .map_err(map_provider_error)?
+        .is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(map_provider_error)?;
+    let before = identity
+        .public_identity()
+        .await
+        .map_err(map_provider_error)?;
+    let status = identity.host_status().await.map_err(map_provider_error)?;
+    let current = status
+        .checkpoint
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if before.reference != reference
+        || before.state != ProviderIdentityState::Active
+        || status.root_capability != ProviderRootCapability::Active
+        || checkpoint.document_version < current.document_version
+        || checkpoint.registry_version < current.registry_version
+        || (checkpoint.document_version == current.document_version
+            && checkpoint.document_hash != current.document_digest)
+        || identity
+            .resume_document_change()
+            .await
+            .map_err(map_provider_error)?
+            .is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    // The provider atomically checks pending revisions, its durable generation,
+    // the pinned root fingerprint, and local device-key authorization.
+    let adopted = identity
+        .adopt_verified_sibling_document(provider_verified_document(document, checkpoint))
+        .await
+        .map_err(map_provider_error)?;
+    if adopted.reference != reference {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_exact_adopted_controller_document(&identity, &adopted, document, checkpoint).await
+}
+
 async fn validate_exact_adopted_controller_document(
     identity: &std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
     public: &crate::internal::identity_provider::ProviderPublicIdentity,
@@ -2172,7 +2369,11 @@ async fn validate_exact_adopted_controller_document(
     if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
         || public.document != *document
         || status.root_capability
-            != crate::internal::identity_provider::ProviderRootCapability::Active
+            != if public.reference.did.starts_with("did:web:") {
+                crate::internal::identity_provider::ProviderRootCapability::Absent
+            } else {
+                crate::internal::identity_provider::ProviderRootCapability::Active
+            }
         || status.checkpoint.as_ref() != Some(&expected_checkpoint)
     {
         return Err(crate::ImError::PermissionDenied);
@@ -3458,16 +3659,22 @@ pub(crate) fn registration_controller_signing_managed_identity(
     )?;
     let public = controller.public_identity().map_err(map_facade_error)?;
     for (kid, purpose) in [
-        (&identity.root_key_id, anp_identity::KeyPurpose::RootControl),
         (
-            &identity.device_signing_key_id,
+            identity.root_key_id.as_ref(),
+            anp_identity::KeyPurpose::RootControl,
+        ),
+        (
+            Some(&identity.device_signing_key_id),
             anp_identity::KeyPurpose::DeviceAssertion,
         ),
         (
-            &identity.device_e2ee_key_id,
+            Some(&identity.device_e2ee_key_id),
             anp_identity::KeyPurpose::KeyAgreement,
         ),
     ] {
+        let Some(kid) = kid else {
+            continue;
+        };
         if !public
             .active_keys
             .iter()
@@ -3612,12 +3819,24 @@ fn did_has_exact_completed_retirement(
     )
 }
 
+fn registration_did_prefix(
+    domain: &str,
+    local_part: &str,
+    method: crate::identity::DidMethod,
+) -> String {
+    match method {
+        crate::identity::DidMethod::Wba => format!("did:wba:{domain}:user:{local_part}:e1_"),
+        crate::identity::DidMethod::Web => format!("did:web:{domain}:awiki:web:"),
+    }
+}
+
 #[cfg(feature = "identity-native-anp")]
 fn find_unprojected_registration_identity(
     core: &crate::core::ImCore,
     manager: &anp_identity::IdentityManager,
     domain: &str,
     local_part: &str,
+    method: crate::identity::DidMethod,
 ) -> crate::ImResult<Option<anp_identity::ManagedIdentity>> {
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
@@ -3627,7 +3846,7 @@ fn find_unprojected_registration_identity(
         .values()
         .filter_map(|entry| entry.anp_identity_id.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
-    let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+    let did_prefix = registration_did_prefix(domain, local_part, method);
     let full_handle = format!("{local_part}.{domain}");
     let historical_dids = historical_handle_dids(core, &full_handle)?;
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
@@ -3831,6 +4050,7 @@ pub(crate) fn native_create_spec(
     anp_identity::CreateIdentityRequest {
         profile: match value.profile {
             ProviderDidProfile::E1 => anp_identity::CreateIdentityProfile::E1,
+            ProviderDidProfile::Web => anp_identity::CreateIdentityProfile::Web,
         },
         domain: value.domain,
         port: value.port,
@@ -4349,7 +4569,7 @@ mod tests {
         second_e2ee_method["controller"] = serde_json::json!(identity.did.as_str());
         public.document = anp::authentication::add_device_to_did_document(
             &public.document,
-            &identity.root_key_id,
+            identity.root_key_id.as_deref().unwrap(),
             &anp::authentication::DeviceManifestEntry {
                 device_id: second.protocol_device_id.as_str().to_owned(),
                 signing_key_id: second_signing_key_id,
@@ -4488,7 +4708,7 @@ mod tests {
                 &reference,
                 crate::internal::identity_provider::ProviderDocumentProofRequest {
                     key: crate::internal::identity_provider::ProviderKeySelector::Kid(
-                        identity.root_key_id.clone(),
+                        identity.root_key_id.clone().unwrap(),
                     ),
                     document: candidate.clone(),
                     options: crate::internal::identity_provider::ProviderDocumentProofOptions {
@@ -4638,7 +4858,7 @@ mod tests {
                 &reference,
                 crate::internal::identity_provider::ProviderDocumentProofRequest {
                     key: crate::internal::identity_provider::ProviderKeySelector::Kid(
-                        identity.root_key_id.clone(),
+                        identity.root_key_id.clone().unwrap(),
                     ),
                     document: public.document,
                     options: crate::internal::identity_provider::ProviderDocumentProofOptions {

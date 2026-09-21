@@ -49,7 +49,7 @@ const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
 pub(crate) struct VNextAnpIdentityCreateSpec {
     pub(crate) spec: crate::internal::identity_provider::ProviderCreateIdentityRequest,
     pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
-    pub(crate) root_key_fragment: String,
+    pub(crate) root_key_fragment: Option<String>,
     pub(crate) device_signing_fragment: String,
     pub(crate) device_e2ee_fragment: String,
 }
@@ -175,6 +175,22 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
     service_endpoint: Option<&crate::config::ServiceEndpoint>,
     service_did: Option<&crate::ids::Did>,
 ) -> crate::ImResult<VNextAnpIdentityCreateSpec> {
+    handle_anp_identity_create_spec(
+        hostname,
+        local_part,
+        service_endpoint,
+        service_did,
+        crate::identity::DidMethod::Wba,
+    )
+}
+
+pub(crate) fn handle_anp_identity_create_spec(
+    hostname: &str,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+    method: crate::identity::DidMethod,
+) -> crate::ImResult<VNextAnpIdentityCreateSpec> {
     let local_part = canonical_handle_local_part(local_part)?;
     let hostname = hostname.trim();
     if hostname.is_empty() {
@@ -196,7 +212,7 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
     let root_key_fragment = VM_KEY_AUTH.to_owned();
     let device_signing_fragment = format!("{}-sign", protocol_device_id.as_str());
     let device_e2ee_fragment = format!("{}-e2ee", protocol_device_id.as_str());
-    Ok(VNextAnpIdentityCreateSpec {
+    let mut created = VNextAnpIdentityCreateSpec {
         spec: crate::internal::identity_provider::ProviderCreateIdentityRequest {
             profile: crate::internal::identity_provider::ProviderDidProfile::E1,
             domain: hostname.to_owned(),
@@ -261,10 +277,55 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
             ],
         },
         protocol_device_id,
-        root_key_fragment,
+        root_key_fragment: Some(root_key_fragment),
         device_signing_fragment,
         device_e2ee_fragment,
-    })
+    };
+    if method == crate::identity::DidMethod::Web {
+        created.spec.profile = crate::internal::identity_provider::ProviderDidProfile::Web;
+        created.spec.capabilities.did_wba = false;
+        created.spec.path_segments = vec![
+            "awiki".to_owned(),
+            "web".to_owned(),
+            uuid::Uuid::new_v4().simple().to_string(),
+        ];
+        created.root_key_fragment = None;
+        created.spec.managed_keys.retain(|key| {
+            key.role != crate::internal::identity_provider::ProviderManagedKeyRole::RootControl
+        });
+        for service in &mut created.spec.services {
+            if service.service_type == "ANPMessageService" {
+                service.profiles = web_device_profiles();
+            }
+        }
+        for extension in &mut created.spec.extensions {
+            let crate::internal::identity_provider::ProviderIdentityExtension::DeviceManifest {
+                devices,
+            } = extension;
+            for device in devices {
+                device.profiles = web_device_profiles();
+            }
+        }
+    }
+    Ok(created)
+}
+
+pub(crate) fn web_device_profiles() -> Vec<String> {
+    // The hosted Web registration and Join contracts freeze this ordered
+    // bundle. Replacing only P4 in the legacy WBA list changes that order.
+    [
+        anp::authentication::PROFILE_CORE_BINDING_V1,
+        anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+        anp::authentication::PROFILE_DIRECT_BASE_V1,
+        anp::authentication::PROFILE_GROUP_BASE_V2,
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+        anp::authentication::PROFILE_GROUP_E2EE_V2,
+        "anp.attachment.v1",
+        "anp.federation.relay.v1",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 /// Generates the exact three-method Manifest document required by Handle

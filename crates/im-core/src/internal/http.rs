@@ -106,6 +106,14 @@ impl HttpClient {
 
     #[cfg(feature = "blocking")]
     pub(crate) fn execute(&self, request: HttpRequest) -> crate::ImResult<HttpResponse> {
+        #[cfg(all(test, feature = "sqlite", feature = "identity-native-anp"))]
+        if let Some(response) =
+            crate::internal::identity_root_import_completion::integration_tests::response_for(
+                &request,
+            )
+        {
+            return response;
+        }
         if let Some(err) = &self.init_error {
             return Err(err.clone());
         }
@@ -146,6 +154,15 @@ impl HttpClient {
         &self,
         request: HttpRequest,
     ) -> crate::ImResult<HttpResponse> {
+        #[cfg(all(test, feature = "sqlite", feature = "identity-native-anp"))]
+        if let Some(response) =
+            crate::internal::identity_root_import_completion::integration_tests::response_for(
+                &request,
+            )
+        {
+            return response;
+        }
+
         #[cfg(feature = "blocking")]
         if let Some(err) = &self.init_error {
             return Err(err.clone());

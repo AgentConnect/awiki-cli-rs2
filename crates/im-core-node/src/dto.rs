@@ -710,12 +710,14 @@ pub struct NodeUpdateProfileInput {
 
 #[napi(object)]
 pub struct NodeRegistrationInput {
+    pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
 }
 
 #[napi(object)]
 pub struct NodeRegistrationWithOtp {
+    pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
     pub otp: String,
@@ -2030,6 +2032,14 @@ fn conversation(
                 .find(|participant| participant.as_str() != owner_did)
                 .cloned()
                 .or_else(|| direct_peer_from_message(value.last_message.as_ref(), owner_did))
+                .or_else(|| match &value.thread {
+                    im_core::messages::ThreadRef::Direct(peer)
+                        if im_core::ids::Did::parse(peer.as_str()).is_ok() =>
+                    {
+                        Some(peer.as_str().to_owned())
+                    }
+                    _ => None,
+                })
         })
         .flatten();
     let peer_handle = (kind == "direct")
@@ -2216,6 +2226,10 @@ fn digest_hex(value: &str) -> Option<String> {
         output
     })
 }
+
+#[cfg(test)]
+#[path = "conversation_dto_tests.rs"]
+mod conversation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2458,4 +2472,14 @@ mod tests {
         let buffer: napi::bindgen_prelude::Buffer = expected.clone().into();
         assert_eq!(buffer.to_vec(), expected);
     }
+}
+
+#[napi(object)]
+pub struct NodeDeviceJoinManagementStatus {
+    pub next_attempt_at_ms: i64,
+    pub failure_code: Option<String>,
+    pub join_session_id: String,
+    pub recipient_device_id: String,
+    pub phase: String,
+    pub attempts: u32,
 }

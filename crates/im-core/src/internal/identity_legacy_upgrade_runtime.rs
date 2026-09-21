@@ -368,7 +368,7 @@ async fn upgrade_inner(
             jwt_token: access_token,
             did_document: Some(pending.identity.target_document.clone()),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                root_key_id: format!("{}#key-1", pending.identity.did.as_str()),
+                root_key_id: Some(format!("{}#key-1", pending.identity.did.as_str())),
                 device_signing_key_id: signing_key_id.clone(),
                 device_e2ee_key_id: e2ee_key_id.clone(),
             },

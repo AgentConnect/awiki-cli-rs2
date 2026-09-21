@@ -1233,7 +1233,7 @@ mod receive_concurrency_tests;
 mod pending_reply_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
@@ -1296,7 +1296,7 @@ mod tests {
         .unwrap()
     }
 
-    pub(super) fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
+    pub(crate) fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
         let alice_ratchet = x25519_dalek::StaticSecret::from([7; 32]);
         let bob_ratchet = x25519_dalek::StaticSecret::from([8; 32]);
         let alice_public = x25519_dalek::PublicKey::from(&alice_ratchet).to_bytes();

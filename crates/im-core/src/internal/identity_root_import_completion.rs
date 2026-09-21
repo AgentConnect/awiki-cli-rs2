@@ -33,7 +33,25 @@ use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2Owner
 use crate::internal::transport::AsyncAuthenticatedRpcTransport;
 
 pub(crate) const ROOT_KEY_ENVELOPE_SYSTEM_TYPE: &str = "awiki.device.root-key-envelope.v1";
+#[cfg(all(test, feature = "identity-native-anp"))]
+pub(crate) mod integration_tests;
+mod v2;
+const ROOT_COMPLETION_V2: &str = "awiki.device.root-key-import-complete.v2";
+const ROOT_COMPLETION_EXTENDED: &str = "awiki.device.root-key-import-complete.extensions.v1";
+
+fn is_extended_completion_contract(value: &str) -> bool {
+    matches!(value, ROOT_COMPLETION_V2 | ROOT_COMPLETION_EXTENDED)
+}
 const ROOT_ENVELOPE_MAX_WINDOW_SECONDS: i64 = 600;
+
+fn root_import_now(_core: &crate::core::ImCore) -> OffsetDateTime {
+    #[cfg(all(test, feature = "identity-native-anp"))]
+    if let Some(now) = integration_tests::clock_for(_core) {
+        return now;
+    }
+    OffsetDateTime::now_utc()
+}
+
 const WRAPPED_ROOT_ENVELOPE_TYPE: &str = "anp.identity.root-transfer.wrapped";
 const WRAPPED_ROOT_ENVELOPE_VERSION: u32 = 1;
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
@@ -175,6 +193,12 @@ impl RootImportCompletionPhase {
 #[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RootKeyEnvelope {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "v2::deserialize_completion_contract"
+    )]
+    pub(crate) completion_contract: Option<String>,
     pub(crate) system_type: String,
     pub(crate) message_id: String,
     pub(crate) did: String,
@@ -281,8 +305,11 @@ enum RootImportAction {
     },
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RootImportSealedPlan {
+    #[serde(default)]
+    v2_timing: Option<v2::ImportTiming>,
     owner_identity_id: String,
     owner_did: String,
     local_device_id: String,
@@ -406,8 +433,8 @@ async fn lock_root_import(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     message_id: &str,
-) -> crate::ImResult<tokio::sync::OwnedMutexGuard<()>> {
-    Ok(root_import_lock(
+) -> crate::ImResult<v2::ImportGuard> {
+    let guard = root_import_lock(
         &crate::internal::identity_transition_pending::state_root_fingerprint(
             &core.inner().sdk_paths().local_state.sqlite_path,
         ),
@@ -416,7 +443,8 @@ async fn lock_root_import(
         message_id,
     )
     .lock_owned()
-    .await)
+    .await;
+    v2::lock_process(core, client, message_id, guard).await
 }
 
 pub(crate) async fn receive_root_envelope_candidate(
@@ -482,7 +510,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         client.did(),
         local_state,
     )?;
-    let now = OffsetDateTime::now_utc();
+    let now = root_import_now(core);
     let now_text = format_time(now)?;
     let sender_static =
         crate::internal::secure_direct::v2_prekey_runtime::static_public_from_document(
@@ -655,6 +683,8 @@ pub(crate) async fn receive_root_envelope_candidate(
             validated: RootInboundValidation::Root(_),
             ..
         }) => {
+            #[cfg(all(test, feature = "identity-native-anp"))]
+            integration_tests::crash_cut(core, "after_handoff");
             drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
             Ok(RootInboundInterceptOutcome::Consumed)
         }
@@ -889,11 +919,19 @@ fn prepare_root_candidate(
 
 async fn complete_root_import_action(
     core: &crate::core::ImCore,
-    plan: RootImportSealedPlan,
+    mut plan: RootImportSealedPlan,
     action: RootImportAction,
 ) -> crate::ImResult<RootImportSealedPlan> {
+    #[cfg(all(test, feature = "identity-native-anp"))]
+    integration_tests::crash_cut(core, "before_plan");
+    v2::freeze_plan(core, &mut plan)?;
+    #[cfg(all(test, feature = "identity-native-anp"))]
+    integration_tests::crash_cut(core, "after_plan");
     match action {
-        RootImportAction::Legacy(request) => {
+        RootImportAction::Legacy(mut request) => {
+            if plan.v2_timing.is_some() {
+                request.evidence.accepted_at = plan.imported_at.clone();
+            }
             let provider =
                 crate::internal::identity_custody::controller_custody_provider(core).await?;
             let outcome = provider
@@ -907,6 +945,8 @@ async fn complete_root_import_action(
             ) {
                 return Err(crate::ImError::PermissionDenied);
             }
+            #[cfg(all(test, feature = "identity-native-anp"))]
+            integration_tests::crash_cut(core, "after_provider");
             Ok(plan)
         }
         RootImportAction::Wrapped { identity, envelope } => {
@@ -1041,6 +1081,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3
 }
 
 struct CompletionRecord {
+    v2_timing: Option<v2::ImportTiming>,
     did: String,
     local_device_id: String,
     message_id: String,
@@ -1078,7 +1119,7 @@ async fn drive_root_import_completion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     message_id: &str,
-    _guard: &tokio::sync::OwnedMutexGuard<()>,
+    _guard: &v2::ImportGuard,
 ) -> crate::ImResult<()> {
     upgrade_legacy_root_completion(core, client, message_id).await?;
     // A different receiver handle may have advanced ANP custody while this
@@ -1092,39 +1133,54 @@ async fn drive_root_import_completion(
     } else {
         client.runtime().key_provider.reload_custody()?;
     }
-    let connection = crate::internal::local_state::open_writable(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    let existing = load_completion_record(&connection, client, message_id)?;
-    drop(connection);
-    if let Some(result_json) = existing.completion_result_json.as_deref() {
-        let success: CompletionSuccess =
-            serde_json::from_str(result_json).map_err(redacted_serialization)?;
-        validate_completion_success(core, client, &existing, &success)?;
-        return converge_completed_root_import(core, client, &success, None).await;
+    for refresh_available in [true, false] {
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let existing = load_completion_record(&connection, client, message_id)?;
+        drop(connection);
+        if let Some(result_json) = existing.completion_result_json.as_deref() {
+            let success: CompletionSuccess =
+                serde_json::from_str(result_json).map_err(redacted_serialization)?;
+            validate_completion_success(core, client, &existing, &success)?;
+            return converge_completed_root_import(core, client, &success, None).await;
+        }
+        let (params, request_hash) = prepare_completion_params(core, client, message_id).await?;
+        #[cfg(all(test, feature = "identity-native-anp"))]
+        integration_tests::crash_cut(core, "after_proof");
+        let current_token = client.runtime().key_provider.valid_auth_token()?;
+        let result = match current_token {
+            Some(token) => call_root_import_completion(client, &token, params.clone())
+                .await
+                .map(Some),
+            None => Ok(None),
+        };
+        #[cfg(all(test, feature = "identity-native-anp"))]
+        integration_tests::crash_cut(core, "after_completion_request");
+        let outcome = match result {
+            Ok(Some(result)) => {
+                let success =
+                    persist_completion_success(core, client, &existing, &request_hash, result)?;
+                converge_completed_root_import(core, client, &success, None).await
+            }
+            Ok(None) | Err(crate::ImError::AuthRequired | crate::ImError::SessionExpired) => {
+                recover_unknown_completion(core, client, &existing, &request_hash, params).await
+            }
+            Err(error) if completion_error_allows_state_probe(&error) => {
+                recover_unknown_completion(core, client, &existing, &request_hash, params).await
+            }
+            Err(error) => Err(error),
+        };
+        if refresh_available
+            && existing.v2_timing.is_some()
+            && outcome.as_ref().err().is_some_and(v2::proof_expired)
+        {
+            prepare_completion_params_inner(core, client, message_id, true).await?;
+            continue;
+        }
+        return outcome;
     }
-    let (params, request_hash) = prepare_completion_params(core, client, message_id).await?;
-    let current_token = client.runtime().key_provider.valid_auth_token()?;
-    let result = match current_token {
-        Some(token) => call_root_import_completion(client, &token, params.clone())
-            .await
-            .map(Some),
-        None => Ok(None),
-    };
-    match result {
-        Ok(Some(result)) => {
-            let success =
-                persist_completion_success(core, client, &existing, &request_hash, result)?;
-            converge_completed_root_import(core, client, &success, None).await
-        }
-        Ok(None) | Err(crate::ImError::AuthRequired | crate::ImError::SessionExpired) => {
-            recover_unknown_completion(core, client, &existing, &request_hash, params).await
-        }
-        Err(error) if completion_error_allows_state_probe(&error) => {
-            recover_unknown_completion(core, client, &existing, &request_hash, params).await
-        }
-        Err(error) => Err(error),
-    }
+    Err(crate::ImError::PermissionDenied)
 }
 
 #[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
@@ -1875,37 +1931,21 @@ WHERE owner_identity_id = ?3 AND local_device_id = ?4 AND message_id = ?5
     Ok(())
 }
 
-async fn prepare_completion_params(
-    core: &crate::core::ImCore,
-    client: &crate::core::ImClient,
-    message_id: &str,
+fn completion_statement(
+    record: &CompletionRecord,
+    nonce: &str,
+    now: OffsetDateTime,
 ) -> crate::ImResult<(Value, String)> {
-    let connection = crate::internal::local_state::open_writable(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    let record = load_completion_record(&connection, client, message_id)?;
-    if let (Some(params), Some(hash)) = (
-        record.completion_params_json.as_deref(),
-        record.completion_request_hash.as_deref(),
-    ) {
-        let value = serde_json::from_str(params).map_err(redacted_serialization)?;
-        return Ok((value, hash.to_owned()));
-    }
-    if record.phase != RootImportCompletionPhase::ImportSealed {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
-    if record.pending_root_ref.did != record.did
-        || record.pending_root_ref.store_id.trim().is_empty()
-        || record.pending_root_ref.identity_id.trim().is_empty()
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
-    let mut nonce_bytes = [0_u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
-    let statement = serde_json::json!({
+    let created = if record.v2_timing.is_some() {
+        format_time(
+            now.replace_nanosecond(0)
+                .map_err(|_| crate::ImError::PermissionDenied)?
+                .max(parse_whole_second_time("imported_at", &record.imported_at)?),
+        )?
+    } else {
+        record.imported_at.clone()
+    };
+    let mut statement = serde_json::json!({
         "type": "awiki.device.root-possession.v1",
         "message_id": record.message_id.clone(),
         "did": record.did.clone(),
@@ -1922,13 +1962,95 @@ async fn prepare_completion_params(
         "expires_at": record.expires_at.clone(),
         "nonce": nonce,
     });
+    if let Some(timing) = &record.v2_timing {
+        statement["type"] = serde_json::json!("awiki.device.root-possession.v2");
+        statement["delivery_issued_at"] = serde_json::json!(timing.delivery_issued_at);
+        statement["delivery_expires_at"] = serde_json::json!(record.expires_at);
+        statement["proof_created_at"] = serde_json::json!(created);
+        let proof_expires = format_time(
+            parse_whole_second_time("proof_created_at", &created)? + Duration::seconds(600),
+        )?;
+        if timing.completion_contract == ROOT_COMPLETION_EXTENDED {
+            statement["type"] = serde_json::json!("awiki.device.root-possession.v1");
+            statement["completion_contract"] = serde_json::json!(ROOT_COMPLETION_EXTENDED);
+            statement["completion_proof_expires_at"] = serde_json::json!(proof_expires);
+        } else if timing.completion_contract == ROOT_COMPLETION_V2 {
+            // Preserve historical V2 requests and their original expiry semantics.
+            statement["expires_at"] = serde_json::json!(proof_expires);
+        } else {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok((statement, created))
+}
+
+async fn prepare_completion_params(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> crate::ImResult<(Value, String)> {
+    prepare_completion_params_inner(core, client, message_id, false).await
+}
+
+async fn prepare_completion_params_inner(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+    refresh: bool,
+) -> crate::ImResult<(Value, String)> {
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let record = load_completion_record(&connection, client, message_id)?;
+    if let (Some(params), Some(hash)) = (
+        record.completion_params_json.as_deref(),
+        record.completion_request_hash.as_deref(),
+    ) {
+        let value = serde_json::from_str(params).map_err(redacted_serialization)?;
+        if !refresh {
+            return Ok((value, hash.to_owned()));
+        }
+    }
+    if (!refresh && record.phase != RootImportCompletionPhase::ImportSealed)
+        || (refresh
+            && (record.v2_timing.is_none()
+                || record.phase != RootImportCompletionPhase::CompletionPending))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    if record.pending_root_ref.did != record.did
+        || record.pending_root_ref.store_id.trim().is_empty()
+        || record.pending_root_ref.identity_id.trim().is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let nonce = if refresh {
+        let old: Value = serde_json::from_str(
+            record
+                .completion_params_json
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )
+        .map_err(redacted_serialization)?;
+        old.pointer("/statement/nonce")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?
+            .to_owned()
+    } else {
+        let mut nonce_bytes = [0_u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        URL_SAFE_NO_PAD.encode(nonce_bytes)
+    };
+    let (statement, created) = completion_statement(&record, &nonce, root_import_now(core))?;
     let signed_statement =
         crate::internal::identity_custody::sign_pending_completion_root_proof_async(
             core,
             &record.pending_root_ref,
             &record.root_key_id,
             &statement,
-            Some(record.imported_at.clone()),
+            Some(created.clone()),
         )
         .await?;
 
@@ -1947,17 +2069,25 @@ async fn prepare_completion_params(
         .filter(|authorization| authorization.protocol_device_id.as_str() == record.local_device_id)
         .map(|authorization| authorization.signing_key_id)
         .ok_or(crate::ImError::PermissionDenied)?;
-    let unsigned_params = serde_json::json!({
+    let mut unsigned_params = serde_json::json!({
         "operation_id": record.message_id.clone(),
-        "type": "awiki.device.root-key-import-complete.v1",
+        "type": if record.v2_timing.is_some() { "awiki.device.root-key-import-complete.v2" } else { "awiki.device.root-key-import-complete.v1" },
         "statement": signed_statement,
     });
+    if record
+        .v2_timing
+        .as_ref()
+        .is_some_and(|timing| timing.completion_contract == ROOT_COMPLETION_EXTENDED)
+    {
+        unsigned_params["type"] = serde_json::json!("awiki.device.root-key-import-complete.v1");
+        unsigned_params["completion_contract"] = serde_json::json!(ROOT_COMPLETION_EXTENDED);
+    }
     let params = sign_device_object_proof_async(
         client,
         &device_key_id,
         &unsigned_params,
         &record.did,
-        Some(record.imported_at.clone()),
+        Some(created.clone()),
     )
     .await?;
     let canonical = serde_json_canonicalizer::to_vec(&params).map_err(redacted_serialization)?;
@@ -1977,8 +2107,8 @@ async fn prepare_completion_params(
 SET phase = 'completion_pending', completion_params_json = ?1,
     completion_request_hash = ?2, updated_at = ?3
 WHERE owner_identity_id = ?4 AND local_device_id = ?5 AND message_id = ?6
-  AND phase = 'import_sealed'
-  AND completion_params_json IS NULL AND completion_request_hash IS NULL"#,
+  AND ((?7 = 0 AND phase = 'import_sealed' AND completion_params_json IS NULL AND completion_request_hash IS NULL)
+       OR (?7 = 1 AND phase = 'completion_pending' AND completion_request_hash = ?8 AND completion_result_json IS NULL))"#,
             rusqlite::params![
                 params_json,
                 request_hash,
@@ -1986,6 +2116,8 @@ WHERE owner_identity_id = ?4 AND local_device_id = ?5 AND message_id = ?6
                 client.current_identity().id.as_str(),
                 record.local_device_id,
                 message_id,
+                refresh,
+                record.completion_request_hash,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -2037,6 +2169,13 @@ fn load_completion_record(
     client: &crate::core::ImClient,
     message_id: &str,
 ) -> crate::ImResult<CompletionRecord> {
+    let timing = v2::load_plan_connection(
+        connection,
+        client.current_identity().id.as_str(),
+        &client.exact_protocol_device_id()?,
+        message_id,
+    )?
+    .and_then(|plan| plan.v2_timing);
     connection
         .query_row(
             r#"SELECT owner_did, local_device_id, message_id, sender_device_id,
@@ -2070,6 +2209,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3"#,
                     )
                 })?;
                 Ok(CompletionRecord {
+                    v2_timing: timing.clone(),
                     did: row.get(0)?,
                     local_device_id: row.get(1)?,
                     message_id: row.get(2)?,
@@ -2128,7 +2268,19 @@ fn validate_pending_root_candidate(
     validate_envelope_field_bounds(envelope)?;
     validate_outer_equality(metadata, body, session, delivery, envelope)?;
     let accepted_at = authoritative_root_accepted_at(delivery)?;
-    let imported_at = validate_envelope_time(envelope, accepted_at, now)?;
+    let mut imported_at = validate_envelope_time(envelope, accepted_at, now)?;
+    let saved_plan = if envelope
+        .completion_contract
+        .as_deref()
+        .is_some_and(is_extended_completion_contract)
+    {
+        v2::load_plan(core, client, &envelope.message_id)?
+    } else {
+        None
+    };
+    if let Some(saved) = &saved_plan {
+        imported_at = saved.imported_at.clone();
+    }
     let local_entry = local_device_entry(core, client)?;
     validate_registry_and_manifest(&local_entry, client, envelope, document, registry)?;
     let root_der = decode_canonical_root_der(&envelope.root_private_key_pkcs8_b64u)?;
@@ -2175,6 +2327,22 @@ fn validate_pending_root_candidate(
         root_key: root_der,
     };
     let plan = RootImportSealedPlan {
+        v2_timing: if envelope
+            .completion_contract
+            .as_deref()
+            .is_some_and(is_extended_completion_contract)
+        {
+            Some(v2::ImportTiming {
+                completion_contract: envelope
+                    .completion_contract
+                    .clone()
+                    .ok_or(crate::ImError::PermissionDenied)?,
+                delivery_issued_at: envelope.issued_at.clone(),
+                input_hash: v2::input_hash(metadata, body, delivery)?,
+            })
+        } else {
+            None
+        },
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
         local_device_id: client.exact_protocol_device_id()?,
@@ -2193,8 +2361,14 @@ fn validate_pending_root_candidate(
         document_version: envelope.document_version,
         document_hash: envelope.document_hash.clone(),
         registry_version: envelope.registry_version,
-        now: format_time(now)?,
+        now: saved_plan
+            .as_ref()
+            .map(|plan| plan.now.clone())
+            .unwrap_or(format_time(now)?),
     };
+    if saved_plan.as_ref().is_some_and(|saved| saved != &plan) {
+        return Err(crate::ImError::PermissionDenied);
+    }
     Ok((plan, import))
 }
 
@@ -2338,6 +2512,7 @@ fn validate_wrapped_root_candidate(
         did: client.did().as_str().to_owned(),
     };
     let plan = RootImportSealedPlan {
+        v2_timing: None,
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
         local_device_id: authorization.protocol_device_id.as_str().to_owned(),
@@ -2386,7 +2561,8 @@ async fn complete_wrapped_root_import(
         .host_status()
         .await
         .map_err(crate::internal::identity_provider::map_provider_error)?
-        .root_key_fingerprint;
+        .root_key_fingerprint
+        .ok_or(crate::ImError::PermissionDenied)?;
     if plan.root_fingerprint.trim().is_empty() {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2511,6 +2687,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3
     if exact != 1 {
         return Err(crate::ImError::PermissionDenied);
     }
+    v2::mark_handoff(transaction, plan)?;
     Ok(())
 }
 
@@ -2594,7 +2771,12 @@ fn validate_envelope_time(
     if expires_at <= issued_at
         || expires_at - issued_at > Duration::seconds(ROOT_ENVELOPE_MAX_WINDOW_SECONDS)
         || accepted_at > expires_at
-        || imported_at > expires_at
+        || (envelope.completion_contract.is_none() && imported_at > expires_at)
+        || (envelope
+            .completion_contract
+            .as_deref()
+            .is_some_and(is_extended_completion_contract)
+            && accepted_at < issued_at)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2602,6 +2784,13 @@ fn validate_envelope_time(
 }
 
 fn validate_envelope_field_bounds(envelope: &RootKeyEnvelope) -> crate::ImResult<()> {
+    if envelope
+        .completion_contract
+        .as_deref()
+        .is_some_and(|value| !is_extended_completion_contract(value))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     for value in [
         envelope.message_id.as_str(),
         envelope.sender_device_id.as_str(),
@@ -2926,6 +3115,7 @@ mod tests {
     fn envelope() -> RootKeyEnvelope {
         let digest = URL_SAFE_NO_PAD.encode([7_u8; 32]);
         RootKeyEnvelope {
+            completion_contract: None,
             system_type: ROOT_KEY_ENVELOPE_SYSTEM_TYPE.to_owned(),
             message_id: "root-message-1".to_owned(),
             did: "did:wba:example.test:users:alice:e1_test".to_owned(),
@@ -3101,7 +3291,7 @@ mod tests {
                     jwt_token: "member-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },
@@ -3309,6 +3499,47 @@ document_hash, registry_version, phase, created_at, updated_at
     }
 
     #[test]
+    fn v2_accepts_delayed_import_but_preserves_delivery_window_and_v1_expiry() {
+        let mut envelope = envelope();
+        for time in ["2026-07-24T00:15:00Z", "2026-07-25T00:00:00Z"] {
+            let now = OffsetDateTime::parse(time, &Rfc3339).unwrap();
+            envelope.completion_contract = None;
+            assert!(validate_envelope_time(&envelope, "2026-07-24T00:00:01.000000Z", now).is_err());
+            envelope.completion_contract = Some(ROOT_COMPLETION_V2.to_owned());
+            assert_eq!(
+                validate_envelope_time(&envelope, "2026-07-24T00:00:01.000000Z", now).unwrap(),
+                time
+            );
+            assert!(validate_envelope_time(&envelope, "2026-07-23T23:59:59.000000Z", now).is_err());
+            assert!(validate_envelope_time(&envelope, "2026-07-24T00:11:00.000000Z", now).is_err());
+        }
+    }
+
+    #[test]
+    fn v2_contract_dispatch_stays_in_secret_root_parser_and_rejects_null() {
+        let mut value = serde_json::to_value(envelope()).unwrap();
+        assert!(value.get("completion_contract").is_none());
+        for invalid in [
+            Value::Null,
+            serde_json::json!("unknown"),
+            serde_json::json!(2),
+        ] {
+            value["completion_contract"] = invalid;
+            assert!(serde_json::from_value::<RootKeyEnvelope>(value.clone()).is_err());
+        }
+        value["completion_contract"] = serde_json::json!(ROOT_COMPLETION_V2);
+        let secret = V2SecretJsonPayload::from_canonical_json_object(
+            serde_json_canonicalizer::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert!(root_system_type(&secret).unwrap());
+        assert!(matches!(
+            decode_root_secret_payload(&secret).unwrap(),
+            RootSecretPayload::Root(_)
+        ));
+    }
+
+    #[test]
     fn ordinary_delivery_context_does_not_apply_root_timestamp_rules() {
         let context = TrustedDirectDeliveryContext::from_stored_message(
             &metadata(),
@@ -3462,7 +3693,7 @@ document_hash, registry_version, phase, created_at, updated_at
         .is_err());
     }
 
-    fn test_access_token(
+    pub(super) fn test_access_token(
         expected: &crate::internal::transport::ExpectedDeviceAccessOwned,
     ) -> String {
         let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -3504,6 +3735,7 @@ document_hash, registry_version, phase, created_at, updated_at
         let mut connection = rusqlite::Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
         let plan = RootImportSealedPlan {
+            v2_timing: None,
             owner_identity_id: "identity-a".to_owned(),
             owner_did: "did:wba:example.test:users:alice:e1_test".to_owned(),
             local_device_id: "device-b".to_owned(),

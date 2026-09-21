@@ -27,23 +27,23 @@ const WORKSPACE_ID: &str = "device-revoke-test-workspace";
 const VAULT_CONTEXT_DEVICE_ID: &str = "device-revoke-test-context";
 const VAULT_KEY: [u8; 32] = [63_u8; 32];
 
-struct Scenario {
+pub(crate) struct Scenario {
     _root: tempfile::TempDir,
     paths: crate::ImCorePaths,
-    did: crate::ids::Did,
-    document: Value,
-    registry: DeviceJoinRemoteRegistry,
-    authorizing: DeviceJoinRemoteDeviceSummary,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) document: Value,
+    pub(crate) registry: DeviceJoinRemoteRegistry,
+    pub(crate) authorizing: DeviceJoinRemoteDeviceSummary,
     target: DeviceJoinRemoteDeviceSummary,
     now: OffsetDateTime,
 }
 
 impl Scenario {
-    fn open_core(&self, enabled: bool) -> crate::ImCore {
+    pub(crate) fn open_core(&self, enabled: bool) -> crate::ImCore {
         open_core(self._root.path(), enabled)
     }
 
-    fn local_document(&self) -> Value {
+    pub(crate) fn local_document(&self) -> Value {
         let store = IdentityStore::new(&self.paths.identities);
         let dir_name = store.load_index().unwrap().credentials[LOCAL_ALIAS]
             .dir_name
@@ -684,6 +684,368 @@ async fn committed_pending_recovery_is_identity_local() {
     ));
 }
 
+#[tokio::test]
+async fn web_revoke_requires_exact_retry_and_adopts_the_current_document_after_restart() {
+    let scenario = web_scenario().await;
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let mut remote = MockRemote::new(
+        scenario.registry.clone(),
+        [RevokeAction::Error(crate::ImError::TransportUnavailable {
+            detail: "response lost".into(),
+        })],
+    );
+    let mut resolver = MockResolver {
+        document: scenario.document.clone(),
+        calls: 0,
+    };
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    let (_, pending) = store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .unwrap();
+    assert!(pending.remote_result.is_none());
+    let first_call = remote.revoke_calls[0].clone();
+    let mut current = scenario.registry.clone();
+    current.checkpoint = pending.expected_result_checkpoint().unwrap();
+    current.checkpoint.document_version += 1;
+    current.checkpoint.registry_version += 1;
+    for device in &mut current.devices {
+        if device.device_id == TARGET_DEVICE_ID {
+            device.status = DeviceAuthorizationStatus::Revoked;
+            device.auth_generation += 1;
+        }
+    }
+    let mut document = pending.new_document.clone();
+    document["alsoKnownAs"] = json!(["https://example.test/later"]);
+    current.checkpoint.document_hash =
+        crate::internal::identity_wire::document::document_hash(&document).unwrap();
+    resolver.document = document.clone();
+    // A removed target in current state does not prove which operation won.
+    let mut remote = MockRemote::new(
+        current.clone(),
+        [RevokeAction::Error(crate::ImError::Service {
+            status_code: None,
+            code: Some("device.inactive".into()),
+            message: "different operation".into(),
+            data: None,
+        })],
+    );
+    assert!(recover_pending_for_client_with_runtime(
+        &core,
+        &client,
+        &store,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert_eq!(remote.revoke_calls.len(), 1);
+    assert_eq!(remote.revoke_calls[0].operation_id, first_call.operation_id);
+    assert_ne!(remote.revoke_calls[0].proof_nonce, first_call.proof_nonce);
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .unwrap()
+        .1
+        .remote_result
+        .is_none());
+    assert_eq!(scenario.local_document(), scenario.document);
+
+    // Even an exact committed receipt must not authorize a revoked admin.
+    remote
+        .actions
+        .push_back(RevokeAction::Error(crate::ImError::Service {
+            status_code: None,
+            code: Some("device.inactive".into()),
+            message: "different operation".into(),
+            data: None,
+        }));
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_some());
+
+    let mut rejected_current = current.clone();
+    rejected_current.devices[0].status = DeviceAuthorizationStatus::Revoked;
+    let mut remote = MockRemote::new(rejected_current, [RevokeAction::Success]);
+    assert!(recover_pending_for_client_with_runtime(
+        &core,
+        &client,
+        &store,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    let (_, committed) = store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote.revoke_calls.len(), 1);
+    assert!(committed.remote_result.is_some());
+    assert_eq!(scenario.local_document(), scenario.document);
+    // Model a crash after custody's original publication was committed, before
+    // the ordinary identity file and local Registry projection were written.
+    crate::internal::identity_device_join::complete_provider_document_change(
+        &client,
+        &pending.new_document,
+        &pending.expected_result_checkpoint().unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(client);
+    drop(core);
+
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let mut remote = MockRemote::new(current.clone(), []);
+    assert_eq!(
+        recover_pending_for_client_with_runtime(&core, &client, &store, &mut remote, &mut resolver)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(remote.revoke_calls.is_empty());
+    assert_eq!(scenario.local_document(), document);
+    let index = IdentityStore::new(&scenario.paths.identities)
+        .load_index()
+        .unwrap();
+    assert_eq!(
+        index.credentials[LOCAL_ALIAS]
+            .device_state
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .as_ref(),
+        Some(&current.checkpoint)
+    );
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        client
+            .runtime()
+            .identity_session
+            .as_ref()
+            .unwrap()
+            .host_status()
+            .await
+            .unwrap()
+            .root_capability,
+        crate::internal::identity_provider::ProviderRootCapability::Absent
+    );
+}
+
+pub(crate) async fn web_scenario() -> Scenario {
+    provider_scenario(crate::identity::DidMethod::Web).await
+}
+
+pub(crate) async fn provider_scenario(did_method: crate::identity::DidMethod) -> Scenario {
+    use crate::internal::identity_provider::*;
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let core = open_core(root.path(), false);
+    let generated = crate::internal::identity_custody::provision_registration_identity_for_method(
+        &core,
+        "awiki.test",
+        LOCAL_ALIAS,
+        did_method,
+    )
+    .unwrap();
+    let signing = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
+        &mut rand::rngs::OsRng,
+    ));
+    let agreement =
+        anp::PrivateKeyMaterial::X25519(X25519StaticSecret::random_from_rng(rand::rngs::OsRng));
+    let target = DeviceJoinRemoteDeviceSummary {
+        device_id: TARGET_DEVICE_ID.into(),
+        signing_key_id: format!("{}#target-sign", generated.did.as_str()),
+        e2ee_key_id: format!("{}#target-e2ee", generated.did.as_str()),
+        status: DeviceAuthorizationStatus::Active,
+        role: DeviceAuthorizationRole::Member,
+        management_ready: false,
+        auth_generation: 1,
+    };
+    let method = |kid: &str, key: anp::PublicKeyMaterial| {
+        json!({"id":kid, "controller":generated.did.as_str(),
+        "type":"Multikey", "publicKeyMultibase": public_key_multibase(&key)})
+    };
+    let document = if did_method == crate::identity::DidMethod::Web {
+        anp::authentication::add_device_to_web_did_document(
+            &generated.did_document,
+            &anp::authentication::DeviceManifestEntry {
+                device_id: TARGET_DEVICE_ID.into(),
+                signing_key_id: target.signing_key_id.clone(),
+                e2ee_key_id: target.e2ee_key_id.clone(),
+                profiles: crate::internal::identity_generation::web_device_profiles(),
+            },
+            &method(&target.signing_key_id, signing.public_key()),
+            &method(&target.e2ee_key_id, agreement.public_key()),
+            &[],
+        )
+        .unwrap()
+    } else {
+        generated.did_document.clone()
+    };
+    let checkpoint = IdentityInternalCheckpoint {
+        document_version: if did_method == crate::identity::DidMethod::Web {
+            2
+        } else {
+            1
+        },
+        registry_version: if did_method == crate::identity::DidMethod::Web {
+            2
+        } else {
+            1
+        },
+        document_hash: crate::internal::identity_wire::document::document_hash(&document).unwrap(),
+    };
+    let provider = crate::internal::identity_custody::controller_custody_provider(&core)
+        .await
+        .unwrap();
+    let identity = provider
+        .open_identity(&ProviderIdentityRef {
+            store_id: generated.controller_store_id.clone(),
+            identity_id: generated.controller_identity_id.clone(),
+            did: generated.did.as_str().into(),
+        })
+        .await
+        .unwrap();
+    identity
+        .adopt_verified_document(ProviderVerifiedRemoteDocument {
+            document: document.clone(),
+            evidence: ProviderPublicationEvidence {
+                document_version: checkpoint.document_version,
+                registry_version: checkpoint.registry_version,
+                document_digest: checkpoint.document_hash.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    let authorizing = DeviceJoinRemoteDeviceSummary {
+        device_id: generated.protocol_device_id.as_str().into(),
+        signing_key_id: generated.device_signing_key_id.clone(),
+        e2ee_key_id: generated.device_e2ee_key_id.clone(),
+        status: DeviceAuthorizationStatus::Active,
+        role: DeviceAuthorizationRole::Admin,
+        management_ready: true,
+        auth_generation: 1,
+    };
+    let issued = OffsetDateTime::now_utc().unix_timestamp();
+    let token = format!("e30.{}.signature", URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({
+        "iss":"user-service", "aud":["awiki-user-service","awiki-message-service"],
+        "sub":generated.did.as_str(), "did":generated.did.as_str(), "type":"access",
+        "purpose":"awiki.device.access.v1", "user_id":"user-1", "device_id":authorizing.device_id,
+        "key_id":authorizing.signing_key_id, "auth_generation":1,
+        "scopes":["device:read","device:manage","message:connect"],
+        "iat":issued, "nbf":issued, "exp":issued + 300, "jti":"web-revoke-unit"
+    })).unwrap()));
+    IdentityStore::new(&paths.identities)
+        .save_anp_identity_projection(
+            SaveIdentityInput {
+                local_alias: LOCAL_ALIAS.into(),
+                did: generated.did.clone(),
+                unique_id: generated.controller_identity_id.clone(),
+                user_id: "user-1".into(),
+                display_name: "Alice".into(),
+                handle: LOCAL_ALIAS.into(),
+                full_handle: "alice.awiki.test".into(),
+                binding_generation: Some("1".into()),
+                jwt_token: token,
+                did_document: Some(document.clone()),
+                key_mode: SaveIdentityKeyMode::VNext {
+                    root_key_id: (did_method == crate::identity::DidMethod::Wba)
+                        .then(|| format!("{}#key-1", generated.did.as_str())),
+                    device_signing_key_id: generated.device_signing_key_id.clone(),
+                    device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                },
+                device_state: Some(IdentityDeviceState {
+                    schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                    mode: IdentityDeviceMode::VNext,
+                    authorization: Some(DeviceAuthorizationProjection {
+                        protocol_device_id: generated.protocol_device_id.clone(),
+                        signing_key_id: authorizing.signing_key_id.clone(),
+                        e2ee_key_id: authorizing.e2ee_key_id.clone(),
+                        status: DeviceAuthorizationStatus::Active,
+                        role: DeviceAuthorizationRole::Admin,
+                        management_ready: true,
+                        auth_generation: 1,
+                    }),
+                    checkpoint: Some(checkpoint.clone()),
+                }),
+                key1_private_pem: String::new(),
+                key1_public_pem: String::new(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: String::new(),
+                daemon_subkey_package: None,
+                make_default: true,
+            },
+            crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+                &core,
+                generated.controller_store_id,
+                generated.controller_identity_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let registry = DeviceJoinRemoteRegistry {
+        did: generated.did.clone(),
+        checkpoint,
+        devices: if did_method == crate::identity::DidMethod::Web {
+            vec![authorizing.clone(), target.clone()]
+        } else {
+            vec![authorizing.clone()]
+        },
+    };
+    Scenario {
+        _root: root,
+        paths,
+        did: generated.did,
+        document,
+        registry,
+        authorizing,
+        target,
+        now: OffsetDateTime::now_utc(),
+    }
+}
+
 fn scenario(
     local_role: DeviceAuthorizationRole,
     target_role: DeviceAuthorizationRole,
@@ -793,7 +1155,7 @@ fn scenario(
                 jwt_token: "device-token".to_owned(),
                 did_document: Some(document.clone()),
                 key_mode: SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -846,6 +1208,7 @@ fn open_core(root: &Path, enabled: bool) -> crate::ImCore {
         test_config(),
         test_paths(root),
         crate::ImCoreOpenOptions::default()
+            .with_multi_device_audience("awiki-user-service")
             .with_identity_secret_vault(
                 crate::IdentitySecretStoragePolicy::VaultRequired,
                 crate::ImCoreSecretVaultOptions::new(
@@ -924,4 +1287,136 @@ fn manifest_contains(document: &Value, device_id: &str) -> bool {
         .devices
         .iter()
         .any(|device| device.device_id == device_id)
+}
+
+#[tokio::test]
+async fn web_revoke_checkpoint_conflict_reconciles_after_reopen_and_allows_new_intent() {
+    let scenario = web_scenario().await;
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let mut remote = MockRemote::new(
+        scenario.registry.clone(),
+        [RevokeAction::Error(crate::ImError::Service {
+            status_code: None,
+            code: Some("device.registry_version_conflict".into()),
+            message: "conflict".into(),
+            data: None,
+        })],
+    );
+    let mut resolver = MockResolver {
+        document: scenario.document.clone(),
+        calls: 0,
+    };
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert!(
+        store
+            .load(&scenario.did, TARGET_DEVICE_ID)
+            .unwrap()
+            .unwrap()
+            .1
+            .rejected
+    );
+    let original_id = remote.revoke_calls[0].operation_id.clone();
+    drop(client);
+    drop(core);
+    let core = scenario.open_core(false);
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    // A Registry-only concurrent change still makes the old CAS impossible.
+    remote.registry.checkpoint.registry_version += 1;
+    remote
+        .registry
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == scenario.authorizing.device_id)
+        .unwrap()
+        .management_ready = false;
+    assert!(recover_pending_for_client_with_runtime(
+        &core,
+        &client,
+        &store,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_some());
+    remote
+        .registry
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == scenario.authorizing.device_id)
+        .unwrap()
+        .management_ready = true;
+    assert_eq!(
+        recover_pending_for_client_with_runtime(&core, &client, &store, &mut remote, &mut resolver)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(remote.revoke_calls.len(), 1);
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_none());
+    assert!(client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .resume_document_change()
+        .await
+        .unwrap()
+        .is_none());
+    // The target is still active; a new intent gets a new operation ID and checkpoint.
+    remote
+        .actions
+        .push_back(RevokeAction::Error(crate::ImError::TransportUnavailable {
+            detail: "new submission".into(),
+        }));
+    assert!(execute_with_runtime(
+        &core,
+        &client,
+        &store,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        TARGET_DEVICE_ID,
+        scenario.now,
+        scenario.now,
+        &mut remote,
+        &mut resolver
+    )
+    .await
+    .is_err());
+    let next = store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_ne!(next.operation_id, original_id);
+    assert_eq!(next.expected_checkpoint, remote.registry.checkpoint);
+    assert!(!next.rejected);
 }

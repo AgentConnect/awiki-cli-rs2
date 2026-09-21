@@ -960,6 +960,30 @@ impl IdentitySession for ExternalIdentitySession {
         self.public_identity().await
     }
 
+    async fn adopt_verified_sibling_document(
+        &self,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            identity: &'a ProviderIdentityRef,
+            remote: &'a ProviderVerifiedRemoteDocument,
+        }
+        let _: String = call_json(
+            &self.dispatch,
+            "adoptVerifiedSiblingDocument",
+            &Payload {
+                identity: &self.identity,
+                remote: &remote,
+            },
+            Vec::new(),
+        )
+        .await?;
+        *self.public_cache.write().await = None;
+        self.public_identity().await
+    }
+
     async fn derive_shared_secret(
         &self,
         request: ProviderKeyAgreementRequest,
@@ -1081,6 +1105,27 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
         let outcome: WireDocumentChangeOutcome = call_json(
             &self.dispatch,
             "documentChangeReconcile",
+            &ReconcileDocumentChangePayload {
+                session_id: &self.session_id,
+                observation: &observation,
+            },
+            Vec::new(),
+        )
+        .await?;
+        let outcome = ProviderDocumentChangeOutcome::try_from(outcome)?;
+        if matches!(outcome, ProviderDocumentChangeOutcome::Committed { .. }) {
+            *self.public_cache.write().await = None;
+        }
+        Ok(outcome)
+    }
+
+    async fn reconcile_rejected(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let outcome: WireDocumentChangeOutcome = call_json(
+            &self.dispatch,
+            "documentChangeReconcileRejected",
             &ReconcileDocumentChangePayload {
                 session_id: &self.session_id,
                 observation: &observation,

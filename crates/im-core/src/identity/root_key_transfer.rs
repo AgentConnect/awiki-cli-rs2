@@ -133,6 +133,8 @@ pub enum RootKeyTransferErrorCode {
     UserPresenceDenied,
     #[serde(rename = "root_transfer.state_changed")]
     StateChanged,
+    #[serde(rename = "root_transfer.delivery_invalidated")]
+    DeliveryInvalidated,
     #[serde(rename = "root_transfer.transport_pending")]
     TransportPending,
     #[serde(rename = "root_transfer.transport_rejected")]

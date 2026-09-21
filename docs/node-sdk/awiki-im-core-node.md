@@ -243,6 +243,14 @@ addon 必须同版本发布并拒绝其他 contract。增量合同见
 
 ## 构建与验证
 
+本次源码的 native API 为 16，wrapper 与 addon 必须从同一任务实现构建。
+
+`RegistrationInput.didMethod` 可选 `wba`（默认）或 `web`，两阶段 phone 注册均传递
+同一值。`identityCreationMethods()` 返回 Core 根据 Server Info 判断的新建方法列表，
+旧服务缺失字段时只有 WBA。Web 要求 OpenOptions 的准确 `multiDeviceAudience`，本地
+仅保管设备密钥；provider `rootKeyFingerprint` 可以为 null。Browser 只消费这些能力，
+不能自行拼 DID、签名或推导设备权限。历史注册结果必须同时通过当前设备校验后才可提交。
+
 源码 checkout 使用以下命令；根包已有的二进制安装 `postinstall` 不属于源码构建，因此依赖
 安装使用 `--ignore-scripts`，native addon 只由新包的显式 build 脚本编译。
 

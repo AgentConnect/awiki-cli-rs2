@@ -7139,7 +7139,7 @@ impl VNextCacheFixture {
                     jwt_token: "test-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },
@@ -7733,4 +7733,81 @@ fn unique_temp_root() -> PathBuf {
         "im-core-read-runtime-{}-{nanos}-{counter}",
         std::process::id()
     ))
+}
+
+#[cfg(feature = "secure-direct")]
+#[tokio::test]
+async fn upgraded_empty_lane_negotiation_blocks_legacy_inbox_before_sync() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let db = client.core_inner().local_state_db().await.unwrap();
+    let binding = crate::internal::local_state::sync_v2::IdentityAccountBinding {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        account_id: "read-cache-user".to_owned(),
+        handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+        current_did: client.did().as_str().to_owned(),
+        protocol_device_id: fixture.device_id.clone(),
+        identity_generation: "1".to_owned(),
+        device_auth_generation: "1".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+    let installation = db
+        .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+        .await
+        .unwrap();
+    db.record_sync_lane_capability_negotiation_v1a(
+        binding.owner_identity_id.clone(),
+        binding.device_auth_generation.clone(),
+        installation,
+        "[]".to_owned(),
+    )
+    .await
+    .unwrap();
+    // A saved empty negotiation from an older build is not a reason to choose
+    // legacy inbox while the newly enabled P5 root-delivery lane is pending.
+    assert!(sync_lane_capability_enabled_async(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    )
+    .await
+    .unwrap());
+    assert!(sync_lane_capability_enabled_blocking(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    ));
+}
+
+#[test]
+fn plain_group_attachment_cache_preserves_wire_id_for_download() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group = "did:example:group:plain";
+    let canonical = "did:example:group:plain:9";
+    let mut message = json!({
+        "id": canonical,
+        "message_id": "logical-plain-group-message",
+        "group_did": group,
+        "sender_did": "did:example:sender",
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "content": {"attachments":[{"attachment_id":"att-plain-group", "access_info":{"object_uri":"https://objects.example/att-plain"}, "encryption_info":{"mode":"none"}}]}
+    });
+    for expected in ["logical-plain-group-message", "explicit-wire-message"] {
+        if expected == "explicit-wire-message" { message["raw_message_id"] = json!(expected); }
+        let record = attachment_manifest_cache_record(&client, &message).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(&db, &record).unwrap();
+        let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &db, client.current_identity().id.as_str(), "group", group, canonical,
+        ).unwrap().unwrap();
+        let selected = crate::attachments::selection::find_internal_attachment_selection(
+            &[cached], canonical, "att-plain-group",
+        ).unwrap();
+        assert_eq!(selected.public.message_security_profile, "transport-protected");
+        assert_eq!(selected.public.message_id, canonical);
+        assert_eq!(selected.authorization_message_id, expected);
+    }
 }

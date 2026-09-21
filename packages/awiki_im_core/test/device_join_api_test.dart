@@ -10,7 +10,41 @@ Future<DeviceJoinProgress> _localDeviceJoinVerificationProgressApiShape(
   joinSessionId: 'join-safe-id',
 );
 
+Future<List<DeviceJoinManagementStatus>> _managementStatusApiShape(
+  AwikiImCore core,
+) => core.deviceJoinManagementStatus(const IdentitySelector.defaultIdentity());
+Future<void> _managementRetryApiShape(AwikiImCore core) =>
+    core.retryDeviceJoinManagement(
+      selector: const IdentitySelector.defaultIdentity(),
+      joinSessionId: 'exact-join',
+    );
+
+Future<DeviceJoinProgress> _managementApprovalApiShape(AwikiImCore core) =>
+    core.confirmDeviceJoinWithManagement(
+      approvalHandle: 'opaque-from-prompt',
+      userPresenceConfirmed: false,
+    );
+
 void main() {
+  test(
+    'automatic management APIs expose progress and exact-Join retry without a root handle',
+    () {
+      expect(_managementApprovalApiShape, isA<Function>());
+      expect(_managementStatusApiShape, isA<Function>());
+      expect(_managementRetryApiShape, isA<Function>());
+      const status = DeviceJoinManagementStatus(
+        joinSessionId: 'exact-join',
+        recipientDeviceId: 'exact-device',
+        phase: 'waiting_for_recipient',
+        attempts: 3,
+        nextAttemptAtMs: 0,
+      );
+      expect(status.phase, 'waiting_for_recipient');
+      expect(status.attempts, 3);
+      expect(status.failureCode, isNull);
+    },
+  );
+
   test('account verification grant has a write-only redacted surface', () {
     const token = 'verification-grant-must-never-appear';
     final grant = DeviceJoinAccountVerificationGrant.fromToken(token);

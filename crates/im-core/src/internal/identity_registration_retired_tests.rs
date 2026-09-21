@@ -4,6 +4,34 @@ use crate::internal::identity_provider::{DirectAnpIdentityCustody, IdentityCusto
 use crate::internal::identity_registration_pending::PendingRegistrationStore;
 use std::{collections::BTreeMap, sync::Arc};
 
+#[tokio::test]
+async fn web_unprojected_candidate_is_reused_without_wba_retirement_fetch() {
+    struct NoRetirementTransport;
+    impl crate::internal::transport::AsyncRawJsonTransport for NoRetirementTransport {
+        async fn get_json_url(
+            &mut self,
+            _: &str,
+            _: BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            panic!("Web candidates must not query WBA recovery tombstones");
+        }
+    }
+    let fixture = Fixture::new();
+    let mut transport = NoRetirementTransport;
+    let first = crate::internal::identity_custody::provision_registration_identity_for_method_with_transport(
+        &fixture.core, "example.test", "alice", crate::identity::DidMethod::Web, &mut transport,
+    ).await.unwrap();
+    let second = crate::internal::identity_custody::provision_registration_identity_for_method_with_transport(
+        &fixture.core, "example.test", "alice", crate::identity::DidMethod::Web, &mut transport,
+    ).await.unwrap();
+    assert!(first
+        .did
+        .as_str()
+        .starts_with("did:web:example.test:awiki:web:"));
+    assert_eq!(first.did, second.did);
+    assert_eq!(fixture.provider.list_identities().await.unwrap().len(), 1);
+}
+
 // Exercise real encrypted custody and pending stores with an empty tenant Core.
 // Only the public directory is replaced; no user accounts or credentials are used.
 struct Fixture {
@@ -142,6 +170,7 @@ impl crate::internal::transport::AsyncRawJsonTransport for Directory {
 }
 fn request() -> crate::identity::RegisterHandleRequest {
     crate::identity::RegisterHandleRequest {
+        did_method: Default::default(),
         local_alias: Some("alice".into()),
         requested_handle: crate::ids::Handle::parse("alice.example.test", "").unwrap(),
         verification: crate::identity::VerificationInput::AlreadyVerified,
@@ -421,6 +450,7 @@ async fn known_committed_pending_is_preserved_without_a_directory_lookup() {
     committed.remote_attempted = true;
     committed.phase = PendingRegistrationPhase::RemoteCommitted;
     committed.remote_result = Some(PendingRegistrationRemoteResult {
+        current: None,
         did: committed.identity.did.as_str().into(),
         user_id: "test-user".into(),
         handle: "alice".into(),

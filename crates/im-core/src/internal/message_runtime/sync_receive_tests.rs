@@ -153,6 +153,7 @@ async fn receive_two_pages_completes_with_business_consumers_stopped() {
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await
         .unwrap();
+    seed_lane_consumers(&client, &binding, BTreeSet::new()).await;
     db.reconcile_sync_lane_capability_v1a(
         &binding.owner_identity_id,
         vec![],
@@ -332,6 +333,7 @@ async fn receive_snapshot_and_post_anchor_page_without_business_then_resume_afte
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await
         .unwrap();
+    seed_lane_consumers(&client, &binding, BTreeSet::new()).await;
     db.reconcile_sync_lane_capability_v1a(
         &binding.owner_identity_id,
         vec![],
@@ -761,6 +763,7 @@ async fn hundred_page_snapshot_keeps_its_own_budget_and_receives_all_post_anchor
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await
         .unwrap();
+    seed_lane_consumers(&client, &binding, BTreeSet::new()).await;
     db.reconcile_sync_lane_capability_v1a(
         &binding.owner_identity_id,
         vec![],

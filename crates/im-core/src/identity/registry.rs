@@ -648,6 +648,37 @@ impl<'a> IdentityRegistry<'a> {
         crate::internal::identity_custody_migration::migrate_async(self.core).await
     }
 
+    /// Resolve the current public Handle binding before any local identity exists.
+    /// This is discovery only; the Join grant and device proofs still authorize enrollment.
+    pub async fn resolve_handle_for_device_join_async(
+        &self,
+        handle: &str,
+    ) -> crate::ImResult<crate::ids::Did> {
+        let lookup =
+            crate::internal::handle_discovery::resolve_authoritative_recovery_binding_async(
+                self.core, handle,
+            )
+            .await?;
+        Ok(lookup.did)
+    }
+
+    /// Read durable registration hints without exposing secret continuation data.
+    pub async fn pending_registrations_async(
+        &self,
+    ) -> crate::ImResult<Vec<super::PendingIdentityRegistration>> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_registration_pending::PendingRegistrationStore::from_core(
+                &core,
+            )?
+            .summaries(&core.inner().sdk_config().did_domain)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
     pub fn identity_document(
         &self,
         selector: super::IdentitySelector,
@@ -675,6 +706,33 @@ impl<'a> IdentityRegistry<'a> {
         .map_err(|error| crate::ImError::Internal {
             message: error.to_string(),
         })?
+    }
+
+    /// Replace public services through the existing first-party document update
+    /// transaction. Repeating the same input resumes a durable pending update.
+    pub async fn update_services_async(
+        &self,
+        selector: super::IdentitySelector,
+        services: Vec<super::DidDocumentService>,
+    ) -> crate::ImResult<serde_json::Value> {
+        crate::internal::identity_services_update::update(self.core, selector, Some(services)).await
+    }
+
+    /// Resume the original operation without supplying a new service list.
+    pub async fn resume_services_update_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<serde_json::Value> {
+        crate::internal::identity_services_update::update(self.core, selector, None).await
+    }
+
+    pub async fn services_update_pending_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<bool> {
+        let registry = self.load_registry_async().await?;
+        let did = &registry.find_entry(selector)?.summary.did;
+        crate::internal::identity_services_update::has_pending(self.core, did)
     }
 
     pub async fn authorize_daemon_subkey_async(
@@ -938,6 +996,7 @@ impl<'a> IdentityRegistry<'a> {
                 candidate.clone(),
                 authorizing_device_id,
                 &authorizing_signing_key_id,
+                self.core.inner().multi_device_audience(),
                 &|kid, message| {
                     admin_client
                         .runtime()
@@ -1380,6 +1439,7 @@ impl<'a> IdentityRegistry<'a> {
                             did_document.clone(),
                             authorizing_device_id,
                             &authorizing_signing_key_id,
+                            self.core.inner().multi_device_audience(),
                             &|kid, message| {
                                 client
                                     .runtime()
@@ -1664,6 +1724,27 @@ impl<'a> IdentityRegistry<'a> {
         .register_handle_async(request)
         .await
         .map(|result| result.sdk_result)
+    }
+
+    pub async fn creation_capabilities_async(
+        &self,
+    ) -> crate::ImResult<super::IdentityCreationCapabilities> {
+        use crate::internal::transport::AsyncRestTransport;
+        let result = crate::internal::transport::CorePlainTransport::new(self.core)
+            .rest_get(
+                "/user-service/v1/server-info",
+                "GET",
+                &std::collections::BTreeMap::new(),
+            )
+            .await;
+        match result {
+            Ok(value) => super::IdentityCreationCapabilities::from_server_info(&value),
+            Err(crate::ImError::Service {
+                status_code: Some(404),
+                ..
+            }) => super::IdentityCreationCapabilities::from_server_info(&serde_json::json!({})),
+            Err(error) => Err(error),
+        }
     }
 
     #[cfg(feature = "mcp-trusted-registration")]
@@ -2221,24 +2302,27 @@ impl IdentityRegistry<'_> {
                 })?;
         let (local_root_available, local_blocker) =
             local_key_state.unwrap_or_else(|| self.vnext_local_key_state(entry));
-        let (readiness, blocked_reason) =
-            match state.readiness(local_root_available, local_blocker.as_deref()) {
-                crate::internal::identity_device_state::LocalDeviceReadiness::Legacy => {
-                    (super::IdentityDeviceReadiness::Legacy, None)
-                }
-                crate::internal::identity_device_state::LocalDeviceReadiness::MemberReady => {
-                    (super::IdentityDeviceReadiness::MemberReady, None)
-                }
-                crate::internal::identity_device_state::LocalDeviceReadiness::AdminAwaitingRoot => {
-                    (super::IdentityDeviceReadiness::AdminAwaitingRoot, None)
-                }
-                crate::internal::identity_device_state::LocalDeviceReadiness::AdminReady => {
-                    (super::IdentityDeviceReadiness::AdminReady, None)
-                }
-                crate::internal::identity_device_state::LocalDeviceReadiness::Blocked {
-                    reason,
-                } => (super::IdentityDeviceReadiness::Blocked, Some(reason)),
-            };
+        let (readiness, blocked_reason) = match state.readiness_for_did(
+            &entry.summary.did,
+            local_root_available,
+            local_blocker.as_deref(),
+        ) {
+            crate::internal::identity_device_state::LocalDeviceReadiness::Legacy => {
+                (super::IdentityDeviceReadiness::Legacy, None)
+            }
+            crate::internal::identity_device_state::LocalDeviceReadiness::MemberReady => {
+                (super::IdentityDeviceReadiness::MemberReady, None)
+            }
+            crate::internal::identity_device_state::LocalDeviceReadiness::AdminAwaitingRoot => {
+                (super::IdentityDeviceReadiness::AdminAwaitingRoot, None)
+            }
+            crate::internal::identity_device_state::LocalDeviceReadiness::AdminReady => {
+                (super::IdentityDeviceReadiness::AdminReady, None)
+            }
+            crate::internal::identity_device_state::LocalDeviceReadiness::Blocked { reason } => {
+                (super::IdentityDeviceReadiness::Blocked, Some(reason))
+            }
+        };
         Ok(super::IdentityDeviceSummary {
             identity: entry.summary.clone(),
             mode: super::IdentityDeviceMode::VNext,
@@ -3839,7 +3923,7 @@ mod tests {
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id.clone(),
                     },
@@ -4063,7 +4147,7 @@ mod tests {
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                        root_key_id: format!("{}#key-1", did.as_str()),
+                        root_key_id: Some(format!("{}#key-1", did.as_str())),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id.clone(),
                     },
@@ -4599,7 +4683,7 @@ mod tests {
                         jwt_token: "device-token".to_owned(),
                         did_document: Some(generated.did_document.clone()),
                         key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                            root_key_id: generated.root_key_id.clone(),
+                            root_key_id: Some(generated.root_key_id.clone()),
                             device_signing_key_id: signing_key_id.clone(),
                             device_e2ee_key_id: e2ee_key_id.clone(),
                         },
@@ -4810,7 +4894,7 @@ mod tests {
                 jwt_token: "jwt-secret-value".to_owned(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -5212,7 +5296,7 @@ mod tests {
                     jwt_token: "new-anp-token".to_string(),
                     did_document: Some(public.document.into_value()),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                        root_key_id: root_kid,
+                        root_key_id: Some(root_kid),
                         device_signing_key_id: device_kid,
                         device_e2ee_key_id: agreement_kid,
                     },
@@ -5363,7 +5447,7 @@ mod tests {
                     jwt_token: "external-ready-token".to_owned(),
                     did_document: Some(did_document),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                        root_key_id: root_kid,
+                        root_key_id: Some(root_kid),
                         device_signing_key_id: device_kid,
                         device_e2ee_key_id: agreement_kid,
                     },
@@ -5938,7 +6022,7 @@ mod tests {
                 jwt_token: "device-token".to_owned(),
                 did_document: Some(generated.did_document),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id,
+                    root_key_id: Some(generated.root_key_id),
                     device_signing_key_id: signing_key_id.clone(),
                     device_e2ee_key_id: e2ee_key_id.clone(),
                 },

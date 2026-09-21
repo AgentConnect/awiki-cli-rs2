@@ -1,5 +1,60 @@
 use super::*;
 
+#[test]
+fn root_import_plan_additive_schema_preserves_version_and_rows_across_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    {
+        let db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        // Model a complete predecessor store without the optional V2 companion.
+        db.execute_batch("DROP TABLE identity_root_import_plan_v2")
+            .unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), 45);
+        assert!(current_schema_shape_is_complete(&db).unwrap());
+    }
+    {
+        let db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), 45);
+        db.execute(
+            "INSERT INTO identity_root_import_plan_v2 VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            [
+                "owner",
+                "did:wba:example.invalid:owner",
+                "device",
+                "message",
+                "{\"checkpoint\":\"preserve\"}",
+            ],
+        )
+        .unwrap();
+    }
+    let db = Connection::open(&path).unwrap();
+    ensure_schema(&db).unwrap();
+    ensure_schema(&db).unwrap();
+    let row: (String, i64) = db.query_row(
+        "SELECT plan_json, handoff FROM identity_root_import_plan_v2 WHERE owner_identity_id='owner' AND local_device_id='device' AND message_id='message'",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(row, ("{\"checkpoint\":\"preserve\"}".to_owned(), 1));
+    assert_eq!(current_schema_version(&db).unwrap(), 45);
+}
+
+#[test]
+fn root_import_plan_is_not_installed_into_an_unknown_newer_schema() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    db.execute_batch("DROP TABLE identity_root_import_plan_v2")
+        .unwrap();
+    set_schema_version(&db, SCHEMA_VERSION + 1).unwrap();
+    assert!(matches!(
+        ensure_schema(&db),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+    assert!(!has_table(&db, "identity_root_import_plan_v2").unwrap());
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION + 1);
+}
+
 fn upgrade_legacy_schema_for_test(connection: &Connection) -> crate::ImResult<()> {
     let version = current_schema_version(connection)?;
     create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;

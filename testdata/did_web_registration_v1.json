@@ -1,0 +1,116 @@
+{
+  "description": "Public S00 byte fixture copied from awiki-system-test fixtures/did-web-mvp.json (3cd2dbc). No private key or verification credential.",
+  "did_document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://w3id.org/security/data-integrity/v2",
+      "https://w3id.org/security/multikey/v1",
+      "https://w3id.org/security/suites/jws-2020/v1"
+    ],
+    "id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000",
+    "verificationMethod": [
+      {
+        "id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign",
+        "type": "Multikey",
+        "controller": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000",
+        "publicKeyMultibase": "z6MkoVVYiBEdyt2oQJqjem27DdmU4s39XNPSc38mZqyH7zry"
+      },
+      {
+        "id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-ka",
+        "type": "Multikey",
+        "controller": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000",
+        "publicKeyMultibase": "z6LSc5P1XKfzmYQFqq9TbhDStWPV2pzbM57MxnV2uTtpWzLT"
+      }
+    ],
+    "authentication": [
+      "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign"
+    ],
+    "assertionMethod": [
+      "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign"
+    ],
+    "deviceManifest": {
+      "type": "ANPDeviceManifest",
+      "devices": [
+        {
+          "device_id": "device-a",
+          "signing_key_id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign",
+          "e2ee_key_id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-ka",
+          "profiles": [
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.group.base.v2",
+            "anp.direct.e2ee.v2",
+            "anp.group.e2ee.v2",
+            "anp.attachment.v1",
+            "anp.federation.relay.v1"
+          ]
+        }
+      ]
+    },
+    "keyAgreement": [
+      "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-ka"
+    ],
+    "service": [
+      {
+        "id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#messages",
+        "type": "ANPMessageService",
+        "serviceEndpoint": "https://messages.example/anp",
+        "serviceDid": "did:wba:service-wba.example",
+        "profiles": [
+          "anp.core.binding.v1",
+          "anp.identity.discovery.v1",
+          "anp.direct.base.v1",
+          "anp.group.base.v2",
+          "anp.direct.e2ee.v2",
+          "anp.group.e2ee.v2",
+          "anp.attachment.v1",
+          "anp.federation.relay.v1"
+        ],
+        "securityProfiles": [
+          "transport-protected",
+          "direct-e2ee",
+          "group-e2ee"
+        ]
+      }
+    ]
+  },
+  "business_projection": {
+    "contract": "awiki.register.web.v1",
+    "audience": "https://identity.example",
+    "registration_operation_id": "576130a8-8331-4b32-8701-9a82626b559e",
+    "full_handle": "fixture-user.identity.example",
+    "did": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000",
+    "bootstrap_device": {
+      "device_id": "device-a",
+      "signing_key_id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign",
+      "e2ee_key_id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-ka"
+    },
+    "document_hash": "sha256:zl42z2UuUR_M05COv_RLEW_Rbpf25kXHI2KgiMg_iRg",
+    "account": {
+      "phone": null,
+      "email": "fixture-user@example.invalid"
+    },
+    "profile": {
+      "name": "Fixture User",
+      "avatar": null,
+      "role": null,
+      "endpoint_url": null,
+      "description": null,
+      "is_public": false,
+      "is_agent": false
+    },
+    "invite_code_hash": null
+  },
+  "canonical_business_utf8": "{\"account\":{\"email\":\"fixture-user@example.invalid\",\"phone\":null},\"audience\":\"https://identity.example\",\"bootstrap_device\":{\"device_id\":\"device-a\",\"e2ee_key_id\":\"did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-ka\",\"signing_key_id\":\"did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign\"},\"contract\":\"awiki.register.web.v1\",\"did\":\"did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000\",\"document_hash\":\"sha256:zl42z2UuUR_M05COv_RLEW_Rbpf25kXHI2KgiMg_iRg\",\"full_handle\":\"fixture-user.identity.example\",\"invite_code_hash\":null,\"profile\":{\"avatar\":null,\"description\":null,\"endpoint_url\":null,\"is_agent\":false,\"is_public\":false,\"name\":\"Fixture User\",\"role\":null},\"registration_operation_id\":\"576130a8-8331-4b32-8701-9a82626b559e\"}",
+  "request_hash": "6fae2ffcdb29b655c365a68b4bf24ceec13c49391435ad3601ed134c7bee7d41",
+  "bootstrap_proof": {
+    "type": "awiki-device-signature-v1",
+    "key_id": "did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign",
+    "created_at": "2026-09-14T00:00:00Z",
+    "expires_at": "2026-09-14T00:05:00Z",
+    "nonce": "fixture-bootstrap-nonce-0001",
+    "signature": "ivGS1wWrwpDQpXUCFWR8DlceiNgNhLVOOTHbz--vfBbqIGnm3z15y4XJbXm37W44JTsg9qvvmfAGQsZqy0BXCg"
+  },
+  "canonical_signing_utf8": "{\"audience\":\"https://identity.example\",\"created_at\":\"2026-09-14T00:00:00Z\",\"expires_at\":\"2026-09-14T00:05:00Z\",\"key_id\":\"did:web:identity.example:awiki:web:123e4567e89b42d3a456426614174000#device-a-sign\",\"method\":\"register\",\"nonce\":\"fixture-bootstrap-nonce-0001\",\"operation_id\":\"576130a8-8331-4b32-8701-9a82626b559e\",\"purpose\":\"awiki.identity.register.web.v1\",\"request_hash\":\"6fae2ffcdb29b655c365a68b4bf24ceec13c49391435ad3601ed134c7bee7d41\",\"type\":\"awiki-device-signature-v1\"}"
+}

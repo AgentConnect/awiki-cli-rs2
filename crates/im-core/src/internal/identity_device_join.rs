@@ -41,6 +41,11 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
+pub(crate) mod document_convergence;
+pub(crate) mod management;
+
+pub(crate) mod web_activation;
+
 const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
@@ -138,6 +143,10 @@ struct DecryptedJoinChallenge {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct StoredAdminApproval {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    management_task: Option<crate::internal::identity_join_management::ManagementTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    management_proof: Option<DeviceJoinObjectProof>,
     operation_id: String,
     input_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +164,7 @@ struct StoredAdminApproval {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedAdminApproval {
+    pub(crate) configure_management: bool,
     pub(crate) operation_id: String,
     pub(crate) join_session_id: String,
     pub(crate) expected_checkpoint:
@@ -469,10 +479,7 @@ pub(crate) async fn start(
         signing_public_key: signing_method,
         e2ee_public_key: e2ee_method,
         pairing_public_key,
-        profiles: DEVICE_JOIN_VNEXT_PROFILES
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        profiles: join_device_profiles(request.did.as_str()),
         requested_role: "member".to_owned(),
         issued_at: format_time(now)?,
         expires_at: format_time(expires_at)?,
@@ -1477,30 +1484,39 @@ pub(crate) fn prepare_admin_approval(
             "join_request.e2ee_public_key",
         )?
         .to_owned(),
-        profiles: DEVICE_JOIN_VNEXT_PROFILES
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        profiles: stored.join_request.profiles.clone(),
     };
-    let mut new_document = anp::authentication::add_device_to_did_document(
-        &current_document,
-        &root_key_id,
-        &device,
-        &stored.join_request.signing_public_key,
-        &stored.join_request.e2ee_public_key,
-        &[],
-    )
+    let mut new_document = if stored.join_request.did.starts_with("did:web:") {
+        anp::authentication::add_device_to_web_did_document(
+            &current_document,
+            &device,
+            &stored.join_request.signing_public_key,
+            &stored.join_request.e2ee_public_key,
+            &[],
+        )
+    } else {
+        anp::authentication::add_device_to_did_document(
+            &current_document,
+            &root_key_id,
+            &device,
+            &stored.join_request.signing_public_key,
+            &stored.join_request.e2ee_public_key,
+            &[],
+        )
+    }
     .map_err(|error| {
         crate::ImError::invalid_input(
             Some("new_document".to_owned()),
             format!("cannot add Join device to DID Document: {error}"),
         )
     })?;
-    crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-        &mut new_document,
-        &crate::ids::Did::parse(&stored.join_request.did)?,
-        client.runtime().key_provider.as_ref(),
-    )?;
+    if !stored.join_request.did.starts_with("did:web:") {
+        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
+            &mut new_document,
+            &crate::ids::Did::parse(&stored.join_request.did)?,
+            client.runtime().key_provider.as_ref(),
+        )?;
+    }
     validate_authorized_document(&stored.join_request, &new_document)?;
     let response = stored
         .response
@@ -1532,6 +1548,8 @@ pub(crate) fn prepare_admin_approval(
         &created_at,
     )?;
     let approval = StoredAdminApproval {
+        management_task: None,
+        management_proof: None,
         operation_id,
         input_hash,
         provider_document_change_operation_id: None,
@@ -1555,6 +1573,27 @@ pub(crate) async fn prepare_admin_approval_async(
     expected_checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
     user_presence_at: &str,
     sas_confirmed: bool,
+) -> crate::ImResult<PreparedAdminApproval> {
+    prepare_admin_approval_with_management_async(
+        core,
+        operation_id,
+        join_session_id,
+        expected_checkpoint,
+        user_presence_at,
+        sas_confirmed,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn prepare_admin_approval_with_management_async(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+    join_session_id: &str,
+    expected_checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    user_presence_at: &str,
+    sas_confirmed: bool,
+    configure_management: bool,
 ) -> crate::ImResult<PreparedAdminApproval> {
     let operation_id = required("operation_id", operation_id)?;
     let join_session_id = required("join_session_id", join_session_id)?;
@@ -1601,7 +1640,10 @@ pub(crate) async fn prepare_admin_approval_async(
                 .approval
                 .as_ref()
                 .ok_or_else(|| invalid_state("prepared approval missing"))?;
-            if approval.operation_id != operation_id || approval.input_hash != input_hash {
+            if approval.operation_id != operation_id
+                || approval.input_hash != input_hash
+                || approval.management_task.is_some() != configure_management
+            {
                 return Err(idempotency_conflict("prepare_admin_approval"));
             }
             return prepared_approval_result(&stored, approval);
@@ -1622,6 +1664,11 @@ pub(crate) async fn prepare_admin_approval_async(
     )
     .await?;
     if client.runtime().identity_session.is_none() {
+        if configure_management {
+            return Err(crate::ImError::UnsupportedCapability {
+                capability: "device_join_automatic_management".to_owned(),
+            });
+        }
         return prepare_admin_approval(
             core,
             &operation_id,
@@ -1669,7 +1716,7 @@ pub(crate) async fn prepare_admin_approval_async(
                         "kid": agreement_key_id,
                         "publicKeyMultibase": agreement_public_key,
                     },
-                    "profiles": DEVICE_JOIN_VNEXT_PROFILES,
+                    "profiles": snapshot.join_request.profiles,
                 },
             }],
         }),
@@ -1705,7 +1752,10 @@ pub(crate) async fn prepare_admin_approval_async(
         &format_time(OffsetDateTime::now_utc())?,
     )
     .await?;
-    let approval = StoredAdminApproval {
+    let mut approval = StoredAdminApproval {
+        management_task: configure_management
+            .then(crate::internal::identity_join_management::ManagementTask::authorized),
+        management_proof: None,
         operation_id,
         input_hash,
         provider_document_change_operation_id: Some(provider_document_change_operation_id),
@@ -1716,6 +1766,17 @@ pub(crate) async fn prepare_admin_approval_async(
         authorizing_device_id: admin_device_id,
         proof,
     };
+    if configure_management {
+        approval.management_proof = Some(
+            sign_object_proof_async(
+                &client,
+                &admin_signing_key_id,
+                &management::authorization_payload(&snapshot, &approval)?,
+                &approval.pairing_confirmation.user_presence_at,
+            )
+            .await?,
+        );
+    }
     let _guard = lock_join_state(core)?;
     let store = JoinStateStore::new(core);
     let mut stored = store
@@ -2795,6 +2856,20 @@ fn promote_join_identity_local(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    if pending.did.as_str().starts_with("did:web:") {
+        crate::internal::access_token::validate_device_access_token(
+            &access.access_token,
+            &crate::internal::access_token::ExpectedDeviceAccess {
+                did: pending.did.as_str(),
+                user_id: &access.user_id,
+                device_id: &pending.authorization.device.device_id,
+                key_id: &pending.authorization.device.signing_key_id,
+                auth_generation: pending.authorization.device.auth_generation,
+                role: pending.authorization.device.role,
+                management_ready: false,
+            },
+        )?;
+    }
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
         IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
@@ -2837,22 +2912,25 @@ fn promote_join_identity_local(
         return Err(crate::ImError::PermissionDenied);
     }
 
-    let root_key_id = format!("{}#key-1", did.as_str());
-    let root_method = pending
-        .resolved_document
-        .get("verificationMethod")
-        .and_then(Value::as_array)
-        .and_then(|methods| {
-            methods.iter().find(|method| {
-                method.get("id").and_then(Value::as_str) == Some(root_key_id.as_str())
+    let root_key_id =
+        (!did.as_str().starts_with("did:web:")).then(|| format!("{}#key-1", did.as_str()));
+    if let Some(root_key_id) = root_key_id.as_ref() {
+        let root_method = pending
+            .resolved_document
+            .get("verificationMethod")
+            .and_then(Value::as_array)
+            .and_then(|methods| {
+                methods.iter().find(|method| {
+                    method.get("id").and_then(Value::as_str) == Some(root_key_id.as_str())
+                })
             })
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if !matches!(
-        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?,
-        anp::PublicKeyMaterial::Ed25519(_)
-    ) {
-        return Err(crate::ImError::PermissionDenied);
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if !matches!(
+            crate::internal::identity_wire::document::extract_identity_public_key(root_method)?,
+            anp::PublicKeyMaterial::Ed25519(_)
+        ) {
+            return Err(crate::ImError::PermissionDenied);
+        }
     }
     let projection_storage =
         crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
@@ -3075,8 +3153,12 @@ fn promote_join_identity_local(
             &pending.authorization,
         );
     }
-    let (local_alias, handle, full_handle, make_default) =
-        join_local_identity_projection(&did, &stored.join_request.device_id, &index)?;
+    let (local_alias, handle, full_handle, make_default) = join_local_identity_projection(
+        &did,
+        &stored.join_request.device_id,
+        &index,
+        access.handle_binding.as_ref(),
+    )?;
     ensure_existing_join_identity_is_rootless(&index, &local_alias, &did, &pending.authorization)?;
     let unique_id =
         crate::internal::identity_join_activation_pending::identity_suffix(&pending.did);
@@ -3089,7 +3171,10 @@ fn promote_join_identity_local(
             display_name: handle.clone(),
             handle,
             full_handle,
-            binding_generation: None,
+            binding_generation: access
+                .handle_binding
+                .as_ref()
+                .map(|binding| binding.binding_generation.clone()),
             jwt_token: access.access_token.clone(),
             did_document: Some(pending.resolved_document.clone()),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
@@ -3147,7 +3232,7 @@ fn promote_retired_registration_join_identity(
     identity_store: &crate::internal::identity_store::IdentityStore<'_>,
     index: &crate::internal::identity_store::IndexPayload,
     projection_storage: crate::internal::identity_store::AnpIdentityProjectionStorage,
-    root_key_id: String,
+    root_key_id: Option<String>,
     rollover: crate::internal::identity_registration_retired_join::RetiredJoinRollover,
 ) -> crate::ImResult<()> {
     if rollover.join_session_id != stored.join_request.join_session_id
@@ -3189,8 +3274,12 @@ fn promote_retired_registration_join_identity(
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        let (local_alias, handle, full_handle, make_default) =
-            join_local_identity_projection(&pending.did, &stored.join_request.device_id, index)?;
+        let (local_alias, handle, full_handle, make_default) = join_local_identity_projection(
+            &pending.did,
+            &stored.join_request.device_id,
+            index,
+            None,
+        )?;
         if full_handle != rollover.handle {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -3289,6 +3378,7 @@ fn join_local_identity_projection(
     did: &crate::ids::Did,
     device_id: &str,
     index: &crate::internal::identity_store::IndexPayload,
+    web_binding: Option<&crate::internal::identity_device_join_runtime::DeviceJoinHandleBinding>,
 ) -> crate::ImResult<(String, String, String, bool)> {
     let existing = index
         .credentials
@@ -3298,21 +3388,36 @@ fn join_local_identity_projection(
     if existing.len() > 1 {
         return Err(crate::ImError::PermissionDenied);
     }
-    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
-    let rest = did
-        .as_str()
-        .strip_prefix(&format!("did:wba:{domain}:"))
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let components = rest.split(':').collect::<Vec<_>>();
-    if components.len() != 3
-        || components[0] != "user"
-        || components[1].trim().is_empty()
-        || !components[2].starts_with("e1_")
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let handle = components[1].to_ascii_lowercase();
-    let full_handle = format!("{handle}.{domain}");
+    let (handle, full_handle) = if did.as_str().starts_with("did:web:") {
+        let binding = web_binding.ok_or(crate::ImError::PermissionDenied)?;
+        let handle = crate::ids::Handle::parse(&binding.full_handle, "")?;
+        let (local, _) = handle
+            .as_str()
+            .split_once('.')
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if binding.binding_generation.trim().is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        (local.to_owned(), handle.as_str().to_owned())
+    } else {
+        let domain =
+            crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+        let rest = did
+            .as_str()
+            .strip_prefix(&format!("did:wba:{domain}:"))
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let components = rest.split(':').collect::<Vec<_>>();
+        if components.len() != 3
+            || components[0] != "user"
+            || components[1].trim().is_empty()
+            || !components[2].starts_with("e1_")
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let handle = components[1].to_ascii_lowercase();
+        let full_handle = format!("{handle}.{domain}");
+        (handle, full_handle)
+    };
     if let Some((alias, _)) = existing.first() {
         return Ok(((*alias).clone(), handle, full_handle, false));
     }
@@ -3859,6 +3964,7 @@ fn prepared_approval_result(
     approval: &StoredAdminApproval,
 ) -> crate::ImResult<PreparedAdminApproval> {
     Ok(PreparedAdminApproval {
+        configure_management: approval.management_task.is_some(),
         operation_id: approval.operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
         expected_checkpoint: approval.expected_checkpoint.clone(),
@@ -3965,7 +4071,7 @@ fn validate_authorized_document(
     did_document: &Value,
 ) -> crate::ImResult<()> {
     if did_document.get("id").and_then(Value::as_str) != Some(join_request.did.as_str())
-        || !anp::authentication::validate_did_document_binding(did_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(did_document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -3987,11 +4093,7 @@ fn validate_authorized_document(
         .ok_or(crate::ImError::PermissionDenied)?;
     if entry.signing_key_id != signing_key_id
         || entry.e2ee_key_id != e2ee_key_id
-        || entry.profiles
-            != DEVICE_JOIN_VNEXT_PROFILES
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect::<Vec<_>>()
+        || entry.profiles != join_request.profiles
         || !document_method_matches_request(
             did_document,
             signing_key_id,
@@ -4307,7 +4409,7 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
             "new devices must request member role",
         ));
     }
-    if !join_profiles_are_supported(&request.profiles) {
+    if !join_profiles_are_supported(request.did.as_str(), &request.profiles) {
         return Err(crate::ImError::invalid_input(
             Some("join_request.profiles".to_owned()),
             "Join Request must use the complete AWiki vNext device Profile closure",
@@ -4374,8 +4476,24 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
         .map_err(|_| crate::ImError::PermissionDenied)
 }
 
-fn join_profiles_are_supported(profiles: &[String]) -> bool {
-    profiles == DEVICE_JOIN_VNEXT_PROFILES || profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+pub(crate) fn join_device_profiles(did: &str) -> Vec<String> {
+    if did.starts_with("did:web:") {
+        crate::internal::identity_generation::web_device_profiles()
+    } else {
+        DEVICE_JOIN_VNEXT_PROFILES
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect()
+    }
+}
+
+pub(crate) fn join_profiles_are_supported(did: &str, profiles: &[String]) -> bool {
+    if did.starts_with("did:web:") {
+        let current = join_device_profiles(did);
+        profiles == current || profiles == &current[..6]
+    } else {
+        profiles == DEVICE_JOIN_VNEXT_PROFILES || profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+    }
 }
 
 fn validate_method_binding(
@@ -4614,7 +4732,7 @@ pub(crate) async fn complete_provider_document_change(
         return Err(crate::ImError::PermissionDenied);
     }
     let provider_document_digest = candidate.candidate_digest;
-    let evidence = crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+    let mut evidence = crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
         document: document.clone(),
         evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
             document_version: checkpoint.document_version,
@@ -4628,6 +4746,10 @@ pub(crate) async fn complete_provider_document_change(
         .map_err(crate::internal::identity_provider::map_provider_error)?
         == crate::internal::identity_provider::ProviderDocumentChangePhase::PublicationUncertain
     {
+        // Reconciliation consumes a verified remote document, whose digest
+        // includes the canonical sha256: prefix. Candidate publication uses
+        // the provider's own opaque candidate digest above.
+        evidence.evidence.document_digest = expected_digest;
         change
             .reconcile(evidence)
             .await
@@ -4719,7 +4841,7 @@ fn validate_current_document(
 ) -> crate::ImResult<()> {
     if did_document.get("id").and_then(Value::as_str) != Some(did)
         || canonical_hash(did_document)? != expected_hash
-        || !anp::authentication::validate_did_document_binding(did_document, true)
+        || !crate::internal::identity_wire::document::validate_control_document_method(did_document)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -5061,7 +5183,7 @@ fn public_key_bytes(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<Vec<
     }
 }
 
-fn document_public_key_bytes(document: &Value, kid: &str) -> crate::ImResult<Vec<u8>> {
+pub(crate) fn document_public_key_bytes(document: &Value, kid: &str) -> crate::ImResult<Vec<u8>> {
     let mut matches = document
         .get("verificationMethod")
         .and_then(Value::as_array)
@@ -5551,6 +5673,7 @@ impl<'a> JoinStateStore<'a> {
                 }
             }
         }
+        management::validate_authority(&stored)?;
         Ok(stored)
     }
 

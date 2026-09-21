@@ -1,5 +1,20 @@
 # im-core SDK Architecture
 
+## 一次 Join 授权自动配置管理权限（2026-09-15）
+
+App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。
+
+Core 在发送批准请求前，将自动任务随该 Join 的既有持久化批准记录保存，绑定 owner、DID、Join、目标设备和签名/E2EE 公钥、源管理设备及已批准文档。服务端批准响应丢失时，只能由已验证批准结果/通知恢复任务。自动尝试状态归 Core，发送原消息/密文仍复用既有 sender ledger 与 P5 pending outbound，不复制密码学实现。
+
+首次立即尝试，包括 PreKey 未就绪在内最多四次（首次发送加最多三次重试）；每次可重试失败结束后持久化五秒后的下次时间。尝试先记账后发网，崩溃不返还预算；恢复中的未完成尝试先对账，并保守等待五秒。跨进程文件锁覆盖整个推进轮次，防止实时线程、同步与恢复重叠。网络操作有独立超时，不把五秒作为整个操作超时。
+
+发送接受后停止发送重试，等待原接收端 pending root、完成证明、Registry 登记、本地 root 激活和认证更新链路。发送端只能报告服务端管理登记，不能据此声明接收端本地 root 已激活。四次耗尽显示“设备已加入，管理权限配置失败”；显式重试先对账接受/登记状态，才允许新一轮预算。撤销、设备/密钥变化、身份/签名验证失败终止任务。进程退出保留状态，不承诺退出后仍发网；长期离线保持等待，无任意失败期限。
+
+无秘密投影只包含 Join/设备 ID、阶段、尝试次数、下次尝试时间、稳定错误码；不暴露 root、密文、proof 或自动授权 handle。真实四方向及第三台设备批准证据属于后续真实环境验收，不由本地测试代替。
+
+
+加入请求列表补收历史终态通知时，若初始请求已过期且本机没有该会话绑定，则保留已验证通知存储但不投影为可操作请求；缺少绑定的非终态通知仍报错。单条历史终态不得阻断其他有效加入请求。
+
 ## 1. Positioning
 
 `crates/im-core` is the reusable Rust IM SDK for awiki. It owns product capabilities that used to be spread through the CLI: identity, auth/session, directory, messages, groups, attachments, secure, realtime, email, content/site, and local state.
@@ -80,6 +95,10 @@ Rules:
 - CLI credential names map to `IdentitySelector::LocalAlias`.
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
+
+### 管理设备接续兄弟设备发布的文档
+
+新 Join 的 challenge 准备前，若本地 DID 文档落后于认证 Registry，Core 解析并验真远端文档，再以独立的 sibling convergence 权限同步 controller custody 和本地投影。必须保持 DID、根密钥、本机 signing/E2EE 密钥及 auth generation 不变，本机在 Registry 仍为 active/admin/management_ready，文档和 Registry checkpoint 均不可回退。Provider 必须没有 pending document change，并在原子 adoption 中执行根指纹、当前 generation 和本机密钥授权检查；不借用 Recovery 或已确认 Join 的 pending publication 权限。旧 custody 无此保证时失败关闭。成功后重新打开 client，仍按原有精确文档摘要检查准备 challenge；同步不发送根密钥，也不批准 Join。
 
 ### 4.2 Manifest Handle Recovery boundary
 
@@ -242,6 +261,55 @@ checkpoint, Registry, and the first ready admin. The existing registration
 result returns one access token; it does not return a device refresh token.
 There is no production `device_genesis`, Genesis grant, or multi-device
 registration rollout branch.
+
+P6 同步文档读取进入 Web 网络解析时，在已有 Tokio 上下文外执行 SDK 同步解析，
+避免异步注册/消息流程嵌套运行时；仍使用 SDK 的严格 TLS、解析目标和资源限制。
+
+创建能力使用未认证 HTTP GET 读取 Server Info 的 `identity.did_methods`，按 `{id, create}`
+仅展示允许新建的方法；旧字符串列表和字段缺失保持兼容，重复/混合/缺少 create 的新格式拒绝。
+
+Web 创建和 Join 的 Profile 顺序直接对照 `testdata/did_web_registration_v1.json` 的冻结合同；
+不从旧 WBA 列表替换单项推导，避免已提交文档被设备认证拒绝。
+
+普通 phone/email 注册可显式选择 `DidMethod::Web`；默认仍为 WBA。托管 Web
+使用独立 UUID 路径、一个 bootstrap device 的 signing/E2EE keys 与当前 Manifest
+Profile，不生成 DID RootControl 或 WBA 根 proof。Store 的加密根仍保留。身份
+provider 的根能力与根指纹分别返回 `Absent` 和空引用；这不决定产品管理员权限。
+首个 Web admin 的管理权限来自服务端 Registry，加入设备仍为 member。
+
+Web 注册沿用同一 `register` RPC，Core 在首次请求前把方法、注册操作 UUID、完整
+候选和稳定业务摘要保存到既有加密 pending。设备 bootstrap proof 绑定部署 audience、
+操作 ID 与完整业务投影，每次重试生成新鲜 nonce；OTP 和 proof 不进入稳定摘要。
+schema 2 的 WBA pending 保持可读，未知版本或方法/根引用不一致时拒绝继续。
+该能力不包括 Web 控制权丢失恢复、Root Import 或全设备换钥。
+
+Web 注册结果确认同时需要精确注册操作的权威业务事实和当前设备资格；公开文档或
+历史成功不单独授权本地激活。原候选保留作幂等绑定，当前文档观察与检查点另存，
+并在本地提交前再次取得 exact-device Token 和当前 Registry。Identity Store 只接受
+仍包含原公钥的单调文档观察；后续合法设备/非设备更新不能被原注册候选覆盖。
+Web 管理 DeviceProof 增加受控 audience，保留完整 params 中的业务文档；WBA 字节不变。
+Web member 的合法消息 Token 仅需要 `device:read` 与 `message:connect`，不能包含管理
+或 Root Import scope。Core readiness 区分方法是否需要根能力，不把 Web root absent
+解释为管理员需要 Root Import。
+
+Web 新设备在本地业务激活前，用精确 enrollment 的设备键完成固定的 `get_me`、
+`device_join_status(join_session_id)` 和 `device_registry_get` 读取。该 signer 只存在于
+Core 的恢复调用链，pending 身份的普通签名仍被 Identity Store 拒绝；这些认证请求
+禁止重定向。会话的 consumed 授权证明历史提交，当前 Registry、Manifest 和本地双
+公钥另行证明当前资格。后续合法文档更新允许继续，撤销、换键、回退或无法查询则保留
+恢复点。即使 custody 已激活但本地业务提交中断，重启也重新查询，不复用过期 Token
+作为激活权限。Handle 来自当前文档声明和权威 WNS 绑定，不从 Web DID 的路径推导。
+
+Core 的 HTTP feature 启用 SDK 的 network resolver，Web 的实际解析统一采用严格
+HTTPS URL、公共地址检查及 DNS 固定、禁止重定向、TLS 验证和文档大小/时间限制。
+Web 不使用 Core 的普通 JSON GET 作为生产解析器；测试仍保留明确的方法 transport
+替身。该公共解析路径不继承 Host 的私有 CA 或测试 base URL override。
+
+Web `device_revoke` 的 Vault 意图继续由既有撤销模块持有。未知结果必须重试精确
+operation，不从当前移除状态推定结果，也不因单次版本冲突删除恢复点。历史成功与
+当前资格分别校验：先确认原候选在原 checkpoint 提交，再单调采用当前文档和 Registry。
+本机管理员双 KID、公钥及 generation 必须保持有效；先完成 custody 后本地写入失败
+仍保留意图，重启不能将当前文档回退至撤销时的版本。WBA 保持原有恢复语义。
 
 A local encrypted pending-registration record may preserve generated key
 material and the exact operation across an ambiguous network result. It is only
@@ -668,6 +736,8 @@ later phase, without regressing it; mismatched bindings or terminal states remai
 conflicts. Network awaits are followed by a fresh coordinator read. A local
 completion conflict is not reported as revoked device permission.
 
+已完成的 Root 导入在消息读取时再次恢复，必须保留之后合法加入、撤销设备所提交的当前文档与 checkpoint。只有本机仍为同一 active/admin/management_ready 设备、auth generation 与已确认晋升一致、文档与 Registry 版本均不低于导入记录时，才使用已验证的当前 checkpoint；同版本换摘要、任一计数回退或撤销状态均拒绝。当前文档仍须匹配本地 checkpoint，并由原 custody 身份核验根指纹和 active Root 能力。历史回执不能覆盖新文档，也不能重新激活已撤销设备；原有初次晋升和崩溃恢复继续使用精确导入回执。
+
 There is no root-specific delivery class, private completion sidecar, encrypted
 imported ACK, ACK-driven readiness, empty-Init phase, or root-transfer rollout
 state machine in the target architecture. P5 Reply only converges the standard
@@ -700,6 +770,14 @@ ciphertext once, independent of the number of group Leaves. A group attachment
 is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
+
+本 workspace 对 OpenMLS 0.8 单独设置 dev/test `debug-assertions = false`：该依赖在
+合法检测到 AEAD tag 错误后含无条件 debug assertion，开启时会先 panic，无法返回原有
+`AeadError`。此设置保留实际解密、签名和 AAD 校验，让恶意密文正常拒绝；其他依赖及
+Core 的 debug assertions 不受影响，release 行为不变。直接消费 Rust crate 的其他
+workspace 需在自身构建根采用相同设置，Cargo 不继承依赖仓库的 profile。
+WBA/Web 现有 P5/P6 产品测试覆盖 AAD、密文篡改拒绝及随后原报文仍能成功解密；P6
+负例重新签署外层 origin proof，确保实际进入 MLS 校验。
 
 P6 的本地 MLS OwnerScope 每次都从 identity index 中当前 `active` 的 vNext
 device authorization 读取 `ProtocolDeviceId`。重启或重建 `ImClient` 后仍使用同一
@@ -961,7 +1039,9 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 
 `messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit user-open creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. Successful active Group create/join/get/add-member/refresh projection also idempotently ensures that same canonical Group DID registry row inside Core, so an empty Group conversation does not depend on an App navigation callback or first message to remain visible. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations represented by verified routes, Group projections, summaries, or preserved legacy rows and never invents an identity from display data.
 
-Every fresh Handle discovery path must receive an available authority status and a stable non-DID `user_id`/`subject_id` before it can build a Direct Persona. Both local directory lookup and public `/.well-known/handle/` discovery validate the same authority/subject/Handle contract, and public discovery additionally verifies that its `did:wba` provider domain matches the Handle authority; a missing or DID-shaped subject returns `identity_unresolved` instead of manufacturing a canonical Direct ID.
+Every fresh Handle discovery path must receive an active authority binding before it can build a Direct Persona. Local Directory retains the stable non-DID account subject; public `/.well-known/handle/` discovery uses the permanent normalized full Handle as its authority subject and ignores provider-private account IDs. Public WNS requires the exact Handle, current DID and canonical positive binding generation. WBA retains its matching DID/Provider domain requirement. Web uses the secure method resolver and requires the DID document to declare an `ANPHandleService` HTTPS endpoint on the real Handle Provider domain (default port, no credentials); its DID host may differ. Invalid document IDs or present proofs fail closed. A DID change alone never grants continuity or merges a Persona; local Directory/public WNS conflicts still fail closed.
+
+公网 Handle 的普通 Direct 解析在 WNS/文档验证通过后，使用同一 Directory 投影事务保存 owner 隔离的 Persona、标识和 route，再返回发送目标。同步与异步入口一致，重开 Core 后仍可用该绑定处理入站消息；不需要临时本域 Handle 或 shadow 授予身份。无 Handle 的 DID 仍可完成普通密码学认证，但不能凭 DID 路径生成 Persona。该投影不写消息，不改变注册、设备管理或群/附件授权。
 
 `ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
 
@@ -1638,12 +1718,17 @@ Core accepts only delivery rows/hints carrying the trusted server-side
 route. Exact-device routing is Message Service storage/delivery metadata and authenticated Inbox
 scope; it is not a P3 field and must not add `device_id`, `recipient_device_id`, or another
 device-targeting extension to P3 `meta`. P3 keeps the standard agent-DID target only. Full
-deliveries are verified against the target user's freshly resolved, root-bound DID
+deliveries are verified against the target user's freshly resolved, method-validated DID
 Document and its unique compatible `ANPMessageService.serviceDid`. That service DID anchors only
 the trusted Home Service domain. `meta.sender_did` must instead use the reserved independent
 `did:wba:<home-domain>:agents:system-notification:e1_*` Business Origin Agent path; Core resolves
 that exact DID, verifies its E1-bound DID Document proof, and verifies its RFC 9421 Origin Proof.
 Join Request self-proof and the closed type-specific payload are verified separately.
+Web recipient documents use the secure Web resolver without requiring an E1 root
+proof. Join notifications share the method-specific Join profile contract: Web
+uses the frozen vNext profiles, while WBA retains its existing compatibility sets.
+The independent system Origin Agent keeps its reserved WBA path and E1 proof;
+an arbitrary external Web service does not gain system notification authority.
 
 Schema version 29 stores an event receipt and one current reducer projection per
 `(owner_identity_id, owner_did, did, join_session_id)`. The reducer uses
@@ -1700,3 +1785,42 @@ Conversation-level read state is separate from reliable sync checkpoints:
 本地投影/后续 JWT/PreKey 前重新核对权威绑定；网络错误、相同/倒退代次、单次 401/403 都不授权关闭。可重试失败仍保留原操作，已证明旧绑定失效返回稳定 `local_transition_superseded`，不再执行旧本地写入。后续用户可从已有 Join 入口加入当前身份，或按 Core 允许的显式新 Recovery/删除流程操作；不把旧完成记录当作可登录凭证。相同 DID 的单设备撤权分支只在 exact-device 授权拒绝后进行一次有界对账，当前 root-verified E1 文档必须证明已移除本次初始 bootstrap key。原始签名文档、当前签名文档或绑定不闭合时保持 pending。该分支已具备 Core 单元证据，真实多设备撤权验收仍须单独取得，不能用更高 WNS 代次的通过冒充。
 
 已解析并按冻结 intent 校验的 Commit/Result Get 成功结果，必须先落 Vault committed journal 和 operation index，再在本地 transition 阶段确认 custody publication。WNS 代次检查位于该 custody 确认及本地迁移之前。`record_nonterminal_error` 接受四种活跃 lifecycle（含 remote_committed/local_transition_pending），不把本地可重试失败二次覆盖为索引 PermissionDenied；终态仍不允许写入普通重试错误。
+
+### 自动管理授权的本地完整性与 Registry-only 收敛
+
+自动任务的授权意图使用源设备签名，绑定稳定 owner、DID、Join request hash、目标设备、源设备、批准 operation、pairing confirmation、预期 checkpoint 和完整批准文档摘要。任务标志本身不是授权；读取旧普通 Join 后伪造管理标志会被签名校验拒绝。可变尝试账本仍受既有原子文件存储与 worker 排他保护，不能声称抵抗拥有完整本地状态回滚权限的攻击者。
+
+发送前保留原有 checkpoint 精确相等校验。只有已经由本机确认的同一完整文档、相同文档版本/摘要、未回退的 Registry 版本，以及仍匹配本地源设备 key/auth generation 的 active admin 和 active 目标，才能复用既有 DeviceJoin custody adoption 同步 Registry-only 前移。不同文档、回退、缺失/不合格设备均失败关闭，不扩大到非本地 pending 文档的 adoption。
+
+## Root导入/完成V2时效与恢复
+
+新自动 Join 与独立手动发送统一复用 V1，省略 completion_contract 字段，保持旧接收端与旧 User Service 的请求合同。正常 Join/SAS 授权后无需第二次 Root 发送审批；总计最多尝试四次（最多重试三次），间隔五秒。V1 必须在原 600 秒窗口内完成导入，已接受但超时同样报告过期，不另建消息或重置预算。
+
+V2 离线增强作为独立能力评审，不是自动发送的依赖；保留已有 V2 消息的接收、恢复和完成支持。历史 pending/accepted 原 message 与密文不重建。发送账本为新消息记录非秘密 completion_contract=v1；历史空值保留原恢复行为，不能据此声称旧记录实际使用 V2。未知或显式 null 的线协议合同仍拒绝，不让 Root 进入普通 JSON 解析。
+
+V2原消息仍须在600秒投递窗口内被接受；接收端可在原checkpoint/设备/密钥/权限仍完全一致时延迟导入。真实首次导入操作开始时间在provider调用前原子保存，provider内部seal时刻仍归provider日志。无秘密identity_root_import_plan_v2绑定owner/DID/device/message、加密输入/route摘要和全部原身份事实。provider后/handoff前崩溃复用原计划与evidence；handoff与计划阶段同事务，所有接收/恢复入口共享OS锁。
+
+completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；只有原请求重放明确返回expired后，才CAS保存同nonce/imported_at/原checkpoint的新证明。服务端稳定intent键与锁内时钟保证旧/新证明并发只晋升一次。发送接受不代表本地Root active；现有token/Registry/pending-to-active确认链保持。服务端接口见User Service docs/api/root-import-completion-v2.md。
+
+自动管理任务在 P5 密文与 pending 账本的同一事务内记录非秘密发送 checkpoint。当前可信 Registry 与该 checkpoint 不一致且目标尚未成为 active admin 时，任务以 `root_transfer.delivery_invalidated` 结束，提示撤销成员后重新加入；不重新发送已接受的密文，不重置四次预算，不放宽接收校验。目标已管理就绪优先判定成功，因为晋升本身会推进 Registry。旧账本缺少此字段时不猜测发送版本，保留原状态并明确旧现场尚不能自动诊断。
+
+已可信确认的 `delivery_invalidated` 是持久失败：后续网络/本地读取暂时失败或返回未晋升，不能将其改回 waiting 或清除重新加入提示；显式重试也不能重置它。仅权威 Registry 已证明目标管理就绪时收敛为成功。
+
+新自动管理授权固定最多四次尝试（首次加三次重试），失败间隔五秒。次数上限随任务持久化并绑定授权签名；历史无上限字段的任务按原三次恢复，不能在升级时静默扩大已签名权限。
+
+### 保持原字段含义的 Root completion 扩展
+
+纯 V1 字段、校验和默认发送不变。明确声明 `awiki.device.root-key-import-complete.extensions.v1` 的 envelope 使用独立扩展完成合同：外层及 statement 保留 V1 type，增加 completion_contract；expires_at 恒为原 envelope 期限，独立 completion_proof_expires_at 表示完成证明有效期。刷新只能更新证明时间/期限与签名，原 expires_at、导入时间、nonce 和身份事实不可变。历史 V2 不改写、不降级，继续按原合同恢复。
+
+旧接收端与旧服务端采用 closed schema，不能假定忽略新增字段。当前所有生产发送入口继续发纯 V1；未接入可信 exact-device 与服务端能力协商前不启用扩展发送，不能凭 V2 支持或版本号推断支持本扩展。新扩展仅提供显式输入的接收/恢复能力；仍需真实混合版本验收。
+
+### 根导入完成计划的追加兼容存储
+
+`identity_root_import_plan_v2` 是历史 V2/extensions 接收恢复的无私钥伴随表，默认纯 V1 导入不冻结该计划。schema 45 的旧完整库可在打开时追加该表；已有计划和 handoff 标记重复重开后保留。它不改变既有必需表的字段含义，因此本轮不强制提升 schema 版本；未知更新版本仍在追加 DDL 前拒绝。此约定不表示旧二进制能续跑新完成合同；完整旧二进制回滚须另验，未来不兼容结构改动须进入版本迁移。
+
+普通 Group 附件下载缓存保留 P4 history 的 `message_id` 作为授权 wire ID，公共时间线仍使用
+`group_did:group_event_seq`。若有显式 `raw_message_id` 则优先保留；P5 与 P6 的已有授权 ID
+规则不变。不能因缓存投影只留下时间线 ID，向服务端请求不存在的普通附件 grant。
+普通 P4 history 没有安全档位字段时，缓存采用 `transport-protected`；仅凭 `group_did`
+不能推断 P6。显式档位、已验证的加密消息标记及完整加密对象仍保留现有安全档位，公开投影
+缺少对象密钥时继续禁止覆盖内部下载缓存。

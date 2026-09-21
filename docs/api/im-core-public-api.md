@@ -1,5 +1,20 @@
 # im-core Public API：公共接口总览
 
+## 一次 Join 授权自动配置管理权限（2026-09-15）
+
+App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。
+
+Core 在发送批准请求前，将自动任务随该 Join 的既有持久化批准记录保存，绑定 owner、DID、Join、目标设备和签名/E2EE 公钥、源管理设备及已批准文档。服务端批准响应丢失时，只能由已验证批准结果/通知恢复任务。自动尝试状态归 Core，发送原消息/密文仍复用既有 sender ledger 与 P5 pending outbound，不复制密码学实现。
+
+首次立即尝试，包括 PreKey 未就绪在内最多四次（首次发送加最多三次重试）；每次可重试失败结束后持久化五秒后的下次时间。尝试先记账后发网，崩溃不返还预算；恢复中的未完成尝试先对账，并保守等待五秒。跨进程文件锁覆盖整个推进轮次，防止实时线程、同步与恢复重叠。网络操作有独立超时，不把五秒作为整个操作超时。
+
+发送接受后停止发送重试，等待原接收端 pending root、完成证明、Registry 登记、本地 root 激活和认证更新链路。发送端只能报告服务端管理登记，不能据此声明接收端本地 root 已激活。四次耗尽显示“设备已加入，管理权限配置失败”；显式重试先对账接受/登记状态，才允许新一轮预算。撤销、设备/密钥变化、身份/签名验证失败终止任务。进程退出保留状态，不承诺退出后仍发网；有效期内被服务接受的 V2 密文，长期离线保持等待，无任意失败期限。若 ledger 证明接受时间晚于密文签发后 600 秒，任务以 `root_transfer.delivery_expired` 结束等待；未确认接受的旧 pending 超过有效期也停止重发。显式重试不返还此类任务预算、不生成替代密文、不删除接受记录；已登记管理权仍优先对账为成功。响应丢失不能证明服务未接受，因此需撤销旧成员设备并重新加入，而不能盲目更换消息 ID。
+
+无秘密投影只包含 Join/设备 ID、阶段、尝试次数、下次尝试时间、稳定错误码；不暴露 root、密文、proof 或自动授权 handle。真实四方向及第三台设备批准证据属于后续真实环境验收，不由本地测试代替。
+
+
+撤销其他设备前，provider-backed 管理设备先按远端 Registry 与 DID 文档进行严格兄弟文档同步，再创建移除候选；校验当前管理员授权代次、公钥、固定根和文档哈希，不覆盖本地待发布操作。已有撤销重试记录继续走原有精确重试路径。同步复用当前客户端，不在撤销锁内重新打开客户端或重入撤销恢复。
+
 ## 1. 设计原则
 
 SDK public API 只表达业务意图：
@@ -697,6 +712,36 @@ External custody 注册复用边界：本地 ANP provider 的 `Active` 仅代表
 Core 保留旧 custody 凭据，使用新临时候选进入现有 `register` / `join_required` 协议，
 不触发 Recovery、不替换远端身份。未发布的 404 候选仍可原样重试，网络或文档校验失败
 则保留状态并返回错误；已记录远端提交结果的 pending 继续原有提交收敛，不能被此路径替换。
+
+`identities().creation_capabilities_async()` 从部署的 Server Info 读取可新建的方法，
+与 Core 支持集合取交集；旧部署缺失该字段时只返回 WBA。该能力仅控制新建选择，
+不改变已存在身份的方法或设备权限。CLI `id register --did-method wba|web` 默认 WBA。
+
+Web 注册完成前通过同一候选设备认证后读取 `device_registry_get.registration_result`，
+验证持久化 operation/request hash、账号、Handle 和双 KID，再校验当前 Registry/文档。
+历史候选不变，当前文档及检查点另存并用于本地投影；缺失结果、当前撤销或权限变化保留
+pending。Web pending 不进入 WBA 退役候选替换或过期根 proof 刷新分支。
+
+Web Join 仍通过现有 `device_join().advance` 推进。Join Token 过期或响应丢失后，
+Core 可用本次 enrollment 的精确设备键查询已 consumed 的会话，但只在当前设备仍
+有效时激活本地身份。失败保留 pending，不向 Host 暴露任意未激活身份的 HTTP 签名。
+恢复会接受批准后的合法文档更新，并在 custody 激活后的崩溃恢复中重新校验 Registry。
+新设备的 full Handle 和 binding generation 来自当前权威绑定，支持与 Web DID
+路径独立的 Handle 域。历史已保存的过期 Token 可读取以恢复，不能用于完成业务激活。
+
+Web 设备撤销的未决结果使用持久化的原 operation、目标、候选文档和旧 checkpoint
+重试 `device_revoke`，每次重新签发管理员 proof。当前文档中目标已消失不能单独证明
+本操作成功；无法确认的结果保留 pending。确认原操作提交后，还必须读取当前 Registry
+和文档，检查本机管理员仍有效、目标仍撤销，再以当前版本更新本地状态。后续合法更新
+不会被历史撤销候选覆盖；已保存的成功结果可免去重复撤销，但不能跳过当前资格检查。明确的文档版本、哈希或 Registry 版本冲突走独立的拒绝收敛：先持久化原请求的冲突结果，再核对当前管理员、密钥和单调前进的检查点，经 custody reconcile 清理旧候选并采用当前状态。旧撤销不计为成功；调用方可重新提交新操作。超时、解析失败、`device.inactive` 或仅观察到目标消失均不能触发此清理。
+
+`RegisterHandleRequest.did_method` 接受 `DidMethod::Wba`（序列化默认 `wba`）或
+`DidMethod::Web`（`web`）。Web 只用于普通 phone/email 注册，并要求配置
+`ImCoreOpenOptions::with_multi_device_audience`；Guest/trusted service 仍保留原有 WBA
+合同。方法选择只影响新候选，不改变已有 Handle 的权威 Join/登录结果。
+provider 的 `ProviderDidProfile::Web` 对应 rootless Web，`ProviderHostStatus` 和
+`ProviderEnrollmentProposal` 的 `root_key_fingerprint` 为 `Option<String>`；WBA 原字符串
+仍反序列化为 `Some`，Web 为 `None`。Host 不以根指纹是否存在推导产品管理权限。
 
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
@@ -2090,3 +2135,56 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
 不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
 CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。
+
+### Join-bound management provisioning
+
+- `confirm_device_join_with_management(DeviceJoinConfirmApprovalRequest)`：一次前台确认，原子保存精确 Join 的自动管理授权；普通 `confirm_device_join_approval` 不扩大授权。
+- `device_join_management_status(selector)`：无秘密 `DeviceJoinManagementStatus` 列表；恢复动作在 Core worker 中，attempts 不因读取重置。
+- `resume_device_join_management(selector)`：前台等待已运行 worker，继续原预算；进程退出后不承诺发网。
+- `retry_device_join_management(selector, join_session_id)`：权威对账成功后才允许新的有界轮次。
+- 单次 HTTP 复用 connect 10s / response 30s，整个发送尝试另有 60s 上限；5s 是可重试失败结束后的退避。
+
+
+### 自动管理 Join 的能力与状态边界
+
+`confirm_device_join_with_management` 要求支持管理授权的 identity session；不支持时在准备/提交批准前返回 `unsupported_capability`，不得降级成普通 member Join。独立普通 Join API 保持兼容。Node `deviceJoinManagementStatus` 透传 `nextAttemptAtMs`（Unix 毫秒），与 Core 的失败完成后 5 秒重试时刻一致。升级后的 hydrate、realtime 和 inbox/read 与 sync 共用当前消费者能力集合，历史空 lane 协商不能绕过 P5 bootstrap。
+
+自动设备管理任务的 `root_transfer.delivery_invalidated` 表示已准备的根密钥投递绑定版本失效；宿主提示管理设备撤销该成员后重新加入，不提供普通重试按钮。此错误不授权删除账本或重建密文。
+
+新自动管理授权固定最多四次尝试（首次加三次重试），失败间隔五秒。次数上限随任务持久化并绑定授权签名；历史无上限字段的任务按原三次恢复，不能在升级时静默扩大已签名权限。
+
+### 普通 DID 服务更新（2026-09-15）
+
+`IdentityRegistry::update_services_async(selector, Vec<DidDocumentService>)` 接收完整公开服务列表，通过原 `device_document_update` RPC 更新。`identity_document_async` 可读取列表；`services_update_pending_async` 读取本地是否存在该操作，`resume_services_update_async` 只续接原操作。返回当前已验证文档，不向公共 DTO 暴露检查点或内部 operation ID。
+
+只允许当前 Registry 中 Active、management-ready 的 admin；设备密钥与 Manifest 不变，Handle、ANPMessageService 归属和 AgentDescription 仍由各自原入口管理。本期提供 native/provider custody 的 WBA 与 Web 路径：WBA 保留根 proof，Web 不添加根 proof。
+
+Vault 在提交前保存业务操作与候选，重复相同列表续接原操作；不同列表在 pending 存在时拒绝。网络失败保留候选和原 operation ID，重试刷新设备 proof nonce。精确成功回执和当前文档/Registry 独立检查，后续合法更新不会被历史候选覆盖，已撤销的管理员不能借历史回执获得本地可用状态。SDK 已收口但业务文件尚未写完时，仍可从 Vault 继续。调用者取消/超时后应检查 pending，再调用 resume；不要重新创建身份。 Web 原请求收到明确 checkpoint conflict 后，先保存拒绝结果，再核对当前文档/Registry、原管理员及密钥、前进的检查点。通过后结束 custody 与 Vault 中的旧候选并刷新当前状态，返回冲突；后续更新创建新 operation ID。清理中断可在重开后 resume，不再重发已确认拒绝的请求；无法核对当前资格时保留 pending。
+
+CLI：`id services show`、`id services update --file services.json`、`id services resume`。输入文件是公开服务 JSON 数组；更新结果显示当前服务与 pending 状态。Node（native API v18）和 Dart 提供 `identityDocument`、`identityServicesUpdatePending`、`updateIdentityServices`、`resumeIdentityServicesUpdate`。Dart Web 不支持 native Rust backend，继续明确拒绝这些调用；DSH 通过 Node Host 使用同一 Core 入口。
+
+
+### 产品 DID 方法能力与注册续接提示
+
+`identity::identity_method_capabilities(did)` 返回 `IdentityMethodCapabilities`：
+`method`、`handleRecovery`、`rootImport`、`rootTransfer` 和 `servicesUpdate`。
+它只描述方法支持，不证明账号存在、DID 文档有效或当前设备可管理。
+WBA 保留已有恢复/根导入/根转移入口；Web MVP 只开放普通服务更新，
+实际写入继续要求当前账号、Registry admin 和本地 custody 资格。
+Web DID 输入由 ANP 的严格 HTTPS 路径构造器检查；未知方法不产生能力。
+
+`IdentityRegistry::pending_registrations_async()` 只读取当前 Vault workspace/device
+及配置 DID 域的注册记录，返回 `PendingIdentityRegistration` 的公开字段：
+`did`、`fullHandle`、`method`、`displayName`、`verificationKind`、`phase`。
+摘要不返回联系方式、OTP、Token、操作 ID、摘要签名或 custody 引用，也不清理记录。
+产品重开后可以展示继续入口；继续仍调用既有注册入口，Core 核验原业务输入并复用原候选。
+新建能力关闭不应把已有 pending 入口隐藏。记录存储故障不等同于无 pending。
+
+Node（native API v18）和 Dart facade 提供 `identityMethodCapabilities(did)`、
+`pendingIdentityRegistrations()`，仅 Host/native 读取 Core，Browser 消费安全投影。
+Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
+
+`IdentityRegistry::resolve_handle_for_device_join_async(handle)` 复用 Core 的公开 Handle
+绑定验证，可在没有本地身份时解析 Join 目标；Node/Dart 同名 facade 为
+`resolveHandleForDeviceJoin(handle)`。它验证公开发现结果，不授权 Join，也不从
+个人资料 JSON 推断身份。后续账号验证 grant、当前 Registry 和设备证明仍由原流程核验。
