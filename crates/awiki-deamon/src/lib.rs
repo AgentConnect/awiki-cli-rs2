@@ -33,7 +33,6 @@ pub mod inbox;
 mod legacy_migration;
 pub mod local_rpc;
 pub mod outbox;
-pub mod plugins;
 pub mod registration;
 #[allow(
     clippy::too_many_arguments,

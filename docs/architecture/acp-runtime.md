@@ -1,8 +1,23 @@
 # ACP Runtime 合同
 
-本模块仅用于 OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness。使用官方 Rust SDK、稳定 ACP v1、stdio 子进程。Hermes、Claude Code、Codex 的原有通路保持不变。
+七种智能体统一使用官方 Rust SDK、稳定 ACP v1 与 stdio 子进程。Hermes 使用官方原生 ACP；Codex、Claude Code 使用 Daemon 随包分发的固定版本上游 ACP 适配器和宿主机 Node.js（≥22，推荐 24 LTS），调用宿主机已有客户端。OpenCode、Gemini CLI、Kimi Code CLI、DeepSeek Harness 沿用原有 ACP 启动方式。
 
-Gemini 的正式创建入口（`gemini`、`gemini-cli`，或 `acp + driver=gemini`）统一使用 ACP。2026-05/06 的 `generic-cli + driver=gemini` 只预留名称、配置和诊断，运行驱动一直未实现，APP 当时也没有 Gemini 选项；它不是需要维护的第二套可用接入。历史占位配置仍可读取并明确报告未实现，不自动迁移为 ACP 会话。旧的 `runtime.cli.gemini-cli` 标识仅供历史数据解析。
+## 2026-09-20 统一迁移合同
+
+- 所有新建类型使用 `acp` 运行时和品牌驱动。旧 Hermes Gateway、Codex exec、Claude stream-json 不再作为执行或回退路径；仍被公共执行使用的提示词、权限、附件和上下文能力迁入共享模块。独立 CLI 产品的 Hermes 通知功能不属于本次删除范围。
+- 旧三种运行时有持久停用原因，保留已提交聊天记录，但不迁移身份、原生会话、记忆或任务。启动恢复、自动修复及个人助理 bootstrap 不得复活旧记录；旧未完成执行收敛为终态，撤销 token。APP 区分旧接入停用与删除，用户手动重新创建。
+- 三种类型与既有四种共用任务状态机、私聊等待位、群忙碌拒绝、授权群历史、附件、流式展示、问答、模型刷新、上下文恢复和可靠最终 outbox。运行时不理解 UI 布局，服务端不执行 ACP。
+- Codex/Claude 组件包含固定上游依赖、许可及完整性信息，随整个 Daemon 版本原子安装/更新，不运行时下载、不重复打包底层客户端。适配器仅支持 macOS 13.5+ arm64/x64、Linux glibc x64 Ubuntu 20.04+ 同等级环境；不支持不阻止 Daemon 或其他类型。
+- Hermes 内置记忆、配置及历史按 agent/controller/conversation scope 隔离。首次仅复用模型配置和静态凭据，不复制旧记忆、会话、OAuth 刷新凭据或共享外部记忆配置；之后配置独立维护，不自动覆盖。账号登录在对应 profile 完成。隔离 profile 不宣称为文件系统沙箱。
+- 个人助理仍仅支持 Hermes，使用相同 ACP 执行机制及独立后台任务角色；保留原 delegated inbox、AppAction 授权与确认、结果同步和幂等。后台任务不占聊天等待位、不向来信者自动发送、不等待交互问答；信息不足时交付注明缺失的结果或明确结束并提示手动处理。投递重试不得重跑模型。
+- 新 APP 通过执行协议能力判断三种类型是否需要升级 Daemon，不静默走旧路径；新 Daemon 明确拒绝旧执行请求。检测仍只表示安装和启动/协议条件，不验证模型账号，不调用模型或自动安装。
+- MCP 问答共用同一任务授权服务。客户端声明 HTTP 时使用原有 HTTP；否则使用 ACP 标准 stdio 传输及随 Daemon 提供的任务桥接。桥接只连接给定回环端点，凭据经环境传递，stdout 只含协议消息，进度、取消、EOF和任务关闭均正确终止。
+- Hermes 恢复使用严格加载，避免其 `resume` 的缺失会话自动新建语义。校验准确会话身份，只有明确不存在才提示用户重建；未知或不完整结果不能证明丢失。历史回放不作为新消息投递。
+
+本节为本次迁移的目标合同；交付和验证状态以对应执行记录为准。
+
+所有产品别名只用于选择 ACP 品牌。`runtime.hermes`、`generic-cli` 和旧 `runtime.cli.*`
+执行入口均拒绝创建；旧 Gemini 占位配置与其余旧接入一起退役，仅保留历史读取。
 
 控制命令在运行时分发前复用公共 `application/json`／JSON object／发送者和目标非空校验。省略内容类型沿用公共 JSON 默认行为；显式错误类型必须拒绝，ACP 不另开宽松入口。权限、任务发起人、幂等与过期校验仍由各自的既有职责承担。
 
@@ -29,16 +44,12 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 `refresh` 绕过 30 秒内存缓存；并发请求合并，每项 5 秒、最多 3 项并行、整批 20 秒。
 返回 `schema_version/checked_at_ms/cache_age_ms/clients`，每项含 `kind/status/version/reason_code`。
 `status` 为 `ready/missing/unavailable/unknown`，只表示安装和启动条件，不验证账号或模型。
-六种 CLI 复用实际运行的程序/PATH 执行版本命令；Hermes 检查解释器及 Gateway 模块，
-不执行完整 Gateway、ACP 初始化或 prompt。原始输出、环境及路径不回传。
-Hermes 使用目标解释器的标准顶层模块发现机制，兼容普通安装、可编辑安装和命名空间包；
-子模块只在已发现的包路径中查找，不导入 `tui_gateway` 或执行 `entry`，不补写安装路径或配置。
-确认 Gateway 入口存在后，在同一解释器内通过 `importlib.metadata.version("hermes-agent")`
-读取可选安装版本；保留预发布／本地版本后缀，不把启动警告中的 Python 版本当成 Hermes 版本。
-元数据缺失、损坏或读取抛错时保持 `ready`、`version=null`；只有版本可获取时 APP 才追加显示。
-不为版本查询执行 Hermes CLI、启动 Gateway、访问模型或新增 Python 依赖；沿用探测总超时。
+七种客户端复用实际运行的程序/PATH。Hermes 使用官方 `hermes acp --version` 与
+`hermes acp --check` 检查 ACP 安装依赖；其余客户端执行版本命令。Codex、Claude Code
+还检查随 Daemon 分发的适配器清单、入口与宿主机 Node.js（≥22，推荐 24 LTS） 版本。结果包含 `execution_protocol=acp`，
+适配器类型另带 `adapter_version`。不访问模型、账号登录或执行 prompt；原始输出、环境、路径不回传。
 创建前先复核所选客户端，再注册；ACP 继续协议校验。幂等命中已创建结果时不重复检查。
-旧 Daemon 未声明能力时 APP 保留原创建流程并说明无法检测；新 Daemon 未知结果不放行。
+APP 对所有类型都要求 Daemon 的 ACP supported_drivers 声明；旧 Daemon 只声明四种时，另三种提示升级且禁止创建。安装检测未声明时沿用已声明 ACP 能力的创建检查；已声明但未知的检测结果不放行。
 
 
 ### 2026-09 可靠交互补充合同
@@ -58,6 +69,10 @@ Hermes 使用目标解释器的标准顶层模块发现机制，兼容普通安�
 
 私聊 `prepare_session` 只握手、查询配置和验证选择，不发送 prompt；新建的探测 session ID 不持久化。准备、模型切换和任务接受使用同一会话锁，锁不跨越模型执行。`model_id` 是客户端确认的会话配置，不承诺等于代理后的实际上游；`selected_model_id` 是用户会话选择。读取 configOptions.currentValue，兼容 models.currentModelId 和原生更新。切换失败不得将请求值或恢复时的默认值写成当前模型，后续 prompt 前重新验证已确认的模型。APP 在准备或切换的发送、响应不确定及等待 Core 路由投影期间保留草稿并阻止新指令；关闭模型窗口不解除这一约束。
 
+模型 ID 作为不透明标识传递，Daemon 不按品牌改写或猜测别名。`set_model` 期间收集准确 session 的配置通知；旧式空成功回执合法，但不得覆盖同次操作中明确不一致的模型通知。当前 SDK 已移除的 `current_model_update` 用最小类型兼容层接收，其他更新继续使用 SDK schema；加载历史仍不发布。客户端报告的配置不等于服务端最终路由，不能通过询问模型身份或读取客户端私有日志作为产品校验。
+
+Hermes 0.15.1 的 DeepSeek 名称归一化会把 `deepseek-flash` 改成 `deepseek-chat`，而 ACP 仍报告请求值。已核对并离线验证官方 v0.21.3（`v2026.9.14`）修复；宿主机应使用包含此修复的版本。Daemon 不自动升级或修改外部 CLI，不维护模型别名补丁。候选客户端兼容验证可运行 `scripts/release/daemon/smoke-hermes-models.py --python <候选官方源码环境的 Python>`：临时 HOME、假凭据、回环 HTTP、禁止外部网络，验证默认、切换、进程重启恢复后的实际请求参数；常规 ACP 合同仍只需要仓内模拟子进程。
+
 `refresh_models` 只重新读取当前客户端提供的目录，不发送 prompt，不调用模型切换，不更新供应商配置或安装客户端。沿用原生会话、工作目录与配置，刷新结果仅更新目录与 `model_catalog_updated_at_ms`，不改当前模型和选择意图。快照通过 `model_refresh_supported` 声明支持；命令结果的 `model_refresh` 标记 `refreshed/deferred`，安全加载窗口未到时附带 `retry_after_ms`。忙碌、等待项或更高优先级操作使刷新延期，不能将缓存返回伪装成成功读取。并发查询合并；任务接受、模型切换和重建上下文取消低优先级查询，并在其连接/子进程清理完成后取得同一会话锁。失败保留已有目录与模型，迟到查询不覆盖后发操作。
 
 APP 模型窗口先显示缓存，成功读取超过 5 分钟时按需刷新一次，另提供手动刷新；不后台轮询。窗口保持打开时，忙碌结束或安全加载时间到达可续接延期查询。查询不阻止草稿和新指令。当前模型未列入候选项时显示独立只读当前项，不补造可选能力，不将目录缺项推断为模型失效；模型未提供、目录为空、读取失败分别表达。模型来源始终是对应宿主机 CLI，APP 不直连供应商列模型，也不根据聊天正文推断模型身份。
@@ -70,11 +85,11 @@ APP 模型窗口先显示缓存，成功读取超过 5 分钟时按需刷新一�
 
 文字、图片和文件经过既有授权附件下载链路后转换；不解析用户文本里的本地路径取得附件。能力来自 initialize 与当前会话模型选项，不能按品牌臆造。工具权限自动允许一次；用户询问必须等待真实答案；未知交互明确失败。
 
-共享问答使用任务内的 `awiki_questions.request_user_input` MCP 工具，参数为 `message` 与 JSON 字符串 `schema_json`；原生 ACP elicitation 仍直接支持。MCP HTTP 监听器只绑定回环随机端口，以随机 Bearer token、Host 校验和任务标识约束请求，拒绝浏览器 Origin，任务结束关闭监听器。创建探测要求客户端声明 MCP HTTP 支持。工具名避开 `ask_user`：Gemini CLI 0.59 的 ACP 排除规则会同时排除同名 MCP 工具。
+共享问答使用任务内的 `awiki_questions.request_user_input` MCP 工具，参数为 `message` 与 JSON 字符串 `schema_json`；原生 ACP elicitation 仍直接支持。MCP HTTP 监听器只绑定回环随机端口，以随机 Bearer token、Host 校验和任务标识约束请求，拒绝浏览器 Origin，任务结束关闭监听器。客户端未声明 HTTP 时使用同服务的 stdio 桥；不按品牌伪造 HTTP 能力。工具名避开 `ask_user`：Gemini CLI 0.59 的 ACP 排除规则会同时排除同名 MCP 工具。
 
 客户端提供 MCP `progressToken` 时，问答通过 Streamable HTTP 的 SSE 响应每 10 秒报告等待进度，直到真实回答、取消或 15 分钟有效期结束；进度不包含推测答案。OpenCode 1.18.31 使用进度通知重置工具超时。客户端主动取消当前问题，或在问题尚未回答时结束模型回合，均视为交互失败，不能生成成功的最终消息。依据：[MCP 进度协议](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress)、[OpenCode MCP 调用实现](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/mcp/catalog.ts)。
 
-Kimi 0.43.1 不根据进度延长默认 60 秒 MCP 调用期限。Daemon 仅在 Kimi 任务子进程设置官方 `KIMI_MCP_TOOL_TIMEOUT_MS=960000`，覆盖 15 分钟问题有效期和返回余量，不写入日常配置；客户端已有的逐服务器期限仍按官方规则优先。真实客户端验收在问题出现后等待至少 65 秒再回答。依据：[Kimi MCP 配置](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/mcp.html)。
+Kimi 0.43.1 不根据进度延长默认 60 秒 MCP 调用期限。Daemon 仅在 Kimi 任务子进程设置官方 `KIMI_MCP_TOOL_TIMEOUT_MS=960000`，覆盖 15 分钟问题有效期和返回余量，不写入日常配置；客户端已有的逐服务器期限仍按官方规则优先。自动测试通过模拟超时与进度验证该设置，不调用真实模型。依据：[Kimi MCP 配置](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/mcp.html)。
 
 DeepSeek Harness 0.1.5-rc.1 的 ACP MCP 配置固定使用 60 秒默认期限。Daemon 使用官方 `--patch` 配置叠加入口，为当前子进程加入 `@deepseek-ai/dsh-mcp-client`，设置 `toolCallTimeoutMs: 960000`。同一问答服务不再通过该进程的 ACP `mcpServers` 重复加入。临时补丁权限 0600、只包含环境变量引用，任务结束删除；URL 和 Bearer 仅通过子进程环境传递，不修改已安装客户端或日常配置。
 
@@ -89,3 +104,30 @@ ACP 子进程在独立执行线程的 Tokio runtime 中运行，使用 SDK 所�
 ## 验证边界
 
 自动测试只使用随源码维护的模拟 ACP 子进程、临时状态和 APP 模拟服务，不读取真实模型凭据、不启动已安装 Agent CLI。真实模型验收及其转换服务测试工具已移除；协议通过不代表第三方 CLI／上游模型兼容性已实测。入口见 [ACP 无模型回归](../../scripts/testing/README.md)。
+
+
+## 旧数据与后台助理迁移
+
+schema 37 的 `runtime_retirement` 永久记录旧接入的 DID、profile 与原因。每次打开状态时
+重施退役门禁：终止旧运行，撤销任务令牌，停止排队与未发送 outbox，保留消息正文、
+原生文件和审计。创建/upsert/恢复均不能把退役 DID 复活。心跳只读投影为
+`profile_status=retired / config_summary.protocol=legacy`，不再修补 Gateway 配置。
+
+新的个人助理由设置页显式启用，使用 `app-personal-agent:acp-v1:<owner>:<appInstance>`
+绑定和独立 handle 哈希，bootstrap 重试复用同一代次。旧 bootstrap 不能创建替代身份。
+后台角色只获得 `rpc.ping / app.action.request`，不获得消息发送或问答工具；最终投递
+与执行中都校验当前绑定。停用/撤权后取消运行，最终结果不投递给来信者。
+
+### 宿主机 Node 与分发体积（0.1.102）
+
+Codex、Claude Code 的固定适配器复用宿主机 Node；检测与执行共用程序发现和版本校验，支持常规安装符号链接。缺失、版本不兼容、启动失败、超时使用独立 reason_code；每次启动复核，清除 NODE_OPTIONS/NODE_PATH，避免与进程注入配置耦合。其他五种客户端不新增此要求。APP 提供官方安装入口与重新检测，不自动安装或修改宿主机。
+
+组件构建删除 source map、声明文件、测试、示例与非法律 Markdown，保留运行时源码、锁文件和许可声明；禁止捆绑原生 Agent CLI。为兼容 0.1.101 升级器，schema_version 保持 1，新增 runtime=host-node 描述；保留极小的 acp/node shell 转发器与说明文件 LICENSE.node，不包含 Node 二进制。新 Daemon 直接发现宿主机 Node，不调用兼容转发器。全部分发文件仍进入清单哈希校验。
+
+### 客户端路径与升级（2026-09-21）
+
+七种类型创建前仍执行安装检查和 ACP 探测。未显式提供 `driver_config.binary_path` 时，探测只临时使用当次解析结果，持久化的 `binary_path` 保持空；每次新建子进程从 Daemon 的有效 PATH 重新发现客户端。因此升级或替换宿主机客户端不需要重建 Agent。独立终端里的 `nvm use` 不会自动修改已运行 Daemon 的环境，仍以 Daemon 的实际发现规则为准。
+
+显式非空路径保存并优先使用；路径失效时明确失败，不静默调用另一份客户端。schema 38 仅一次性清除已保存成功创建探测、属于 ACP profile、原始配置明确未指定 `binary_path` 的绝对默认路径；显式配置（包括异常值）、旧运行时、缺少来源证据或无法解析的配置均保留。迁移不修改身份、工作目录、会话或模型设置。
+
+个人助理新建使用 `app-personal-agent:acp-v1:{userDid}:{appInstanceId}`，加密 envelope 的 `binding_id` 与 payload 的 `ensure_once_key` 相同。Daemon 与 Rust System Test 探针共用生成函数；旧代际请求继续拒绝，不自动创建替代身份。

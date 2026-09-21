@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 36;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 38;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -706,6 +706,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_user_delegated_identity_vault_refs_v33(connection)?;
     migrate_legacy_message_agent_binding_v34(connection)?;
     migrate_agent_device_identity_v35(connection)?;
+    super::runtime_retirement::initialize(connection)?;
+    migrate_acp_default_binary_paths_v38(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -2168,4 +2170,34 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok(count > 0)
+}
+
+// The ACP create path saved the original driver_config and a successful probe.
+// Only these records prove that an absolute path without a config override was
+// auto-resolved. Preserve legacy, explicitly configured and ambiguous profiles.
+fn migrate_acp_default_binary_paths_v38(connection: &Connection) -> Result<()> {
+    let tx = connection.unchecked_transaction()?;
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 38)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        tx.execute_batch("UPDATE cli_runtime_profile SET binary_path = NULL
+            WHERE binary_path LIKE '/%'
+              AND driver_id IN ('hermes','codex','claude-code','opencode','gemini','kimi','deepseek-harness')
+              AND CASE WHEN json_valid(driver_config_json) THEN
+                  json_type(driver_config_json) = 'object'
+                  AND json_type(driver_config_json, '$.binary_path') IS NULL
+                  ELSE 0 END
+              AND runtime_profile_id IN (
+                  SELECT r.runtime_profile_id FROM runtime_profile r
+                  JOIN acp_probes p ON p.profile_id = r.runtime_profile_id
+                  WHERE r.runtime_plugin_id = 'acp'
+              );
+            INSERT INTO schema_migrations(version, applied_at)
+            VALUES (38, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));")?;
+    }
+    tx.commit()?;
+    Ok(())
 }

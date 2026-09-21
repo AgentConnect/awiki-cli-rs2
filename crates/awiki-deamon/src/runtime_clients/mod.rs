@@ -1,5 +1,5 @@
 //! Host installation facts, separate from protocol/session/model readiness.
-mod process;
+use crate::runtime::probe as process;
 use crate::DaemonConfig;
 use serde::Serialize;
 use std::{
@@ -10,18 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const KINDS: [&str; 7] = [
-    "hermes",
-    "codex",
-    "claude-code",
-    "opencode",
-    "gemini",
-    "kimi",
-    "deepseek-harness",
-];
+pub const KINDS: [&str; 7] = crate::acp::SUPPORTED_DRIVERS;
 const TTL: Duration = Duration::from_secs(30);
 const ITEM_TIMEOUT: Duration = Duration::from_secs(5);
-const HERMES_MODULE_PROBE: &str = include_str!("hermes_probe.py");
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ClientInstallation {
@@ -29,6 +20,8 @@ pub struct ClientInstallation {
     pub status: &'static str,
     pub version: Option<String>,
     pub reason_code: Option<&'static str>,
+    pub execution_protocol: &'static str,
+    pub adapter_version: Option<String>,
 }
 impl ClientInstallation {
     fn result(kind: &str, result: Result<String, &'static str>) -> Self {
@@ -36,22 +29,22 @@ impl ClientInstallation {
             Ok(text) => Self {
                 kind: kind.into(),
                 status: "ready",
-                version: if kind == "hermes" {
-                    hermes_version(&text)
-                } else {
-                    version(&text)
-                },
+                version: version(&text),
                 reason_code: None,
+                execution_protocol: "acp",
+                adapter_version: None,
             },
             Err(code) => Self {
                 kind: kind.into(),
                 status: match code {
                     "not_found" => "missing",
-                    "timeout" | "custom_launcher" => "unknown",
+                    "timeout" => "unknown",
                     _ => "unavailable",
                 },
                 version: None,
                 reason_code: Some(code),
+                execution_protocol: "acp",
+                adapter_version: None,
             },
         }
     }
@@ -61,26 +54,10 @@ fn version(text: &str) -> Option<String> {
     static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
     PATTERN
         .get_or_init(|| {
-            regex::Regex::new(r"\b\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[A-Za-z0-9.]{1,24})?\b").unwrap()
+            regex::Regex::new(r"\bv?(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[A-Za-z0-9.]{1,24})?)\b").unwrap()
         })
-        .find(text)
-        .map(|v| v.as_str().to_owned())
-}
-
-fn hermes_version(text: &str) -> Option<String> {
-    // Only use our metadata field, never a Python version in startup warnings.
-    // Keep Python prerelease/local suffixes intact; display text is bounded and
-    // cannot contain paths, whitespace or control characters.
-    text.lines().find_map(|line| {
-        let record: serde_json::Value = serde_json::from_str(line).ok()?;
-        let value = record.get("awiki_hermes_version")?.as_str()?;
-        (value.len() <= 64
-            && value.as_bytes().first()?.is_ascii_digit()
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".!+_-".contains(&b)))
-        .then(|| value.to_owned())
-    })
+        .captures(text)
+        .map(|v| v[1].to_owned())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -186,17 +163,12 @@ pub fn require_installed(
     binary_override: Option<&str>,
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + ITEM_TIMEOUT;
-    let item = if let Some(binary) = binary_override {
-        ClientInstallation::result(
-            kind,
-            probe_version(
-                &crate::cli_runtime_env::resolve_cli_binary(binary),
-                deadline,
-            ),
-        )
-    } else {
-        inspect_one_until(config, kind, deadline)
-    };
+    let _ = config;
+    let item = inspect_client(
+        kind,
+        binary_override.map(crate::cli_runtime_env::resolve_cli_binary),
+        deadline,
+    );
     anyhow::ensure!(
         item.status == "ready",
         "runtime_client_{}:{}",
@@ -206,64 +178,94 @@ pub fn require_installed(
     Ok(())
 }
 
-fn inspect_one_until(config: &DaemonConfig, kind: &str, deadline: Instant) -> ClientInstallation {
-    let deadline = deadline.min(Instant::now() + ITEM_TIMEOUT);
-    let result = if Instant::now() >= deadline {
-        Err("timeout")
-    } else if kind == "hermes" {
-        inspect_hermes(config, deadline)
-    } else {
-        let name = match kind {
-            "claude-code" => "claude",
-            "deepseek-harness" => "dsh",
-            name => name,
-        };
-        let binary = crate::cli_runtime_env::resolve_cli_binary(name);
-        probe_version(&binary, deadline)
-    };
-    ClientInstallation::result(kind, result)
+fn inspect_one_until(_config: &DaemonConfig, kind: &str, deadline: Instant) -> ClientInstallation {
+    inspect_client(kind, None, deadline.min(Instant::now() + ITEM_TIMEOUT))
 }
 
-fn probe_version(binary: &Path, deadline: Instant) -> Result<String, &'static str> {
+fn inspect_client(kind: &str, binary: Option<PathBuf>, deadline: Instant) -> ClientInstallation {
+    let brand = match crate::acp::Brand::parse(kind) {
+        Ok(brand) => brand,
+        Err(_) => return ClientInstallation::result(kind, Err("unsupported_client")),
+    };
+    let binary =
+        binary.unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command()));
+    let result = if Instant::now() >= deadline {
+        Err("timeout")
+    } else if brand == crate::acp::Brand::Hermes {
+        inspect_hermes(&binary, deadline)
+    } else {
+        probe_version(&binary, deadline)
+    };
+    let mut item = ClientInstallation::result(kind, result);
+    if item.status == "ready"
+        && matches!(
+            brand,
+            crate::acp::Brand::Codex | crate::acp::Brand::ClaudeCode
+        )
+    {
+        match inspect_adapter(brand, deadline) {
+            Ok(version) => item.adapter_version = Some(version),
+            Err(code) => {
+                item.status = "unavailable";
+                item.reason_code = Some(code);
+            }
+        }
+    }
+    item
+}
+
+fn inspect_adapter(brand: crate::acp::Brand, deadline: Instant) -> Result<String, &'static str> {
+    let adapter = crate::acp::components::Adapter::discover(brand).map_err(|error| match error
+        .to_string()
+        .as_str()
+    {
+        "acp_adapter_platform_unsupported" => "adapter_platform_unsupported",
+        "acp_adapter_missing" => "adapter_missing",
+        _ => "adapter_invalid",
+    })?;
+    adapter.validate_node(deadline)?;
+    Ok(adapter.version)
+}
+
+pub(crate) fn probe_version(binary: &Path, deadline: Instant) -> Result<String, &'static str> {
     if !binary.is_file() {
         return Err("not_found");
     }
     let mut command = Command::new(binary);
     command.arg("--version");
+    command.env_remove("NODE_OPTIONS").env_remove("NODE_PATH");
     if let Some(path) = crate::cli_runtime_env::cli_child_path() {
         command.env("PATH", path);
     }
     process::run(&mut command, deadline)
 }
 
-fn inspect_hermes(config: &DaemonConfig, deadline: Instant) -> Result<String, &'static str> {
-    let candidates = crate::plugins::hermes::gateway::installation_probe_candidates(config)
-        .map_err(|_| "custom_launcher")?;
-    let mut failure = "not_found";
-    for parts in candidates {
-        if Instant::now() >= deadline {
-            return Err("timeout");
-        }
-        // Only the adapter's known Python module form has a safe local probe.
-        if parts.len() != 3 || parts[1] != "-m" || parts[2] != "tui_gateway.entry" {
-            return Err("custom_launcher");
-        }
-        let python = crate::cli_runtime_env::resolve_cli_binary(&parts[0]);
-        if !python.is_file() {
-            continue;
-        }
-        let mut command = Command::new(python);
-        command.args(["-B", "-c", HERMES_MODULE_PROBE]);
-        if let Some(path) = crate::cli_runtime_env::cli_child_path() {
-            command.env("PATH", path);
-        }
-        match process::run(&mut command, deadline) {
-            Ok(output) => return Ok(output),
-            Err("version_failed") => failure = "gateway_module_missing",
-            Err(code) => failure = code,
-        }
+fn inspect_hermes(binary: &Path, deadline: Instant) -> Result<String, &'static str> {
+    if !binary.is_file() {
+        return Err("not_found");
     }
-    Err(failure)
+    let mut command = Command::new(binary);
+    command.args(["acp", "--version"]);
+    if let Some(path) = crate::cli_runtime_env::cli_child_path() {
+        command.env("PATH", path);
+    }
+    let version = process::run(&mut command, deadline)?;
+    if Instant::now() >= deadline {
+        return Err("timeout");
+    }
+    let mut check = Command::new(binary);
+    check.args(["acp", "--check"]);
+    if let Some(path) = crate::cli_runtime_env::cli_child_path() {
+        check.env("PATH", path);
+    }
+    process::run(&mut check, deadline).map_err(|code| {
+        if code == "version_failed" {
+            "acp_dependencies_missing"
+        } else {
+            code
+        }
+    })?;
+    Ok(version)
 }
 
 #[cfg(test)]

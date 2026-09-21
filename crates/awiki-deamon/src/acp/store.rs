@@ -10,6 +10,15 @@ use crate::{
     DaemonState,
 };
 
+pub(crate) fn task_scope(task: &RuntimeTask) -> String {
+    let scope = task.conversation_scope.scope_key();
+    if task.trigger_kind == crate::runtime::RuntimeTaskTriggerKind::DelegatedDirect {
+        format!("delegated:{scope}")
+    } else {
+        scope
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Work {
     pub task: RuntimeTask,
@@ -84,11 +93,15 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn is_background(&self) -> bool {
+        self.scope.starts_with("delegated:")
+    }
+
     pub fn new(task: &RuntimeTask) -> Self {
         Self::for_scope(
             &task.agent_did,
             &task.controller_scope_key,
-            task.conversation_scope.scope_key(),
+            task_scope(task),
             task.conversation_id.clone(),
             task.conversation_scope.kind() == RuntimeConversationScopeKind::GroupVisible,
         )
@@ -139,7 +152,7 @@ impl Session {
     pub fn submit(&mut self, work: Work) -> Result<bool> {
         if work.task.agent_did != self.agent_did
             || work.task.controller_scope_key != self.controller_scope_key
-            || work.task.conversation_scope.scope_key() != self.scope
+            || task_scope(&work.task) != self.scope
         {
             bail!("conversation_mismatch");
         }
@@ -150,6 +163,9 @@ impl Session {
         // rotation. Native context is bound to the verified stable scope above.
         self.conversation_id = work.task.conversation_id.clone();
         if self.active.is_some() || self.waiting.is_some() {
+            if self.is_background() {
+                bail!("background_busy");
+            }
             if self.group {
                 bail!("group_busy");
             }
@@ -557,7 +573,7 @@ pub fn finish_with_final(
         || session.controller_scope_key != record.controller_scope_key
         || active.agent_did != record.agent_did
         || active.controller_scope_key != record.controller_scope_key
-        || active.conversation_scope.scope_key() != session.scope
+        || task_scope(active) != session.scope
         || active.conversation_id != record.conversation_id
         || active.reply_recipient_did != record.recipient_did
         || active.controller_did != record.controller_did
@@ -618,6 +634,11 @@ pub(super) fn save(db: &Connection, s: &mut Session) -> Result<()> {
         )?;
     }
     db.execute("INSERT INTO acp_sessions(session_key,agent_did,data) VALUES(?1,?2,?3) ON CONFLICT(session_key) DO UPDATE SET data=excluded.data",params![s.key,s.agent_did,serde_json::to_string(s)?])?;
+    if s.is_background() {
+        // Delegated inbox results use the owner APP sync channel. Never publish
+        // streaming snapshots into the original sender's conversation.
+        return Ok(());
+    }
     if let Some(run) = &s.last_run_id {
         // A snapshot is complete: retain the newest undelivered revision rather
         // than queueing quadratic copies of every streamed text fragment.

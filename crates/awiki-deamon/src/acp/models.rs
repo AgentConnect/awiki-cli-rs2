@@ -1,6 +1,19 @@
 //! Model metadata shared by durable state and the ACP transport.
 use serde_json::{json, Value};
 
+pub fn set_current_model(options: &mut Value, model: &str) {
+    if let Some(items) = options.as_array_mut() {
+        if let Some(item) = items
+            .iter_mut()
+            .find(|v| v["category"] == "model" || v["id"] == "model")
+        {
+            item["currentValue"] = json!(model);
+        }
+    } else if options.is_object() {
+        options["currentModelId"] = json!(model);
+    }
+}
+
 pub fn current_model(options: &Value) -> Option<String> {
     let current = if let Some(items) = options.as_array() {
         items

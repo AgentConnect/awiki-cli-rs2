@@ -21,9 +21,6 @@ use crate::outbox::{
     ImCoreAgentOutbox, RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
     RuntimeMessageSendResult, RuntimeOutbox,
 };
-use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
-use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
-use crate::runtime::host::run_existing_runtime_task_with_config;
 use crate::runtime::{
     RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRunStatus, RuntimeTask,
     RuntimeTaskTriggerKind,
@@ -182,20 +179,11 @@ impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
 pub struct RuntimeHostMessageDispatcher<'a> {
     config: &'a DaemonConfig,
     state: &'a DaemonState,
-    hermes_gateway: StdioHermesGateway,
 }
 
 impl<'a> RuntimeHostMessageDispatcher<'a> {
-    pub fn new(
-        config: &'a DaemonConfig,
-        state: &'a DaemonState,
-        hermes_gateway: StdioHermesGateway,
-    ) -> Self {
-        Self {
-            config,
-            state,
-            hermes_gateway,
-        }
+    pub fn new(config: &'a DaemonConfig, state: &'a DaemonState) -> Self {
+        Self { config, state }
     }
 }
 
@@ -209,66 +197,37 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
         let profile = self.state.load_runtime_agent_profile(&task.agent_did)?;
         let run_id = delegated_runtime_run_id(self.state, &task.task_id)?;
         let outbox = UserDelegatedRuntimeOutbox::new(self.state);
-        match profile.runtime_plugin_id.as_str() {
-            HERMES_RUNTIME_PLUGIN_ID => {
-                let hermes_profile = self.state.load_hermes_profile(&profile.agent_did)?;
-                let plugin = HermesRuntimePlugin::with_state(
-                    self.hermes_gateway.clone(),
-                    hermes_profile,
-                    self.state.clone(),
-                );
-                run_existing_runtime_task_with_config(
-                    self.config,
-                    self.state,
-                    &profile,
-                    &plugin,
-                    &outbox,
-                    task,
-                    run_id,
-                )?;
-            }
-            GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-                let cli_profile = self
-                    .state
-                    .load_cli_runtime_profile(&profile.runtime_profile_id)?;
-                let plugin = GenericCliDriverRegistry::new(cli_profile);
-                run_existing_runtime_task_with_config(
-                    self.config,
-                    self.state,
-                    &profile,
-                    &plugin,
-                    &outbox,
-                    task,
-                    run_id,
-                )?;
-            }
-            _ => {
-                bail!(
-                    "unsupported app message runtime plugin: {}",
-                    profile.runtime_plugin_id
-                );
-            }
+        crate::acp::background::binding(self.state, &profile, &task)?;
+        let result = crate::acp::host::run(
+            self.state,
+            &profile,
+            &outbox,
+            task,
+            run_id,
+            Some(&self.config.local_socket_path),
+        )?;
+        if result.run.status == RuntimeRunStatus::Failed {
+            outbox.send_status_with_detail(
+                &AuthorizedRuntimeContext {
+                    token_id: "acp-host".into(),
+                    agent_did: profile.agent_did,
+                    runtime_profile_id: profile.runtime_profile_id,
+                    run_id: result.run.run_id,
+                    method: crate::security::runtime_token::RpcMethod::TaskStatus,
+                },
+                "failed",
+                None,
+                Some("personal_agent_manual_handling_required"),
+                Some("个人助理未能完成此消息的处理，请手动查看原消息。"),
+            )?;
         }
         Ok(())
     }
 }
 
-fn delegated_runtime_run_id(state: &DaemonState, task_id: &str) -> Result<String> {
-    let base = format!("run_{task_id}");
-    match state.load_runtime_run(&base) {
-        Ok(run) if run.status == RuntimeRunStatus::Failed => {}
-        Ok(_) => return Ok(base),
-        Err(_) => return Ok(base),
-    }
-    for attempt in 1..=5 {
-        let candidate = format!("{base}_retry_{attempt}");
-        match state.load_runtime_run(&candidate) {
-            Ok(run) if run.status == RuntimeRunStatus::Failed => continue,
-            Ok(_) => return Ok(candidate),
-            Err(_) => return Ok(candidate),
-        }
-    }
-    bail!("delegated message runtime retry attempts exhausted for task {task_id}")
+fn delegated_runtime_run_id(_state: &DaemonState, task_id: &str) -> Result<String> {
+    // Source retries may redeliver the durable result, never rerun the model.
+    Ok(format!("run_{task_id}"))
 }
 
 pub struct ImCoreDelegatedInboxClient<'a> {
@@ -338,12 +297,12 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
     }
 }
 
-struct UserDelegatedRuntimeOutbox<'a> {
+pub(crate) struct UserDelegatedRuntimeOutbox<'a> {
     state: &'a DaemonState,
 }
 
 impl<'a> UserDelegatedRuntimeOutbox<'a> {
-    fn new(state: &'a DaemonState) -> Self {
+    pub(crate) fn new(state: &'a DaemonState) -> Self {
         Self { state }
     }
 
@@ -366,6 +325,9 @@ impl<'a> UserDelegatedRuntimeOutbox<'a> {
                     context.agent_did
                 )
             })?;
+        let task = self.state.load_runtime_task_for_run(&context.run_id)?;
+        let profile = self.state.load_runtime_agent_profile(&context.agent_did)?;
+        crate::acp::background::binding(self.state, &profile, &task)?;
         let resolved_did = message
             .resolved_did()
             .unwrap_or_else(|| message.resolved_recipient())
@@ -832,10 +794,9 @@ pub fn process_user_delegated_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: StdioHermesGateway,
 ) -> Result<usize> {
     let client = ImCoreDelegatedInboxClient::new(config, state, im_core);
-    let dispatcher = RuntimeHostMessageDispatcher::new(config, state, hermes_gateway);
+    let dispatcher = RuntimeHostMessageDispatcher::new(config, state);
     process_user_delegated_inbox_once_with_client(state, &client, &dispatcher)
 }
 

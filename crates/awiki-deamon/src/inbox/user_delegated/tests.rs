@@ -8,6 +8,8 @@ use tempfile::TempDir;
 use crate::runtime::{RuntimeAgentProfile, RuntimeRun};
 
 use super::*;
+#[path = "background_tests.rs"]
+mod background;
 
 type DelegatedInboxCall = (String, String, Option<String>);
 
@@ -436,7 +438,7 @@ fn delegated_inbox_retries_retryable_processing_after_dispatch_failure() {
 }
 
 #[test]
-fn delegated_runtime_run_id_skips_failed_prior_attempt() {
+fn delegated_runtime_run_id_preserves_failed_attempt_without_model_retry() {
     let fixture = fixture();
     let state = &fixture.state;
     let binding = &fixture.binding;
@@ -445,7 +447,7 @@ fn delegated_runtime_run_id_skips_failed_prior_attempt() {
         task_id: "task_user_msg_failed".to_string(),
         agent_did: binding.runtime_agent_did.clone(),
         runtime_profile_id: binding.runtime_profile_id.clone(),
-        runtime_plugin_id: "hermes".to_string(),
+        runtime_plugin_id: crate::acp::PLUGIN_ID.to_string(),
         workspace_id: None,
         status: RuntimeRunStatus::Failed,
     };
@@ -453,7 +455,7 @@ fn delegated_runtime_run_id_skips_failed_prior_attempt() {
 
     let run_id = delegated_runtime_run_id(state, "task_user_msg_failed").unwrap();
 
-    assert_eq!(run_id, "run_task_user_msg_failed_retry_1");
+    assert_eq!(run_id, "run_task_user_msg_failed");
 }
 
 #[test]
@@ -909,7 +911,7 @@ fn delegated_runtime_status_and_final_are_queued_without_plaintext_final() {
             task_id: task.task_id.clone(),
             agent_did: binding.runtime_agent_did.clone(),
             runtime_profile_id: binding.runtime_profile_id.clone(),
-            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            runtime_plugin_id: crate::acp::PLUGIN_ID.to_string(),
             workspace_id: None,
             status: RuntimeRunStatus::Running,
         })
@@ -1008,7 +1010,7 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
             task_id: task.task_id.clone(),
             agent_did: binding.runtime_agent_did.clone(),
             runtime_profile_id: binding.runtime_profile_id.clone(),
-            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            runtime_plugin_id: crate::acp::PLUGIN_ID.to_string(),
             workspace_id: None,
             status: RuntimeRunStatus::Running,
         })
@@ -1247,7 +1249,7 @@ fn insert_delegated_runtime_task_and_run(
             task_id: task.task_id,
             agent_did: binding.runtime_agent_did.clone(),
             runtime_profile_id: binding.runtime_profile_id.clone(),
-            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            runtime_plugin_id: crate::acp::PLUGIN_ID.to_string(),
             workspace_id: None,
             status: RuntimeRunStatus::Running,
         })
@@ -1298,13 +1300,18 @@ fn fixture() -> TestFixture {
             controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
             controller_did: identity.user_did.clone(),
             runtime_profile_id: "profile_hermes".to_string(),
-            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            runtime_plugin_id: crate::acp::PLUGIN_ID.to_string(),
             display_name: Some("Hermes".to_string()),
             preferred_language: "zh-Hans".to_string(),
             workspace_id: None,
             workspace_root: None,
             workspace_mode: None,
         })
+        .unwrap();
+    state
+        .upsert_cli_runtime_profile(
+            &crate::state::CliRuntimeProfileRecord::for_driver("profile_hermes", "hermes").unwrap(),
+        )
         .unwrap();
     let binding = AppPersonalAgentBindingRecord {
         binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),

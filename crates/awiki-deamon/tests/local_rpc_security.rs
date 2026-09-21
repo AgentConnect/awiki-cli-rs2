@@ -896,6 +896,68 @@ fn app_action_request_requires_outbox_execution_path() {
 fn app_action_request_records_message_sync_side_effect() {
     let (_root, state) = fixture();
     insert_app_personal_agent_binding(&state);
+    use awiki_deamon::runtime::{
+        RuntimeAgentProfile, RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRun,
+        RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
+    };
+    let profile = RuntimeAgentProfile {
+        agent_did: "did:agent:test".into(),
+        agent_handle: "hermes".into(),
+        runtime_profile_id: "profile_1".into(),
+        runtime_plugin_id: "acp".into(),
+        controller_did: "did:human:alice".into(),
+        controller_user_id: "alice".into(),
+        controller_full_handle: "alice.example.com".into(),
+        controller_scope_key: "controller-scope:v1:alice:alice.example.com".into(),
+        display_name: None,
+        preferred_language: "en".into(),
+        workspace_id: None,
+        workspace_root: None,
+        workspace_mode: None,
+    };
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    state
+        .upsert_cli_runtime_profile(
+            &awiki_deamon::state::CliRuntimeProfileRecord::for_driver(
+                &profile.runtime_profile_id,
+                "hermes",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .insert_runtime_task(&RuntimeTask {
+            task_id: "task_1".into(),
+            agent_did: profile.agent_did.clone(),
+            agent_handle: profile.agent_handle.clone(),
+            controller_did: profile.controller_did.clone(),
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            sender_did: "did:human:bob".into(),
+            requester_did: "did:human:bob".into(),
+            requester_user_id: Some("bob".into()),
+            requester_full_handle: Some("bob.example.com".into()),
+            trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+            conversation_scope: RuntimeConversationScope::direct("bob", "bob.example.com").unwrap(),
+            invocation_authority: RuntimeInvocationAuthority::Requester,
+            reply_recipient_did: "did:human:alice".into(),
+            conversation_id: Some("direct:did:human:bob".into()),
+            text: json!({"source_message_id":"msg_1"}).to_string(),
+        })
+        .unwrap();
+    state
+        .insert_runtime_run(&RuntimeRun {
+            run_id: "run_1".into(),
+            task_id: "task_1".into(),
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            runtime_plugin_id: "acp".into(),
+            workspace_id: None,
+            status: RuntimeRunStatus::Running,
+        })
+        .unwrap();
+
     let issued = issue(&state, vec![RpcMethod::AppActionRequest], None);
     let outbox = MemoryRuntimeOutbox::default();
 

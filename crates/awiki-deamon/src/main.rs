@@ -31,6 +31,9 @@ fn run() -> Result<()> {
     }
     if let Some(command) = std::env::args().nth(1) {
         match command.as_str() {
+            "__acp-mcp-stdio" => {
+                return awiki_deamon::acp::mcp_stdio::run();
+            }
             "__runtime-wrapper" => {
                 let response = run_runtime_wrapper(std::env::args().skip(2))?;
                 println!("{}", serde_json::to_string(&response)?);
@@ -159,6 +162,22 @@ fn parse_runtime_wrapper_args(args: impl IntoIterator<Item = String>) -> Result<
     let socket_path = socket_from_env_or_arg(socket)?;
     let runtime_rpc_token = runtime_token_from_env_or_arg(token)?;
     match command.as_str() {
+        "app-action" => {
+            if to.is_some()
+                || group.is_some()
+                || text.is_some()
+                || file_path.is_some()
+                || display_filename.is_some()
+                || mime_type.is_some()
+                || caption.is_some()
+            {
+                bail!("app-action accepts a JSON request on stdin, not message arguments");
+            }
+            Ok(CliWrapperCommand::AppAction {
+                socket_path,
+                runtime_rpc_token,
+            })
+        }
         "send" => {
             let target = match (to, group) {
                 (Some(recipient), None) => {
@@ -433,5 +452,5 @@ fn self_check_usage_error<T>() -> Result<T> {
 }
 
 fn runtime_wrapper_usage_error<T>() -> Result<T> {
-    bail!("usage: awiki-deamon-runtime <send|send-message|send-attachment> [--socket <path>] [--token <runtime-token>] [send: (--to <handle-or-did>|--group <group>) --text <text> --file <path> --display-filename <name> --mime-type <mime>] [send-message: --to <handle-or-did> --text <text>] [send-attachment: --file <path> --display-filename <name> --caption <text>]")
+    bail!("usage: awiki-deamon-runtime <send|send-message|send-attachment|app-action> [--socket <path>] [--token <runtime-token>] [send: (--to <handle-or-did>|--group <group>) --text <text> --file <path> --display-filename <name> --mime-type <mime>] [send-message: --to <handle-or-did> --text <text>] [send-attachment: --file <path> --display-filename <name> --caption <text>] [app-action: JSON request on stdin]")
 }

@@ -1,0 +1,13 @@
+{
+  "name": "awiki-daemon-acp-components",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned ACP adapters; native Agent CLIs are provided by the host.",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.12.0",
+    "@agentclientprotocol/claude-agent-acp": "0.79.0"
+  },
+  "overrides": {
+    "@openai/codex": "0.154.0"
+  }
+}

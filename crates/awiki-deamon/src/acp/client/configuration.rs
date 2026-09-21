@@ -5,6 +5,38 @@ pub struct PreparedConfiguration {
     pub options: Value,
 }
 
+/// Observe only the current set-model operation, never restoration replay.
+/// Legacy set_model may acknowledge with {} and report the actual selection
+/// separately. Keep that report instead of overwriting it with the request.
+#[derive(Default)]
+pub(super) struct ModelChangeNotifications {
+    session: Option<SessionId>,
+    options: Value,
+    changed: bool,
+}
+
+impl ModelChangeNotifications {
+    pub(super) fn observe(&mut self, notification: &SessionNotificationWithModels) {
+        if self.session.as_ref() != Some(&notification.session_id) {
+            return;
+        }
+        let update = serde_json::to_value(&notification.update).unwrap();
+        match update["sessionUpdate"].as_str() {
+            Some("config_option_update") => {
+                self.options = update["configOptions"].clone();
+                self.changed = true;
+            }
+            Some("current_model_update") => {
+                if let Some(model) = update["currentModelId"].as_str() {
+                    super::super::models::set_current_model(&mut self.options, model);
+                }
+                self.changed = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Initialize/query/configure only. No prompt, task token, or user tool server.
 /// A newly allocated native session is deliberately not returned for storage.
 pub async fn prepare(
@@ -42,6 +74,8 @@ pub async fn prepare_cancellable(
     let startup_native = existing_native.clone();
     let initialized = Arc::new(AtomicBool::new(false));
     let did_initialize = initialized.clone();
+    let changes = Arc::new(Mutex::new(ModelChangeNotifications::default()));
+    let observed_changes = changes.clone();
     let agent = AcpAgent::new(launch).with_debug(move |line, direction| {
         if brand == Brand::Gemini
             && direction == acp::LineDirection::Stderr
@@ -57,18 +91,31 @@ pub async fn prepare_cancellable(
         .builder()
         // Restoration may replay history; configuration never publishes it.
         .on_receive_notification(
-            async |_notification: SessionNotification, _cx| Ok(()),
+            async move |notification: SessionNotificationWithModels, _cx| {
+                observed_changes.lock().unwrap().observe(&notification);
+                Ok(())
+            },
             acp::on_receive_notification!(),
         )
         .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
-            let initialized = cx.send_request(initialize_request()).block_task().await?;
+            let initialized = cx
+                .send_request(initialize_request(true))
+                .block_task()
+                .await?;
             did_initialize.store(true, Ordering::Release);
             if initialized.protocol_version != ProtocolVersion::V1 {
                 return Err(acp::Error::invalid_params());
             }
             let caps = serde_json::to_value(initialized.agent_capabilities).unwrap();
-            let session =
-                open_session(&cx, &caps, &cwd, existing_native.as_deref(), json!([])).await;
+            let session = open_session(
+                &cx,
+                brand,
+                &caps,
+                &cwd,
+                existing_native.as_deref(),
+                json!([]),
+            )
+            .await;
             let session = match session {
                 Ok(value) => value,
                 Err(error) => {
@@ -95,7 +142,7 @@ pub async fn prepare_cancellable(
             let sid = SessionId::new(native);
             let mut options = session_options(&session);
             if let Some(desired) = desired {
-                options = configure_model(&cx, &sid, options, &desired).await?;
+                options = configure_model(&cx, &sid, options, &desired, &changes).await?;
             }
             *output.lock().unwrap() = Some(PreparedConfiguration {
                 capabilities: caps.clone(),
@@ -139,6 +186,7 @@ pub async fn prepare_cancellable(
 
 pub(super) async fn open_session(
     cx: &ConnectionTo<Agent>,
+    brand: Brand,
     caps: &Value,
     cwd: &std::path::Path,
     native: Option<&str>,
@@ -146,6 +194,9 @@ pub(super) async fn open_session(
 ) -> Result<Value, acp::Error> {
     if let Some(native) = native {
         let params = json!({"sessionId":native,"cwd":cwd,"mcpServers":servers});
+        if brand == Brand::Hermes {
+            return load_hermes_session(cx, caps, cwd, native, params).await;
+        }
         if caps["sessionCapabilities"]["resume"].is_object() {
             let inner = serde_json::from_value(params).map_err(|_| acp::Error::invalid_params())?;
             cx.send_request(ResumeSessionWithModels { inner })
@@ -168,11 +219,63 @@ pub(super) async fn open_session(
     }
 }
 
+// Hermes resume can silently create a new session. A successful load must
+// describe the requested ACP identity (internal compression heads may differ),
+// or be independently confirmed by its advertised native session inventory.
+async fn load_hermes_session(
+    cx: &ConnectionTo<Agent>,
+    caps: &Value,
+    cwd: &std::path::Path,
+    native: &str,
+    params: Value,
+) -> Result<Value, acp::Error> {
+    if caps["loadSession"] != true {
+        return Err(acp::Error::invalid_params());
+    }
+    let inner = serde_json::from_value(params).map_err(|_| acp::Error::invalid_params())?;
+    let response = cx
+        .send_request(LoadSessionWithModels { inner })
+        .block_task()
+        .await;
+    if let Ok(value) = &response {
+        if value.is_object() {
+            let returned = value.get("sessionId");
+            let provenance = value.pointer("/_meta/hermes/sessionProvenance/acpSessionId");
+            for claimed in [returned, provenance].into_iter().flatten() {
+                if claimed.as_str() != Some(native) {
+                    return Err(acp::Error::invalid_params());
+                }
+            }
+            if returned.is_some() || provenance.is_some() {
+                return response;
+            }
+            if caps["sessionCapabilities"]["list"].is_object() {
+                return match session_exists(cx, cwd, native).await {
+                    Some(true) => response,
+                    Some(false) => Err(acp::Error::new(
+                        ErrorCode::ResourceNotFound.into(),
+                        "Session not found",
+                    )),
+                    None => Err(acp::Error::internal_error()),
+                };
+            }
+        }
+    }
+    if caps["sessionCapabilities"]["list"].is_object() && session_absent(cx, cwd, native).await {
+        return Err(acp::Error::new(
+            ErrorCode::ResourceNotFound.into(),
+            "Session not found",
+        ));
+    }
+    response.and_then(|_| Err(acp::Error::internal_error()))
+}
+
 pub(super) async fn configure_model(
     cx: &ConnectionTo<Agent>,
     sid: &SessionId,
     mut options: Value,
     desired: &str,
+    changes: &Mutex<ModelChangeNotifications>,
 ) -> Result<Value, acp::Error> {
     if current_model(&options).as_deref() == Some(desired) {
         return Ok(options);
@@ -183,11 +286,18 @@ pub(super) async fn configure_model(
     {
         return Err(acp::Error::invalid_params());
     }
+    *changes.lock().unwrap() = ModelChangeNotifications {
+        session: Some(sid.clone()),
+        options: options.clone(),
+        changed: false,
+    };
+    let response_has_configuration;
     if let Some(option) = options.as_array().and_then(|items| {
         items
             .iter()
             .find(|v| v["category"] == "model" || v["id"] == "model")
     }) {
+        response_has_configuration = true;
         let request: SetSessionConfigOptionRequest = serde_json::from_value(json!({
             "sessionId":sid,"configId":option["id"],"value":desired,
         }))
@@ -207,8 +317,9 @@ pub(super) async fn configure_model(
             })
             .block_task()
             .await?;
-        // Legacy ACP set_model confirms success with an empty response. Only
-        // after that acknowledgement may the requested value become effective.
+        response_has_configuration = response.get("models").is_some();
+        // An empty legacy acknowledgement is valid, but cannot override an
+        // explicit current-model notification from the same operation.
         let returned = response
             .get("models")
             .cloned()
@@ -220,6 +331,15 @@ pub(super) async fn configure_model(
         options["currentModelId"] = json!(desired);
     } else {
         return Err(acp::Error::invalid_params());
+    }
+    let observed = std::mem::take(&mut *changes.lock().unwrap());
+    // An explicit response is newer than notifications dispatched before it.
+    // Only an empty legacy acknowledgement needs the separate notification.
+    if !response_has_configuration && observed.changed {
+        if current_model(&observed.options).as_deref() != Some(desired) {
+            return Err(acp::Error::invalid_params());
+        }
+        options = observed.options;
     }
     Ok(options)
 }

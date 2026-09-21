@@ -175,8 +175,21 @@ pub fn build_cli_child_path(home: Option<&Path>, current_path: Option<&OsStr>) -
     std::env::join_paths(paths).ok()
 }
 
+#[cfg(test)]
+thread_local! { static TEST_CLIENTS: std::cell::RefCell<BTreeMap<String, PathBuf>> = Default::default(); }
+
+#[cfg(test)]
+pub(crate) fn set_test_client(name: &str, path: PathBuf) {
+    TEST_CLIENTS.with(|clients| clients.borrow_mut().insert(name.into(), path));
+}
+
 /// One resolver for installation detection and actual runtime launch.
 pub fn resolve_cli_binary(name: &str) -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_CLIENTS.with(|clients| clients.borrow().get(name).cloned()) {
+        return path;
+    }
+
     let path = Path::new(name);
     if path.components().count() > 1 {
         return path.to_path_buf();

@@ -477,6 +477,7 @@ SELECT EXISTS(
         record: &AppPersonalAgentBindingRecord,
     ) -> Result<()> {
         record.validate()?;
+        self.require_runtime_not_retired(&record.runtime_agent_did)?;
         let connection = self.connection()?;
         let now = current_time_millis()?;
         connection.execute(

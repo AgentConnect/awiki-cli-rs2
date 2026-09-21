@@ -8,7 +8,7 @@ python3 -m unittest discover -s scripts/testing -p 'test_acp_contract_runner.py'
 ```
 
 支持 macOS 与 Linux；需要仓库要求的 Rust 工具链、Python 3 和 Node.js 20.6+。
-无需 OpenCode、Gemini CLI、Kimi、DeepSeek Harness、模型 API Key 或运行中的服务。
+无需安装七种 Agent 客户端、模型 API Key 或运行中的服务。
 依赖首次下载和 Cargo 编译使用正常开发缓存，编译时间单独计算；预热后测试通常为秒级。
 可用 `--cargo-toolchain` 或既有 `AWIKI_DAEMON_RUST_CARGO_TOOLCHAIN` 指定已安装工具链。
 
@@ -28,4 +28,16 @@ APP 的无模型组件与聊天回归：在 `awiki-me` 执行 `dart run tests/un
 System 聚合入口与归属见 [ACP 测试说明](../../../awiki-system-test/docs/acp-testing.md)。
 
 宿主机安装检测与创建准入也由此入口覆盖：使用临时可执行脚本模拟已安装／缺失／异常客户端，不读取日常安装或模型配置。
-Hermes 模块探测另用隔离的 Python 和临时包验证普通／可编辑／命名空间安装、缺少包或入口、异常或超时的导入钩子；直接执行随 Daemon 嵌入的探测脚本，断言不导入 Gateway、不写入字节码，不需要安装 Hermes 或 pip 依赖。
+Hermes 使用临时原生 ACP 可执行脚本覆盖版本、依赖检查、超时与退出；Codex/Claude 额外验证固定适配器清单和隔离的宿主机 Node 替身。
+
+
+### 2026-09-20 三种旧接入迁移
+
+`acp_contract.py` 统一覆盖七种品牌、旧身份退役、后台 Hermes 的 owner-only AppAction、
+协议身份/恢复与可靠投递，并运行真正 Daemon 子进程的 stdio MCP 和 stdin AppAction
+入口测试。所有运行使用临时 HOME、白名单工具 PATH 与本地 fake transport；
+Codex/Claude 的包级初始化另由 `scripts/release/daemon/smoke-acp-components.py` 验证，
+同样只连接 fake native client，不调用模型。旧 Gateway/generic-cli 执行测试已由对应 ACP
+状态/授权/取消/恢复测试接替，不再维护已删除引擎的 argv、输出解析和自动重跑契约。
+
+跨服务和双 APP runner 复用 `prepare_acp_fixture.py --root <全新目录>` 创建离线客户端和固定组件替身；仅 Debug Daemon 接受测试目录，Release 不接受该环境变量。包级初始化仍使用实际固定版本适配器，两层证据分别记录。

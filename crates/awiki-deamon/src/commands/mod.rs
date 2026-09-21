@@ -8,13 +8,10 @@ use sha2::{Digest, Sha256};
 
 use crate::agent::{
     agent_data_paths, normalize_handle, resolve_runtime, runtime_profile_id, workspace_id,
-    workspace_path, AgentDefinition, AgentKind, GENERIC_CLI_RUNTIME_PLUGIN_ID,
+    workspace_path, AgentDefinition, AgentKind,
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
-use crate::plugins::hermes::{
-    initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
-};
 use crate::registration::{
     AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
     AgentRegistrationExchangeResult, RegistrationToken,
@@ -917,6 +914,7 @@ where
             let mut outcome: RuntimeAgentCreateOutcome =
                 serde_json::from_value(existing.outcome_json)
                     .context("parse cached runtime.agent.create outcome")?;
+            state.require_runtime_not_retired(&outcome.agent_did)?;
             outcome.command_id = payload.command_id.clone();
             outcome.client_request_id = Some(client_request_id.to_string());
             return Ok(outcome);
@@ -925,69 +923,46 @@ where
     let resolution = validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = resolution.runtime_plugin_id.clone();
     // Before registration exchange: a stale UI snapshot must not create a broken Agent.
-    let client_kind =
-        resolution
-            .driver_id
-            .as_deref()
-            .unwrap_or(if plugin_id == HERMES_RUNTIME_PLUGIN_ID {
-                "hermes"
-            } else {
-                &plugin_id
-            });
-    if crate::runtime_clients::KINDS.contains(&client_kind) {
-        // Generic CLI creation already supports an explicit host binary path.
-        let binary_override = if matches!(client_kind, "codex" | "claude-code") {
-            payload
-                .args
-                .driver_config
-                .as_ref()
-                .and_then(|c| c.get("binary_path"))
-                .and_then(Value::as_str)
+    let driver_id = resolution
+        .driver_id
+        .as_deref()
+        .context("acp_driver_required")?;
+    let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
+    let mut prepared_cli = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
+    if let Some(driver_config) = &payload.args.driver_config {
+        prepared_cli.driver_config_json = driver_config.clone();
+        if let Some(value) = driver_config.get("binary_path") {
+            let path = value
+                .as_str()
                 .map(str::trim)
                 .filter(|p| !p.is_empty())
-        } else {
-            None
-        };
-        crate::runtime_clients::require_installed(config, client_kind, binary_override)?;
+                .context("driver_config.binary_path must be a non-empty path")?;
+            prepared_cli.binary_path = Some(path.into());
+        }
     }
-    let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
-    let is_generic_cli = matches!(
-        plugin_id.as_str(),
-        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID
+    // Resolve once for this preflight, but persist only an explicit override.
+    // Default clients may move when the host's package manager is upgraded.
+    let brand = crate::acp::Brand::parse(driver_id)?;
+    let mut probe_cli = prepared_cli.clone();
+    probe_cli.binary_path = Some(
+        prepared_cli
+            .binary_path
+            .clone()
+            .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command())),
     );
-    if plugin_id == crate::acp::PLUGIN_ID {
-        let cli = CliRuntimeProfileRecord::for_driver(
-            &profile_id,
-            resolution
-                .driver_id
-                .as_deref()
-                .context("acp_driver_required")?,
-        )?;
-        let report = crate::acp::host::inspect_sync(&cli)?;
-        state.connection()?.execute("INSERT INTO acp_probes(profile_id,report,checked_at_ms) VALUES(?1,?2,?3) ON CONFLICT(profile_id) DO UPDATE SET report=excluded.report,checked_at_ms=excluded.checked_at_ms",rusqlite::params![profile_id,serde_json::to_string(&report)?,crate::security::runtime_token::current_time_millis()?])?;
-    }
-    let workspace_mode = runtime_create_workspace_mode(&payload.args, is_generic_cli)?;
-    let workspace_root = if is_generic_cli {
-        Some(
-            workspace_path(payload.args.workspace.as_deref())?
-                .unwrap_or_else(|| generic_cli_workspace_root(config, &profile_id)),
-        )
-    } else {
+    crate::runtime_clients::require_installed(
+        config,
+        driver_id,
+        probe_cli.binary_path.as_ref().and_then(|p| p.to_str()),
+    )?;
+    let report = crate::acp::host::inspect_sync(&probe_cli)?;
+    state.connection()?.execute("INSERT INTO acp_probes(profile_id,report,checked_at_ms) VALUES(?1,?2,?3) ON CONFLICT(profile_id) DO UPDATE SET report=excluded.report,checked_at_ms=excluded.checked_at_ms",rusqlite::params![profile_id,serde_json::to_string(&report)?,crate::security::runtime_token::current_time_millis()?])?;
+    let workspace_mode = runtime_create_workspace_mode(&payload.args)?;
+    let workspace_root = Some(
         workspace_path(payload.args.workspace.as_deref())?
-    };
-    let workspace_id = workspace_root
-        .as_ref()
-        .map(|_| {
-            if is_generic_cli {
-                generic_cli_workspace_id(
-                    resolution.driver_id.as_deref().unwrap_or("generic-cli"),
-                    &handle,
-                )
-            } else {
-                workspace_id(&handle)
-            }
-        })
-        .transpose()?;
+            .unwrap_or_else(|| runtime_workspace_root(config, &profile_id)),
+    );
+    let workspace_id = Some(workspace_id(&format!("{driver_id}-{handle}"))?);
     let display_name = payload
         .args
         .display_name
@@ -1061,23 +1036,10 @@ where
         &verified_sender.controller_scope_key,
         &verified_sender.controller_did,
     )?;
-    if matches!(
-        profile.runtime_plugin_id.as_str(),
-        GENERIC_CLI_RUNTIME_PLUGIN_ID | crate::acp::PLUGIN_ID
-    ) {
-        let driver_id = resolution
-            .driver_id
-            .clone()
-            .context("generic-cli runtime must have driver_id")?;
-        let mut cli_profile = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
-        if cli_profile.driver_id == "codex" {
-            let profile_dir = codex_profile_dir(config, &profile_id);
-            create_private_dir_all(&profile_dir)?;
-            let config_home = profile_dir.join("codex-home");
-            create_private_dir_all(&config_home)?;
-            seed_codex_profile_home_from_host(&config_home)?;
-            cli_profile.config_home = Some(config_home);
-        }
+    {
+        // Reuse the exact client configuration that passed preflight. Native
+        // Codex/Claude credentials stay in the user's official client home.
+        let mut cli_profile = prepared_cli;
         if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
             cli_profile.recipient_policy_json = recipient_policy;
         }
@@ -1115,41 +1077,6 @@ where
         }),
     )?;
 
-    if profile.runtime_plugin_id == HERMES_RUNTIME_PLUGIN_ID {
-        match initialize_hermes_profile(config, state, &profile, &exchange.handle) {
-            Ok(install) => {
-                state.insert_audit_event_json(
-                    "hermes.profile.initialize",
-                    Some(&profile.agent_did),
-                    Some(&profile.runtime_profile_id),
-                    None,
-                    None,
-                    json!({
-                        "status": install.record.status,
-                        "hermes_profile": install.record.hermes_profile,
-                        "hermes_home": install.record.hermes_home,
-                        "awiki_skills_version": install.record.awiki_skills_version,
-                    }),
-                )?;
-            }
-            Err(error) => {
-                mark_hermes_profile_failed(config, state, &profile, &exchange.handle)?;
-                state.insert_audit_event_json(
-                    "hermes.profile.initialize",
-                    Some(&profile.agent_did),
-                    Some(&profile.runtime_profile_id),
-                    None,
-                    None,
-                    json!({
-                        "status": "failed",
-                        "reason": error.to_string(),
-                    }),
-                )?;
-                return Err(error).context("initialize Hermes profile");
-            }
-        }
-    }
-
     let outcome = RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),
         client_request_id: client_request_id.map(str::to_string),
@@ -1182,127 +1109,13 @@ where
     Ok(outcome)
 }
 
-fn codex_profile_dir(config: &DaemonConfig, runtime_profile_id: &str) -> std::path::PathBuf {
-    config
-        .state_root
-        .join("runtime")
-        .join("profiles")
-        .join(runtime_profile_id)
-}
-
-fn create_private_dir_all(path: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("create runtime profile directory {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("set private permissions on {}", path.display()))?;
-    }
-    Ok(())
-}
-
-const CODEX_PROFILE_SEED_FILES: &[&str] = &["config.toml", "auth.json"];
-
-fn seed_codex_profile_home_from_host(config_home: &std::path::Path) -> Result<()> {
-    let Some(source_home) = host_codex_home_for_profile_seed(config_home) else {
-        return Ok(());
-    };
-    seed_codex_profile_home_from_source(config_home, &source_home)
-}
-
-fn host_codex_home_for_profile_seed(config_home: &std::path::Path) -> Option<std::path::PathBuf> {
-    let candidates = [
-        std::env::var_os("CODEX_HOME").map(std::path::PathBuf::from),
-        awiki_user_dirs::try_home_dir().map(|home| home.join(".codex")),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|candidate| candidate.is_dir() && !same_path(candidate, config_home))
-}
-
-fn seed_codex_profile_home_from_source(
-    config_home: &std::path::Path,
-    source_home: &std::path::Path,
-) -> Result<()> {
-    create_private_dir_all(config_home)?;
-    for file_name in CODEX_PROFILE_SEED_FILES {
-        copy_codex_seed_file_if_missing(source_home, config_home, file_name)?;
-    }
-    Ok(())
-}
-
-fn copy_codex_seed_file_if_missing(
-    source_home: &std::path::Path,
-    config_home: &std::path::Path,
-    file_name: &str,
-) -> Result<()> {
-    let source = source_home.join(file_name);
-    let target = config_home.join(file_name);
-    let source_metadata = match std::fs::symlink_metadata(&source) {
-        Ok(metadata) if metadata.file_type().is_file() => metadata,
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspect Codex seed source {}", source.display()))
-        }
-    };
-    if source_metadata.len() == 0 {
-        return Ok(());
-    }
-    match std::fs::symlink_metadata(&target) {
-        Ok(metadata) if metadata.file_type().is_file() => {
-            set_private_file_permissions(&target)?;
-            return Ok(());
-        }
-        Ok(_) => {
-            bail!(
-                "refusing to overwrite non-file Codex profile seed target {}",
-                target.display()
-            );
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspect Codex seed target {}", target.display()))
-        }
-    }
-    if same_path(&source, &target) {
-        return Ok(());
-    }
-    std::fs::copy(&source, &target)
-        .with_context(|| format!("seed Codex profile file {}", target.display()))?;
-    set_private_file_permissions(&target)?;
-    Ok(())
-}
-
-fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
-}
-
-fn set_private_file_permissions(path: &std::path::Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("set private permissions on {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
-}
-
 fn validate_runtime_create_args_contract(
     args: &RuntimeAgentCreateArgs,
 ) -> Result<crate::agent::RuntimeResolution> {
     let resolution = resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
+    if resolution.runtime_plugin_id != crate::acp::PLUGIN_ID {
+        bail!("unsupported_runtime_use_acp");
+    }
     validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
     validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
     if let Some(workspace_mode) = args.workspace_mode.as_deref() {
@@ -1324,36 +1137,22 @@ fn validate_runtime_create_args_contract(
     Ok(resolution)
 }
 
-fn runtime_create_workspace_mode(
-    args: &RuntimeAgentCreateArgs,
-    is_generic_cli: bool,
-) -> Result<WorkspaceMode> {
+fn runtime_create_workspace_mode(args: &RuntimeAgentCreateArgs) -> Result<WorkspaceMode> {
     if let Some(workspace_mode) = args.workspace_mode.as_deref() {
         return WorkspaceMode::parse(workspace_mode);
     }
     if let Some(workspace_strategy) = args.workspace_strategy.as_deref() {
         return WorkspaceMode::parse(workspace_strategy);
     }
-    if is_generic_cli {
-        Ok(WorkspaceMode::RouteRoot)
-    } else {
-        Ok(WorkspaceMode::SharedRoot)
-    }
+    Ok(WorkspaceMode::RouteRoot)
 }
 
-fn generic_cli_workspace_root(
-    config: &DaemonConfig,
-    runtime_profile_id: &str,
-) -> std::path::PathBuf {
+fn runtime_workspace_root(config: &DaemonConfig, runtime_profile_id: &str) -> std::path::PathBuf {
     config
         .state_root
         .join("runtime")
         .join("workspaces")
         .join(runtime_profile_id)
-}
-
-fn generic_cli_workspace_id(driver_id: &str, handle: &str) -> Result<String> {
-    workspace_id(&format!("{driver_id}-{handle}"))
 }
 
 fn normalize_optional_arg(value: Option<&str>) -> Option<String> {
@@ -1451,231 +1250,14 @@ where
             );
         }
     };
-    let Some(runtime_profile_id) = runtime_agent.runtime_profile_id.as_deref() else {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("runtime agent profile is missing".to_string()),
-            json!({
-                "command": command,
-                "runtime_agent_did": runtime_agent_did,
-                "error_code": "runtime_profile_missing",
-            }),
-        );
-    };
-    let runtime_plugin_id = runtime_agent
-        .runtime_plugin_id
-        .as_deref()
-        .unwrap_or("unknown");
-    if runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("runtime session list is not supported for this runtime".to_string()),
-            json!({
-                "command": command,
-                "runtime_agent_did": runtime_agent.agent_did,
-                "runtime_plugin_id": runtime_plugin_id,
-                "error_code": "unsupported_for_runtime",
-            }),
-        );
-    }
-    let profile = match state.load_cli_runtime_profile(runtime_profile_id) {
-        Ok(profile) => profile,
-        Err(_) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("generic-cli runtime profile is unavailable".to_string()),
-                json!({
-                    "command": command,
-                    "runtime_agent_did": runtime_agent_did,
-                    "runtime_plugin_id": runtime_plugin_id,
-                    "error_code": "runtime_profile_unavailable",
-                }),
-            );
-        }
-    };
-
-    let status_filter = optional_arg_string(&payload.args, "status");
-    let conversation_filter = optional_arg_string(&payload.args, "conversation_id")
-        .map(|conversation_id| crate::state::canonical_cli_conversation_id(&conversation_id))
-        .transpose();
-    let conversation_filter = match conversation_filter {
-        Ok(filter) => filter,
-        Err(error) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("invalid runtime session list filter".to_string()),
-                json!({
-                    "command": command,
-                    "runtime_agent_did": runtime_agent.agent_did,
-                    "runtime_plugin_id": runtime_plugin_id,
-                    "driver_id": profile.driver_id,
-                    "error_code": "invalid_filter",
-                    "filter": "conversation_id",
-                    "error_summary": sanitize_public_error(&error.to_string()),
-                }),
-            );
-        }
-    };
-    let route_key_hash_filter = optional_arg_string(&payload.args, "route_key_hash");
-    let limit = match runtime_session_list_limit(&payload.args) {
-        Ok(limit) => limit,
-        Err(error) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("invalid runtime session list limit".to_string()),
-                json!({
-                    "command": command,
-                    "runtime_agent_did": runtime_agent.agent_did,
-                    "runtime_plugin_id": runtime_plugin_id,
-                    "driver_id": profile.driver_id,
-                    "error_code": "invalid_filter",
-                    "filter": "limit",
-                    "error_summary": sanitize_public_error(&error.to_string()),
-                }),
-            );
-        }
-    };
-
-    let driver_id = profile.driver_id.clone();
-    let workspace_mode = profile.default_workspace_mode.as_str();
-    let sessions = match state.list_cli_route_sessions_for_runtime_profile(
-        &runtime_agent.agent_did,
-        runtime_profile_id,
-        &daemon_agent.controller_scope_key,
-        status_filter.as_deref(),
-        conversation_filter.as_deref(),
-        route_key_hash_filter.as_deref(),
-        limit,
-    ) {
-        Ok(sessions) => sessions,
-        Err(error) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("runtime session list failed".to_string()),
-                json!({
-                    "command": command,
-                    "runtime_agent_did": runtime_agent.agent_did,
-                    "runtime_plugin_id": runtime_plugin_id,
-                    "driver_id": driver_id.clone(),
-                    "error_code": "invalid_filter",
-                    "error_summary": sanitize_public_error(&error.to_string()),
-                }),
-            );
-        }
-    };
-    if command == RUNTIME_SESSION_STATUS
-        && sessions.is_empty()
-        && (conversation_filter.is_some() || route_key_hash_filter.is_some())
-    {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("runtime route session was not found".to_string()),
-            json!({
-                "command": command,
-                "runtime_agent_did": runtime_agent.agent_did,
-                "runtime_plugin_id": runtime_plugin_id,
-                "driver_id": driver_id,
-                "error_code": "route_session_not_found",
-                "filters": {
-                    "conversation_id_present": conversation_filter.is_some(),
-                    "route_key_hash_present": route_key_hash_filter.is_some(),
-                },
-            }),
-        );
-    }
-    let items: Vec<Value> = sessions
-        .iter()
-        .map(|session| {
-            json!({
-                "route_key_hash": session.route_key_hash,
-                "conversation_id_present": !session.conversation_id.trim().is_empty(),
-                "conversation_kind": generic_cli_conversation_kind(&session.conversation_id),
-                "status": session.status,
-                "workspace_mode": workspace_mode,
-                "native_session_present": session.native_session_id.is_some(),
-                "last_run_id": session.last_run_id,
-                "last_message_id": session.last_message_id,
-                "last_error_code": session.last_error_code,
-                "next_action": next_action_for_route_session(session.last_error_code.as_deref()),
-                "created_at_ms": session.created_at_ms,
-                "updated_at_ms": session.updated_at_ms,
-            })
-        })
-        .collect();
-
-    state.insert_audit_event_json(
-        command,
-        Some(&runtime_agent.agent_did),
-        Some(runtime_profile_id),
-        None,
-        None,
-        json!({
-            "command_id": payload.command_id,
-            "runtime_plugin_id": runtime_plugin_id,
-            "driver_id": driver_id.clone(),
-            "filter_status_present": status_filter.is_some(),
-            "filter_conversation_present": conversation_filter.is_some(),
-            "filter_route_key_hash_present": route_key_hash_filter.is_some(),
-            "limit": limit,
-            "returned_count": items.len(),
-            "local_only": false,
-        }),
-    )?;
-
     send_command_status(
         outbox,
         daemon_agent,
         message,
         &payload.command_id,
-        "ready",
-        Some("runtime session list ready".to_string()),
-        json!({
-            "command": command,
-            "runtime_agent_did": runtime_agent.agent_did,
-            "daemon_agent_did": daemon_agent.agent_did,
-            "runtime_plugin_id": runtime_plugin_id,
-            "driver_id": driver_id,
-            "runtime_profile_id_present": true,
-            "controller_scope_key_present": true,
-            "filters": {
-                "status_present": status_filter.is_some(),
-                "conversation_id_present": conversation_filter.is_some(),
-                "route_key_hash_present": route_key_hash_filter.is_some(),
-            },
-            "items": items,
-            "page": {
-                "limit": limit,
-                "next_cursor": Value::Null,
-            },
-        }),
+        "failed",
+        Some("Legacy session diagnostics are unavailable; use ACP session controls".into()),
+        json!({"command":command,"runtime_agent_did":runtime_agent.agent_did,"error_code":"unsupported_runtime"}),
     )
 }
 
@@ -2764,48 +2346,6 @@ fn optional_arg_u64(args: &Value, field: &str) -> Option<u64> {
     })
 }
 
-fn runtime_session_list_limit(args: &Value) -> Result<usize> {
-    let limit = match args.get("limit") {
-        None | Some(Value::Null) => 50,
-        Some(Value::Number(number)) => number
-            .as_u64()
-            .with_context(|| "limit must be an unsigned integer")?,
-        Some(Value::String(text)) => text
-            .trim()
-            .parse::<u64>()
-            .with_context(|| "limit must be an unsigned integer")?,
-        Some(_) => bail!("limit must be an unsigned integer"),
-    };
-    if !(1..=100).contains(&limit) {
-        bail!("limit must be between 1 and 100");
-    }
-    Ok(limit as usize)
-}
-
-fn generic_cli_conversation_kind(conversation_id: &str) -> &'static str {
-    if conversation_id.starts_with("direct:") {
-        "direct"
-    } else if conversation_id.starts_with("group:") {
-        "group"
-    } else if conversation_id.starts_with("thread:") {
-        "thread"
-    } else {
-        "unknown"
-    }
-}
-
-fn next_action_for_route_session(error_code: Option<&str>) -> Option<&'static str> {
-    match error_code {
-        Some("resume_not_found") | Some("resume_invalid") => Some("reset_route_session"),
-        Some("route_busy") | Some("backpressure_rejected") => Some("retry_later"),
-        Some("missing_binary") => Some("install_driver"),
-        Some("auth_missing") | Some("needs_login") => Some("login_driver"),
-        Some("unsupported_driver_version") | Some("unsupported_driver") => Some("upgrade_daemon"),
-        Some(_) => Some("manual_review_required"),
-        None => None,
-    }
-}
-
 fn sanitize_public_error(message: &str) -> String {
     let mut sanitized = message
         .split_whitespace()
@@ -3452,59 +2992,6 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn codex_profile_seed_copies_only_setup_files_with_private_permissions() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("host-codex");
-        let target = root.path().join("profile-codex-home");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(source.join("config.toml"), "model = \"gpt-test\"\n").unwrap();
-        std::fs::write(source.join("auth.json"), "{\"token\":\"redacted\"}").unwrap();
-        std::fs::write(source.join("history.jsonl"), "should-not-copy").unwrap();
-
-        seed_codex_profile_home_from_source(&target, &source).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(target.join("config.toml")).unwrap(),
-            "model = \"gpt-test\"\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(target.join("auth.json")).unwrap(),
-            "{\"token\":\"redacted\"}"
-        );
-        assert!(!target.join("history.jsonl").exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let dir_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-            let auth_mode = std::fs::metadata(target.join("auth.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(dir_mode, 0o700);
-            assert_eq!(auth_mode, 0o600);
-        }
-    }
-
-    #[test]
-    fn codex_profile_seed_preserves_existing_profile_files() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("host-codex");
-        let target = root.path().join("profile-codex-home");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(source.join("auth.json"), "{\"token\":\"source\"}").unwrap();
-        std::fs::write(target.join("auth.json"), "{\"token\":\"target\"}").unwrap();
-
-        seed_codex_profile_home_from_source(&target, &source).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(target.join("auth.json")).unwrap(),
-            "{\"token\":\"target\"}"
-        );
-    }
 
     #[test]
     fn public_error_chain_keeps_upgrade_download_root_cause() {
