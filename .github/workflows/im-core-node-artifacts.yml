@@ -3,6 +3,10 @@ name: IM Core Node Tier 1 Artifacts
 on:
   workflow_dispatch:
     inputs:
+      test_sources:
+        description: Build the fixed-source Singapore Core and Identity candidate set
+        type: boolean
+        default: false
       build_only:
         description: Build release artifacts without running install tests
         required: false
@@ -43,6 +47,7 @@ env:
 
 jobs:
   build-platform:
+    if: ${{ !inputs.test_sources }}
     name: Build Tier 1 ${{ matrix.target_name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -401,3 +406,125 @@ jobs:
           path: channel/*
           if-no-files-found: error
           retention-days: 30
+
+  singapore-native:
+    if: ${{ inputs.test_sources && github.ref == 'refs/heads/test/singapore-full-20260922' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-x64-gnu, runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, ext: so, prefix: lib, image: quay.io/pypa/manylinux_2_28_x86_64}
+          - {name: linux-arm64-gnu, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, ext: so, prefix: lib, image: quay.io/pypa/manylinux_2_28_aarch64}
+          - {name: darwin-arm64, runner: macos-15, target: aarch64-apple-darwin, ext: dylib, prefix: lib, image: ''}
+          - {name: darwin-x64, runner: macos-15-intel, target: x86_64-apple-darwin, ext: dylib, prefix: lib, image: ''}
+          - {name: win32-x64-msvc, runner: windows-2022, target: x86_64-pc-windows-msvc, ext: dll, prefix: '', image: ''}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.5'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: awiki-cli-rs2
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp
+          ref: 0ba814aadc6567cdba366a0550f79e433233e687
+          path: anp/anp
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: 65a79d2644a065942004fad6272ea8b8b6b792f4
+          path: anp/anp-identity
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Prepare tools and exact source inputs
+        shell: bash
+        working-directory: awiki-cli-rs2
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup target add --toolchain 1.88.0 ${{ matrix.target }}
+          corepack enable
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          corepack pnpm --filter @awiki/im-core-node run build:typescript
+          python3 scripts/release/test-source-build.py --manifest scripts/release/singapore-test-sources.json --prepare ../native-inputs
+          cmp Cargo.lock scripts/release/test-source.Cargo.lock
+      - name: Build the two native SDKs once for this platform
+        shell: bash
+        env:
+          NATIVE_IMAGE: ${{ matrix.image }}
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/native-target"
+          if [[ -n "$NATIVE_IMAGE" ]]; then
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -e CARGO_HOME="$HOME/.cargo" -e RUSTUP_HOME="$HOME/.rustup" \
+              -e RUSTUP_TOOLCHAIN=1.88.0 -e CARGO_TARGET_DIR -e NATIVE_TARGET \
+              -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$HOME/.cargo:$HOME/.cargo" \
+              -v "$HOME/.rustup:$HOME/.rustup:ro" -w "$GITHUB_WORKSPACE/native-inputs" \
+              "$NATIVE_IMAGE" bash -euc '
+                "$CARGO_HOME/bin/cargo" build --manifest-path awiki-cli-rs2/Cargo.toml --release --locked -p awiki-im-core-node --target "$NATIVE_TARGET"
+                "$CARGO_HOME/bin/cargo" build --manifest-path anp/anp-identity/Cargo.toml --release --locked -p anp-identity-node --target "$NATIVE_TARGET"'
+          else
+            cargo +1.88.0 build --manifest-path native-inputs/awiki-cli-rs2/Cargo.toml --release --locked -p awiki-im-core-node --target "$NATIVE_TARGET"
+            cargo +1.88.0 build --manifest-path native-inputs/anp/anp-identity/Cargo.toml --release --locked -p anp-identity-node --target "$NATIVE_TARGET"
+          fi
+      - name: Stage source candidates and allocate test versions
+        shell: bash
+        env:
+          NATIVE_NAME: ${{ matrix.name }}
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_PREFIX: ${{ matrix.prefix }}
+          NATIVE_EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          cd awiki-cli-rs2
+          core_binary="../native-target/$NATIVE_TARGET/release/${NATIVE_PREFIX}awiki_im_core_node.$NATIVE_EXT"
+          identity_binary="../../native-target/$NATIVE_TARGET/release/${NATIVE_PREFIX}anp_identity_node.$NATIVE_EXT"
+          if [[ "$NATIVE_NAME" == linux-* ]]; then
+            for binary in "$core_binary" "../anp/anp-identity/$identity_binary"; do
+              highest="$(objdump -T "$binary" | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' | sort -Vu | tail -n 1)"
+              test -n "$highest"
+              dpkg --compare-versions "$highest" le 2.28
+            done
+          elif [[ "$NATIVE_NAME" == darwin-* ]]; then
+            for binary in "$core_binary" "../anp/anp-identity/$identity_binary"; do
+              test "$(otool -l "$binary" | awk '$1 == "minos" { print $2; exit }')" = '13.5'
+            done
+          fi
+          node scripts/release/node-sdk/stage-package.mjs --local-candidate --kind platform --package-dir "packages/awiki-im-core-node-platforms/$NATIVE_NAME" --target "$NATIVE_NAME" --binary "$core_binary" --output "dist/node-sdk/staged/$NATIVE_NAME"
+          node scripts/release/node-sdk/stage-package.mjs --local-candidate --kind wrapper --package-dir packages/awiki-im-core-node --output dist/node-sdk/staged/wrapper
+          for kind in "$NATIVE_NAME" wrapper; do
+            python3 scripts/release/label-test-package.py --directory "dist/node-sdk/staged/$kind" --version 0.2.8-sg.20260922.1
+            node scripts/release/node-sdk/pack-audit.mjs --package-dir "dist/node-sdk/staged/$kind" --destination dist/node-sdk/tarballs
+          done
+          cd ../anp/anp-identity
+          node scripts/release/stage-node-package.mjs --local-candidate --kind platform --package-dir "bindings/node/npm/$NATIVE_NAME" --target "$NATIVE_NAME" --binary "$identity_binary" --output "dist/node-release/staged/$NATIVE_NAME"
+          node scripts/release/stage-node-package.mjs --local-candidate --kind wrapper --output dist/node-release/staged/wrapper
+          for kind in "$NATIVE_NAME" wrapper; do
+            python3 ../../awiki-cli-rs2/scripts/release/label-test-package.py --directory "dist/node-release/staged/$kind" --version 0.2.4-sg.20260922.1
+            node scripts/release/pack-node-package.mjs --package-dir "dist/node-release/staged/$kind" --destination dist/node-release/tarballs
+          done
+      - name: Load both exact packaged SDKs
+        shell: bash
+        run: |
+          core_wrapper="$(find awiki-cli-rs2/dist/node-sdk/tarballs -name 'awiki-im-core-node-0*.tgz' -print -quit)"
+          core_platform="$(find awiki-cli-rs2/dist/node-sdk/tarballs -name 'awiki-im-core-node-${{ matrix.name }}-*.tgz' -print -quit)"
+          identity_wrapper="$(find anp/anp-identity/dist/node-release/tarballs -name 'agent-network-protocol-anp-identity-0*.tgz' -print -quit)"
+          identity_platform="$(find anp/anp-identity/dist/node-release/tarballs -name 'agent-network-protocol-anp-identity-${{ matrix.name }}-*.tgz' -print -quit)"
+          node awiki-cli-rs2/scripts/release/node-sdk/verify-packed-install.mjs --wrapper "$core_wrapper" --platform "$core_platform"
+          node anp/anp-identity/scripts/release/verify-node-install.mjs --wrapper "$identity_wrapper" --platform "$identity_platform"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: singapore-native-${{ matrix.name }}
+          path: |
+            awiki-cli-rs2/dist/node-sdk/tarballs/*
+            anp/anp-identity/dist/node-release/tarballs/*
+            native-inputs/source-receipt.json
+          if-no-files-found: error
+          retention-days: 14
