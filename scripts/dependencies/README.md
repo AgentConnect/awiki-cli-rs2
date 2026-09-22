@@ -5,15 +5,20 @@
 这里的 Release 指交付入口；直接 `cargo build --release` 仍只是本地优化构建。
 
 ```bash
-# 在修改中的 CLI 工作区使用已发布 SDK，不要求先提交消费者代码。
+# Debug 默认使用已发布 SDK，不要求先提交消费者代码。CLI 与 Daemon 是同一入口。
 python3 scripts/dependencies/build.py --check
-# 本地路径相对于配置文件目录；把 example 复制到仓库根目录后再修改。
+python3 scripts/dependencies/build.py --package awiki-deamon --check
+# 只要把 ANP 改成源码：复制 example 到仓库根目录（路径相对该文件）。
+cp scripts/dependencies/local-anp.example.json dependencies.local.json
+python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
+# 同时替换 Core / Identity / ANP 时用 local.example.json。
 cp scripts/dependencies/local.example.json dependencies.local.json
 python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
 # 支持 awiki-cli / awiki-deamon / im-core-dart / awiki-im-core-node。
 python3 scripts/dependencies/build.py --package awiki-im-core-node --check
 # 正式构建：只允许 registry，要求已提交源码。
 python3 scripts/dependencies/build.py --profile release --package awiki-cli
+python3 scripts/dependencies/build.py --profile release --package awiki-deamon
 ```
 
 `--resolve-only` 仅用于 Debug 依赖图诊断，不代替编译检查。编译结果与解析记录保存在
