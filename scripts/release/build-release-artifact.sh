@@ -240,9 +240,9 @@ else
   cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
 fi
 
-anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
+anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" "${TEST_SOURCES}" <<'NODE'
 const fs = require('fs');
-const [configPath, version] = process.argv.slice(2);
+const [configPath, version, testSources] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const versions = Object.values(config.channels || {}).map(entry => entry.version);
 if (!versions.includes(version)) {
@@ -251,7 +251,7 @@ if (!versions.includes(version)) {
 if (!/^[a-f0-9]{40}$/i.test(config.anp_commit || '')) {
   throw new Error(`anp_commit in ${configPath} must be a full commit SHA`);
 }
-process.stdout.write(config.anp_commit);
+process.stdout.write(testSources ? JSON.parse(fs.readFileSync(testSources, "utf8")).dependencies.anp.commit : config.anp_commit);
 NODE
 )"
 
