@@ -69,15 +69,17 @@ Select the sender workspace before inspecting the sender:
 Before the dry-run, inspect the sender in the selected workspace with:
 
 ```bash
-awiki-cli id current --format json
+awiki-cli id list --format json
 ```
 
 For a non-default workspace, the command environment must include the exact
 `AWIKI_CLI_WORKSPACE_HOME_DIR` recovered above.
 
-Pin the resolved local identity with the global `--identity <local-alias>` flag when sending. If
-there is no active identity in the selected workspace, or multiple identities make the intended
-sender unclear, stop and ask the user. Do not switch identities or call `id use` as part of Notify.
+Match exactly one entry in `data.identities` to the alias and sender DID already authorized for
+this task. Pin that alias with the global `--identity <local-alias>` flag when sending. `id current`
+reports the workspace default, even when another identity is selected; it cannot validate a pinned
+non-default sender. If the intended sender is unavailable or unclear, stop and ask the user. Do not
+switch the workspace default or call `id use` as part of Notify.
 
 Resolve the authorized receiver with the same pinned identity before planning the send:
 This is the `awiki-cli id resolve` read path.
@@ -172,8 +174,8 @@ Do not infer success only from `summary`. Server acceptance does not prove AWiki
 Dry-run is syntactic planning only: it does not prove that an identity exists and does not resolve a
 Handle to a DID. Before the real send, verify the dry-run envelope has `ok: true`,
 `data.plan.action: "direct.send"`, `data.plan.identity` equal to the alias returned by
-`id current`, and `data.plan.target.did` equal to the DID returned by `id resolve`. These checks
-detect argument drift only; `id current` and `id resolve` are the identity and target validation
+`id list` for the pinned sender, and `data.plan.target.did` equal to the DID returned by `id resolve`. These checks
+detect argument drift only; `id list` and `id resolve` are the identity and target validation
 steps. The plan must also report `data.plan.listener_required: false` and a
 `data.plan.transport_policy` value. When explicit idempotency values are used, require
 `data.plan.client_message_id` and `data.plan.idempotency_key` to match them exactly.
@@ -186,7 +188,7 @@ steps. The plan must also report `data.plan.listener_required: false` and a
 - Send at most once for the same task and terminal state.
 - A later, different terminal state may be sent once. For example, `action_required` may later be followed by `completed`.
 - Record the returned message ID in the Agent's current-task context, but do not expose it unless it helps diagnose delivery.
-- No durable send ledger exists in this Skill. If current-task context or the stable notification key is lost, do not assume the message was unsent and retry.
+- The one-shot runner retains a private durable event receipt. It is not a background delivery queue. If that context or the stable notification key is lost, do not assume the message was unsent and retry.
 - Do not send a contradictory terminal state after `failed` or `completed` unless the user explicitly resumes the work as a new task.
 
 ## Product Boundary
