@@ -5986,6 +5986,17 @@ fn metadata_attributes_from_object(
     content_type: Option<&str>,
 ) -> Vec<crate::messages::MessageMetadataAttribute> {
     let mut attributes = raw_content_attributes(object.get("content"), content_type);
+    if content_type == Some("text/plain") && object.get("group_did").is_none_or(Value::is_null) {
+        let annotations = object
+            .get("annotations")
+            .or_else(|| object.get("body").and_then(|body| body.get("annotations")));
+        if let Some(level) = annotations.and_then(crate::messages::notify_projection_level) {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: crate::messages::NOTIFY_LEVEL_ATTRIBUTE.into(),
+                value: level.into(),
+            });
+        }
+    }
     if let Some(is_read) = bool_value(object.get("is_read")) {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "is_read".to_string(),

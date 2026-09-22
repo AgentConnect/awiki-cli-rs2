@@ -1,5 +1,10 @@
 mod dto;
 mod mention;
+mod notify;
+pub use notify::{
+    notify_level_from_annotations, notify_projection_level, NotifyLevel, NOTIFY_ANNOTATION,
+    NOTIFY_LEVEL_ATTRIBUTE,
+};
 mod processing;
 mod service;
 mod v2_product;

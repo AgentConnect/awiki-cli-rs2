@@ -92,6 +92,19 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         Some(content_type.clone()),
         [("notification_method", "direct.incoming")],
     );
+    if content_type == "text/plain" {
+        if let Some(level) = body
+            .and_then(|b| b.get("annotations"))
+            .and_then(crate::messages::notify_projection_level)
+        {
+            metadata
+                .attributes
+                .push(crate::messages::MessageMetadataAttribute {
+                    key: "notify_level".into(),
+                    value: level.into(),
+                });
+        }
+    }
     add_verified_p5_security_attributes(&mut metadata, params, meta);
     add_direct_message_identity_attributes(&mut metadata, meta);
     if let Some(attachment) = attachment_projection.as_ref() {

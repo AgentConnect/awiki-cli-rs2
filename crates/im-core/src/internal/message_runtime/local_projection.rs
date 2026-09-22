@@ -1485,6 +1485,12 @@ fn request_body_projection(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<(String, String)> {
     match body {
+        crate::messages::MessageBody::NotifyText { text, .. } => {
+            request_body_projection(&crate::messages::MessageBody::Text {
+                text: text.clone(),
+                kind: crate::messages::MessageKind::Text,
+            })
+        }
         crate::messages::MessageBody::Text { text, kind } => {
             if text.trim().is_empty() {
                 return Err(crate::ImError::invalid_input(
@@ -1516,6 +1522,12 @@ fn request_body_view(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<crate::messages::MessageBodyView> {
     match body {
+        crate::messages::MessageBody::NotifyText { text, .. } => {
+            request_body_view(&crate::messages::MessageBody::Text {
+                text: text.clone(),
+                kind: crate::messages::MessageKind::Text,
+            })
+        }
         crate::messages::MessageBody::Text { text, kind } => {
             if text.trim().is_empty() {
                 return Err(crate::ImError::invalid_input(
@@ -1550,6 +1562,9 @@ fn retry_target_for_body_and_target(
     target: &crate::messages::MessageTarget,
 ) -> crate::ImResult<crate::internal::message_runtime::state::MessageRetryTarget> {
     match (target, body) {
+        (_, crate::messages::MessageBody::NotifyText { .. }) => {
+            Ok(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
+        }
         (crate::messages::MessageTarget::Direct(_), crate::messages::MessageBody::Text { .. }) => {
             Ok(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
         }
@@ -1574,6 +1589,7 @@ fn content_type_for_message_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<&'static str> {
     match body {
+        crate::messages::MessageBody::NotifyText { .. } => Ok("text/plain"),
         crate::messages::MessageBody::Text { kind, .. } => Ok(content_type_for_kind(kind)),
         crate::messages::MessageBody::Payload { .. } => Ok("application/json"),
         crate::messages::MessageBody::Attachment { .. } => {
@@ -1899,7 +1915,8 @@ where
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "raw_message_id"
+            "notify_level"
+            | "raw_message_id"
             | "group_event_seq"
             | "group_state_version"
             | "attachment_id"
@@ -2093,7 +2110,8 @@ where
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "raw_message_id"
+            "notify_level"
+            | "raw_message_id"
             | "group_event_seq"
             | "group_state_version"
             | "secure_outbox_id"
@@ -2389,7 +2407,8 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "raw_message_id"
+            "notify_level"
+            | "raw_message_id"
             | "sync_event_id"
             | "sync_event_seq"
             | "sync_event_type"

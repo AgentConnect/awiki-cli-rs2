@@ -124,3 +124,18 @@ registry-build.py使用指定提交的Git归档构建输入，不再创建worktr
 不会带入dirty文件，registry pin/lock与实际metadata检查保持。构建输入的
 `.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
 归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。
+
+### Notify PR #43 开发源码联调
+
+Notify 已迁移到 `release/0910`。`dependencies.source.json` 固定同一 PR 中含 Notify
+及当前基线的 Core 提交，配套 source Cargo.lock；同时保留 0910 基线的 Identity
+`bef7757603b004bf4a54873040da49480272738f` 源码及其 PR #11 归属。
+ANP 1.0.3 保持 registry 来源；不要退回旧 0815 Core 或旧 Identity Node 修复 pin。
+
+使用上文的 source `--check --package awiki-cli` 入口验证本候选。
+当前基线的 ANP/Identity 固定版本缺少 Core 所需的 did:web API，source 编译仍有阻塞。
+本地 Core 回归使用 ANP `0ba814aadc6567cdba366a0550f79e433233e687`、Identity
+`65a79d2644a065942004fad6272ea8b8b6b792f4`（各自 release/0910）通过，不能代替提交中
+固定依赖的验证。这不修复或跳过独立 registry 检查；正式 registry 尚缺新 API，仍是合并门禁。
+获得对应发布授权并满足依赖门禁后才能更新正式 pin/lock，再验证 registry。
+开发、基线迁移及提交 PR 都不授权发布依赖或任何版本。

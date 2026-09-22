@@ -1298,6 +1298,12 @@ Mutations without a declared replay identity do not inherit either behavior.
 
 ## 14. Reliable Message Sync
 
+Plain Direct Notify annotations are projected by both realtime/inbox and the reliable delta/get_batch
+hydration reducer. Local upsert retains an already validated `notify_level` when a later plaintext Direct
+projection omits it, while keeping new sync metadata. It does not merge unrelated old attributes or transfer
+Notify intent to Group/E2EE messages. Malformed namespaced annotations remain `invalid`, preventing an
+ordinary-notification fallback without granting urgency. Device presentation remains App-owned.
+
 Reliable message sync is split between service-owned event logs and
 `im-core`-owned local recovery state. The service API is documented in
 `message-service/docs/api/ANP-client-server-api-sync.md`; this document records

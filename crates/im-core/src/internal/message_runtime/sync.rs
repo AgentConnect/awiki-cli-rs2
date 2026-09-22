@@ -2064,6 +2064,20 @@ pub(super) fn sync_delta_message_from_payload(
         crate::messages::MessageDirection::Incoming
     };
     let mut attributes = Vec::new();
+    // Delta and get_batch hydration share this projection. Only a closed,
+    // plaintext Direct annotation carries device presentation intent.
+    if !is_group && content_type == "text/plain" {
+        if let Some(level) = message
+            .get("annotations")
+            .or_else(|| message.get("body").and_then(|body| body.get("annotations")))
+            .and_then(crate::messages::notify_projection_level)
+        {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: crate::messages::NOTIFY_LEVEL_ATTRIBUTE.to_owned(),
+                value: level.to_owned(),
+            });
+        }
+    }
     attributes.push(crate::messages::MessageMetadataAttribute {
         key: "sync_event_id".to_owned(),
         value: event.event_id.clone(),

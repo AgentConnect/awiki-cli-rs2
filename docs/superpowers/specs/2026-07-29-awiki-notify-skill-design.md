@@ -71,13 +71,14 @@ Skill 只提供“Agent 主动调用”的尽力通知。它不能保证 Coding 
 消息使用普通文本，格式固定为：
 
 ```text
-[Coding Agent][<status>] <task_title>
+<状态文案> · <task_title>
 <summary>
 下一步：<next_action>
 ```
 
 要求：
 
+- 状态文案采用“已完成 / 暂时受阻 / 执行失败 / 需要你处理”；机器状态保留在本地事件和回执中，不作为方括号前缀展示。
 - `task_title` 是简短任务名；
 - `summary` 只写用户可理解的结果或阻塞原因；
 - `next_action` 在无需后续操作时写“无需操作”；
@@ -88,7 +89,7 @@ Skill 只提供“Agent 主动调用”的尽力通知。它不能保证 Coding 
 示例：
 
 ```text
-[Coding Agent][completed] 修复 AWiki Me 消息横幅
+已完成 · 修复 AWiki Me 消息横幅
 已完成普通消息的前台横幅与后台系统通知处理。
 下一步：请在 AWiki Me 中确认是否收到测试消息。
 ```

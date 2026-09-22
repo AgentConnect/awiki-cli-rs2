@@ -309,6 +309,9 @@ impl V2OrdinaryBody {
 
     pub(crate) fn from_message_body(body: &crate::messages::MessageBody) -> crate::ImResult<Self> {
         match body {
+            crate::messages::MessageBody::NotifyText { .. } => {
+                Err(crate::ImError::unsupported("notify-requires-plain-direct"))
+            }
             crate::messages::MessageBody::Text { text, kind } => Ok(Self::Text {
                 text: text.clone(),
                 markdown: matches!(kind, crate::messages::MessageKind::Markdown),

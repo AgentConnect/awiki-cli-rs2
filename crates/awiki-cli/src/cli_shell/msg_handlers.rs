@@ -257,6 +257,7 @@ fn parse_listener_local_result(result: Map<String, Value>) -> Result<CommandResu
 }
 
 struct MsgSendPlan<'a> {
+    notify_level: Option<im_core::messages::NotifyLevel>,
     identity: &'a str,
     to: &'a str,
     group: &'a str,
@@ -314,6 +315,9 @@ impl App {
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
+                    notify_level: im_core::messages::NotifyLevel::parse(&string_flag(
+                        command, "notify",
+                    )),
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
@@ -380,6 +384,9 @@ impl App {
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
+                    notify_level: im_core::messages::NotifyLevel::parse(&string_flag(
+                        command, "notify",
+                    )),
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
@@ -442,6 +449,9 @@ impl App {
             return self.render_msg_send_plan(
                 resolved,
                 MsgSendPlan {
+                    notify_level: im_core::messages::NotifyLevel::parse(&string_flag(
+                        command, "notify",
+                    )),
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
@@ -505,6 +515,9 @@ impl App {
             return self.render_msg_send_plan(
                 resolved,
                 MsgSendPlan {
+                    notify_level: im_core::messages::NotifyLevel::parse(&string_flag(
+                        command, "notify",
+                    )),
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
@@ -603,6 +616,9 @@ impl App {
             )),
         );
         plan.insert("listener_required".to_string(), Value::Bool(false));
+        if let Some(level) = input.notify_level {
+            plan.insert("notify_level".into(), Value::String(level.as_str().into()));
+        }
         plan.insert("local_writes".to_string(), json!(["messages"]));
         plan.insert("secure".to_string(), Value::Bool(input.secure));
         plan.insert(
@@ -1349,6 +1365,11 @@ fn send_message_plan_body(
     request: &im_core::prelude::SendMessageRequest,
 ) -> Result<MsgSendPlanBody<'_>, ExitError> {
     match &request.body {
+        MessageBody::NotifyText { text, .. } => Ok(MsgSendPlanBody {
+            text: text.clone(),
+            message_type: "text",
+            payload: None,
+        }),
         MessageBody::Text { text, kind } => Ok(MsgSendPlanBody {
             text: text.clone(),
             message_type: message_type_for_kind(kind),

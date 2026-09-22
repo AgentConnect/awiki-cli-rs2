@@ -439,7 +439,7 @@ fn persist_current(
 ) -> crate::ImResult<()> {
     crate::internal::identity_device_revoke::write_document_atomic(
         &client.runtime().did_document_path,
-        &current,
+        current,
     )?;
     let alias = client
         .current_identity()
