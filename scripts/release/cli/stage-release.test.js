@@ -217,3 +217,19 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
+
+test('explicit test staging rejects missing provenance without relaxing formal staging', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-test-stage-'));
+  try {
+    const artifacts = path.join(temp, 'artifacts'); fs.mkdirSync(artifacts);
+    writeArtifacts(artifacts, '1.0.53');
+    const server = path.join(temp, 'server.toml'); writeServerConfig(server, temp);
+    const args = [path.join(scriptDir, 'stage-release.js'), '--channel', 'stable', '--release-config', releaseConfig,
+      '--server-config', server, '--artifacts', artifacts, '--output', path.join(temp, 'output'),
+      '--source-tag', 'test/singapore-full-20260922', '--source-commit', 'a'.repeat(40)];
+    assert.notEqual(run(process.execPath, args).status, 0);
+    const result = run(process.execPath, [...args, '--test-sources', path.resolve(scriptDir, '../singapore-test-sources.json')]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /source\.json/);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});

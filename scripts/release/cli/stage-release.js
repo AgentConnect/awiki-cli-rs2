@@ -88,6 +88,17 @@ function main() {
   const channel = arg('--channel');
   if (!['beta', 'stable'].includes(channel)) die('channel must be beta or stable');
   const releaseConfig = readReleaseConfig(arg('--release-config'));
+  const testSourcesPath = process.argv.includes('--test-sources') ? arg('--test-sources') : null;
+  const testSources = testSourcesPath ? JSON.parse(fs.readFileSync(testSourcesPath, 'utf8')) : null;
+  if (testSources) {
+    if (testSources.schema_version !== 1 || testSources.channel !== 'singapore-test'
+        || Object.keys(testSources.dependencies ?? {}).sort().join(',') !== 'anp,anp-identity'
+        || Object.values(testSources.dependencies).some(item => !/^[a-f0-9]{40}$/.test(item.commit))) {
+      die('invalid explicit Singapore test source manifest');
+    }
+    releaseConfig.anp_commit = testSources.dependencies.anp.commit;
+    releaseConfig.anp_identity_commit = testSources.dependencies['anp-identity'].commit;
+  }
   const serverConfig = readServerConfig(arg('--server-config'));
   const artifactsDir = path.resolve(arg('--artifacts'));
   const outputDir = path.resolve(arg('--output'));
@@ -98,7 +109,7 @@ function main() {
   const version = entry.version;
   const channelBaseUrl = `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}`;
   const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl };
-  if (sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
+  if (sourceTag !== (testSources ? 'test/singapore-full-20260922' : `cli-v${version}`)) die(`source tag ${sourceTag} does not match cli-v${version}`);
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
 
@@ -109,6 +120,7 @@ function main() {
     const extension = target.startsWith('windows-') ? 'zip' : 'tar.gz';
     return `awiki-cli-${version}-${target}.${extension}`;
   }));
+  if (testSources) for (const target of releaseConfig.targets) expectedArtifacts.add(`awiki-cli-${version}-${target}.source.json`);
   const unexpectedArtifacts = fs.readdirSync(artifactsDir).filter(name => !expectedArtifacts.has(name));
   if (unexpectedArtifacts.length) die(`unexpected release artifacts: ${unexpectedArtifacts.join(', ')}`);
   for (const target of releaseConfig.targets) {
@@ -116,6 +128,18 @@ function main() {
     const fileName = `awiki-cli-${version}-${target}.${extension}`;
     const source = path.join(artifactsDir, fileName);
     if (!fs.statSync(source, { throwIfNoEntry: false })?.isFile()) die(`missing artifact ${source}`);
+    if (testSources) {
+      const receipt = JSON.parse(fs.readFileSync(path.join(artifactsDir, `awiki-cli-${version}-${target}.source.json`), 'utf8'));
+      if (receipt.dependency_mode !== 'test-source' || receipt.channel !== 'singapore-test' || receipt.published !== false
+          || receipt.source_commit !== sourceCommit
+          || ![sha256(testSourcesPath), crypto.createHash('sha256').update(fs.readFileSync(testSourcesPath, 'utf8').replace(/\r?\n/g, '\r\n')).digest('hex')].includes(receipt.manifest_sha256)
+          || ['anp', 'anp-identity'].some(name => receipt.dependencies?.[name]?.commit !== testSources.dependencies[name].commit)) {
+        die(`test source receipt mismatch: ${target}`);
+      }
+      const archiveSource = readArchiveFile(source, target, 'SOURCE.md').toString('utf8');
+      if (!archiveSource.includes(sourceCommit) || !archiveSource.includes(testSources.dependencies.anp.commit)) die(`archive source mismatch: ${target}`);
+      fs.copyFileSync(path.join(artifactsDir, `awiki-cli-${version}-${target}.source.json`), path.join(outputDir, 'artifacts', `awiki-cli-${version}-${target}.source.json`));
+    }
     const currentTenantConfigRaw = readArchiveFile(source, target, 'BUILTIN-TENANTS.json');
     validateTenantConfig(currentTenantConfigRaw, `${fileName}/BUILTIN-TENANTS.json`);
     if (tenantConfigRaw === null) {
@@ -143,7 +167,8 @@ function main() {
     fs.writeFileSync(path.join(packageStage, 'SOURCE.md'), `# AWiki CLI S2 Corresponding Source
 
 Version: ${version}
-Tag: ${sourceTag}
+${testSources ? 'Test build ref' : 'Tag'}: ${sourceTag}
+${testSources ? 'Channel: Singapore test build; SDKs unpublished\n' : ''}
 Commit: ${sourceCommit}
 Source: https://github.com/${serverConfig.github_repo}/tree/${sourceCommit}
 Source archive: https://github.com/${serverConfig.github_repo}/archive/${sourceCommit}.tar.gz
@@ -216,7 +241,7 @@ the accompanying LICENSE file.
     latest: version,
     min_supported_version: entry.min_supported_version,
     published_at: new Date().toISOString(),
-    source: { tag: sourceTag, commit: sourceCommit },
+    source: { ...(testSources ? { ref: sourceTag, dependency_mode: 'test-source', channel: 'singapore-test', published: false } : { tag: sourceTag }), commit: sourceCommit },
     builtin_tenants_sha256: crypto.createHash('sha256').update(tenantConfigRaw).digest('hex'),
     installer: {
       url: `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}/awiki-cli.tgz`,
