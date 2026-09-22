@@ -12,10 +12,12 @@ pub(super) struct RuntimeInboundAttachment {
     pub(super) local_path: Option<PathBuf>,
     pub(super) download_status: String,
     pub(super) error: Option<String>,
+    pub(super) failure: Option<crate::acp::attachments::AttachmentFailure>,
 }
 
 pub(super) async fn attachment_runtime_prompt_text(
     config: &DaemonConfig,
+    state: &DaemonState,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     preferred_language: &str,
@@ -38,6 +40,43 @@ pub(super) async fn attachment_runtime_prompt_text(
             )
             .await,
         );
+    }
+    if state
+        .load_runtime_agent_profile(target_agent_did)?
+        .runtime_plugin_id
+        == crate::acp::PLUGIN_ID
+    {
+        let items = resolved
+            .iter()
+            .map(|item| {
+                let path = item
+                    .local_path
+                    .clone()
+                    .context("attachment_download_failed")?;
+                crate::acp::attachments::AuthorizedAttachment::from_download(
+                    path,
+                    item.filename.clone(),
+                    item.mime_type.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>>>();
+        match items {
+            Ok(items) => crate::acp::attachments::remember(
+                state,
+                target_agent_did,
+                message.id.as_str(),
+                &items,
+            )?,
+            Err(_) => crate::acp::attachments::remember_failure_details(
+                state,
+                target_agent_did,
+                message.id.as_str(),
+                &resolved
+                    .iter()
+                    .find_map(|item| item.failure.clone())
+                    .unwrap_or_default(),
+            )?,
+        }
     }
     Ok(render_attachment_runtime_prompt(
         preferred_language,
@@ -80,6 +119,7 @@ fn attachment_items_from_payload(payload: &Value) -> Result<Vec<RuntimeInboundAt
             local_path: None,
             download_status: "pending".to_string(),
             error: None,
+            failure: None,
         });
     }
     if items.is_empty() {
@@ -112,6 +152,9 @@ async fn resolve_inbound_attachment(
         }
         Err(error) => {
             attachment.download_status = "failed".to_string();
+            attachment.failure = error
+                .downcast_ref::<im_core::ImError>()
+                .map(crate::acp::attachments::AttachmentFailure::from_core);
             attachment.error = Some(sanitize_error_message(&error.to_string()));
         }
     }

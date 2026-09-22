@@ -43,6 +43,49 @@ mod stale_direct_rebind_http_tests {
     const TEXT: &str = "one logical message across a stale route";
 
     #[tokio::test]
+    async fn foreign_persona_old_conversation_reference_sends_to_repaired_scope() {
+        let fixture = Fixture::new("foreign-reference");
+        let client = fixture.client("http://127.0.0.1:1").await;
+        let mut lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("bob.remote.test", "").unwrap(),
+            did: crate::ids::Did::parse("did:wba:remote.test:user:bob").unwrap(),
+            user_id: "old-private-subject".to_owned(),
+            domain: Some("remote.test".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: vec![],
+        };
+        let mut db = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        let old_id = crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut db,
+            "alice-id",
+            "did:example:alice",
+            &lookup,
+        )
+        .unwrap();
+        lookup.user_id = lookup.handle.as_str().to_owned();
+        crate::directory::project_handle_lookup(&client, &lookup).unwrap();
+        let request = super::super::conversation_send_request(
+            &client,
+            crate::messages::ConversationReadRef::new(old_id).unwrap(),
+            crate::messages::MessageBody::Text {
+                text: "same history".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::Plain,
+            Some(crate::ids::MessageId::parse("old-reference-send").unwrap()),
+            Some("same-operation".to_owned()),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(request.conversation_id, lookup.direct_conversation_id());
+        assert_eq!(request.target_did.as_deref(), Some(lookup.did.as_str()));
+        assert_eq!(request.peer_scope.unwrap().user_id, "bob.remote.test");
+    }
+
+    #[tokio::test]
     async fn stale_direct_send_refreshes_authority_once_and_reuses_logical_message() {
         let fixture = Fixture::new("success");
         let server = HttpTestServer::spawn(vec![

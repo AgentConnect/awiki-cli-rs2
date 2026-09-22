@@ -246,6 +246,12 @@ export function createIdentityProviderDispatch(
           transitionSessions.set(sessionId, session)
           return success({ sessionId, candidate: await session.candidate() })
         }
+        case 'adoptVerifiedSiblingDocument':
+          if (typeof provider.adoptVerifiedSiblingDocument !== 'function') throw incompatible()
+          return success(await provider.adoptVerifiedSiblingDocument(
+            reference(payload.identity),
+            object(payload.remote),
+          ))
         case 'adoptVerifiedDocument':
           return success(await provider.adoptVerifiedDocument(
             reference(payload.identity),
@@ -308,6 +314,14 @@ export function createIdentityProviderDispatch(
         case 'documentChangeReconcile': {
           const sessionId = requiredString(payload.sessionId)
           const outcome = await documentSession(documentSessions, sessionId).reconcile(
+            object(payload.observation),
+          )
+          if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
+          return success(outcome)
+        }
+        case 'documentChangeReconcileRejected': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await documentSession(documentSessions, sessionId).reconcileRejected(
             object(payload.observation),
           )
           if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)

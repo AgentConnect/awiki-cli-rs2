@@ -868,6 +868,13 @@ pub(crate) fn load_sync_thread_binding_for_conversation(
     conversation_id: &str,
     thread_kind: &str,
 ) -> crate::ImResult<Option<SyncThreadBinding>> {
+    let canonical = super::conversation_aliases::resolve(
+        connection,
+        owner_identity_id,
+        "verified_foreign_persona",
+        conversation_id,
+    )?;
+    let conversation_id = canonical.as_deref().unwrap_or(conversation_id);
     validate_required("owner_identity_id", owner_identity_id)?;
     validate_required("conversation_id", conversation_id)?;
     if !matches!(thread_kind, "direct" | "group") {
@@ -1536,6 +1543,20 @@ pub(crate) fn lane_capability_negotiation_required(
     owner_identity_id: &str,
     device_auth_generation: &str,
 ) -> crate::ImResult<bool> {
+    lane_capability_negotiation_required_with_lanes(
+        connection,
+        owner_identity_id,
+        device_auth_generation,
+        None,
+    )
+}
+
+pub(crate) fn lane_capability_negotiation_required_with_lanes(
+    connection: &Connection,
+    owner_identity_id: &str,
+    device_auth_generation: &str,
+    desired_lanes: Option<&std::collections::BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>>,
+) -> crate::ImResult<bool> {
     validate_required("owner_identity_id", owner_identity_id)?;
     validate_positive_decimal("device_auth_generation", device_auth_generation)?;
     let binding =
@@ -1563,7 +1584,12 @@ pub(crate) fn lane_capability_negotiation_required(
         )
         .optional()
         .map_err(super::local_state_unavailable)?;
-    Ok(negotiated.as_deref() != Some(device_auth_generation))
+    let changed = if let Some(desired) = desired_lanes {
+        load_negotiated_lanes_v1a(connection, &binding)?.as_ref() != Some(desired)
+    } else {
+        false
+    };
+    Ok(negotiated.as_deref() != Some(device_auth_generation) || changed)
 }
 
 pub(crate) fn record_sync_lane_capability_negotiation_v1a(
@@ -1637,9 +1663,12 @@ pub(crate) fn reconcile_sync_lane_capability_v1a(
     client_instance_id: &str,
     negotiated_capabilities_json: &str,
 ) -> crate::ImResult<()> {
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(super::local_state_unavailable)?;
+    // Acquire the writer lock before reading the account binding. Concurrent
+    // receivers can otherwise create a deferred read snapshot whose write
+    // upgrade fails with SQLITE_BUSY without honoring the busy timeout.
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(super::local_state_unavailable)?;
     replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
     record_sync_lane_capability_negotiation_v1a(
         &transaction,
@@ -6859,6 +6888,10 @@ fn subtract_small_decimal(value: &str, amount: u32) -> crate::ImResult<Option<St
             .collect(),
     ))
 }
+
+#[cfg(test)]
+#[path = "sync_v2_concurrency_tests.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 mod tests {

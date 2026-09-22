@@ -151,7 +151,7 @@ fn local_reset_includes_unprojected_registration_custody_without_enumerating_the
             did: crate::ids::Did::parse(&expected.did).unwrap(),
             did_document: public.document.into_value(),
             protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
-            root_key_id: format!("{}#key-1", expected.did),
+            root_key_id: Some(format!("{}#key-1", expected.did)),
             device_signing_key_id: device.signing_key_id.clone(),
             device_e2ee_key_id: device.e2ee_key_id.clone(),
             legacy_daemon_authorization: false,

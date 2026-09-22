@@ -36,6 +36,19 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<String> resolveHandleForDeviceJoin(String handle) async =>
+      throw _unsupported();
+
+  Future<List<PendingIdentityRegistration>>
+  pendingIdentityRegistrations() async => throw _unsupported();
+
+  Future<IdentityMethodCapabilities> identityMethodCapabilities(
+    String did,
+  ) async => throw _unsupported();
+
+  Future<List<DidMethod>> identityCreationMethods() async =>
+      throw _unsupported();
+
   Future<List<IdentitySummary>> listIdentities() async {
     throw _unsupported();
   }
@@ -153,6 +166,22 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<Map<String, Object?>> identityDocument(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
+  Future<bool> identityServicesUpdatePending(IdentitySelector selector) async =>
+      throw _unsupported();
+
+  Future<Map<String, Object?>> updateIdentityServices(
+    IdentitySelector selector,
+    List<DidDocumentService> services,
+  ) async => throw _unsupported();
+
+  Future<Map<String, Object?>> resumeIdentityServicesUpdate(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,
@@ -237,7 +266,23 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<DeviceJoinManagementStatus>> deviceJoinManagementStatus(
+    IdentitySelector selector,
+  ) async => throw _unsupported();
+
+  Future<void> retryDeviceJoinManagement({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async => throw _unsupported();
+
   Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinWithManagement({
     required String approvalHandle,
     required bool userPresenceConfirmed,
   }) async {

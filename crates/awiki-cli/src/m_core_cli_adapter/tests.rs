@@ -83,6 +83,26 @@ fn register_handle_request_builds_email_sdk_dto() {
 }
 
 #[test]
+fn register_handle_request_selects_web_and_rejects_unknown_method() {
+    let mut command = command_with_flags([("handle", "alice"), ("email", "alice@example.test")]);
+    assert_eq!(
+        identity::register_handle_request(&command)
+            .unwrap()
+            .did_method,
+        im_core::identity::DidMethod::Wba
+    );
+    command.flags.insert("did-method".into(), "web".into());
+    assert_eq!(
+        identity::register_handle_request(&command)
+            .unwrap()
+            .did_method,
+        im_core::identity::DidMethod::Web
+    );
+    command.flags.insert("did-method".into(), "unknown".into());
+    assert!(identity::register_handle_request(&command).is_err());
+}
+
+#[test]
 fn register_handle_command_request_uses_cli_identity_alias() {
     let command = command_with_flags([
         ("handle", "alice"),

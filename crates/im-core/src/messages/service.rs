@@ -3073,6 +3073,8 @@ impl<'a> MessageService<'a> {
         &self,
         limit: crate::ids::PageLimit,
     ) -> crate::ImResult<Vec<String>> {
+        #[cfg(feature = "sqlite")]
+        crate::internal::identity_join_management::start_worker(self.client);
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
@@ -3096,9 +3098,16 @@ impl<'a> MessageService<'a> {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
             let db = self.client.core_inner().local_state_db().await?;
             if db
-                .lane_capability_negotiation_required(
+                .lane_capability_negotiation_required_with_lanes(
                     binding.owner_identity_id.clone(),
                     binding.device_auth_generation.clone(),
+                    Some(
+                        crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                            &db,
+                            &binding.owner_identity_id,
+                        )
+                        .await?,
+                    ),
                 )
                 .await?
             {
@@ -3324,6 +3333,24 @@ impl<'a> MessageService<'a> {
         self.local_history_with_metadata_async(thread, query)
             .await
             .map(super::MessagePage::into_page)
+    }
+
+    /// Read committed messages strictly before an owner/conversation-bound anchor.
+    /// Continuations cannot move past the anchor. This method neither syncs nor
+    /// changes read state.
+    pub async fn local_history_before_async(
+        &self,
+        thread: super::ThreadRef,
+        anchor_message_id: crate::ids::MessageId,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        crate::internal::message_runtime::read::local_history_before_async(
+            self.client,
+            thread,
+            anchor_message_id,
+            query,
+        )
+        .await
     }
 
     pub fn local_history_with_metadata(
@@ -3844,6 +3871,8 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MessageSyncRequest,
     ) -> crate::ImResult<super::MessageReceiveOutcome> {
+        #[cfg(feature = "sqlite")]
+        crate::internal::identity_join_management::start_worker(self.client);
         self.coordinated_receive_now_async(
             request,
             crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::EnsureCurrent,
@@ -4516,8 +4545,12 @@ fn conversation_send_request(
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
     ensure_conversation_registry(client, &conversation)?;
-    let conversation_id = conversation.conversation_id.clone();
     let resolved = resolve_service_conversation_thread(client, &conversation)?;
+    let conversation_id = resolved
+        .peer_scope
+        .as_ref()
+        .map(crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope)
+        .unwrap_or_else(|| conversation.conversation_id.clone());
     let client_message_id = match client_message_id {
         Some(id) => id,
         None => crate::ids::MessageId::parse(format!(
@@ -5879,7 +5912,7 @@ mod group_e2ee_public_send_tests {
                     jwt_token: "test-token".to_owned(),
                     did_document: Some(generated.did_document),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id,
+                        root_key_id: Some(generated.root_key_id),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },

@@ -24,6 +24,7 @@ mod records;
 mod row_mappers;
 mod runtime_auth;
 mod runtime_profiles;
+pub(crate) mod runtime_retirement;
 mod runtime_tasks;
 mod schema;
 mod sync_probe;
@@ -42,6 +43,9 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    pub(crate) fn database_path(&self) -> &std::path::Path {
+        &self.database_path
+    }
     pub fn open(config: &DaemonConfig) -> Result<Self> {
         Ok(Self {
             database_path: config.daemon_db_path.clone(),

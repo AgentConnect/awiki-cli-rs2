@@ -1,6 +1,20 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 
+/// First-party device control uses rootless Web documents; ordinary external
+/// resolution has its own optional-document-proof policy in the ANP resolver.
+pub(crate) fn validate_control_document_method(document: &serde_json::Value) -> bool {
+    if document
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|did| did.starts_with("did:web:"))
+        && document.get("proof").is_some()
+    {
+        return false;
+    }
+    anp::authentication::validate_did_document_method(document, true)
+}
+
 pub(crate) fn document_hash(document: &serde_json::Value) -> crate::ImResult<String> {
     let canonical = serde_json_canonicalizer::to_vec(document).map_err(|err| {
         crate::ImError::Serialization {

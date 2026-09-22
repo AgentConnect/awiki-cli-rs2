@@ -79,6 +79,7 @@ pub(crate) async fn rebind_for_stale_error(
         .local_state_db()
         .await?
         .project_verified_handle(
+            &client.core_inner().sdk_config().did_domain,
             &context.owner.owner_identity_id,
             &context.owner.owner_did,
             lookup.clone(),
@@ -194,6 +195,9 @@ where
     let mut documents = std::collections::HashMap::new();
     let mut current = requested_did.to_owned();
     for _ in 0..=anp::authentication::DEFAULT_MAX_TRANSITION_HOPS {
+        if !current.starts_with("did:wba:") {
+            return Err(binding_conflict("DID transition is only supported for WBA"));
+        }
         if documents.contains_key(&current) {
             return Err(binding_conflict(
                 "DID transition document chain contains a cycle",
@@ -468,6 +472,26 @@ fn binding_conflict(detail: &str) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn web_transition_hint_is_rejected_before_any_document_fetch() {
+        struct NoTransitionTransport;
+        impl crate::internal::transport::AsyncRawJsonTransport for NoTransitionTransport {
+            async fn get_json_url(
+                &mut self,
+                _: &str,
+                _: std::collections::BTreeMap<String, String>,
+            ) -> crate::ImResult<serde_json::Value> {
+                panic!("Web MVP does not resolve WBA transition chains");
+            }
+        }
+        assert!(super::collect_transition_documents(
+            &mut NoTransitionTransport,
+            "did:web:example.test:alice",
+        )
+        .await
+        .is_err());
+    }
+
     use crate::internal::local_state::owner_scope::DirectPeerScope;
     use anp::authentication::{
         TransitionAssurance, TransitionHop, TransitionResult, TransitionStatus,

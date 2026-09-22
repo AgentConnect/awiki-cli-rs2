@@ -24,7 +24,6 @@ use crate::agent_status::{HeartbeatScheduler, LATEST_STATUS_CHECK_MS};
 use crate::app_bridge::message_control::{
     handle_app_control_payload_with_readiness, is_app_control_payload, IncomingAppControlPayload,
 };
-use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
     handle_agent_payload_message_with_readiness, AgentCommandOutcome, IncomingAgentPayloadMessage,
     RuntimeAgentCreateOutcome, RuntimeAgentMessageReadiness,
@@ -34,7 +33,6 @@ use crate::controller_scope::{
 };
 use crate::inbox::user_delegated::{flush_message_sync_outbox, process_user_delegated_inbox_once};
 use crate::inbox::ControllerTextMessage;
-use crate::local_rpc::call_uds_once;
 #[cfg(unix)]
 use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
@@ -44,35 +42,26 @@ use crate::outbox::{
     RuntimeAttachmentSendResult, RuntimeMessageSecurity, RuntimeMessageSend,
     RuntimeMessageSendResult, RuntimeMessageTarget, RuntimeOutbox,
 };
-use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
-use crate::plugins::hermes::{
-    repair_hermes_profile_if_needed, HermesGateway, HermesRuntimePlugin, StdioHermesGateway,
-    HERMES_RUNTIME_PLUGIN_ID,
-};
 use crate::registration::{AgentInventoryClient, UserServiceAgentRegistrationClient};
 use crate::runtime::host::{
     flush_runtime_final_outbox, run_controller_text_task_with_config,
-    run_controller_text_task_with_verified_sender_config, run_existing_runtime_task_with_config,
+    run_controller_text_task_with_verified_sender_config,
 };
 use crate::runtime::reply_payload::{
     group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
 };
-use crate::runtime::{
-    is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
-    RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
-    RuntimeRunStatus, RuntimeTask,
-};
+use crate::runtime::{is_group_conversation_id, RuntimeInvocationAuthority, RuntimeTask};
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
+mod acp_control;
 mod attachments;
 mod group_context;
 mod lifecycle_support;
 mod outbox;
 mod queue_scheduler;
 mod runtime_realtime;
-mod runtime_support;
 mod state_root_owner;
 
 use attachments::attachment_runtime_prompt_text;
@@ -98,10 +87,8 @@ use runtime_realtime::{
     RuntimeRealtimeNotification, RuntimeRealtimeSupervisor, RuntimeRealtimeSyncCoordinator,
     RuntimeRealtimeSyncWork,
 };
-use runtime_support::UdsTestRuntimePlugin;
 use state_root_owner::StateRootOwnerGuard;
 
-const GENERIC_CLI_ROUTE_RUNNING_STALE_MS: i64 = 10 * 60 * 1000;
 const RUNTIME_INBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_INBOX_RECOVERY_PAGE_LIMIT: u32 = 100;
 const RUNTIME_INBOX_RECOVERY_ROUND_HARD_CAP: usize = 500;
@@ -340,37 +327,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             }),
         )?;
     }
-    let recovered_runtime_retries =
-        state.recover_stale_runtime_retries_running(startup_recovery_cutoff)?;
-    if recovered_runtime_retries > 0 {
-        state.insert_audit_event_json(
-            "runtime.run.retry.recovered",
-            None,
-            None,
-            None,
-            None,
-            json!({
-                "recovered_count": recovered_runtime_retries,
-            }),
-        )?;
-    }
-    let recovered_cli_route_queue =
-        state.recover_stale_cli_route_message_queue_running(startup_recovery_cutoff)?;
-    let recovered_cli_route_sessions =
-        state.recover_stale_cli_route_sessions_running(startup_recovery_cutoff)?;
-    if recovered_cli_route_queue > 0 || recovered_cli_route_sessions > 0 {
-        state.insert_audit_event_json(
-            "generic_cli.route_runtime.recovered",
-            None,
-            None,
-            None,
-            None,
-            json!({
-                "recovered_queue_count": recovered_cli_route_queue,
-                "recovered_session_count": recovered_cli_route_sessions,
-            }),
-        )?;
-    }
+    crate::acp::store::recover(&state)?;
     let im_core = ImCoreAdapter::open(&config)?;
     let im_core_status = im_core
         .initialize_local_state()
@@ -409,7 +366,6 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let rpc_outbox =
         runtime_callback_outbox(&config, &state, &im_core, options.mock_status_outbox)?;
     let queue_notifier = QueueSchedulerNotifier::new();
-    let hermes_gateway = StdioHermesGateway::from_config(&config);
     let rpc_worker = start_runtime_rpc_worker(
         config.local_socket_path.clone(),
         state.clone(),
@@ -421,7 +377,6 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         state.clone(),
         im_core.clone(),
         rpc_outbox.clone(),
-        hermes_gateway.clone(),
         queue_notifier.clone(),
     );
     {
@@ -527,12 +482,11 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                         &config,
                         &state,
                         &im_core,
-                        &hermes_gateway,
                         &mut runtime_routes,
                         &mut recovery_page_tokens,
                     ).await?;
                 let delegated_processed =
-                    process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
+                    process_user_delegated_inbox_once(&config, &state, &im_core)?;
                 if newly_processed + delegated_processed > 0 {
                     realtime_supervisor.reconcile_active_agents().await?;
                 }
@@ -563,7 +517,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 let key = processing_ready.keys().next().cloned().expect("guarded processing hint");
                 let source = processing_ready.remove(&key).expect("pending processing source");
                 if let Some(client) = realtime_supervisor.client_for_source(&source) {
-                    let count = process_hydrated_runtime_recovery(&config, &state, &im_core, &hermes_gateway, &registration,
+                    let count = process_hydrated_runtime_recovery(&config, &state, &im_core, &registration,
                         &client, &source.agent_did, &mut runtime_routes, &mut recovery_page_tokens).await?;
                     processed_messages += count;
                     if count > 0 { queue_notifier.notify_all(); }
@@ -597,6 +551,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         }
     };
     realtime_supervisor.stop().await;
+    crate::acp::store::request_shutdown(&state)?;
     runtime_routes.shutdown().await;
     rpc_worker.stop();
     queue_scheduler.stop().await;
@@ -1083,7 +1038,6 @@ async fn process_realtime_message_for_test(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -1099,7 +1053,6 @@ async fn process_realtime_message_for_test(
         config,
         state,
         im_core,
-        hermes_gateway,
         registration,
         client,
         agent_did,
@@ -1116,7 +1069,6 @@ async fn process_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     runtime_routes: &mut RuntimeRouteDispatcher,
     recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
 ) -> Result<usize> {
@@ -1140,7 +1092,6 @@ async fn process_inbox_once(
             config,
             state,
             im_core,
-            hermes_gateway,
             &registration,
             &client,
             &agent.agent_did,
@@ -1167,7 +1118,6 @@ async fn process_hydrated_runtime_recovery(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -1200,19 +1150,16 @@ async fn process_hydrated_runtime_recovery(
         scanned = scanned.saturating_add(page.items.len());
         for item in page.items {
             validate_hydrated_recovery_message_binding(&item.logical_message_id, &item.message)?;
-            let group_history =
-                is_group_message(&item.message).then(|| std::slice::from_ref(&item.message));
             if process_runtime_inbox_message(
                 config,
                 state,
                 im_core,
-                hermes_gateway,
                 registration,
                 client,
                 agent_did,
                 &item.message,
                 runtime_routes,
-                group_history,
+                None,
             )
             .await?
             .unwrap_or(false)
@@ -1244,7 +1191,6 @@ async fn process_runtime_inbox_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -1268,7 +1214,6 @@ async fn process_runtime_inbox_message(
         let config = config.clone();
         let state = state.clone();
         let im_core = im_core.clone();
-        let hermes_gateway = hermes_gateway.clone();
         let registration = registration.clone();
         let client = client.clone();
         let agent_did = agent_did.to_string();
@@ -1280,7 +1225,6 @@ async fn process_runtime_inbox_message(
                 &config,
                 &state,
                 &im_core,
-                &hermes_gateway,
                 &registration,
                 &client,
                 &agent_did,
@@ -1327,7 +1271,6 @@ async fn process_runtime_inbox_message(
         config,
         state,
         im_core,
-        hermes_gateway,
         registration,
         client,
         agent_did,
@@ -1391,8 +1334,10 @@ fn should_dispatch_runtime_execution(
             Ok(
                 is_attachment_manifest_message(message, &content_type, payload)
                     || (is_awiki_agent_command_payload(payload)
-                        && payload.get("command").and_then(Value::as_str)
-                            == Some("runtime.task.submit")),
+                        && matches!(
+                            payload.get("command").and_then(Value::as_str),
+                            Some("runtime.task.submit" | "runtime.acp.control")
+                        )),
             )
         }
         MessageBodyView::Unsupported { .. } => Ok(false),
@@ -1518,235 +1463,6 @@ fn validate_hydrated_recovery_message_binding(
     Ok(())
 }
 
-#[cfg(test)]
-fn drain_runtime_retry_queue_once(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-    hermes_gateway: &StdioHermesGateway,
-) -> Result<usize> {
-    drain_runtime_retry_queue_once_limited(config, state, outbox, hermes_gateway, 10)
-}
-
-fn drain_runtime_retry_queue_once_limited(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-    hermes_gateway: &StdioHermesGateway,
-    limit: usize,
-) -> Result<usize> {
-    let retries = state.list_queued_runtime_retries_due(current_time_millis()?, limit)?;
-    let mut processed = 0usize;
-    for retry in retries {
-        if retry.requested_by_command_id == "runtime.busy.auto-deferred"
-            && !state
-                .list_cli_route_message_queue_for_task(&retry.task_id)?
-                .is_empty()
-        {
-            state.mark_runtime_retry_superseded_by_cli_route_message_queue(&retry.retry_id)?;
-            state.insert_audit_event_json(
-                "runtime.run.retry.superseded_by_route_message_queue",
-                Some(&retry.agent_did),
-                Some(&retry.runtime_profile_id),
-                Some(&retry.original_run_id),
-                None,
-                json!({
-                    "retry_id": retry.retry_id.as_str(),
-                    "original_run_id": retry.original_run_id.as_str(),
-                    "task_id": retry.task_id.as_str(),
-                }),
-            )?;
-            processed += 1;
-            continue;
-        }
-        if !state.start_queued_runtime_retry(&retry.retry_id)? {
-            continue;
-        }
-        let result = run_runtime_retry(config, state, outbox, hermes_gateway, &retry);
-        match result {
-            Ok(run_id) => {
-                if state.succeed_running_runtime_retry(&retry.retry_id)? {
-                    state.insert_audit_event_json(
-                        "runtime.run.retry.succeeded",
-                        Some(&retry.agent_did),
-                        Some(&retry.runtime_profile_id),
-                        Some(&run_id),
-                        None,
-                        json!({
-                            "retry_id": retry.retry_id,
-                            "original_run_id": retry.original_run_id,
-                            "task_id": retry.task_id,
-                        }),
-                    )?;
-                }
-            }
-            Err(error) => {
-                let busy_reason = runtime_retry_busy_reason_from_error(&error);
-                let sanitized_error = sanitize_error_message(&error.to_string());
-                if let Some(busy_reason) = busy_reason {
-                    let next_attempt_at_ms =
-                        current_time_millis()? + runtime_retry_busy_delay_ms(retry.attempts + 1);
-                    state.reschedule_runtime_retry_request(&retry.retry_id, next_attempt_at_ms)?;
-                    state.insert_audit_event_json(
-                        "runtime.run.retry.deferred",
-                        Some(&retry.agent_did),
-                        Some(&retry.runtime_profile_id),
-                        Some(&retry.original_run_id),
-                        None,
-                        json!({
-                            "retry_id": retry.retry_id,
-                            "original_run_id": retry.original_run_id,
-                            "task_id": retry.task_id,
-                            "next_attempt_at_ms": next_attempt_at_ms,
-                            "busy_reason": busy_reason,
-                        }),
-                    )?;
-                } else if state.fail_running_runtime_retry(&retry.retry_id)? {
-                    state.insert_audit_event_json(
-                        "runtime.run.retry.failed",
-                        Some(&retry.agent_did),
-                        Some(&retry.runtime_profile_id),
-                        Some(&retry.original_run_id),
-                        None,
-                        json!({
-                            "retry_id": retry.retry_id,
-                            "original_run_id": retry.original_run_id,
-                            "task_id": retry.task_id,
-                            "error": sanitized_error,
-                        }),
-                    )?;
-                }
-            }
-        }
-        processed += 1;
-    }
-    Ok(processed)
-}
-
-#[cfg(test)]
-fn drain_cli_route_message_queue_once(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-) -> Result<usize> {
-    drain_cli_route_message_queue_once_limited(config, state, outbox, 10)
-}
-
-fn drain_cli_route_message_queue_once_limited(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-    limit: usize,
-) -> Result<usize> {
-    let now = current_time_millis()?;
-    state.recover_stale_cli_route_runtime_state(
-        now.saturating_sub(GENERIC_CLI_ROUTE_RUNNING_STALE_MS),
-    )?;
-    let items = state.list_due_cli_route_message_queue_fair(now, limit)?;
-    let mut processed = 0usize;
-    for item in items {
-        let replay_run_id = format!("run_replay_{}_{}", item.queue_id, item.attempts + 1);
-        let Some(claimed) =
-            state.claim_cli_route_message_queue_item(&item.queue_id, &replay_run_id)?
-        else {
-            continue;
-        };
-        let result = run_cli_route_message_queue_item(
-            config,
-            state,
-            outbox,
-            &item,
-            &claimed,
-            &replay_run_id,
-        );
-        match result {
-            Ok(run_id) => {
-                state.mark_cli_route_message_queue_succeeded(&item.queue_id, &run_id)?;
-                state.insert_audit_event_json(
-                    "cli_route_message_queue.replay.succeeded",
-                    Some(&item.agent_did),
-                    Some(&item.runtime_profile_id),
-                    Some(&run_id),
-                    None,
-                    json!({
-                        "queue_id": item.queue_id.as_str(),
-                        "task_id": item.task_id.as_deref(),
-                        "source_message_id": item.source_message_id.as_str(),
-                        "route_key_hash": item.route_key_hash.as_str(),
-                        "driver_id": item.driver_id.as_str(),
-                    }),
-                )?;
-            }
-            Err(error) => {
-                let busy_reason = runtime_retry_busy_reason_from_error(&error);
-                let next_attempt_at_ms =
-                    current_time_millis()? + runtime_retry_busy_delay_ms(claimed.attempts);
-                let error_code = busy_reason.unwrap_or("queue_replay_failed");
-                let sanitized_error = sanitize_error_message(&error.to_string());
-                let updated = state.retry_or_dead_letter_cli_route_message_queue_item(
-                    &item.queue_id,
-                    3,
-                    next_attempt_at_ms,
-                    error_code,
-                    &sanitized_error,
-                )?;
-                state.insert_audit_event_json(
-                    if updated.status == "dead_letter" {
-                        "cli_route_message_queue.replay.dead_letter"
-                    } else {
-                        "cli_route_message_queue.replay.deferred"
-                    },
-                    Some(&item.agent_did),
-                    Some(&item.runtime_profile_id),
-                    Some(&replay_run_id),
-                    None,
-                    json!({
-                        "queue_id": item.queue_id.as_str(),
-                        "task_id": item.task_id.as_deref(),
-                        "source_message_id": item.source_message_id.as_str(),
-                        "route_key_hash": item.route_key_hash.as_str(),
-                        "driver_id": item.driver_id.as_str(),
-                        "status": updated.status.as_str(),
-                        "attempts": updated.attempts,
-                        "next_attempt_at_ms": updated.next_attempt_at_ms,
-                        "error_code": error_code,
-                        "error": sanitized_error,
-                    }),
-                )?;
-            }
-        }
-        processed += 1;
-    }
-    Ok(processed)
-}
-
-fn runtime_retry_busy_reason_from_error(error: &anyhow::Error) -> Option<&'static str> {
-    error
-        .chain()
-        .find_map(|cause| runtime_retry_busy_reason(&cause.to_string()))
-}
-
-fn runtime_retry_busy_reason(error: &str) -> Option<&'static str> {
-    if error.contains("route session is busy") || error.contains("route_busy") {
-        Some("route_busy")
-    } else if error.contains("runtime profile is busy") || error.contains("profile_busy") {
-        Some("profile_busy")
-    } else if error.contains("host home is busy") || error.contains("host_home_busy") {
-        Some("host_home_busy")
-    } else {
-        None
-    }
-}
-
-fn runtime_retry_busy_delay_ms(attempts: i64) -> i64 {
-    match attempts {
-        0 | 1 => 10_000,
-        2 => 30_000,
-        3 => 120_000,
-        _ => 300_000,
-    }
-}
-
 fn record_foreground_status_error(state: &DaemonState, message: &str) -> Result<()> {
     for daemon in state
         .list_agent_definitions()?
@@ -1763,233 +1479,6 @@ fn record_foreground_status_error(state: &DaemonState, message: &str) -> Result<
                 "error": sanitize_error_message(message),
             }),
         )?;
-    }
-    Ok(())
-}
-
-fn run_runtime_retry(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-    hermes_gateway: &StdioHermesGateway,
-    retry: &crate::state::RuntimeRetryQueueRecord,
-) -> Result<String> {
-    let original_run = state.load_runtime_run(&retry.original_run_id)?;
-    if original_run.status != RuntimeRunStatus::Failed {
-        bail!("runtime retry original run is no longer failed");
-    }
-    if original_run.agent_did != retry.agent_did
-        || original_run.task_id != retry.task_id
-        || original_run.runtime_profile_id != retry.runtime_profile_id
-        || original_run.runtime_plugin_id != retry.runtime_plugin_id
-    {
-        bail!("runtime retry queue record does not match original run");
-    }
-    let task = state.load_runtime_task(&retry.task_id)?;
-    let profile = state.load_runtime_agent_profile(&retry.agent_did)?;
-    validate_retry_task_binding(&task, &profile)?;
-    let run_id = format!("run_{}", retry.retry_id);
-    match profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway.clone(),
-                hermes_profile,
-                state.clone(),
-            );
-            run_existing_runtime_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                outbox,
-                task,
-                run_id.clone(),
-            )?;
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            run_existing_runtime_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                outbox,
-                task,
-                run_id.clone(),
-            )?;
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_existing_runtime_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                outbox,
-                task,
-                run_id.clone(),
-            )?;
-        }
-    }
-    Ok(run_id)
-}
-
-fn run_cli_route_message_queue_item(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    outbox: &impl RuntimeOutbox,
-    original_item: &crate::state::CliRouteMessageQueueRecord,
-    claimed_item: &crate::state::CliRouteMessageQueueRecord,
-    replay_run_id: &str,
-) -> Result<String> {
-    validate_claimed_cli_route_message_queue_item(original_item, claimed_item, replay_run_id)?;
-    let task_id = original_item
-        .task_id
-        .as_deref()
-        .context("cli route message queue item is missing task_id")?;
-    let original_run_id = original_runtime_run_id_for_queue_item(original_item)?;
-    let original_run = state.load_runtime_run(&original_run_id)?;
-    if original_run.status != RuntimeRunStatus::Failed {
-        bail!("cli route message queue original run is no longer failed");
-    }
-    if original_run.task_id != task_id
-        || original_run.agent_did != original_item.agent_did
-        || original_run.runtime_profile_id != original_item.runtime_profile_id
-        || original_run.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID
-    {
-        bail!("cli route message queue record does not match original run");
-    }
-
-    let task = state.load_runtime_task(task_id)?;
-    let profile = state.load_runtime_agent_profile(&original_item.agent_did)?;
-    let cli_profile = state.load_cli_runtime_profile(&original_item.runtime_profile_id)?;
-    let route = state
-        .load_cli_route_session(&original_item.route_key)?
-        .context("cli route message queue route session missing")?;
-    validate_cli_route_message_queue_binding(
-        original_item,
-        &task,
-        &original_run,
-        &profile,
-        &cli_profile,
-        &route,
-    )?;
-
-    let plugin = GenericCliDriverRegistry::new(cli_profile);
-    run_existing_runtime_task_with_config(
-        config,
-        state,
-        &profile,
-        &plugin,
-        outbox,
-        task,
-        replay_run_id.to_string(),
-    )?;
-    Ok(replay_run_id.to_string())
-}
-
-fn original_runtime_run_id_for_queue_item(
-    item: &crate::state::CliRouteMessageQueueRecord,
-) -> Result<String> {
-    let task_id = item
-        .task_id
-        .as_deref()
-        .context("cli route message queue item is missing task_id")?;
-    Ok(format!("run_{task_id}"))
-}
-
-fn validate_claimed_cli_route_message_queue_item(
-    original: &crate::state::CliRouteMessageQueueRecord,
-    claimed: &crate::state::CliRouteMessageQueueRecord,
-    replay_run_id: &str,
-) -> Result<()> {
-    if claimed.queue_id != original.queue_id
-        || claimed.agent_did != original.agent_did
-        || claimed.runtime_profile_id != original.runtime_profile_id
-        || claimed.driver_id != original.driver_id
-        || claimed.controller_scope_key != original.controller_scope_key
-        || claimed.conversation_id != original.conversation_id
-        || claimed.route_key != original.route_key
-        || claimed.route_key_hash != original.route_key_hash
-        || claimed.source_message_id != original.source_message_id
-        || claimed.task_id != original.task_id
-    {
-        bail!("claimed cli route message queue item changed binding");
-    }
-    if claimed.status != "running" {
-        bail!("claimed cli route message queue item is not running");
-    }
-    if claimed.run_id.as_deref() != Some(replay_run_id) {
-        bail!("claimed cli route message queue item has unexpected replay run id");
-    }
-    Ok(())
-}
-
-fn validate_cli_route_message_queue_binding(
-    item: &crate::state::CliRouteMessageQueueRecord,
-    task: &RuntimeTask,
-    original_run: &crate::runtime::RuntimeRun,
-    profile: &crate::runtime::RuntimeAgentProfile,
-    cli_profile: &crate::state::CliRuntimeProfileRecord,
-    route: &crate::state::CliRouteSessionRecord,
-) -> Result<()> {
-    if profile.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        bail!("cli route message queue runtime profile is not generic-cli");
-    }
-    if !runtime_task_matches_profile_controller_scope(task, profile) {
-        bail!("cli route message queue task does not match profile controller scope");
-    }
-    if task.agent_did != item.agent_did
-        || task.controller_user_id != item.controller_user_id
-        || task.controller_full_handle != item.controller_full_handle
-        || task.controller_scope_key != item.controller_scope_key
-        || task.controller_did != item.controller_did
-        || task.conversation_id.as_deref() != Some(item.conversation_id.as_str())
-    {
-        bail!("cli route message queue task binding mismatch");
-    }
-    if task.task_id.strip_prefix("task_").unwrap_or(&task.task_id) != item.source_message_id {
-        bail!("cli route message queue source message mismatch");
-    }
-    if original_run.task_id != task.task_id
-        || original_run.agent_did != item.agent_did
-        || original_run.runtime_profile_id != item.runtime_profile_id
-        || original_run.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID
-    {
-        bail!("cli route message queue original run binding mismatch");
-    }
-    if cli_profile.runtime_profile_id != item.runtime_profile_id
-        || cli_profile.driver_id != item.driver_id
-    {
-        bail!("cli route message queue CLI profile binding mismatch");
-    }
-    if route.route_key != item.route_key
-        || route.route_key_hash != item.route_key_hash
-        || route.agent_did != item.agent_did
-        || route.runtime_profile_id != item.runtime_profile_id
-        || route.driver_id != item.driver_id
-        || route.controller_user_id != item.controller_user_id
-        || route.controller_full_handle != item.controller_full_handle
-        || route.controller_scope_key != item.controller_scope_key
-        || route.controller_did != item.controller_did
-        || route.conversation_id != item.conversation_id
-    {
-        bail!("cli route message queue route binding mismatch");
-    }
-    if !matches!(item.driver_id.as_str(), "codex" | "claude-code") {
-        bail!("cli route message queue driver is not replayable");
-    }
-    Ok(())
-}
-
-fn validate_retry_task_binding(
-    task: &RuntimeTask,
-    profile: &crate::runtime::RuntimeAgentProfile,
-) -> Result<()> {
-    if !runtime_task_matches_profile_controller_scope(task, profile) {
-        bail!("runtime retry task does not match profile controller scope");
     }
     Ok(())
 }
@@ -2023,7 +1512,6 @@ async fn route_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -2041,7 +1529,6 @@ async fn route_message(
             config,
             state,
             im_core,
-            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
@@ -2069,6 +1556,24 @@ async fn route_message(
                 content_type: content_type.clone(),
                 payload: payload.clone(),
             };
+            if is_awiki_agent_command_payload(payload) {
+                crate::commands::validate_application_json_payload(&payload_message)?;
+            }
+            if is_awiki_agent_command_payload(payload)
+                && payload["command"] == "runtime.acp.control"
+            {
+                acp_control::handle(
+                    config,
+                    state,
+                    im_core,
+                    registration,
+                    target_agent_did,
+                    &sender_did,
+                    conversation_id.clone(),
+                    payload,
+                )?;
+                return Ok(true);
+            }
             if is_app_control_payload(payload) {
                 let readiness = ImCoreRuntimeAgentMessageReadiness::new(config, state, im_core);
                 handle_app_control_payload_with_readiness(
@@ -2098,6 +1603,7 @@ async fn route_message(
                 let profile = state.load_runtime_agent_profile(target_agent_did)?;
                 let task_text = attachment_runtime_prompt_text(
                     config,
+                    state,
                     target_client,
                     target_agent_did,
                     &profile.preferred_language,
@@ -2110,7 +1616,6 @@ async fn route_message(
                     config,
                     state,
                     im_core,
-                    hermes_gateway,
                     target_client,
                     target_agent_did,
                     message.id.as_str(),
@@ -2132,14 +1637,7 @@ async fn route_message(
                 return Ok(false);
             }
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
-                run_runtime_task_command(
-                    config,
-                    state,
-                    im_core,
-                    hermes_gateway,
-                    registration,
-                    payload_message,
-                )?;
+                run_runtime_task_command(config, state, im_core, registration, payload_message)?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let readiness = ImCoreRuntimeAgentMessageReadiness::new(config, state, im_core);
@@ -2163,7 +1661,6 @@ async fn route_message(
                 config,
                 state,
                 im_core,
-                hermes_gateway,
                 registration,
                 target_client,
                 target_agent_did,
@@ -2265,7 +1762,6 @@ async fn try_route_group_agent_mention<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -2330,6 +1826,7 @@ where
 
     let task_text = group_agent_mention_content_text(
         config,
+        state,
         target_client,
         target_agent_did,
         &profile.preferred_language,
@@ -2339,12 +1836,17 @@ where
         payload,
     )
     .await?;
+    let recent_context = if group_history.is_empty() {
+        group_context::load_recent_group_context(target_client, message).await
+    } else {
+        build_recent_group_context(message, group_history)
+    };
     let task_payload = group_agent_mention_task_payload(
         message,
         &mention_context,
         task_text,
         authorization.sender_full_handle.as_deref(),
-        Some(build_recent_group_context(message, group_history)),
+        Some(recent_context),
     );
     let task_message_id =
         group_agent_mention_task_message_id(message, &mention_context.mention_id, target_agent_did);
@@ -2368,7 +1870,7 @@ where
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
-    run_runtime_text_message_with_gateway(
+    run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
@@ -2388,7 +1890,6 @@ where
             text: task_payload.to_string(),
         },
         None,
-        hermes_gateway.clone(),
     )?;
     state.insert_audit_event_json(
         "daemon.group_mention.dispatched",
@@ -2620,6 +2121,7 @@ fn mention_surface_from_payload(text: &str, mention: &MessageMention) -> String 
 
 async fn group_agent_mention_content_text(
     config: &DaemonConfig,
+    state: &DaemonState,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     preferred_language: &str,
@@ -2636,6 +2138,7 @@ async fn group_agent_mention_content_text(
     if is_attachment_manifest_message(message, &content_type, raw_payload) {
         return attachment_runtime_prompt_text(
             config,
+            state,
             target_client,
             target_agent_did,
             preferred_language,
@@ -2792,7 +2295,6 @@ fn route_runtime_controller_text(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message_id: &str,
@@ -2846,7 +2348,7 @@ fn route_runtime_controller_text(
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
-    run_runtime_text_message_with_gateway(
+    run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
@@ -2864,7 +2366,6 @@ fn route_runtime_controller_text(
             text,
         },
         verified_sender,
-        hermes_gateway.clone(),
     )?;
     Ok(())
 }
@@ -2873,7 +2374,6 @@ fn route_runtime_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -2896,7 +2396,6 @@ where
             config,
             state,
             im_core,
-            hermes_gateway,
             target_client,
             target_agent_did,
             message_id,
@@ -2909,7 +2408,6 @@ where
             config,
             state,
             im_core,
-            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
@@ -2926,7 +2424,6 @@ fn route_runtime_external_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -3009,7 +2506,7 @@ where
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
-    run_runtime_text_message_with_gateway(
+    run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
@@ -3025,7 +2522,6 @@ where
             text: task_payload.to_string(),
         },
         None,
-        hermes_gateway.clone(),
     )
     .with_context(|| {
         format!(
@@ -3400,115 +2896,27 @@ impl RuntimeWelcomeSender for ImCoreWelcomeSender<'_> {
     }
 }
 
-fn run_runtime_text_message_with_gateway<G>(
+fn run_runtime_text_message(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     message: ControllerTextMessage,
     verified_sender: Option<VerifiedControllerSender>,
-    hermes_gateway: G,
-) -> Result<crate::runtime::host::RuntimeTaskRunResult>
-where
-    G: HermesGateway + Clone,
-{
-    let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
-    match current_profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile =
-                current_hermes_profile_for_runtime(config, state, &current_profile)?;
-            let plugin =
-                HermesRuntimePlugin::with_state(hermes_gateway, hermes_profile, state.clone());
-            if let Some(verified) = verified_sender.as_ref() {
-                run_controller_text_task_with_verified_sender_config(
-                    config,
-                    state,
-                    &current_profile,
-                    verified,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            } else {
-                run_controller_text_task_with_config(
-                    config,
-                    state,
-                    &current_profile,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            }
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile =
-                state.load_cli_runtime_profile(&current_profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            if let Some(verified) = verified_sender.as_ref() {
-                run_controller_text_task_with_verified_sender_config(
-                    config,
-                    state,
-                    &current_profile,
-                    verified,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            } else {
-                run_controller_text_task_with_config(
-                    config,
-                    state,
-                    &current_profile,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            }
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            if let Some(verified) = verified_sender.as_ref() {
-                run_controller_text_task_with_verified_sender_config(
-                    config,
-                    state,
-                    &current_profile,
-                    verified,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            } else {
-                run_controller_text_task_with_config(
-                    config,
-                    state,
-                    &current_profile,
-                    &plugin,
-                    outbox,
-                    message,
-                )
-            }
-        }
+) -> Result<crate::runtime::host::RuntimeTaskRunResult> {
+    let profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
+    if let Some(verified) = verified_sender.as_ref() {
+        run_controller_text_task_with_verified_sender_config(
+            config, state, &profile, verified, outbox, message,
+        )
+    } else {
+        run_controller_text_task_with_config(config, state, &profile, outbox, message)
     }
-}
-
-fn current_hermes_profile_for_runtime(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    profile: &crate::runtime::RuntimeAgentProfile,
-) -> Result<crate::state::HermesProfileRecord> {
-    let definition = state.load_agent_definition(&profile.agent_did)?;
-    if let Some(repaired) =
-        repair_hermes_profile_if_needed(config, state, profile, &definition.handle)?
-    {
-        return Ok(repaired.record);
-    }
-    state.load_hermes_profile(&profile.agent_did)
 }
 
 fn run_runtime_task_command(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     message: IncomingAgentPayloadMessage,
 ) -> Result<()> {
@@ -3551,47 +2959,7 @@ fn run_runtime_task_command(
         target_agent_did,
         text: payload.text,
     };
-    match profile.runtime_plugin_id.as_str() {
-        HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway.clone(),
-                hermes_profile,
-                state.clone(),
-            );
-            run_controller_text_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                &runtime_outbox,
-                task_message,
-            )?;
-        }
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
-            let plugin = GenericCliDriverRegistry::new(cli_profile);
-            run_controller_text_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                &runtime_outbox,
-                task_message,
-            )?;
-        }
-        _ => {
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_controller_text_task_with_config(
-                config,
-                state,
-                &profile,
-                &plugin,
-                &runtime_outbox,
-                task_message,
-            )?;
-        }
-    }
+    run_controller_text_task_with_config(config, state, &profile, &runtime_outbox, task_message)?;
     Ok(())
 }
 

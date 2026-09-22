@@ -138,6 +138,14 @@ pub(crate) fn get(
 ) -> crate::ImResult<Option<DirectPeerRouteRecord>> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id.to_owned())?;
     let conversation_id = required("conversation_id", conversation_id.to_owned())?;
+    let conversation_id = super::conversation_aliases::resolve(
+        connection,
+        &owner_identity_id,
+        "verified_foreign_persona",
+        &conversation_id,
+    )?
+    .unwrap_or(conversation_id);
+
     let record = connection
         .query_row(
             r#"

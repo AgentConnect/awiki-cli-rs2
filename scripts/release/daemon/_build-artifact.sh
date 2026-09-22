@@ -10,7 +10,7 @@ usage() {
 Build an awiki-deamon release archive.
 
 Usage:
-  scripts/release/daemon/_build-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--dry-run]
+  scripts/release/daemon/_build-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--local-core] [--dry-run]
 
 Options:
   --version VERSION   Package version. Defaults to crates/awiki-deamon/Cargo.toml package version.
@@ -18,6 +18,7 @@ Options:
   --arch ARCH        Release arch name: amd64 or arm64. Defaults to current host.
   --target TRIPLE    Rust target triple. Defaults from --os/--arch.
   --dist DIR         Output directory. Defaults to dist/daemon.
+  --local-core       Explicit temporary build with committed local Core; other SDKs stay registry.
   --dry-run          Print the plan without building.
 USAGE
 }
@@ -80,6 +81,7 @@ ARCH_NAME=""
 TARGET_TRIPLE=""
 DIST_DIR="${ROOT_DIR}/dist/daemon"
 DRY_RUN=0
+LOCAL_CORE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --local-core)
+      LOCAL_CORE=1
       shift
       ;;
     -h|--help)
@@ -149,16 +155,24 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
-cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
-
 archive_path="${DIST_DIR}/awiki-deamon-${OS_NAME}-${ARCH_NAME}.tar.gz"
-build_bin="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/awiki-deamon"
+provenance_path="${archive_path}.source.json"
+target_dir="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+case "${target_dir}" in /*) ;; *) target_dir="${ROOT_DIR}/${target_dir}" ;; esac
+build_bin="${target_dir}/${TARGET_TRIPLE}/release/awiki-deamon"
+if [[ "${LOCAL_CORE}" == "1" ]]; then
+  [[ "${commit}" == "$(git rev-parse HEAD)" ]] || die "local Core source commit must match HEAD"
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/daemon/local-core-build.py" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
+else
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
 Would run: ${cargo_cmd[*]} build -p awiki-deamon --bin awiki-deamon --release --locked --target ${TARGET_TRIPLE}
 Would archive: ${build_bin} -> ${archive_path}
-Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
+Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt acp/
+Would prepare: pinned ACP adapters for host Node for ${OS_NAME}/${ARCH_NAME}
 EOF
   exit 0
 fi
@@ -181,6 +195,9 @@ if ln -s awiki-deamon "${stage_dir}/awiki-deamon-runtime" 2>/dev/null; then
 else
   cp "${stage_dir}/awiki-deamon" "${stage_dir}/awiki-deamon-runtime"
 fi
+
+python3 scripts/release/daemon/prepare-acp-components.py \
+  --os "${OS_NAME}" --arch "${ARCH_NAME}" --output "${stage_dir}/acp"
 
 cat >"${stage_dir}/README.txt" <<EOF
 Awiki Daemon Agent Runtime Host ${VERSION}
@@ -209,11 +226,32 @@ release. The Corresponding Source is provided under Apache License 2.0 as descri
 the accompanying LICENSE file.
 EOF
 
-(cd "${stage_dir}" && shasum -a 256 \
-  awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
-  COMMERCIAL-LICENSING.md SOURCE.md > checksums.txt)
+if [[ "${LOCAL_CORE}" == "1" ]]; then
+  printf '\nDependency mode: local-core (explicit temporary source build)\n\n' >> "${stage_dir}/SOURCE.md"
+  cat "${provenance_path}" >> "${stage_dir}/SOURCE.md"
+fi
+
+python3 - "${stage_dir}" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+with (root / "checksums.txt").open("w") as output:
+    for path in sorted(root.rglob("*")):
+        if path.name == "checksums.txt" and path.parent == root or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(character in relative for character in "\r\n\\\0"):
+            raise SystemExit("invalid package checksum path")
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        output.write(f"{digest.hexdigest()}  {relative}\n")
+PY
 rm -f "${archive_path}"
-tar -C "${stage_dir}" -czf "${archive_path}" \
+COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${archive_path}" \
   awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
-  COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
+  COMMERCIAL-LICENSING.md SOURCE.md checksums.txt acp
 echo "daemon release archive created: ${archive_path}"

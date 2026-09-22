@@ -193,6 +193,8 @@ enum LocalStateCommand {
     LaneCapabilityNegotiationRequired {
         owner_identity_id: String,
         device_auth_generation: String,
+        desired_lanes:
+            Option<std::collections::BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>>,
         reply: oneshot::Sender<crate::ImResult<bool>>,
     },
     RecordSyncLaneCapabilityNegotiationV1a {
@@ -348,6 +350,7 @@ enum LocalStateCommand {
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     ProjectVerifiedHandle {
+        home_domain: String,
         owner_identity_id: String,
         owner_did: String,
         lookup: crate::directory::HandleLookupResult,
@@ -494,6 +497,7 @@ enum LocalStateCommand {
         thread: crate::messages::ThreadRef,
         limit: i64,
         cursor: Option<String>,
+        before_message_id: Option<String>,
         reply: oneshot::Sender<crate::ImResult<super::messages::ThreadLocalHistoryRecords>>,
     },
     MaxServerSeqForThreadRef {
@@ -1193,10 +1197,27 @@ impl LocalStateDb {
         owner_identity_id: impl Into<String>,
         device_auth_generation: impl Into<String>,
     ) -> crate::ImResult<bool> {
+        self.lane_capability_negotiation_required_with_lanes(
+            owner_identity_id,
+            device_auth_generation,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn lane_capability_negotiation_required_with_lanes(
+        &self,
+        owner_identity_id: impl Into<String>,
+        device_auth_generation: impl Into<String>,
+        desired_lanes: Option<
+            std::collections::BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+        >,
+    ) -> crate::ImResult<bool> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::LaneCapabilityNegotiationRequired {
             owner_identity_id: owner_identity_id.into(),
             device_auth_generation: device_auth_generation.into(),
+            desired_lanes,
             reply,
         })
         .await?;
@@ -1584,12 +1605,14 @@ impl LocalStateDb {
 
     pub(crate) async fn project_verified_handle(
         &self,
+        home_domain: &str,
         owner_identity_id: impl Into<String>,
         owner_did: impl Into<String>,
         lookup: crate::directory::HandleLookupResult,
     ) -> crate::ImResult<String> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ProjectVerifiedHandle {
+            home_domain: home_domain.to_owned(),
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             lookup,
@@ -1970,6 +1993,30 @@ impl LocalStateDb {
             thread,
             limit,
             cursor,
+            before_message_id: None,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_messages_before_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+        before_message_id: String,
+        limit: i64,
+        cursor: Option<String>,
+    ) -> crate::ImResult<super::messages::ThreadLocalHistoryRecords> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListMessagesForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            limit,
+            cursor,
+            before_message_id: Some(before_message_id),
             reply,
         })
         .await?;
@@ -2774,12 +2821,14 @@ fn run_actor(
             LocalStateCommand::LaneCapabilityNegotiationRequired {
                 owner_identity_id,
                 device_auth_generation,
+                desired_lanes,
                 reply,
             } => {
-                let result = super::sync_v2::lane_capability_negotiation_required(
+                let result = super::sync_v2::lane_capability_negotiation_required_with_lanes(
                     &connection,
                     &owner_identity_id,
                     &device_auth_generation,
+                    desired_lanes.as_ref(),
                 );
                 let _ = reply.send(result);
             }
@@ -3046,16 +3095,18 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::ProjectVerifiedHandle {
+                home_domain,
                 owner_identity_id,
                 owner_did,
                 lookup,
                 reply,
             } => {
-                let result = super::peer_personas::project_verified_handle(
+                let result = super::peer_personas::project_verified_handle_in_domain(
                     &mut connection,
                     &owner_identity_id,
                     &owner_did,
                     &lookup,
+                    Some(&home_domain),
                 );
                 let _ = reply.send(result);
             }
@@ -3353,16 +3404,30 @@ fn run_actor(
                 thread,
                 limit,
                 cursor,
+                before_message_id,
                 reply,
             } => {
-                let result = super::messages::list_messages_for_thread_ref_for_owner_identity(
-                    &connection,
-                    &owner_identity_id,
-                    &owner_did,
-                    &thread,
-                    limit,
-                    cursor.as_deref(),
-                );
+                let result = match before_message_id {
+                    Some(anchor) => {
+                        super::messages::list_messages_before_for_thread_ref_for_owner_identity(
+                            &connection,
+                            &owner_identity_id,
+                            &owner_did,
+                            &thread,
+                            &anchor,
+                            limit,
+                            cursor.as_deref(),
+                        )
+                    }
+                    None => super::messages::list_messages_for_thread_ref_for_owner_identity(
+                        &connection,
+                        &owner_identity_id,
+                        &owner_did,
+                        &thread,
+                        limit,
+                        cursor.as_deref(),
+                    ),
+                };
                 let _ = reply.send(result);
             }
             LocalStateCommand::MaxServerSeqForThreadRef {

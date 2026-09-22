@@ -157,7 +157,7 @@ fn did_document(did: &str, devices: &[DeviceSpec]) -> Value {
             "device_id": device.id,
             "signing_key_id": signing_key_id,
             "e2ee_key_id": e2ee_key_id,
-            "profiles": profiles(),
+            "profiles": if did.starts_with("did:web:") { crate::internal::identity_generation::web_device_profiles() } else { profiles() },
         }));
     }
     json!({
@@ -386,7 +386,7 @@ impl RuntimeP5TestClientFixture {
                     jwt_token: "runtime-p5-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },
@@ -763,9 +763,20 @@ fn text_input(id: &str, target_did: &str, text: &str) -> V2DirectProductSendInpu
 
 #[tokio::test]
 async fn one_send_fans_out_exact_init_to_every_peer_and_sibling_device() {
+    exact_device_fanout("did:example:alice", "did:example:bob").await;
+}
+
+#[tokio::test]
+async fn mixed_did_methods_keep_p5_exact_device_fanout_and_decryption() {
+    for alice in ["did:wba:p5.example:users:alice", "did:web:p5.example:alice"] {
+        for bob in ["did:wba:p5.example:users:bob", "did:web:p5.example:bob"] {
+            exact_device_fanout(alice, bob).await;
+        }
+    }
+}
+
+async fn exact_device_fanout(alice_did: &str, bob_did: &str) {
     let root = tempfile::tempdir().unwrap();
-    let alice_did = "did:example:alice";
-    let bob_did = "did:example:bob";
     let a1 = DeviceSpec {
         id: "alice-a1",
         signing_seed: 1,
@@ -873,6 +884,30 @@ async fn one_send_fans_out_exact_init_to_every_peer_and_sibling_device() {
         let mut receiver_host = FakeHost::default();
         receiver_host.add_document(alice_did, alice_document.clone());
         receiver_host.add_document(bob_did, bob_document.clone());
+        for tamper_aad in [true, false] {
+            let mut metadata = prepared.metadata.clone();
+            let mut body = prepared.body.clone();
+            if tamper_aad {
+                metadata.message_id.push_str("-tampered");
+                metadata.operation_id = metadata.message_id.clone();
+            } else {
+                let V2DirectBody::Init(init) = &mut body else {
+                    panic!("fresh recipient must receive init");
+                };
+                let mut ciphertext = URL_SAFE_NO_PAD.decode(&init.ciphertext_b64u).unwrap();
+                ciphertext[0] ^= 1;
+                init.ciphertext_b64u = URL_SAFE_NO_PAD.encode(&ciphertext);
+            }
+            let error = receive_with_host(&recipient, &mut receiver_host, metadata, body)
+                .await
+                .expect_err("modified P5 AAD/ciphertext must not produce plaintext");
+            assert!(
+                matches!(error, crate::ImError::PermissionDenied),
+                "{error:?}"
+            );
+            assert!(receiver_host.post_attempts.is_empty());
+        }
+        // Reusing the original packet also proves rejection did not consume the OPK.
         let outcome = receive_with_host(
             &recipient,
             &mut receiver_host,

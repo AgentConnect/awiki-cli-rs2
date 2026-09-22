@@ -6,8 +6,6 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 
-#[cfg(feature = "sqlite")]
-use crate::internal::transport::AsyncRpcTransport;
 #[cfg(feature = "blocking")]
 use crate::internal::transport::RpcTransport;
 
@@ -932,6 +930,7 @@ async fn project_realtime_message_received_async_with_lookup(
     let db = client.core_inner().local_state_db().await?;
     if let Some(lookup) = peer_lookup {
         db.project_verified_handle(
+            &client.core_inner().sdk_config().did_domain,
             client.current_identity().id.as_str(),
             client.did().as_str(),
             lookup,
@@ -1016,15 +1015,12 @@ fn realtime_direct_peer_lookup(
 ) -> Option<crate::directory::HandleLookupResult> {
     let peer_did = realtime_direct_peer_did(client, message)?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
-        peer_did.as_str(),
+    crate::internal::directory_runtime::lookup_handle_by_did_for_projection(
+        client,
+        &mut transport,
+        &crate::ids::Did::parse(peer_did).ok()?,
     )
-    .ok()?;
-    let raw = RpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params).ok()?;
-    let lookup =
-        crate::internal::directory_runtime::handle_lookup_from_value_with_client(client, &raw)
-            .ok()?;
-    (lookup.did.as_str() == peer_did).then_some(lookup)
+    .ok()
 }
 
 #[cfg(feature = "sqlite")]
@@ -1034,17 +1030,13 @@ async fn realtime_direct_peer_lookup_async(
 ) -> Option<crate::directory::HandleLookupResult> {
     let peer_did = realtime_direct_peer_did(client, message)?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
-        peer_did.as_str(),
+    crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
+        client,
+        &mut transport,
+        &crate::ids::Did::parse(peer_did).ok()?,
     )
-    .ok()?;
-    let raw = AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
-        .await
-        .ok()?;
-    let lookup =
-        crate::internal::directory_runtime::handle_lookup_from_value_with_client(client, &raw)
-            .ok()?;
-    (lookup.did.as_str() == peer_did).then_some(lookup)
+    .await
+    .ok()
 }
 
 #[cfg(feature = "sqlite")]
@@ -2367,6 +2359,7 @@ pub(crate) async fn spawn_default_async(
 
 #[cfg(feature = "sqlite")]
 async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
+    crate::internal::identity_join_management::start_worker(client);
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)
             .await;

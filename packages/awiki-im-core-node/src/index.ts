@@ -18,6 +18,9 @@ import {
   type DeviceJoinRequestNotice,
   type DeviceRegistrySnapshot,
   type DeviceRevokeResult,
+  type DidDocumentService,
+  type IdentityMethodCapabilities,
+  type PendingIdentityRegistration,
   type DownloadAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
@@ -139,6 +142,22 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.getDefaultIdentity())
   }
 
+  public resolveHandleForDeviceJoin(handle: string): Promise<string> {
+    return call(() => this.native.resolveHandleForDeviceJoin(handle))
+  }
+
+  public pendingIdentityRegistrations(): Promise<readonly PendingIdentityRegistration[]> {
+    return call(async () => JSON.parse(await this.native.pendingIdentityRegistrations()) as readonly PendingIdentityRegistration[])
+  }
+
+  public identityMethodCapabilities(did: string): Promise<IdentityMethodCapabilities> {
+    return call(async () => JSON.parse(await this.native.identityMethodCapabilities(did)) as IdentityMethodCapabilities)
+  }
+
+  public identityCreationMethods(): Promise<readonly ('wba' | 'web')[]> {
+    return call(() => this.native.identityCreationMethods())
+  }
+
   public requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge> {
     return call(() => this.native.requestRegistrationOtp(input))
   }
@@ -202,8 +221,36 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(async () => ({ ...await this.native.confirmDeviceJoinApproval(input) }))
   }
 
+  public deviceJoinManagementStatus() {
+    return call(() => this.native.deviceJoinManagementStatus())
+  }
+
+  public retryDeviceJoinManagement(input: { readonly joinSessionId: string }): Promise<void> {
+    return call(() => this.native.retryDeviceJoinManagement(input))
+  }
+
+  public confirmDeviceJoinWithManagement(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.confirmDeviceJoinWithManagement(input) }))
+  }
+
   public rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress> {
     return call(async () => ({ ...await this.native.rejectDeviceJoin(input) }))
+  }
+
+  public identityDocument(): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.identityDocument()) as Record<string, unknown>)
+  }
+
+  public identityServicesUpdatePending(): Promise<boolean> {
+    return call(() => this.native.identityServicesUpdatePending())
+  }
+
+  public updateIdentityServices(services: readonly DidDocumentService[]): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.updateIdentityServices(JSON.stringify(services))) as Record<string, unknown>)
+  }
+
+  public resumeIdentityServicesUpdate(): Promise<Readonly<Record<string, unknown>>> {
+    return call(async () => JSON.parse(await this.native.updateIdentityServices()) as Record<string, unknown>)
   }
 
   public revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult> {

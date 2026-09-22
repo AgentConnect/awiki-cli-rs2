@@ -10,6 +10,20 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
+pub use crate::internal::identity_join_management::ManagementPhase as DeviceJoinManagementPhase;
+
+/// Secret-free source-device projection. ManagementRegistered is Registry
+/// evidence only; the recipient still owns proof of local root activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceJoinManagementStatus {
+    pub join_session_id: String,
+    pub recipient_device_id: String,
+    pub phase: DeviceJoinManagementPhase,
+    pub attempts: u8,
+    pub next_attempt_at_ms: i64,
+    pub failure_code: Option<String>,
+}
+
 pub const DEVICE_JOIN_REQUEST_TYPE: &str = "awiki.device.join.v1";
 pub const DEVICE_JOIN_REQUEST_PROOF_TYPE: &str = "awiki.device.join-request-proof.v1";
 pub const DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE: &str = "awiki.device.join-request-proof-input.v1";
@@ -831,6 +845,31 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinConfirmApprovalRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.confirm_device_join_approval_policy(request, false)
+            .await
+    }
+
+    /// Confirms the foreground authorization to join AND provision this exact
+    /// device as a management device. Legacy Join callers retain member-only semantics.
+    pub async fn confirm_device_join_with_management(
+        &self,
+        request: DeviceJoinConfirmApprovalRequest,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        self.confirm_device_join_approval_policy(request, true)
+            .await
+    }
+
+    async fn confirm_device_join_approval_policy(
+        &self,
+        request: DeviceJoinConfirmApprovalRequest,
+        configure_management: bool,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        #[cfg(not(feature = "sqlite"))]
+        if configure_management {
+            return Err(crate::ImError::unsupported(
+                "join-management-requires-sqlite",
+            ));
+        }
         if !request.user_presence_confirmed {
             self.core
                 .inner()
@@ -872,11 +911,12 @@ impl<'a> DeviceJoinService<'a> {
                     &admin_client,
                 );
             runtime
-                .approve(
+                .approve_with_management(
                     &state.join_session_id,
                     &state.operation_id,
                     &confirmed_at,
                     true,
+                    configure_management,
                 )
                 .await
         }
@@ -899,7 +939,58 @@ impl<'a> DeviceJoinService<'a> {
                 .device_join_approvals
                 .consume(&request.approval_handle)?,
         }
-        public_progress(result?)
+        let progress = public_progress(result?)?;
+        #[cfg(feature = "sqlite")]
+        if configure_management {
+            let client = self.core.client_async(state.admin_identity).await?;
+            crate::internal::identity_join_management::start_worker(&client);
+        }
+        Ok(progress)
+    }
+
+    pub async fn device_join_management_status(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<Vec<DeviceJoinManagementStatus>> {
+        let client = self.core.client_async(selector).await?;
+        #[cfg(feature = "sqlite")]
+        crate::internal::identity_join_management::start_worker(&client);
+        crate::internal::identity_device_join::management::tasks(self.core, &client).map(|joins| {
+            joins
+                .into_iter()
+                .map(|join| DeviceJoinManagementStatus {
+                    join_session_id: join.join_session_id,
+                    recipient_device_id: join.recipient_device_id,
+                    phase: join.task.phase,
+                    attempts: join.task.attempts,
+                    next_attempt_at_ms: join.task.next_attempt_at_ms,
+                    failure_code: join.task.failure_code,
+                })
+                .collect()
+        })
+    }
+
+    /// Foreground CLI continuation; exit/cancellation leaves its charged budget
+    /// and pending P5 delivery available for the next Core recovery.
+    #[cfg(feature = "sqlite")]
+    pub async fn resume_device_join_management(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<()> {
+        let client = self.core.client_async(selector).await?;
+        crate::internal::identity_join_management::run(&client).await
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub async fn retry_device_join_management(
+        &self,
+        selector: super::IdentitySelector,
+        join_session_id: &str,
+    ) -> crate::ImResult<()> {
+        let client = self.core.client_async(selector).await?;
+        crate::internal::identity_join_management::retry(&client, join_session_id).await?;
+        crate::internal::identity_join_management::start_worker(&client);
+        Ok(())
     }
 
     pub async fn reject_device_join(

@@ -205,7 +205,7 @@ pub(crate) async fn request_otp(
                 .await?
             }
         };
-        let pending = PendingHandleRecoveryV4::new_pre_otp(
+        let mut pending = PendingHandleRecoveryV4::new_pre_otp(
             operation_id.clone(),
             context.owner_identity_id.clone(),
             context.local_alias.clone(),
@@ -216,6 +216,10 @@ pub(crate) async fn request_otp(
             context.local_previous_did.clone(),
             identity,
         )?;
+        pending.registration_candidate_cleanup =
+            crate::internal::identity_handle_recovery_registration_cleanup::capture(
+                core, &pending,
+            )?;
         store.create_v4(&pending)?;
         let now = format_timestamp(
             time::OffsetDateTime::now_utc()
@@ -435,12 +439,28 @@ pub(crate) fn list_pending_operations(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
     require_enabled(core)?;
-    crate::internal::identity_handle_recovery_operation::list_pending(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?
-    .into_iter()
-    .map(operation_summary)
-    .collect()
+    let sqlite = &core.inner().sdk_paths().local_state.sqlite_path;
+    let mut records = crate::internal::identity_handle_recovery_operation::list_pending(sqlite)?;
+    let applied = crate::internal::identity_handle_recovery_operation::list_applied(sqlite)?;
+    if !applied.is_empty() {
+        let store = PendingHandleRecoveryStore::from_core(core)?;
+        for record in applied {
+            if let Some((_, pending)) = store.load_v4(&record.operation_id)? {
+                if pending.phase == PendingRecoveryPhaseV4::Applied
+                    && pending.registration_candidate_cleanup.is_some()
+                {
+                    records.push(record);
+                }
+            }
+        }
+    }
+    records.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.operation_id.cmp(&left.operation_id))
+    });
+    records.into_iter().map(operation_summary).collect()
 }
 
 pub(crate) async fn list_operations(
@@ -1355,6 +1375,12 @@ async fn advance_v4(
             return Err(recovery_error(code));
         }
     }
+    let _ = crate::internal::identity_handle_recovery_registration_cleanup::finish(
+        core,
+        &store,
+        &mut pending,
+    )
+    .await;
     progress_v4(core, &pending)
 }
 
@@ -2227,7 +2253,7 @@ async fn apply_local_transition_v4(
                 jwt_token: String::new(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: generated.root_key_id.clone(),
+                    root_key_id: Some(generated.root_key_id.clone()),
                     device_signing_key_id: generated.device_signing_key_id.clone(),
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
@@ -3206,6 +3232,7 @@ fn canonical_generation(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod registration_cleanup;
     use super::*;
     mod postcommit_authority;
     mod retirement;
@@ -3999,7 +4026,7 @@ mod tests {
                 jwt_token: String::new(),
                 did_document: Some(predecessor.did_document),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                    root_key_id: format!("{predecessor_did}#fixture-root"),
+                    root_key_id: Some(format!("{predecessor_did}#fixture-root")),
                     device_signing_key_id: format!("{predecessor_did}#fixture-sign"),
                     device_e2ee_key_id: format!("{predecessor_did}#fixture-e2ee"),
                 },

@@ -119,6 +119,28 @@ impl IdentityDeviceState {
         local_root_available: bool,
         local_blocker: Option<&str>,
     ) -> LocalDeviceReadiness {
+        self.readiness_with_root_requirement(true, local_root_available, local_blocker)
+    }
+
+    pub(crate) fn readiness_for_did(
+        &self,
+        did: &crate::ids::Did,
+        local_root_available: bool,
+        local_blocker: Option<&str>,
+    ) -> LocalDeviceReadiness {
+        self.readiness_with_root_requirement(
+            !did.as_str().starts_with("did:web:"),
+            local_root_available,
+            local_blocker,
+        )
+    }
+
+    fn readiness_with_root_requirement(
+        &self,
+        requires_root: bool,
+        local_root_available: bool,
+        local_blocker: Option<&str>,
+    ) -> LocalDeviceReadiness {
         if let Some(reason) = local_blocker
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -164,7 +186,7 @@ impl IdentityDeviceState {
         match authorization.role {
             DeviceAuthorizationRole::Member => LocalDeviceReadiness::MemberReady,
             DeviceAuthorizationRole::Admin
-                if authorization.management_ready && local_root_available =>
+                if authorization.management_ready && (!requires_root || local_root_available) =>
             {
                 LocalDeviceReadiness::AdminReady
             }

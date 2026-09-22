@@ -1,3 +1,4 @@
+pub(crate) mod probe;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
@@ -5,11 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::local_rpc::RuntimeRpcRequest;
-use crate::security::runtime_token::RuntimeRpcToken;
-use crate::state::CliRouteSessionRecord;
-use crate::workspace::{WorkspaceInstance, WorkspaceMode};
+use crate::workspace::WorkspaceMode;
 
 pub mod host;
+pub mod prompt;
 pub mod reply_payload;
 
 pub fn canonical_full_handle(value: &str) -> Result<String> {
@@ -195,19 +195,6 @@ impl RuntimeProgressUpdate {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RuntimeLaunchContext {
-    pub run: RuntimeRun,
-    pub task: RuntimeTask,
-    pub preferred_language: String,
-    pub workspace_root: Option<PathBuf>,
-    pub workspace_instance: Option<WorkspaceInstance>,
-    pub cli_route_session: Option<CliRouteSessionRecord>,
-    pub runtime_temp_dir: Option<PathBuf>,
-    pub runtime_rpc_token: RuntimeRpcToken,
-    pub local_socket_path: Option<PathBuf>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLaunchOutcome {
     pub run_id: String,
@@ -215,18 +202,6 @@ pub struct RuntimeLaunchOutcome {
     pub exit_code: Option<i32>,
     pub callbacks: Vec<RuntimeRpcRequest>,
     pub metadata: Value,
-}
-
-pub trait RuntimePlugin {
-    fn plugin_id(&self) -> &str;
-    fn check_install_status(&self) -> Result<RuntimeInstallStatus>;
-    fn launch_run(&self, context: RuntimeLaunchContext) -> Result<RuntimeLaunchOutcome>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeInstallStatus {
-    pub installed: bool,
-    pub detail: Option<String>,
 }
 
 impl RuntimeAgentProfile {

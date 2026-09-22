@@ -343,9 +343,9 @@ async fn sync_delta_hydrates_metadata_only_outbound_direct_before_checkpoint() {
         ),
         FixedLookupDirectoryTransport(json!({
             "handle": "bob",
-            "full_handle": "bob.example",
+            "full_handle": "bob.awiki.test",
             "did": "did:example:bob",
-            "domain": "example",
+            "domain": "awiki.test",
             "status": "active",
             "user_id": "user-bob"
         })),
@@ -504,9 +504,9 @@ async fn sync_delta_batches_metadata_only_outbound_hydration_per_direct_peer() {
         ),
         FixedLookupDirectoryTransport(json!({
             "handle": "bob",
-            "full_handle": "bob.example",
+            "full_handle": "bob.awiki.test",
             "did": "did:example:bob",
-            "domain": "example",
+            "domain": "awiki.test",
             "status": "active",
             "user_id": "user-bob"
         })),
@@ -582,9 +582,9 @@ async fn sync_delta_hydrates_missing_message_even_when_thread_sequence_is_ahead(
         ),
         FixedLookupDirectoryTransport(json!({
             "handle": "bob",
-            "full_handle": "bob.example",
+            "full_handle": "bob.awiki.test",
             "did": "did:example:bob",
-            "domain": "example",
+            "domain": "awiki.test",
             "status": "active",
             "user_id": "user-bob"
         })),

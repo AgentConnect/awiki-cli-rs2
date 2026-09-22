@@ -390,7 +390,7 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "onboarding") {
+    if has_any_command_prefix(name, &["onboarding", "http"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -456,7 +456,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
-    if has_command_prefix(name, "id.device") {
+    if has_any_command_prefix(name, &["id.device", "id.services"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -471,6 +471,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "id.register",
             "id.bind",
             "id.refresh-token",
+            "id.logout",
             "id.resolve",
             "id.list",
             "id.current",
@@ -607,7 +608,10 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "id.device") {
+    if has_command_prefix(name, "http") {
+        return CommandAudience::AdvancedUser;
+    }
+    if has_any_command_prefix(name, &["id.device", "id.services"]) {
         return CommandAudience::AdvancedUser;
     }
     if is_one_of(
@@ -709,6 +713,9 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "http") {
+        return CommandOwner::ImCoreAuth;
+    }
     if has_command_prefix(name, "onboarding") {
         return CommandOwner::ImCoreOnboarding;
     }
@@ -797,6 +804,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "http") {
+        return CliShellRole::ParsesInputOnly;
+    }
     if matches!(
         name,
         "id.device.join.approve"
@@ -1289,6 +1299,9 @@ macro_rules! cmd {
 
 fn default_specs() -> &'static [CommandSpec] {
     &[
+        CommandSpec { name: "http", use_: "http", short: "Authenticated HTTP requests", long: "Closed JSON input over stdin; credentials stay in the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "http.request", use_: "request", short: "Send an exact authenticated HTTPS request from stdin", long: "At most 4 MiB body; no redirects, shell arguments or caller-provided credentials.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "http.request", side_effect: true, outputs: &["json"], flags: &[] },
+
         cmd!("status", "status", "Show the current CLI, workspace, and identity status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
@@ -1317,14 +1330,19 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "tenant.use", use_: "use <name>", short: "Switch the active tenant", long: "Switch the product-level active tenant by name. The tenant must already exist; this command intentionally does not accept backend or DID host fields.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "tenant.reconfigure", use_: "reconfigure <name>", short: "Update an empty tenant's backend and DID host", long: "Update backend_base_url and did_host only for an empty tenant. If the tenant already has identities or local database data, create a new tenant instead.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.reconfigure", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("backend-base-url", "string", "New backend base URL", required), flag!("did-host", "string", "New bare DID host", required)] },
         CommandSpec { name: "id", use_: "id", short: "Identity lifecycle commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.services", use_: "services", short: "Public DID service management", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.services.show", use_: "show", short: "Show the selected identity service list and pending state", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.show", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.services.update", use_: "update", short: "Update public services using current administrator authority", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.update", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("file", "string", "JSON file containing the complete public service array", required)] },
+        CommandSpec { name: "id.services.resume", use_: "resume", short: "Resume the original pending service update", long: "Service updates preserve device keys, Manifest and protected service ownership. Unknown outcomes retain the original operation for resume.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.services.resume", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.status", use_: "status", short: "Show identity status", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.vault", use_: "vault", short: "Inspect or migrate identity secret vault state", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.vault.status", use_: "status", short: "Show identity SecretVault status", long: "Show the selected identity's SecretVault open options, root-key availability, selected backend, migration metadata status, and plaintext compatibility retention. This command never prints root key material, JWTs, private PEM, or full SecretRef values.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.vault.migrate", use_: "migrate", short: "Preflight identity migration into SecretVault", long: "Migration-gated SecretVault preflight. In this build, im-core exposes vault-backed register/recover and status but not a CLI-safe standalone migration API, so live execution fails without rewriting identity files.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.migrate", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.vault.cleanup-plaintext", use_: "cleanup-plaintext", short: "Preflight plaintext compatibility cleanup", long: "Migration-gated SecretVault cleanup preflight. In this build, im-core exposes status but not a CLI-safe standalone plaintext cleanup API, so live execution fails without deleting identity files.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.cleanup-plaintext", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.create", use_: "create", short: "Create local DID material for bootstrap or migration", long: "", aliases: &[], phase: "phase2", hidden: true, implemented: true, handler: "id.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Identity display name", required), flag!("identity", "string", "Identity alias override")] },
-        CommandSpec { name: "id.register", use_: "register", short: "Register a handle-backed user identity", long: "Use --verification-stdin to keep phone verification material out of process arguments. The command reads one JSON object with phone and optional otp fields and never prints those fields.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.register", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("handle", "string", "Handle local part", required), flag!("phone", "string", "Phone number for registration"), flag!("email", "string", "Email address for registration"), flag!("otp", "string", "Verification code"), flag!("verification-stdin", "bool", "Read phone and optional OTP from one JSON object on stdin"), flag!("invite-code", "string", "Invite code if required"), flag!("wait", "bool", "Wait for email verification before completing registration")] },
+        CommandSpec { name: "id.register", use_: "register", short: "Register a handle-backed user identity", long: "Use --verification-stdin to keep phone verification material out of process arguments. The command reads one JSON object with phone and optional otp fields and never prints those fields.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.register", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("handle", "string", "Handle local part", required), flag!("did-method", "string", "DID method for new identity: wba (default) or web"), flag!("phone", "string", "Phone number for registration"), flag!("email", "string", "Email address for registration"), flag!("otp", "string", "Verification code"), flag!("verification-stdin", "bool", "Read phone and optional OTP from one JSON object on stdin"), flag!("invite-code", "string", "Invite code if required"), flag!("wait", "bool", "Wait for email verification before completing registration")] },
         CommandSpec { name: "id.bind", use_: "bind", short: "Bind phone or email to the current identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.bind", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("phone", "string", "Phone number to bind"), flag!("email", "string", "Email address to bind"), flag!("otp", "string", "Verification code"), flag!("wait", "bool", "Wait for email verification before completing the bind")] },
+        CommandSpec { name: "id.logout", use_: "logout", short: "Retire explicit local identity credentials while keeping history", long: "Requires --identity with an explicit alias, DID, or Handle (not default). Retires local credentials through im-core and preserves message history and business data. Does not revoke the remote device. To rejoin a revoked device, run this command in its original workspace, then id device join start and complete device verification.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.logout", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.refresh-token", use_: "refresh-token", short: "Refresh the stored JWT for an identity using DID auth", long: "Refresh the selected identity's stored JWT by calling did-auth.get_me with DID credentials and persisting the newly returned bearer token. This command intentionally bypasses the previously stored bearer token instead of deleting local auth state first.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.refresh-token", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.resolve", use_: "resolve", short: "Resolve a DID or handle", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.resolve", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("handle", "string", "Handle to resolve"), flag!("did", "string", "DID to resolve")] },
         CommandSpec { name: "id.list", use_: "list", short: "List local identities", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
@@ -1338,7 +1356,10 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.device.join.start", use_: "start", short: "Create a pending Join request as a new device", long: "Requires a short-lived AWIKI_ACCOUNT_VERIFICATION_TOKEN environment value. The verification grant is never accepted in argv or emitted.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.start", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did", "string", "Existing account DID", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("ttl-seconds", "int", "Join session lifetime in seconds", default = "600")] },
         CommandSpec { name: "id.device.join.poll", use_: "poll", short: "Advance and inspect the new-device Join session", long: "Polls only the new-device status endpoint. Management-device verification is notification-driven and never uses status polling.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.poll", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
         CommandSpec { name: "id.device.join.verify", use_: "verify", short: "Start verification for a local Join request notice", long: "Explicitly starts verification once for the selected management identity. Opening or listing a request never performs this write.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.verify", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id from the local request notice", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("challenge-ttl-seconds", "int", "Challenge lifetime in seconds", default = "300")] },
-        CommandSpec { name: "id.device.join.approve", use_: "approve", short: "Interactively approve a verified device Join as a member", long: "Requires a foreground TTY. The user must type the locally derived SAS and APPROVE. The one-time approval handle is created and consumed in-process and never printed; the new device is always rootless member.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.approve", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
+        CommandSpec { name: "id.device.join.approve", use_: "approve", short: "Approve a verified Join and automatically configure management access", long: "Requires a foreground TTY. The user must type the locally derived SAS and APPROVE. The one-time approval handle is created and consumed in-process and never printed; the joined member is automatically provisioned by Core with at most four durable attempts (the initial attempt plus three retries, five seconds after each retryable failure). Historical signed tasks without max_attempts retain their three-attempt budget. Delivery acceptance is separate from management readiness.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.approve", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
+        CommandSpec { name: "id.device.join.management-status", use_: "management-status", short: "Read automatic management configuration progress", long: "Returns only durable phases and retry metadata; never asserts recipient-local activation.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.management-status", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.device.join.management-resume", use_: "management-resume", short: "Resume the persisted management configuration round", long: "Continues the existing attempt budget, waits through Core retries, and returns after acceptance or failure. Exit leaves durable state.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.management-resume", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.device.join.management-retry", use_: "management-retry", short: "Explicitly retry failed management configuration", long: "First reconciles prior acceptance and recipient Registry status, then starts a new bounded round for the exact previously authorized Join.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.management-retry", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Previously authorized Join session id", required)] },
         CommandSpec { name: "id.device.join.reject", use_: "reject", short: "Reject a local management-device Join request", long: "Rejects the selected request through the management identity. This is distinct from cancelling the new-device side. The reason is a closed protocol value.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.reject", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("reason", "string", "Rejection reason", default = "user-rejected", choices = ["user-rejected", "sas-mismatch"])] },
         CommandSpec { name: "id.device.join.cancel", use_: "cancel", short: "Cancel a new-device Join session", long: "Cancels only the local new-device side. Use reject from an authorized management device to reject a request.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.cancel", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
         CommandSpec { name: "id.device.revoke", use_: "revoke", short: "Permanently revoke one other authorized device", long: "Enabled by default; AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED=0 is the emergency rollback. Requires a foreground TTY. Only a ready management device may revoke; self-revocation and revoking the last ready admin fail closed in Core. Output contains only DID, target device ID, and revoked status.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.revoke", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("device", "string", "Authorized target protocol device ID", required)] },

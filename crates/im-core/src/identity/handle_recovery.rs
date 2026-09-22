@@ -368,7 +368,8 @@ impl<'a> HandleRecoveryService<'a> {
     }
 
     /// Read unfinished operations in this local state root, including fresh recovery
-    /// owners that have not yet become public identities. Does not advance recovery.
+    /// owners that have not yet become public identities and Applied operations with
+    /// registration candidate cleanup outstanding. Does not advance recovery.
     pub fn list_pending_handle_recovery_operations(
         &self,
     ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {

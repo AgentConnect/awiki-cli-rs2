@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
@@ -43,6 +44,7 @@ import 'models/profile.dart';
 import 'models/realtime.dart';
 import 'models/secure.dart';
 import 'native_library_loader.dart';
+import 'native_session_stream.dart';
 
 bool _rustLibInitialized = false;
 
@@ -433,6 +435,57 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<Map<String, Object?>> identityDocument(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.identityDocument(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<bool> identityServicesUpdatePending(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.identityServicesUpdatePending(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+  }
+
+  Future<Map<String, Object?>> updateIdentityServices(
+    IdentitySelector selector,
+    List<DidDocumentService> services,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+        servicesJson: jsonEncode(services.map((s) => s.toJson()).toList()),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
+  Future<Map<String, Object?>> resumeIdentityServicesUpdate(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.updateIdentityServices(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return Map<String, Object?>.from(jsonDecode(value) as Map);
+  }
+
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,
@@ -619,6 +672,44 @@ class AwikiImCore {
     return prompt._toModel();
   }
 
+  Future<List<DeviceJoinManagementStatus>> deviceJoinManagementStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final statuses = await _mapNativeErrors(
+      () => gen_identity_api.deviceJoinManagementStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return statuses
+        .map(
+          (value) => DeviceJoinManagementStatus(
+            joinSessionId: value.joinSessionId,
+            recipientDeviceId: value.recipientDeviceId,
+            phase: value.phase,
+            attempts: value.attempts,
+            nextAttemptAtMs: value.nextAttemptAtMs.toInt(),
+            failureCode: value.failureCode,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> retryDeviceJoinManagement({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    _ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_identity_api.retryDeviceJoinManagement(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+      ),
+    );
+  }
+
   Future<DeviceJoinProgress> confirmDeviceJoinApproval({
     required String approvalHandle,
     required bool userPresenceConfirmed,
@@ -626,6 +717,21 @@ class AwikiImCore {
     _ensureNotDisposed();
     final progress = await _mapNativeErrors(
       () => gen_identity_api.confirmDeviceJoinApproval(
+        core: _inner,
+        approvalHandle: approvalHandle,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinWithManagement({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.confirmDeviceJoinWithManagement(
         core: _inner,
         approvalHandle: approvalHandle,
         userPresenceConfirmed: userPresenceConfirmed,
@@ -820,7 +926,55 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<String> resolveHandleForDeviceJoin(String handle) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.resolveHandleForDeviceJoin(
+        core: _inner,
+        handle: handle,
+      ),
+    );
+  }
+
+  Future<List<PendingIdentityRegistration>>
+  pendingIdentityRegistrations() async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.pendingIdentityRegistrations(core: _inner),
+    );
+    return (jsonDecode(value) as List)
+        .map(
+          (item) => PendingIdentityRegistration.fromJson(
+            item as Map<String, Object?>,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<IdentityMethodCapabilities> identityMethodCapabilities(
+    String did,
+  ) async {
+    _ensureNotDisposed();
+    final value = await _mapNativeErrors(
+      () => gen_identity_api.identityMethodCapabilities(did: did),
+    );
+    return IdentityMethodCapabilities.fromJson(
+      jsonDecode(value) as Map<String, Object?>,
+    );
+  }
+
+  Future<List<DidMethod>> identityCreationMethods() async {
+    _ensureNotDisposed();
+    final methods = await _mapNativeErrors(
+      () => gen_identity_api.identityCreationMethods(core: _inner),
+    );
+    return methods
+        .map((method) => DidMethod.values.byName(method))
+        .toList(growable: false);
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String phone,
@@ -833,6 +987,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithPhone(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         phone: phone,
@@ -846,6 +1001,7 @@ class AwikiImCore {
   }
 
   Future<HandleRegistrationResult> registerHandleWithEmail({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     required String email,
@@ -858,6 +1014,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithEmail(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         email: email,
@@ -871,6 +1028,7 @@ class AwikiImCore {
   }
 
   Future<HandleRegistrationResult> registerHandleWithoutContactVerification({
+    DidMethod didMethod = DidMethod.wba,
     String? localAlias,
     required String requestedHandle,
     String? inviteCode,
@@ -881,6 +1039,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.registerHandleWithoutContactVerification(
         core: _inner,
+        didMethod: didMethod.name,
         localAlias: localAlias,
         requestedHandle: requestedHandle,
         inviteCode: inviteCode,
@@ -1655,20 +1814,22 @@ class MessageApi {
     );
   }
 
-  Stream<ConversationStorePatch> watchConversationPatches() async* {
+  Stream<ConversationStorePatch> watchConversationPatches() {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchConversationPatches(client: _client._inner),
-    );
-    try {
-      yield* gen_messages
+    return nativeSessionStream<
+      gen_messages.ArcDartConversationPatchSession,
+      ConversationStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchConversationPatches(client: _client._inner),
+      ),
+      events: (session) => gen_messages
           .conversationPatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
         () => gen_messages.stopConversationPatchSession(session: session),
-      );
-    }
+      ),
+    );
   }
 
   Future<ConversationStorePatch> repairConversationStore() async {
@@ -1682,47 +1843,51 @@ class MessageApi {
   Stream<ThreadMessageStorePatch> watchThreadPatches(
     ThreadRef thread, {
     int limit = 100,
-  }) async* {
+  }) {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchThreadPatches(
-        client: _client._inner,
-        thread: thread._toGen(),
-        limit: limit,
+    return nativeSessionStream<
+      gen_messages.ArcDartThreadMessagePatchSession,
+      ThreadMessageStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchThreadPatches(
+          client: _client._inner,
+          thread: thread._toGen(),
+          limit: limit,
+        ),
+      ),
+      events: (session) => gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
       ),
     );
-    try {
-      yield* gen_messages
-          .threadMessagePatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
-        () => gen_messages.stopThreadMessagePatchSession(session: session),
-      );
-    }
   }
 
   Stream<ThreadMessageStorePatch> watchConversationTimelinePatches(
     ConversationReadRef conversation, {
     int limit = 100,
-  }) async* {
+  }) {
     _client._ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_messages.watchConversationTimelinePatches(
-        client: _client._inner,
-        conversation: conversation._toGen(),
-        limit: limit,
+    return nativeSessionStream<
+      gen_messages.ArcDartThreadMessagePatchSession,
+      ThreadMessageStorePatch
+    >(
+      open: () => _mapNativeErrors(
+        () => gen_messages.watchConversationTimelinePatches(
+          client: _client._inner,
+          conversation: conversation._toGen(),
+          limit: limit,
+        ),
+      ),
+      events: (session) => gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel()),
+      stop: (session) => _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
       ),
     );
-    try {
-      yield* gen_messages
-          .threadMessagePatchStream(session: session)
-          .map((patch) => patch._toModel());
-    } finally {
-      await _mapNativeErrors(
-        () => gen_messages.stopThreadMessagePatchSession(session: session),
-      );
-    }
   }
 
   Future<ThreadMessageStorePatch> repairThreadStore(

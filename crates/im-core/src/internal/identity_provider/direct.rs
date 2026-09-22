@@ -712,6 +712,21 @@ impl IdentitySession for DirectAnpIdentitySession {
         .await
     }
 
+    async fn adopt_verified_sibling_document(
+        &self,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            with_owned_identity(&identity, |identity| {
+                identity.adopt_verified_sibling_document(remote.clone().into())?;
+                identity.public_identity()
+            })
+            .map(Into::into)
+        })
+        .await
+    }
+
     async fn derive_shared_secret(
         &self,
         request: ProviderKeyAgreementRequest,
@@ -1026,6 +1041,22 @@ impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
                 .lock()
                 .map_err(|_| internal())?
                 .reconcile(observation.into())
+                .map(Into::into)
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn reconcile_rejected(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .reconcile_rejected(observation.into())
                 .map(Into::into)
                 .map_err(map_identity_error)
         })

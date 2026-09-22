@@ -2015,6 +2015,37 @@ fn local_history_records_to_page(
     })
 }
 
+/// Anchored local reads share the local history order and never fetch the network.
+pub(crate) async fn local_history_before_async(
+    client: &crate::core::ImClient,
+    thread: crate::messages::ThreadRef,
+    anchor: crate::ids::MessageId,
+    query: crate::messages::LocalHistoryQuery,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .list_messages_before_for_thread_ref(
+                client.current_identity().id.as_str(),
+                client.did().as_str(),
+                thread,
+                anchor.as_str().to_owned(),
+                page_limit(query.limit, 50),
+                query.cursor.map(|cursor| cursor.as_str().to_owned()),
+            )
+            .await?;
+        local_history_records_to_page(records)
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, thread, anchor, query);
+        Err(crate::ImError::unsupported("message-local-history-before"))
+    }
+}
+
 fn merge_raw_metadata(target: &mut Value, source: &Value, fallback_source: &str) {
     let Some(target_object) = target.as_object_mut() else {
         return;
@@ -2321,20 +2352,19 @@ fn lookup_direct_peer_scope(
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
 ) -> VerifiedHandleScopeLookup {
-    let Ok(call) =
-        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-    else {
+    let Ok(did) = crate::ids::Did::parse(peer_did) else {
         return VerifiedHandleScopeLookup::Rejected;
     };
-    let raw = match directory_transport.rpc(call.endpoint, call.method, call.params) {
-        Ok(raw) => raw,
+    let lookup = match crate::internal::directory_runtime::lookup_handle_by_did_for_projection(
+        client,
+        directory_transport,
+        &did,
+    ) {
+        Ok(lookup) => lookup,
         Err(error) if is_legacy_handle_lookup_error(&error) => {
-            return VerifiedHandleScopeLookup::Unavailable;
+            return VerifiedHandleScopeLookup::Unavailable
         }
         Err(_) => return VerifiedHandleScopeLookup::Rejected,
-    };
-    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
-        return VerifiedHandleScopeLookup::Rejected;
     };
     if lookup.did.as_str() != peer_did {
         return VerifiedHandleScopeLookup::Rejected;
@@ -2383,24 +2413,23 @@ async fn lookup_direct_peer_scope_async(
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
 ) -> VerifiedHandleScopeLookup {
-    let Ok(call) =
-        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-    else {
+    let Ok(did) = crate::ids::Did::parse(peer_did) else {
         return VerifiedHandleScopeLookup::Rejected;
     };
-    let raw = match directory_transport
-        .rpc(call.endpoint, call.method, call.params)
+    let lookup =
+        match crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
+            client,
+            directory_transport,
+            &did,
+        )
         .await
-    {
-        Ok(raw) => raw,
-        Err(error) if is_legacy_handle_lookup_error(&error) => {
-            return VerifiedHandleScopeLookup::Unavailable;
-        }
-        Err(_) => return VerifiedHandleScopeLookup::Rejected,
-    };
-    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
-        return VerifiedHandleScopeLookup::Rejected;
-    };
+        {
+            Ok(lookup) => lookup,
+            Err(error) if is_legacy_handle_lookup_error(&error) => {
+                return VerifiedHandleScopeLookup::Unavailable
+            }
+            Err(_) => return VerifiedHandleScopeLookup::Rejected,
+        };
     if lookup.did.as_str() != peer_did {
         return VerifiedHandleScopeLookup::Rejected;
     }
@@ -3257,9 +3286,16 @@ async fn sync_lane_capability_enabled_async(
         return Ok(false);
     };
     if db
-        .lane_capability_negotiation_required(
+        .lane_capability_negotiation_required_with_lanes(
             owner_identity_id.clone(),
             binding.device_auth_generation,
+            Some(
+                crate::internal::message_runtime::sync_v2::desired_v1b_lanes(
+                    &db,
+                    &owner_identity_id,
+                )
+                .await?,
+            ),
         )
         .await?
     {
@@ -3303,10 +3339,22 @@ fn sync_lane_capability_enabled_blocking(
         Ok(None) | Err(crate::ImError::IdentityBindingConflict { .. }) => return false,
         Err(_) => return true,
     };
-    match crate::internal::local_state::sync_v2::lane_capability_negotiation_required(
+    let transport_states = match crate::internal::local_state::sync_v2::load_lane_transport_states(
+        &connection,
+        owner_identity_id,
+    ) {
+        Ok(states) => states,
+        Err(_) => return true,
+    };
+    let desired =
+        crate::internal::message_runtime::sync_v2::desired_v1b_lanes_from_transport_states(
+            transport_states,
+        );
+    match crate::internal::local_state::sync_v2::lane_capability_negotiation_required_with_lanes(
         &connection,
         owner_identity_id,
         &binding.device_auth_generation,
+        Some(&desired),
     ) {
         Ok(true) => true,
         Err(_) => true,
@@ -5597,6 +5645,17 @@ pub(crate) fn attachment_manifest_cache_record(
         ("direct", peer_did)
     };
     let message_id = attachment_manifest_cache_message_id(object, &thread_id)?;
+    let wire_message_id = first_non_empty_owned([
+        string_value(object.get("raw_message_id")),
+        if thread_kind == "group" {
+            // P4 history carries its logical grant id in message_id, alongside
+            // the canonical timeline id. Preserve it before cache projection.
+            string_value(object.get("message_id"))
+        } else {
+            String::new()
+        },
+    ])
+    .unwrap_or_default();
     Some(
         crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -5604,9 +5663,9 @@ pub(crate) fn attachment_manifest_cache_record(
             thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
-            wire_message_id: string_value(object.get("raw_message_id")),
+            wire_message_id,
             sender_did: string_value(object.get("sender_did")),
-            message_security_profile: secure_message_security_profile(object),
+            message_security_profile: attachment_cache_security_profile(object, &content),
             content: serde_json::to_string(&content).ok()?,
             stored_at: first_non_empty_owned([
                 string_value(object.get("stored_at")),
@@ -5618,6 +5677,42 @@ pub(crate) fn attachment_manifest_cache_record(
             .to_owned(),
         },
     )
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_cache_security_profile(
+    object: &serde_json::Map<String, Value>,
+    content: &Value,
+) -> String {
+    let explicit_profile = ["message_security_profile", "security_profile", "security"]
+        .iter()
+        .any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        });
+    let encrypted_object = content
+        .get("attachments")
+        .and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                attachment
+                    .pointer("/encryption_info/mode")
+                    .and_then(Value::as_str)
+                    == Some(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE)
+            })
+        });
+    if explicit_profile
+        || object.get("secure").and_then(Value::as_bool) == Some(true)
+        || encrypted_object
+    {
+        secure_message_security_profile(object)
+    } else {
+        // Plain P4 history has no security profile; group membership alone does
+        // not make an attachment an encrypted P6 message.
+        "transport-protected".to_owned()
+    }
 }
 
 #[cfg(feature = "sqlite")]

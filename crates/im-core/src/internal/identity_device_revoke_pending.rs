@@ -35,6 +35,8 @@ pub(crate) struct PendingDeviceRevoke {
     pub(crate) authorizing_device:
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary,
     pub(crate) remote_result: Option<DeviceRevokeRemoteResult>,
+    #[serde(default)]
+    pub(crate) rejected: bool,
 }
 
 impl std::fmt::Debug for PendingDeviceRevoke {
@@ -73,6 +75,7 @@ impl PendingDeviceRevoke {
             new_document,
             authorizing_device,
             remote_result: None,
+            rejected: false,
         };
         record.validate()?;
         Ok(record)
@@ -97,7 +100,8 @@ impl PendingDeviceRevoke {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
-        if self.schema_version != SCHEMA_VERSION
+        if (self.rejected && self.remote_result.is_some())
+            || self.schema_version != SCHEMA_VERSION
             || self.operation_id.trim().is_empty()
             || self.target_auth_generation == 0
             || self.target_device_id == self.authorizing_device.device_id
@@ -110,7 +114,9 @@ impl PendingDeviceRevoke {
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 != Some(self.did.as_str())
-            || !anp::authentication::validate_did_document_binding(&self.new_document, true)
+            || !crate::internal::identity_wire::document::validate_control_document_method(
+                &self.new_document,
+            )
         {
             return Err(crate::ImError::PermissionDenied);
         }

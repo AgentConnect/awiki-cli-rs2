@@ -1032,7 +1032,7 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
         did: crate::ids::Did::parse(&public.reference.did).unwrap(),
         did_document: public.document.into_value(),
         protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
-        root_key_id: format!("{}#key-1", public.reference.did),
+        root_key_id: Some(format!("{}#key-1", public.reference.did)),
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
         legacy_daemon_authorization: false,
@@ -1170,4 +1170,64 @@ fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
         }
         other => panic!("expected service error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn caller_owned_retry_budget_never_resubmits_after_authentication_rejection() {
+    for rpc_rejection in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = host_backed_core(root.path(), &format!("http://{address}"));
+        let (client, _, _) = host_backed_client(&core);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request_headers(&mut stream);
+            if rpc_rejection {
+                let body = r#"{"jsonrpc":"2.0","id":"request","error":{"code":1401,"message":"unauthorized"}}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            } else {
+                write_unauthorized(&mut stream);
+            }
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let mut count = 1;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        count += 1;
+                        let _ = read_request_headers(&mut stream);
+                        write_unauthorized(&mut stream);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(e) => panic!("local test listener failed: {e}"),
+                }
+            }
+            count
+        });
+        let result = CoreHttpTransport::new(&client)
+            .authenticated_rpc_once("/user-service/v1/did/rpc", "get_me", json!({}))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(server.join().unwrap(), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn web_sync_resolution_inside_current_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_sync_resolution_inside_multi_thread_runtime_keeps_network_policy() {
+    assert!(matches!(
+        super::resolve_web_document_blocking("did:web:127.0.0.1"),
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
 }

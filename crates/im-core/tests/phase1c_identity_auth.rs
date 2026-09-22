@@ -160,6 +160,7 @@ async fn register_handle_returns_identity_and_default_change() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -210,6 +211,7 @@ async fn legacy_recovery_registered_response_commits_the_exact_local_identity() 
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("legacy-carol".to_string()),
             requested_handle: Handle::parse("legacy-carol.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -259,6 +261,7 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
         .identities()
         .register_handle_with_service_bearer_async(
             RegisterHandleRequest {
+                did_method: Default::default(),
                 local_alias: Some("mcp".to_string()),
                 requested_handle: Handle::parse("mcp.awiki.test", "").unwrap(),
                 verification: VerificationInput::AlreadyVerified,
@@ -296,6 +299,7 @@ async fn trusted_service_registration_prepare_is_local_and_stable() {
         .await;
     let request = TrustedServiceRegisterHandleRequest {
         registration: RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("guest".to_string()),
             requested_handle: Handle::parse(
                 "guest-0123456789abcdef0123456789abcdef.awiki.test",
@@ -347,6 +351,7 @@ async fn trusted_service_registration_sends_bearer_and_operation_id() {
         .register_handle_with_trusted_service_async(
             TrustedServiceRegisterHandleRequest {
                 registration: RegisterHandleRequest {
+                    did_method: Default::default(),
                     local_alias: Some("guest".to_string()),
                     requested_handle: Handle::parse(
                         "guest-0123456789abcdef0123456789abcdef.awiki.test",
@@ -440,6 +445,7 @@ async fn trusted_service_registration_live_contract_when_explicitly_configured()
         .register_handle_with_trusted_service_async(
             TrustedServiceRegisterHandleRequest {
                 registration: RegisterHandleRequest {
+                    did_method: Default::default(),
                     local_alias: Some("guest-live-contract".to_string()),
                     requested_handle: Handle::parse(&full_handle, "").unwrap(),
                     verification: VerificationInput::AlreadyVerified,
@@ -483,6 +489,7 @@ async fn trusted_service_registration_rejects_noncanonical_operation_id_before_n
             .register_handle_with_trusted_service_async(
                 TrustedServiceRegisterHandleRequest {
                     registration: RegisterHandleRequest {
+                        did_method: Default::default(),
                         local_alias: Some("guest".to_string()),
                         requested_handle: Handle::parse(
                             "guest-0123456789abcdef0123456789abcdef.awiki.test",
@@ -522,6 +529,7 @@ async fn register_handle_async_returns_identity_and_default_change() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("dana".to_string()),
             requested_handle: Handle::parse("dana.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -571,6 +579,7 @@ async fn register_handle_leaves_daemon_subkey_provisioning_to_the_daemon() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("daemon".to_string()),
             requested_handle: Handle::parse("daemon.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -638,6 +647,7 @@ async fn daemon_public_proposal_is_authorized_without_exporting_private_material
     let identity = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("daemon-public".to_string()),
             requested_handle: Handle::parse("daemon-public.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -728,6 +738,7 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("secure".to_string()),
             requested_handle: Handle::parse("secure.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -870,6 +881,7 @@ async fn register_phone_without_otp_returns_pending_otp_state() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::Phone {
@@ -923,6 +935,7 @@ async fn register_email_without_wait_returns_email_sent_state() {
     let result = core
         .identities()
         .register_handle_async(RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::Email {

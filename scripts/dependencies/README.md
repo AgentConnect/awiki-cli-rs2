@@ -5,15 +5,20 @@
 这里的 Release 指交付入口；直接 `cargo build --release` 仍只是本地优化构建。
 
 ```bash
-# 在修改中的 CLI 工作区使用已发布 SDK，不要求先提交消费者代码。
+# Debug 默认使用已发布 SDK，不要求先提交消费者代码。CLI 与 Daemon 是同一入口。
 python3 scripts/dependencies/build.py --check
-# 本地路径相对于配置文件目录；把 example 复制到仓库根目录后再修改。
+python3 scripts/dependencies/build.py --package awiki-deamon --check
+# 只要把 ANP 改成源码：复制 example 到仓库根目录（路径相对该文件）。
+cp scripts/dependencies/local-anp.example.json dependencies.local.json
+python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
+# 同时替换 Core / Identity / ANP 时用 local.example.json。
 cp scripts/dependencies/local.example.json dependencies.local.json
 python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
 # 支持 awiki-cli / awiki-deamon / im-core-dart / awiki-im-core-node。
 python3 scripts/dependencies/build.py --package awiki-im-core-node --check
 # 正式构建：只允许 registry，要求已提交源码。
 python3 scripts/dependencies/build.py --profile release --package awiki-cli
+python3 scripts/dependencies/build.py --profile release --package awiki-deamon
 ```
 
 `--resolve-only` 仅用于 Debug 依赖图诊断，不代替编译检查。编译结果与解析记录保存在
@@ -63,10 +68,12 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 Release 依赖为已发布的 ANP `1.0.3`、Identity `0.2.3`、Core `0.1.4`。
-`registry-dependencies.json` 与通过既有 `--refresh-lock` 入口生成的
-`registry-Cargo.lock` 已同步；实际 Cargo metadata 已确认三者均来自 crates.io，
-没有 path/git SDK 替换。CLI、Daemon、Dart binding 与 Node binding 共用这组精确版本。
+上次正式 Release 使用已发布的 ANP `1.0.3`、Identity `0.2.3`、Core `0.1.4`。
+本 ACP 分支已将 Core 源码及目标 registry pin 提升到 `0.1.5`，但该版本尚未发布，
+正式 registry lock 仍为上一版；registry CI 尚不能通过，不应声称二者已同步。
+2026-09-17 用户授权的两平台 Daemon 临时验证包改用显式 `--local-core` 入口，
+使用独立的 `scripts/release/daemon/local-core.Cargo.lock`，不改变 SDK 的公开发布状态。
+具体范围和复现步骤见 [Daemon 发布说明](../../docs/publish.md)。
 
 2026-09-09 的历史发布按用户明确要求不运行测试；完成了发布构建、包校验、上传及 registry
 版本/来源核验。以下此前执行的测试记录属于发布前的历史证据，不表示本次重新执行。
@@ -109,21 +116,23 @@ registry 来源验证或真实账号恢复验收。
 重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
 Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。
 
+### 指定已提交消费者源码构建
+
+registry-build.py使用指定提交的Git归档构建输入，不再创建worktree/clone。默认仍
+要求tracked源码已提交。主目录存在其他任务修改时，可显式传
+`--source-commit <完整40位SHA> -- cargo build --release -p awiki-cli`；仅消费该提交，
+不会带入dirty文件，registry pin/lock与实际metadata检查保持。构建输入的
+`.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
+归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。
+
 ### Notify PR #43 开发源码联调
 
-本候选 CLI 使用新增的 typed Notify Core API，而正式 Core 0.1.4 尚未包含该能力。
-`dependencies.source.json` 显式锁定同一 PR 中 Core 候选
-`7a2d0ce138d328112527e5359ac8079a5bbda506`，配套 source Cargo lock；
-source-integration-check 因此会真正执行，不再因缺少清单而跳过。
-ANP 1.0.3 和 Identity 0.2.3 继续使用固定 registry 来源。
+Notify 已迁移到 `release/0910`。`dependencies.source.json` 固定同一 PR 中含 Notify
+及当前基线的 Core 提交，配套 source Cargo.lock；同时保留 0910 基线的 Identity
+`bef7757603b004bf4a54873040da49480272738f` 源码及其 PR #11 归属。
+ANP 1.0.3 保持 registry 来源；不要退回旧 0815 Core 或旧 Identity Node 修复 pin。
 
 使用上文的 source `--check --package awiki-cli` 入口验证本候选。
-这不修复或跳过独立 registry 检查；正式 registry 仍缺新 API，保持合并/发布阻塞。
-未来获得对应发布授权并满足依赖门禁后，更新正式 pin/lock、删除 source 清单和锁，
-再验证 registry。开发 PR 不授权发布依赖或任何版本。
-
-Notify 后续 CI 修复将 ANP Identity 源码 pin 更新到已存在的
-`9b6309e0d7776b3fb606e52b2b44c61e5d768af4`，该提交修正 Node 0.2.2 的安装锁。
-与此前 `27b511bb` 相比，Rust crates、Cargo manifest/lock、Node manifest/build scripts
-没有差异，原 `rustTreeSha256` 保持不变；正式 registry 版本没有更新。
-本次只消费已经存在的上游修复，不运行任何发布流程。
+这不修复或跳过独立 registry 检查；正式 registry 尚缺新 API，仍是合并门禁。
+获得对应发布授权并满足依赖门禁后才能更新正式 pin/lock，再验证 registry。
+开发、基线迁移及提交 PR 都不授权发布依赖或任何版本。

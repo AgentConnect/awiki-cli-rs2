@@ -267,9 +267,7 @@ redacted `awiki.app.action.result.v1` 回传和撤销 Daemon 消息授权。报�
 `PERSONALAGENT-E2E-001..005` 以及 `uiEnabled`、`runtimeFinalReceived`、
 `draftConfirmed`、`actionResultReturned`、`authorizationRevoked`。
 
-该 gate 不等同于 real Hermes smoke。P0 使用 deterministic fake Hermes gateway 验证
-daemon contract 与产品 UI 链路；`AWIKI_ENABLE_DAEMON_HERMES_SMOKE=1` 才运行真实
-Hermes gateway smoke。选择 full UI gate 后，缺少 Rust checkout、App runner、
+测试使用 deterministic fake Hermes gateway；真实 Hermes 模型 smoke 已移除。选择 full UI gate 后，缺少 Rust checkout、App runner、
 backend/OTP、fake Hermes command 或本地 cleanup 后端都必须 fail-fast，不能用 skip
 表示通过。daemon status query、latest-status 与 heartbeat 都必须包含公开 bootstrap key diagnostics，
 避免 App cache 被不含 key 的轻量心跳覆盖成 `bootstrap_key_status=missing`。2026-07-01
@@ -330,8 +328,8 @@ Linux 使用 `SO_PEERCRED` 校验连接方 UID 必须等于 daemon UID。其他 
 
 daemon 当前提供 Generic CLI runtime MVP 闭环：
 
-1. `runtime.agent.create` 支持 `runtime=generic-cli` 以及 `codex`、`codex-cli`、`claude-code`、`gemini`、`gemini-cli` alias。
-2. CLI family 新建 agent 时持久化 `runtime_plugin_id=generic-cli`，并在 `cli_runtime_profile.driver_id` 中保存具体 driver。`runtime=generic-cli` 未显式传 `driver_id` 时默认 `codex`。
+1. `runtime.agent.create` 的通用 CLI 路径支持 `runtime=generic-cli` 以及 `codex`、`codex-cli`、`claude-code` alias。`gemini`／`gemini-cli` 正式入口走独立 [ACP 插件](../../../docs/architecture/acp-runtime.md)；旧 generic-cli Gemini 只有配置占位，运行驱动未实现。
+2. 本插件新建 agent 时持久化 `runtime_plugin_id=generic-cli`，并在 `cli_runtime_profile.driver_id` 中保存具体 driver。`runtime=generic-cli` 未显式传 `driver_id` 时默认 `codex`。
 3. 旧数据中的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 只作为 legacy migration / alias 处理；新写入路径不再产生这些值。
 4. 消息入口仍按 Runtime Agent DID 路由到 `agent_definition`，然后读取 `runtime_profile` 和 CLI profile 选择 driver；`generic-cli` 不是外部消息 routing key。
 5. daemon 只接受 `sender_did == controller_did` 的 controller 消息执行 run，将文本消息标准化为内部 `RuntimeTask`。

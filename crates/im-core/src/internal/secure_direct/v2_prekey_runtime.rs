@@ -441,6 +441,25 @@ pub(crate) async fn fetch_verified_prekey(
     target_did_document: &serde_json::Value,
     operation_seed: &str,
 ) -> crate::ImResult<V2GetPrekeyBundleResult> {
+    fetch_verified_prekey_with_transport_retry(
+        client,
+        target_did,
+        target_device_id,
+        target_did_document,
+        operation_seed,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_verified_prekey_with_transport_retry(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_device_id: &str,
+    target_did_document: &serde_json::Value,
+    operation_seed: &str,
+    retry_transport: bool,
+) -> crate::ImResult<V2GetPrekeyBundleResult> {
     require_exact("operation_seed", operation_seed)?;
     let service_did = target_prekey_service_did(target_did, target_did_document)?;
     let local_state = local_authorization(client)?;
@@ -458,10 +477,17 @@ pub(crate) async fn fetch_verified_prekey(
         false,
     )?;
     let (method, params) = split_rpc_request(request)?;
-    for attempt in 0..=1 {
-        let response = crate::internal::transport::CoreHttpTransport::new(client)
-            .authenticated_rpc("/im/rpc", &method, params.clone())
-            .await;
+    for attempt in 0..=u8::from(retry_transport) {
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+        let response = if retry_transport {
+            transport
+                .authenticated_rpc("/im/rpc", &method, params.clone())
+                .await
+        } else {
+            transport
+                .authenticated_rpc_once("/im/rpc", &method, params.clone())
+                .await
+        };
         match response {
             Ok(response) => {
                 return verify_get_result(
@@ -473,7 +499,11 @@ pub(crate) async fn fetch_verified_prekey(
                     false,
                 );
             }
-            Err(error) if attempt == 0 && retryable_prekey_transport_error(&error) => continue,
+            Err(error)
+                if retry_transport && attempt == 0 && retryable_prekey_transport_error(&error) =>
+            {
+                continue
+            }
             Err(error) => return Err(error),
         }
     }
@@ -512,10 +542,25 @@ pub(crate) async fn post_standard_direct(
     client: &crate::core::ImClient,
     prepared: &super::v2_runtime::PreparedV2Outbound,
 ) -> crate::ImResult<anp::direct_e2ee::V2DirectSendResult> {
+    post_standard_direct_with_auth_retry(client, prepared, true).await
+}
+
+pub(crate) async fn post_standard_direct_with_auth_retry(
+    client: &crate::core::ImClient,
+    prepared: &super::v2_runtime::PreparedV2Outbound,
+    retry_auth: bool,
+) -> crate::ImResult<anp::direct_e2ee::V2DirectSendResult> {
     let (method, params) = split_rpc_request(prepared.direct_request()?)?;
-    let response = crate::internal::transport::CoreHttpTransport::new(client)
-        .authenticated_rpc("/im/rpc", &method, params)
-        .await?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let response = if retry_auth {
+        transport
+            .authenticated_rpc("/im/rpc", &method, params)
+            .await?
+    } else {
+        transport
+            .authenticated_rpc_once("/im/rpc", &method, params)
+            .await?
+    };
     super::v2_runtime::parse_send_result(&response, prepared)
 }
 

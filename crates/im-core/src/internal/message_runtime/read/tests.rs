@@ -185,7 +185,7 @@ async fn all_inbox_persists_direct_and_group_in_their_child_paths() {
     .unwrap();
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let direct = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
@@ -556,7 +556,7 @@ fn messages_read_runtime_annotates_delegated_inbox_peer_scope_from_handle_lookup
             .iter()
             .find(|attribute| attribute.key == "peer_full_handle")
             .map(|attribute| attribute.value.as_str()),
-        Some("bob.anpclaw.com")
+        Some("bob.awiki.test")
     );
     assert_eq!(
         message
@@ -810,7 +810,7 @@ fn messages_read_runtime_rejects_scoped_inbox_token_until_enabled() {
 #[test]
 fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     let fixture = Fixture::new();
-    fixture.seed_verified_peer_identity("user-bob", "bob.anpclaw.com", &["did:example:bob"]);
+    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,
@@ -877,7 +877,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
     let fixture = Fixture::new();
     fixture.seed_verified_peer_identity(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
         &["did:example:bob-old", "did:example:bob-new"],
     );
     let client = fixture.client();
@@ -941,7 +941,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
         crate::messages::ThreadRef::Thread(thread)
             if thread.as_str().starts_with("dm:peer-scope:v1:")
     ));
-    assert_eq!(conversation.participants[0].as_str(), "bob.anpclaw.com");
+    assert_eq!(conversation.participants[0].as_str(), "bob.awiki.test");
     assert_eq!(
         conversation
             .last_message
@@ -2557,6 +2557,40 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
 }
 
 #[test]
+fn plain_attachment_history_without_profile_keeps_transport_download_grant() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    for secure in [None, Some(false)] {
+        for group in [false, true] {
+            let mut message = json!({
+                "id": "plain-file",
+                "sender_did": "did:example:alice",
+                "receiver_did": client.did().as_str(),
+                "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                "content": {"attachments": [{"attachment_id": "att-plain", "access_info": {"object_uri": "https://objects.example/plain"}}]}
+            });
+            if let Some(secure) = secure {
+                message["secure"] = json!(secure);
+            }
+            if group {
+                message["group_did"] = json!("did:example:group");
+            }
+            let record = attachment_manifest_cache_record(&client, &message).unwrap();
+            assert_eq!(record.message_security_profile, "transport-protected");
+            // Explicit secure metadata remains authoritative even on views
+            // that do not carry the convenience `secure` flag.
+            message["message_security_profile"] =
+                json!(if group { "group-e2ee" } else { "direct-e2ee" });
+            let record = attachment_manifest_cache_record(&client, &message).unwrap();
+            assert_eq!(
+                record.message_security_profile,
+                message["message_security_profile"].as_str().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn transport_attachment_manifest_cache_preserves_historical_direct_target() {
     let fixture = Fixture::new();
     let client = fixture.client();
@@ -3518,7 +3552,7 @@ async fn direct_inbox_projects_verified_handle_before_persisting_message() {
     assert_eq!(result.page.items.len(), 1);
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let records = client
@@ -3597,7 +3631,7 @@ async fn direct_page_resolves_expected_peer_scope_once_for_all_messages() {
     assert_eq!(calls.borrow().as_slice(), ["lookup"]);
     for message in raw["messages"].as_array().unwrap() {
         assert_eq!(message["peer_user_id"], "user-bob");
-        assert_eq!(message["peer_full_handle"], "bob.anpclaw.com");
+        assert_eq!(message["peer_full_handle"], "bob.awiki.test");
         assert_eq!(message["peer_current_did"], "did:example:bob-new");
     }
 }
@@ -3615,7 +3649,7 @@ fn plain_direct_history_keeps_peer_wire_identity_after_canonical_thread_projecti
             "content_type": "text/plain",
             "server_seq": 37,
             "peer_user_id": "user-bob",
-            "peer_full_handle": "bob.anpclaw.com",
+            "peer_full_handle": "bob.awiki.test",
             "peer_current_did": "did:example:bob-new",
             "resolved_target_did": "did:example:bob-new"
         }],
@@ -3757,7 +3791,7 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
     );
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let records = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
@@ -4547,7 +4581,7 @@ async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() 
     .await;
     let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
@@ -5031,7 +5065,7 @@ async fn scoped_history_mixed_page_keeps_and_persists_requested_peer_once() {
     let requested_peer_did = "did:example:bob-new";
     let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let requested_wire = json!({
@@ -5200,7 +5234,7 @@ async fn history_and_sync_reject_authenticated_p5_for_unrequested_peer() {
     let requested_peer_did = "did:example:bob-new";
     let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     seed_sync_thread_binding_for_test(&client, &requested_scope, "conversation-ref-bob-new");
@@ -5438,7 +5472,7 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
     wire["thread_kind"] = json!("direct");
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
         "user-bob",
-        "bob.anpclaw.com",
+        "bob.awiki.test",
     )
     .unwrap();
     let conversation_id =
@@ -6230,9 +6264,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
     let client = fixture.client();
     let mut first = FixedLookupDirectoryTransport(json!({
         "handle": "bob",
-        "full_handle": "bob.anpclaw.com",
+        "full_handle": "bob.awiki.test",
         "did": "did:example:bob-new",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-bob"
     }));
@@ -6243,9 +6277,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
 
     let mut missing = FixedLookupDirectoryTransport(json!({
         "handle": "bob",
-        "full_handle": "bob.anpclaw.com",
+        "full_handle": "bob.awiki.test",
         "did": "did:example:bob-missing-authority",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active"
     }));
     assert!(matches!(
@@ -6256,9 +6290,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
 
     let mismatched_response = json!({
         "handle": "mallory",
-        "full_handle": "mallory.anpclaw.com",
+        "full_handle": "mallory.awiki.test",
         "did": "did:example:mallory-response",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-mallory-response"
     });
@@ -6299,9 +6333,9 @@ async fn verified_handle_projection_rejects_missing_and_conflicting_authority() 
     drop(connection);
     let mut conflicting = FixedLookupDirectoryTransport(json!({
         "handle": "mallory",
-        "full_handle": "mallory.anpclaw.com",
+        "full_handle": "mallory.awiki.test",
         "did": "did:example:bob-new",
-        "domain": "anpclaw.com",
+        "domain": "awiki.test",
         "status": "active",
         "user_id": "user-mallory"
     }));
@@ -6843,9 +6877,9 @@ impl RpcTransport for StaticHandleDirectoryTransport {
         if method == "lookup" {
             return Ok(json!({
                 "handle": "bob",
-                "full_handle": "bob.anpclaw.com",
+                "full_handle": "bob.awiki.test",
                 "did": did,
-                "domain": "anpclaw.com",
+                "domain": "awiki.test",
                 "status": "active",
                 "user_id": "user-bob"
             }));
@@ -6876,9 +6910,9 @@ impl RpcTransport for CountingHandleDirectoryTransport {
             .unwrap_or("did:example:bob-new");
         Ok(json!({
             "handle": "bob",
-            "full_handle": "bob.anpclaw.com",
+            "full_handle": "bob.awiki.test",
             "did": did,
-            "domain": "anpclaw.com",
+            "domain": "awiki.test",
             "status": "active",
             "user_id": "user-bob"
         }))
@@ -7105,7 +7139,7 @@ impl VNextCacheFixture {
                     jwt_token: "test-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {
-                        root_key_id: generated.root_key_id.clone(),
+                        root_key_id: Some(generated.root_key_id.clone()),
                         device_signing_key_id: generated.device_signing_key_id.clone(),
                         device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                     },
@@ -7786,4 +7820,92 @@ fn notify_text_annotation_projects_intent_without_changing_plain_message() {
         .iter()
         .any(|a| a.key == "notify_level" && a.value == "urgent"));
     assert_eq!(calls.borrow().len(), 1);
+}
+
+#[cfg(feature = "secure-direct")]
+#[tokio::test]
+async fn upgraded_empty_lane_negotiation_blocks_legacy_inbox_before_sync() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let db = client.core_inner().local_state_db().await.unwrap();
+    let binding = crate::internal::local_state::sync_v2::IdentityAccountBinding {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        account_id: "read-cache-user".to_owned(),
+        handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+        current_did: client.did().as_str().to_owned(),
+        protocol_device_id: fixture.device_id.clone(),
+        identity_generation: "1".to_owned(),
+        device_auth_generation: "1".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+    let installation = db
+        .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+        .await
+        .unwrap();
+    db.record_sync_lane_capability_negotiation_v1a(
+        binding.owner_identity_id.clone(),
+        binding.device_auth_generation.clone(),
+        installation,
+        "[]".to_owned(),
+    )
+    .await
+    .unwrap();
+    // A saved empty negotiation from an older build is not a reason to choose
+    // legacy inbox while the newly enabled P5 root-delivery lane is pending.
+    assert!(sync_lane_capability_enabled_async(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    )
+    .await
+    .unwrap());
+    assert!(sync_lane_capability_enabled_blocking(
+        &client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+    ));
+}
+
+#[test]
+fn plain_group_attachment_cache_preserves_wire_id_for_download() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group = "did:example:group:plain";
+    let canonical = "did:example:group:plain:9";
+    let mut message = json!({
+        "id": canonical,
+        "message_id": "logical-plain-group-message",
+        "group_did": group,
+        "sender_did": "did:example:sender",
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "content": {"attachments":[{"attachment_id":"att-plain-group", "access_info":{"object_uri":"https://objects.example/att-plain"}, "encryption_info":{"mode":"none"}}]}
+    });
+    for expected in ["logical-plain-group-message", "explicit-wire-message"] {
+        if expected == "explicit-wire-message" {
+            message["raw_message_id"] = json!(expected);
+        }
+        let record = attachment_manifest_cache_record(&client, &message).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+            &db, &record,
+        )
+        .unwrap();
+        let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &db, client.current_identity().id.as_str(), "group", group, canonical,
+        ).unwrap().unwrap();
+        let selected = crate::attachments::selection::find_internal_attachment_selection(
+            &[cached],
+            canonical,
+            "att-plain-group",
+        )
+        .unwrap();
+        assert_eq!(
+            selected.public.message_security_profile,
+            "transport-protected"
+        );
+        assert_eq!(selected.public.message_id, canonical);
+        assert_eq!(selected.authorization_message_id, expected);
+    }
 }

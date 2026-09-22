@@ -387,8 +387,34 @@ pub enum IdentityMissingItem {
     Other(String),
 }
 
+/// Method for a new hosted identity; existing Handle admission remains server-owned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DidMethod {
+    #[default]
+    Wba,
+    Web,
+}
+
+impl std::str::FromStr for DidMethod {
+    type Err = crate::ImError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "wba" => Ok(Self::Wba),
+            "web" => Ok(Self::Web),
+            _ => Err(crate::ImError::invalid_input(
+                Some("did_method".to_owned()),
+                "unsupported DID method",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterHandleRequest {
+    #[serde(default)]
+    pub did_method: DidMethod,
     pub local_alias: Option<String>,
     pub requested_handle: crate::ids::Handle,
     pub verification: VerificationInput,

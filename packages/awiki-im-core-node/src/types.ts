@@ -106,7 +106,7 @@ export interface ImCoreIdentityProvider {
   publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
   hostStatus(reference: ImCoreIdentityReference): Promise<{
     readonly rootCapability: 'absent' | 'pending' | 'active'
-    readonly rootKeyFingerprint: string
+    readonly rootKeyFingerprint: string | null
     readonly checkpoint?: {
       readonly documentVersion: number
       readonly registryVersion: number
@@ -228,6 +228,10 @@ export interface ImCoreIdentityProvider {
     reference: ImCoreIdentityReference,
     remote: unknown,
   ): Promise<string>
+  adoptVerifiedSiblingDocument?(
+    reference: ImCoreIdentityReference,
+    remote: unknown,
+  ): Promise<string>
   beginDeviceEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
   beginRequestSigningEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
   resumeEnrollment(
@@ -286,6 +290,8 @@ export interface ImCoreProviderDocumentChangeSession {
   beginPublication(): Promise<unknown>
   complete(attempt: unknown, result: unknown): Promise<unknown>
   reconcile(observation: unknown): Promise<unknown>
+  reconcileRejected(observation: unknown): Promise<unknown>
+
 }
 
 /** Host-only DID transition workflow retained inside the provider bridge. */
@@ -337,6 +343,7 @@ export interface UpdateProfileInput {
 
 /** First stage of phone registration. */
 export interface RegistrationInput {
+  readonly didMethod?: 'wba' | 'web'
   readonly handle: string
   readonly phone: string
 }
@@ -1016,9 +1023,22 @@ export class ImCoreNodeError extends Error {
 }
 
 /** Environment-scoped Promise API backed by one Rust ImCore/ImClient pair. */
+export interface DidDocumentService {
+  readonly id: string
+  readonly type: string
+  readonly serviceEndpoint: string
+  readonly serviceDid?: string
+  readonly profiles?: readonly string[]
+  readonly securityProfiles?: readonly string[]
+}
+
 export interface ImCoreNodeClient {
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  resolveHandleForDeviceJoin(handle: string): Promise<string>
+  pendingIdentityRegistrations(): Promise<readonly PendingIdentityRegistration[]>
+  identityMethodCapabilities(did: string): Promise<IdentityMethodCapabilities>
+  identityCreationMethods(): Promise<readonly ('wba' | 'web')[]>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   /** Complete registration without collapsing an existing Handle into an error. */
@@ -1036,7 +1056,14 @@ export interface ImCoreNodeClient {
   getLocalDeviceJoinVerificationProgress(input: PreparedRegistrationJoinResumeInput): Promise<AdminDeviceJoinProgress>
   prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
+  confirmDeviceJoinWithManagement(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
+  deviceJoinManagementStatus(): Promise<ReadonlyArray<{ readonly joinSessionId: string; readonly recipientDeviceId: string; readonly phase: string; readonly attempts: number; readonly nextAttemptAtMs: number; readonly failureCode?: string }>>
+  retryDeviceJoinManagement(input: { readonly joinSessionId: string }): Promise<void>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  identityDocument(): Promise<Readonly<Record<string, unknown>>>
+  identityServicesUpdatePending(): Promise<boolean>
+  updateIdentityServices(services: readonly DidDocumentService[]): Promise<Readonly<Record<string, unknown>>>
+  resumeIdentityServicesUpdate(): Promise<Readonly<Record<string, unknown>>>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
   confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>
@@ -1090,4 +1117,23 @@ export interface ImCoreNodeClient {
   clearLocalData(): Promise<{ readonly cleared: boolean; readonly clearedIdentityDids?: readonly string[] }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */
   close(): Promise<void>
+}
+
+/** Method support only; current device authorization is checked by Core on every write. */
+export interface IdentityMethodCapabilities {
+  readonly method: 'wba' | 'web'
+  readonly handleRecovery: boolean
+  readonly rootImport: boolean
+  readonly rootTransfer: boolean
+  readonly servicesUpdate: boolean
+}
+
+/** Public resume hints from the current tenant's durable Core registration store. */
+export interface PendingIdentityRegistration {
+  readonly did: string
+  readonly fullHandle: string
+  readonly method: 'wba' | 'web'
+  readonly displayName: string
+  readonly verificationKind: string
+  readonly phase: 'prepared' | 'remote_committed' | 'local_committed'
 }

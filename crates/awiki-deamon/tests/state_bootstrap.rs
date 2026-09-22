@@ -1,6 +1,6 @@
 use awiki_deamon::{run_command, DaemonCommand, DaemonConfig, DaemonState};
 
-const EXPECTED_DAEMON_SCHEMA_VERSION: i64 = 35;
+const EXPECTED_DAEMON_SCHEMA_VERSION: i64 = 37;
 
 #[test]
 fn init_state_creates_daemon_and_im_core_databases() {

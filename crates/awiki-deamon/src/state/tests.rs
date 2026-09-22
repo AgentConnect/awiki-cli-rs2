@@ -5360,3 +5360,77 @@ fn controller_rebind_rejects_changed_stable_scope_without_mutation() {
         .unwrap();
     assert_eq!(audit_count, 0);
 }
+
+#[test]
+fn acp_default_binary_migration_preserves_overrides_and_ambiguous_profiles() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [9; 32]);
+    state.initialize().unwrap();
+    let db = state.connection().unwrap();
+    db.execute("DELETE FROM schema_migrations WHERE version = 38", [])
+        .unwrap();
+    let cases = [
+        ("hermes", "{}", "acp", true, true),
+        ("codex", "{}", "acp", true, true),
+        ("claude-code", "{}", "acp", true, true),
+        ("opencode", "{}", "acp", true, true),
+        ("gemini", "{}", "acp", true, true),
+        ("kimi", "{}", "acp", true, true),
+        ("deepseek-harness", "{}", "acp", true, true),
+        (
+            "codex",
+            r#"{"binary_path":"/old/client"}"#,
+            "acp",
+            true,
+            false,
+        ),
+        ("codex", r#"{"binary_path":null}"#, "acp", true, false),
+        ("codex", "broken json", "acp", true, false),
+        ("codex", "[]", "acp", true, false),
+        ("codex", "{}", "acp", false, false),
+        ("codex", "{}", "generic-cli", true, false),
+    ];
+    for (i, (driver, config_json, plugin, probed, _)) in cases.iter().enumerate() {
+        let id = format!("migration-{i}");
+        let mut profile = CliRuntimeProfileRecord::for_driver(&id, *driver).unwrap();
+        profile.binary_path = Some("/old/client".into());
+        state.upsert_cli_runtime_profile(&profile).unwrap();
+        db.execute(
+            "UPDATE cli_runtime_profile SET driver_config_json=?1 WHERE runtime_profile_id=?2",
+            rusqlite::params![config_json, id],
+        )
+        .unwrap();
+        db.execute("INSERT INTO runtime_profile(runtime_profile_id,runtime_plugin_id,status,created_at,updated_at) VALUES(?1,?2,'active','0','0')", rusqlite::params![id, plugin]).unwrap();
+        if *probed {
+            db.execute(
+                "INSERT INTO acp_probes(profile_id,report,checked_at_ms) VALUES(?1,'{}',0)",
+                [&id],
+            )
+            .unwrap();
+        }
+    }
+    // Reopen through the real schema entry point, including retirement ordering.
+    state.initialize().unwrap();
+    for (i, (_, _, _, _, cleared)) in cases.iter().enumerate() {
+        let path: Option<String> = db
+            .query_row(
+                "SELECT binary_path FROM cli_runtime_profile WHERE runtime_profile_id=?1",
+                [format!("migration-{i}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(path.is_none(), *cleared, "case {i}");
+    }
+    // Once migrated, a later explicit write is never normalized again.
+    db.execute("UPDATE cli_runtime_profile SET binary_path='/later/explicit' WHERE runtime_profile_id='migration-0'", []).unwrap();
+    state.initialize().unwrap();
+    assert_eq!(
+        state
+            .load_cli_runtime_profile("migration-0")
+            .unwrap()
+            .binary_path
+            .unwrap(),
+        std::path::PathBuf::from("/later/explicit")
+    );
+}

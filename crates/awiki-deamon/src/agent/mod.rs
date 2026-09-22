@@ -230,33 +230,36 @@ pub fn resolve_runtime(
     }
 
     let key = runtime.to_ascii_lowercase();
+    if let Ok(brand) = crate::acp::Brand::parse(&key) {
+        if let Some(driver) = driver_id_override {
+            if crate::acp::Brand::parse(driver)? != brand {
+                bail!("acp_driver_mismatch");
+            }
+        }
+        return Ok(RuntimeResolution {
+            runtime_plugin_id: crate::acp::PLUGIN_ID.into(),
+            driver_id: Some(brand.id().into()),
+            legacy_runtime_plugin_id: None,
+            defaulted_driver_id: false,
+        });
+    }
+    if key == crate::acp::PLUGIN_ID {
+        let brand = crate::acp::Brand::parse(driver_id_override.context("acp_driver_required")?)?;
+        return Ok(RuntimeResolution {
+            runtime_plugin_id: crate::acp::PLUGIN_ID.into(),
+            driver_id: Some(brand.id().into()),
+            legacy_runtime_plugin_id: None,
+            defaulted_driver_id: false,
+        });
+    }
     match key.as_str() {
-        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let (driver_id, defaulted_driver_id) = match driver_id_override {
-                Some(driver_id) => (normalize_cli_driver_id(driver_id)?, false),
-                None => (CODEX_CLI_DRIVER_ID.to_string(), true),
-            };
-            Ok(RuntimeResolution {
-                runtime_plugin_id: GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string(),
-                driver_id: Some(driver_id),
-                legacy_runtime_plugin_id: None,
-                defaulted_driver_id,
-            })
+        GENERIC_CLI_RUNTIME_PLUGIN_ID
+        | "runtime.hermes"
+        | "runtime.cli.codex"
+        | "runtime.cli.claude-code"
+        | "runtime.cli.gemini-cli" => {
+            bail!("legacy_runtime_disabled_recreate_required")
         }
-        "codex" | "codex-cli" => {
-            cli_alias_resolution(driver_id_override, CODEX_CLI_DRIVER_ID, "runtime.cli.codex")
-        }
-        "claude-code" => cli_alias_resolution(
-            driver_id_override,
-            CLAUDE_CODE_CLI_DRIVER_ID,
-            "runtime.cli.claude-code",
-        ),
-        "gemini" | "gemini-cli" => cli_alias_resolution(
-            driver_id_override,
-            GEMINI_CLI_DRIVER_ID,
-            "runtime.cli.gemini-cli",
-        ),
-        "hermes" => native_runtime_resolution("runtime.hermes", driver_id_override),
         "openclaw" => native_runtime_resolution("runtime.openclaw", driver_id_override),
         _ => native_runtime_resolution(runtime, driver_id_override),
     }
@@ -415,25 +418,6 @@ fn stable_id_segment(input: &str) -> Result<String> {
     Ok(normalized)
 }
 
-fn cli_alias_resolution(
-    driver_id_override: Option<&str>,
-    canonical_driver_id: &str,
-    legacy_runtime_plugin_id: &str,
-) -> Result<RuntimeResolution> {
-    if let Some(driver_id_override) = driver_id_override {
-        let driver_id = normalize_cli_driver_id(driver_id_override)?;
-        if driver_id != canonical_driver_id {
-            bail!("runtime alias requires driver_id {canonical_driver_id}, got {driver_id}");
-        }
-    }
-    Ok(RuntimeResolution {
-        runtime_plugin_id: GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string(),
-        driver_id: Some(canonical_driver_id.to_string()),
-        legacy_runtime_plugin_id: Some(legacy_runtime_plugin_id.to_string()),
-        defaulted_driver_id: false,
-    })
-}
-
 fn native_runtime_resolution(
     runtime_plugin_id: &str,
     driver_id_override: Option<&str>,
@@ -447,26 +431,6 @@ fn native_runtime_resolution(
         legacy_runtime_plugin_id: None,
         defaulted_driver_id: false,
     })
-}
-
-fn normalize_cli_driver_id(input: &str) -> Result<String> {
-    let value = input.trim().to_ascii_lowercase();
-    if value.is_empty() {
-        bail!("driver_id must not be empty");
-    }
-    if !value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-    {
-        bail!("driver_id contains unsupported characters");
-    }
-    let normalized = match value.as_str() {
-        CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID | GEMINI_CLI_DRIVER_ID => value,
-        "codex-cli" => CODEX_CLI_DRIVER_ID.to_string(),
-        "gemini-cli" => GEMINI_CLI_DRIVER_ID.to_string(),
-        other => bail!("unsupported generic-cli driver_id: {other}"),
-    };
-    Ok(normalized)
 }
 
 fn required_private_key(
@@ -546,49 +510,62 @@ mod tests {
     }
 
     #[test]
-    fn resolve_runtime_maps_cli_family_aliases_to_generic_cli_driver_ids() {
-        for (runtime, driver_id, legacy_plugin_id) in [
-            ("codex", CODEX_CLI_DRIVER_ID, "runtime.cli.codex"),
-            ("codex-cli", CODEX_CLI_DRIVER_ID, "runtime.cli.codex"),
-            (
-                "claude-code",
-                CLAUDE_CODE_CLI_DRIVER_ID,
-                "runtime.cli.claude-code",
-            ),
-            ("gemini", GEMINI_CLI_DRIVER_ID, "runtime.cli.gemini-cli"),
-            ("gemini-cli", GEMINI_CLI_DRIVER_ID, "runtime.cli.gemini-cli"),
+    fn old_brand_aliases_create_only_acp_drivers() {
+        for (alias, driver) in [
+            ("hermes", "hermes"),
+            ("codex", "codex"),
+            ("codex-cli", "codex"),
+            ("claude-code", "claude-code"),
         ] {
-            let resolution = resolve_runtime(runtime, None).unwrap();
-
-            assert_eq!(resolution.runtime_plugin_id, GENERIC_CLI_RUNTIME_PLUGIN_ID);
-            assert_eq!(resolution.driver_id.as_deref(), Some(driver_id));
-            assert_eq!(
-                resolution.legacy_runtime_plugin_id.as_deref(),
-                Some(legacy_plugin_id)
-            );
-            assert!(!resolution.defaulted_driver_id);
+            let resolved = resolve_runtime(alias, None).unwrap();
+            assert_eq!(resolved.runtime_plugin_id, crate::acp::PLUGIN_ID);
+            assert_eq!(resolved.driver_id.as_deref(), Some(driver));
+            assert!(resolved.legacy_runtime_plugin_id.is_none());
+            assert!(!resolved.defaulted_driver_id);
         }
     }
 
     #[test]
-    fn resolve_runtime_supports_generic_cli_default_and_explicit_driver() {
-        let defaulted = resolve_runtime(" generic-cli ", None).unwrap();
-        assert_eq!(defaulted.runtime_plugin_id, GENERIC_CLI_RUNTIME_PLUGIN_ID);
-        assert_eq!(defaulted.driver_id.as_deref(), Some(CODEX_CLI_DRIVER_ID));
-        assert_eq!(defaulted.legacy_runtime_plugin_id, None);
-        assert!(defaulted.defaulted_driver_id);
+    fn resolve_runtime_routes_new_brands_to_acp() {
+        for (alias, driver) in [
+            ("opencode", "opencode"),
+            ("gemini", "gemini"),
+            ("gemini-cli", "gemini"),
+            ("kimi-code", "kimi"),
+            ("dsh", "deepseek-harness"),
+        ] {
+            let resolved = resolve_runtime(alias, None).unwrap();
+            assert_eq!(resolved.runtime_plugin_id, "acp");
+            assert_eq!(resolved.driver_id.as_deref(), Some(driver));
+            assert!(resolve_runtime(alias, Some("codex")).is_err());
+        }
+        assert!(resolve_runtime("acp", None).is_err());
+        assert_eq!(
+            resolve_runtime("acp", Some("kimi"))
+                .unwrap()
+                .driver_id
+                .as_deref(),
+            Some("kimi")
+        );
+    }
 
-        let explicit = resolve_runtime("generic-cli", Some(" Gemini-CLI ")).unwrap();
-        assert_eq!(explicit.runtime_plugin_id, GENERIC_CLI_RUNTIME_PLUGIN_ID);
-        assert_eq!(explicit.driver_id.as_deref(), Some(GEMINI_CLI_DRIVER_ID));
-        assert_eq!(explicit.legacy_runtime_plugin_id, None);
-        assert!(!explicit.defaulted_driver_id);
+    #[test]
+    fn legacy_creation_identifiers_cannot_reactivate_old_executors() {
+        for runtime in [
+            "generic-cli",
+            "runtime.hermes",
+            "runtime.cli.codex",
+            "runtime.cli.claude-code",
+            "runtime.cli.gemini-cli",
+        ] {
+            assert!(resolve_runtime(runtime, None).is_err());
+            assert!(resolve_runtime(runtime, Some("gemini")).is_err());
+        }
     }
 
     #[test]
     fn resolve_runtime_keeps_native_runtime_types_without_driver_ids() {
         for (runtime, plugin_id) in [
-            ("hermes", "runtime.hermes"),
             ("openclaw", "runtime.openclaw"),
             ("runtime.custom", "runtime.custom"),
         ] {
@@ -611,7 +588,7 @@ mod tests {
         let alias_with_matching_driver = resolve_runtime("codex", Some("codex-cli")).unwrap();
         assert_eq!(
             alias_with_matching_driver.runtime_plugin_id,
-            GENERIC_CLI_RUNTIME_PLUGIN_ID
+            crate::acp::PLUGIN_ID
         );
         assert_eq!(
             alias_with_matching_driver.driver_id.as_deref(),

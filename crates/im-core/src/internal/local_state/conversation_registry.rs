@@ -197,7 +197,13 @@ pub(crate) fn ensure_validated(
     owner_did: &str,
     conversation_id: &str,
 ) -> crate::ImResult<()> {
-    let conversation_id = conversation_id.trim();
+    let canonical = super::conversation_aliases::resolve(
+        connection,
+        owner_identity_id,
+        "verified_foreign_persona",
+        conversation_id,
+    )?;
+    let conversation_id = canonical.as_deref().unwrap_or(conversation_id).trim();
     let (thread_kind, thread_id) = if let Some(group_ref) = conversation_id.strip_prefix("group:") {
         let group_ref = group_ref.trim();
         crate::ids::Did::parse(group_ref).map_err(|_| {

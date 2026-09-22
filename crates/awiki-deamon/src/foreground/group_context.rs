@@ -8,6 +8,83 @@ pub(super) const GROUP_CONTEXT_MESSAGE_LIMIT: usize = 30;
 const GROUP_CONTEXT_CHAR_LIMIT: usize = 12_000;
 const GROUP_CONTEXT_REDACTED_TEXT: &str = "[已省略疑似敏感内容]";
 
+const GROUP_CONTEXT_SCAN_LIMIT: usize = 1_000;
+const GROUP_CONTEXT_PAGE_SIZE: u32 = 100;
+
+#[cfg(test)]
+#[path = "group_context_tests.rs"]
+mod tests;
+
+pub(super) async fn load_recent_group_context(
+    client: &im_core::ImClient,
+    current: &Message,
+) -> Value {
+    let messages = client.messages();
+    read_recent_group_context(current, |query| {
+        messages.local_history_before_async(current.thread.clone(), current.id.clone(), query)
+    })
+    .await
+}
+
+async fn read_recent_group_context<F, Fut>(current: &Message, mut read: F) -> Value
+where
+    F: FnMut(im_core::messages::LocalHistoryQuery) -> Fut,
+    Fut: std::future::Future<Output = im_core::ImResult<im_core::ids::Page<Message>>>,
+{
+    let mut history = vec![current.clone()];
+    let mut cursor = None;
+    let mut scanned = 0;
+    let mut included = 0;
+    let mut cursors = std::collections::HashSet::new();
+    let mut truncated = false;
+    loop {
+        let page = match read(im_core::messages::LocalHistoryQuery {
+            limit: im_core::ids::PageLimit(GROUP_CONTEXT_PAGE_SIZE),
+            cursor,
+        })
+        .await
+        {
+            Ok(page) => page,
+            Err(_) => return empty_recent_group_context(current, "local_history_unavailable"),
+        };
+        for message in page.items {
+            scanned += 1;
+            // Core owns the scope and anchor. This also prevents a malformed
+            // adapter response from becoming cross-group prompt context.
+            if conversation_id(&message) != conversation_id(current) || message.id == current.id {
+                return empty_recent_group_context(current, "local_history_binding_mismatch");
+            }
+            if !is_opaque_group_e2ee_message(&message)
+                && group_context_visible_content(&message).is_some()
+            {
+                included += 1;
+                history.push(message);
+            }
+            if included >= GROUP_CONTEXT_MESSAGE_LIMIT {
+                break;
+            }
+        }
+        if included >= GROUP_CONTEXT_MESSAGE_LIMIT || !page.has_more {
+            break;
+        }
+        if scanned >= GROUP_CONTEXT_SCAN_LIMIT {
+            truncated = true;
+            break;
+        }
+        let Some(next) = page.next_cursor else {
+            return empty_recent_group_context(current, "local_history_cursor_missing");
+        };
+        if !cursors.insert(next.as_str().to_owned()) {
+            return empty_recent_group_context(current, "local_history_cursor_repeated");
+        }
+        cursor = Some(next);
+    }
+    let mut context = build_recent_group_context(current, &history);
+    context["source"] = json!("daemon_core_local_history");
+    context["scan_limit_reached"] = json!(truncated);
+    context
+}
+
 pub(super) fn build_recent_group_context(
     current_message: &Message,
     group_history: &[Message],

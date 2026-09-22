@@ -13,6 +13,33 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<String> identityDocument({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityDocument(
+  core: core,
+  selector: selector,
+);
+
+Future<bool> identityServicesUpdatePending({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityServicesUpdatePending(
+  core: core,
+  selector: selector,
+);
+
+/// None resumes the existing durable operation.
+Future<String> updateIdentityServices({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  String? servicesJson,
+}) => RustLib.instance.api.crateApiIdentityUpdateIdentityServices(
+  core: core,
+  selector: selector,
+  servicesJson: servicesJson,
+);
+
 Future<bool> hasPendingLocalIdentityRecovery({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
@@ -303,6 +330,16 @@ Future<DartDeviceJoinProgress> confirmDeviceJoinApproval({
   userPresenceConfirmed: userPresenceConfirmed,
 );
 
+Future<DartDeviceJoinProgress> confirmDeviceJoinWithManagement({
+  required ArcDartImCore core,
+  required String approvalHandle,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityConfirmDeviceJoinWithManagement(
+  core: core,
+  approvalHandle: approvalHandle,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
 Future<DartDeviceJoinProgress> rejectDeviceJoin({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
@@ -462,6 +499,7 @@ Future<DartHandleRegistrationResult> registerHandleWithPhone({
   String? inviteCode,
   required DartInitialProfile profile,
   required bool makeDefault,
+  String? didMethod,
 }) => RustLib.instance.api.crateApiIdentityRegisterHandleWithPhone(
   core: core,
   localAlias: localAlias,
@@ -471,6 +509,7 @@ Future<DartHandleRegistrationResult> registerHandleWithPhone({
   inviteCode: inviteCode,
   profile: profile,
   makeDefault: makeDefault,
+  didMethod: didMethod,
 );
 
 Future<DartHandleRegistrationResult> registerHandleWithEmail({
@@ -482,6 +521,7 @@ Future<DartHandleRegistrationResult> registerHandleWithEmail({
   String? inviteCode,
   required DartInitialProfile profile,
   required bool makeDefault,
+  String? didMethod,
 }) => RustLib.instance.api.crateApiIdentityRegisterHandleWithEmail(
   core: core,
   localAlias: localAlias,
@@ -491,10 +531,12 @@ Future<DartHandleRegistrationResult> registerHandleWithEmail({
   inviteCode: inviteCode,
   profile: profile,
   makeDefault: makeDefault,
+  didMethod: didMethod,
 );
 
 Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
   required ArcDartImCore core,
+  String? didMethod,
   String? localAlias,
   required String requestedHandle,
   String? inviteCode,
@@ -503,9 +545,48 @@ Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
 }) => RustLib.instance.api
     .crateApiIdentityRegisterHandleWithoutContactVerification(
       core: core,
+      didMethod: didMethod,
       localAlias: localAlias,
       requestedHandle: requestedHandle,
       inviteCode: inviteCode,
       profile: profile,
       makeDefault: makeDefault,
     );
+
+Future<String> identityMethodCapabilities({required String did}) =>
+    RustLib.instance.api.crateApiIdentityIdentityMethodCapabilities(did: did);
+
+Future<String> resolveHandleForDeviceJoin({
+  required ArcDartImCore core,
+  required String handle,
+}) => RustLib.instance.api.crateApiIdentityResolveHandleForDeviceJoin(
+  core: core,
+  handle: handle,
+);
+
+Future<String> pendingIdentityRegistrations({required ArcDartImCore core}) =>
+    RustLib.instance.api.crateApiIdentityPendingIdentityRegistrations(
+      core: core,
+    );
+
+Future<List<String>> identityCreationMethods({required ArcDartImCore core}) =>
+    RustLib.instance.api.crateApiIdentityIdentityCreationMethods(core: core);
+
+/// Secret-free automatic management configuration projection.
+Future<List<DartDeviceJoinManagementStatus>> deviceJoinManagementStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityDeviceJoinManagementStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<void> retryDeviceJoinManagement({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityRetryDeviceJoinManagement(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+);

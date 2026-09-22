@@ -508,69 +508,9 @@ async fn directory_service_exposes_contact_store_and_resolution_api() {
     assert!(!relation.messaged);
 }
 
-#[tokio::test]
-async fn directory_service_resolves_federated_full_handle_via_current_user_service() {
-    let fixture = Fixture::new();
-    let server = RpcTestServer::spawn(vec![
-        ExpectedRpc::new(
-            "/user-service/v1/handle/rpc",
-            "lookup",
-            json!({ "handle": "agent.remote.example" }),
-            federated_handle_lookup_value(),
-        ),
-        ExpectedRpc::new(
-            "/user-service/v1/did/profile/rpc",
-            "resolve",
-            json!({ "did": "did:wba:remote.example:user:agent:e1" }),
-            json!({
-                "did": "did:wba:remote.example:user:agent:e1",
-                "service_endpoints": [{
-                    "id": "did:wba:remote.example:user:agent:e1#messaging",
-                    "type": "ANPMessageService",
-                    "serviceEndpoint": "https://messages.remote.example/im"
-                }]
-            }),
-        ),
-    ]);
-    let client = fixture.client_with_base_url("alice", server.base_url());
-
-    let resolved = client
-        .directory()
-        .resolve_peer_async(PeerRef::parse("agent.remote.example", "").unwrap())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        resolved.did.as_str(),
-        "did:wba:remote.example:user:agent:e1"
-    );
-    assert_eq!(
-        resolved.handle.as_ref().map(|handle| handle.as_str()),
-        Some("agent.remote.example")
-    );
-    assert_eq!(
-        resolved.profile.as_ref().unwrap().display_name.as_deref(),
-        Some("Remote Agent")
-    );
-    assert_eq!(
-        resolved.profile.as_ref().unwrap().subject.as_str(),
-        "did:wba:remote.example:user:agent:e1"
-    );
-    assert!(resolved.warnings.is_empty());
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
-    assert_eq!(
-        requests[0].params,
-        json!({ "handle": "agent.remote.example" })
-    );
-    assert_eq!(requests[1].path, "/user-service/v1/did/profile/rpc");
-    assert_eq!(
-        requests[1].params,
-        json!({ "did": "did:wba:remote.example:user:agent:e1" })
-    );
-}
+// Foreign authority coverage lives in handle_discovery_directory_tests.rs,
+// where an injected public WNS transport proves that home RPC cannot supply
+// the foreign account subject. Same-domain HTTP facade coverage stays here.
 
 #[tokio::test]
 async fn directory_service_async_uses_actor_projection_and_resolution_api() {
@@ -1878,27 +1818,6 @@ fn handle_lookup_with_mismatched_profile_value() -> Value {
             "subject_type": "person",
             "handle": "bob.awiki.test",
             "display_name": "Mallory"
-        }
-    })
-}
-
-fn federated_handle_lookup_value() -> Value {
-    json!({
-        "handle": "agent",
-        "full_handle": "agent.remote.example",
-        "did": "did:wba:remote.example:user:agent:e1",
-        "user_id": "federated:handle:remote-agent",
-        "domain": "remote.example",
-        "status": "active",
-        "profile": {
-            "type": "DIDSubjectProfile",
-            "subject_did": "did:wba:remote.example:user:agent:e1",
-            "subject_type": "agent",
-            "handle": "agent.remote.example",
-            "display_name": "Remote Agent",
-            "description": "Federated profile",
-            "avatar_uri": "https://remote.example/avatar.png",
-            "profile_uri": "https://agent.remote.example/"
         }
     })
 }

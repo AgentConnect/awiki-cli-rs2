@@ -30,7 +30,7 @@ where
         mut self,
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::HandleLookupResult> {
-        let raw = lookup_by_handle(&mut self.transport, handle.as_str())?;
+        let raw = lookup_authoritative_handle(self.client, &mut self.transport, handle.as_str())?;
         handle_lookup_from_value_with_client(self.client, &raw)
     }
 
@@ -83,7 +83,7 @@ where
     }
 
     fn resolve_handle(&mut self, handle: String) -> crate::ImResult<DirectoryResolveResult> {
-        let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
+        let lookup_raw = lookup_authoritative_handle(self.client, &mut self.transport, &handle)
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
@@ -93,7 +93,17 @@ where
         } else {
             None
         };
-        let resolve_raw = resolve_profile_by_did(&mut self.transport, lookup.did.as_str())?;
+        let resolve_raw = if crate::internal::handle_discovery::is_local_handle(
+            self.client,
+            lookup.handle.as_str(),
+        ) {
+            Some(resolve_profile_by_did(
+                &mut self.transport,
+                lookup.did.as_str(),
+            )?)
+        } else {
+            resolve_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
+        };
         let profile_dto = lookup
             .profile
             .clone()
@@ -117,7 +127,7 @@ where
                 warnings,
             },
             handle_lookup: Some(lookup.clone()),
-            resolve: Some(resolve_raw),
+            resolve: resolve_raw,
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
         })
@@ -131,7 +141,7 @@ where
         let mut handle = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
-        match lookup_by_did(&mut self.transport, did.as_str()) {
+        match lookup_authoritative_did(self.client, &mut self.transport, did.as_str()) {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
@@ -176,8 +186,9 @@ where
         &mut self,
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::PublicProfile> {
-        let lookup_raw = lookup_by_handle(&mut self.transport, handle.as_str())
-            .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
+        let lookup_raw =
+            lookup_authoritative_handle(self.client, &mut self.transport, handle.as_str())
+                .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         if let Some(profile) = lookup.profile {
             return Ok(crate::directory::PublicProfile {
@@ -222,7 +233,9 @@ where
         mut self,
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::HandleLookupResult> {
-        let raw = lookup_by_handle_async(&mut self.transport, handle.as_str()).await?;
+        let raw =
+            lookup_authoritative_handle_async(self.client, &mut self.transport, handle.as_str())
+                .await?;
         handle_lookup_from_value_with_client(self.client, &raw)
     }
 
@@ -282,9 +295,10 @@ where
         &mut self,
         handle: String,
     ) -> crate::ImResult<DirectoryResolveResult> {
-        let lookup_raw = lookup_by_handle_async(&mut self.transport, &handle)
-            .await
-            .map_err(|err| map_directory_not_found(err, &handle))?;
+        let lookup_raw =
+            lookup_authoritative_handle_async(self.client, &mut self.transport, &handle)
+                .await
+                .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
         let warnings = lookup.warnings.clone();
@@ -295,8 +309,16 @@ where
         } else {
             None
         };
-        let resolve_raw =
-            resolve_profile_by_did_async(&mut self.transport, lookup.did.as_str()).await?;
+        let resolve_raw = if crate::internal::handle_discovery::is_local_handle(
+            self.client,
+            lookup.handle.as_str(),
+        ) {
+            Some(resolve_profile_by_did_async(&mut self.transport, lookup.did.as_str()).await?)
+        } else {
+            resolve_profile_by_did_async(&mut self.transport, lookup.did.as_str())
+                .await
+                .ok()
+        };
         let profile_dto = lookup
             .profile
             .clone()
@@ -320,7 +342,7 @@ where
                 warnings,
             },
             handle_lookup: Some(lookup.clone()),
-            resolve: Some(resolve_raw),
+            resolve: resolve_raw,
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
         })
@@ -334,7 +356,7 @@ where
         let mut handle = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
-        match lookup_by_did_async(&mut self.transport, did.as_str()).await {
+        match lookup_authoritative_did_async(self.client, &mut self.transport, did.as_str()).await {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
@@ -379,9 +401,10 @@ where
         &mut self,
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::PublicProfile> {
-        let lookup_raw = lookup_by_handle_async(&mut self.transport, handle.as_str())
-            .await
-            .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
+        let lookup_raw =
+            lookup_authoritative_handle_async(self.client, &mut self.transport, handle.as_str())
+                .await
+                .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         if let Some(profile) = lookup.profile {
             return Ok(crate::directory::PublicProfile {
@@ -417,6 +440,76 @@ where
             warnings: Vec::new(),
         })
     }
+}
+
+fn lookup_authoritative_handle<T: RpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    handle: &str,
+) -> crate::ImResult<Value> {
+    match crate::internal::handle_discovery::foreign_directory_lookup(client, transport, handle)? {
+        Some(raw) => Ok(raw),
+        None => lookup_by_handle(transport, handle),
+    }
+}
+
+fn lookup_authoritative_did<T: RpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    did: &str,
+) -> crate::ImResult<Value> {
+    let hint = lookup_by_did(transport, did)?;
+    let handle = first_string_value(&hint, &["full_handle", "handle"]);
+    let raw = match crate::internal::handle_discovery::foreign_directory_lookup(
+        client, transport, &handle,
+    )? {
+        Some(verified) => verified,
+        None => hint,
+    };
+    if raw.get("did").and_then(Value::as_str) != Some(did) {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "DID lookup returned a different verified identity".to_owned(),
+        });
+    }
+    Ok(raw)
+}
+
+async fn lookup_authoritative_handle_async<T: AsyncRpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    handle: &str,
+) -> crate::ImResult<Value> {
+    match crate::internal::handle_discovery::foreign_directory_lookup_async(
+        client, transport, handle,
+    )
+    .await?
+    {
+        Some(raw) => Ok(raw),
+        None => lookup_by_handle_async(transport, handle).await,
+    }
+}
+
+async fn lookup_authoritative_did_async<T: AsyncRpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    did: &str,
+) -> crate::ImResult<Value> {
+    let hint = lookup_by_did_async(transport, did).await?;
+    let handle = first_string_value(&hint, &["full_handle", "handle"]);
+    let raw = match crate::internal::handle_discovery::foreign_directory_lookup_async(
+        client, transport, &handle,
+    )
+    .await?
+    {
+        Some(verified) => verified,
+        None => hint,
+    };
+    if raw.get("did").and_then(Value::as_str) != Some(did) {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "DID lookup returned a different verified identity".to_owned(),
+        });
+    }
+    Ok(raw)
 }
 
 fn lookup_by_handle<T>(transport: &mut T, handle: &str) -> crate::ImResult<Value>
@@ -508,6 +601,15 @@ where
     .await
 }
 
+pub(crate) fn lookup_handle_by_did_for_projection<T: RpcTransport>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    did: &crate::ids::Did,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let raw = lookup_authoritative_did(client, transport, did.as_str())?;
+    handle_lookup_from_value_with_client(client, &raw)
+}
+
 pub(crate) async fn lookup_handle_by_did_for_projection_async<T>(
     client: &crate::core::ImClient,
     transport: &mut T,
@@ -516,7 +618,7 @@ pub(crate) async fn lookup_handle_by_did_for_projection_async<T>(
 where
     T: AsyncRpcTransport,
 {
-    let raw = lookup_by_did_async(transport, did.as_str()).await?;
+    let raw = lookup_authoritative_did_async(client, transport, did.as_str()).await?;
     let lookup = handle_lookup_from_value_with_client(client, &raw)?;
     if lookup.did != *did {
         return Err(crate::ImError::IdentityBindingConflict {

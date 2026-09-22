@@ -14,6 +14,7 @@ impl DaemonState {
         handle: &str,
     ) -> Result<()> {
         profile.validate()?;
+        self.require_runtime_not_retired(&profile.agent_did)?;
         let (local_agent_db_path, message_db_path) = agent_data_paths(&profile.agent_did)?;
         let connection = self.connection()?;
         let now = current_time_millis()?.to_string();
@@ -116,6 +117,7 @@ ON CONFLICT(runtime_profile_id) DO UPDATE SET
 
     pub fn upsert_agent_definition(&self, definition: &AgentDefinition) -> Result<()> {
         definition.validate()?;
+        self.require_runtime_not_retired(&definition.agent_did)?;
         let connection = self.connection()?;
         let now = current_time_millis()?.to_string();
         connection.execute(
@@ -1879,7 +1881,7 @@ FROM agent_definition
 INNER JOIN runtime_daemon_binding
     ON runtime_daemon_binding.runtime_agent_did = agent_definition.agent_did
 WHERE agent_definition.agent_kind = 'runtime'
-  AND agent_definition.status = 'active'
+  AND agent_definition.status IN ('active','retired')
   AND runtime_daemon_binding.daemon_agent_did = ?1
 ORDER BY agent_definition.updated_at DESC, agent_definition.agent_did ASC
 "#,

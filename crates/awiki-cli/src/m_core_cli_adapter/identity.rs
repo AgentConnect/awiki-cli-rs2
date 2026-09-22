@@ -165,6 +165,18 @@ pub fn register_handle_request(
         }
     };
     Ok(RegisterHandleRequest {
+        did_method: match string_flag(command, "did-method").as_str() {
+            "" | "wba" => im_core::identity::DidMethod::Wba,
+            "web" => im_core::identity::DidMethod::Web,
+            _ => {
+                return Err(ExitError::new(
+                    "invalid_argument",
+                    2,
+                    "invalid --did-method",
+                    "Use --did-method wba or web.",
+                ))
+            }
+        },
         local_alias,
         requested_handle,
         verification,
@@ -2093,6 +2105,7 @@ mod tests {
 
     fn registration_request() -> RegisterHandleRequest {
         RegisterHandleRequest {
+            did_method: Default::default(),
             local_alias: Some("alice".to_owned()),
             requested_handle: Handle::parse("alice.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,

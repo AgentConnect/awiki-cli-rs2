@@ -23,6 +23,7 @@ mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
 mod identity_register_handlers;
+mod identity_services_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
         choose_default_identity_name, create_migration_identity,
@@ -36,6 +37,7 @@ mod legacy_sqlite {
         StoreError,
     };
 }
+mod http_request_handlers;
 mod mail_handlers;
 mod msg_handlers;
 mod onboarding_handlers;
@@ -947,6 +949,30 @@ impl App {
             .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?
         };
         self.render_identity_result("awiki-cli id bind", &resolved, result)
+    }
+
+    pub fn run_id_logout(&self) -> Result<(), ExitError> {
+        let selector =
+            crate::m_core_cli_adapter::identity_logout::explicit_selector(&self.globals.identity)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::identity_logout::plan(&self.globals.identity)
+        } else {
+            crate::m_core_cli_adapter::identity_logout::logout(&resolved, selector)?
+        };
+        self.render_identity_result("awiki-cli id logout", &resolved, result)
+    }
+
+    pub async fn run_id_logout_async(&self) -> Result<(), ExitError> {
+        let selector =
+            crate::m_core_cli_adapter::identity_logout::explicit_selector(&self.globals.identity)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::identity_logout::plan(&self.globals.identity)
+        } else {
+            crate::m_core_cli_adapter::identity_logout::logout_async(&resolved, selector).await?
+        };
+        self.render_identity_result("awiki-cli id logout", &resolved, result)
     }
 
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {

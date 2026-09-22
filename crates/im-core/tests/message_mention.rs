@@ -194,3 +194,24 @@ fn historical_transition_payload_round_trips_unchanged() {
         Some(&json!(historical_did))
     );
 }
+
+#[test]
+fn mention_identity_preserves_the_exact_wba_or_web_did() {
+    for did in [
+        "did:wba:example.com:user:alice",
+        "did:web:identity.example:alice",
+    ] {
+        let payload = json!({"text":"@Alice hello", "mentions":[{
+            "id":"men-1", "range":{"start":0,"end":6,"unit":"unicode_code_point"},
+            "target":{"kind":"human", "did":did, "display_name":"Alice"},
+        }]});
+        let parsed = parse_message_mention_payload(&payload).unwrap();
+        assert_eq!(
+            parsed.mentions[0].target,
+            MessageMentionTarget::Human {
+                did: did.to_owned(),
+                display_name: Some("Alice".to_owned()),
+            }
+        );
+    }
+}
