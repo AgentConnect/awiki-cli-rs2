@@ -1,5 +1,19 @@
 # SDK 依赖来源与消费端构建
 
+## 新加坡固定源码测试包（2026-09-22）
+
+本轮仅向 `anpclaw.com` 交付未发布 SDK 的测试组合。CLI/Daemon 显式传入
+`--test-sources scripts/release/singapore-test-sources.json`；Flutter 原生构建显式设置
+`AWIKI_TEST_SOURCE_MANIFEST` 为该清单的绝对路径，并关闭 `AWIKI_RELEASE_REGISTRY`。
+两种来源同时启用会报错。默认正式入口继续要求 registry，不自动回退。
+
+`test-source-build.py` 从消费者提交和清单中的完整 ANP/Identity SHA 导出隔离源码，
+只使用独立提交的 `test-source.Cargo.lock`。构建前核对实际 Cargo metadata 的三份 SDK
+路径和版本；优化编译不改变 `test-source` 身份。测试包内的 `SOURCE.md` 和旁路 JSON
+记录真实提交、来源清单摘要及锁摘要。此入口拒绝 `cargo publish/install`，不发布 SDK。
+首次更新锁需显式执行 `--refresh-lock`，提交后普通构建只用 `--locked`。
+`--prepare <新目录>` 可导出同一批原生 SDK 构建输入供平台 worker 复用。
+
 统一入口是 `python3 scripts/dependencies/build.py`。默认 Debug 使用正式 registry 锁；
 个人联调和跨仓 PR 必须显式选择，不根据平台、当前目录旁是否存在仓库自动切换。
 这里的 Release 指交付入口；直接 `cargo build --release` 仍只是本地优化构建。

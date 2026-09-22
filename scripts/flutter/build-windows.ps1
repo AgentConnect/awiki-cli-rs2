@@ -51,7 +51,10 @@ try {
     }
 
     $BuildCommand = @("+$Toolchain", "build", "-p", "im-core-dart", "--release", "--locked", "--target", $Target, "--no-default-features", "--features", $Features)
-    if ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
+    if ($env:AWIKI_TEST_SOURCE_MANIFEST) {
+        if ($env:AWIKI_RELEASE_REGISTRY -eq "1") { throw 'Conflicting registry and test source modes' }
+        & python3 (Join-Path $RootDir "scripts/release/test-source-build.py") --manifest $env:AWIKI_TEST_SOURCE_MANIFEST --provenance (Join-Path $RootDir "target/test-source-native.json") -- cargo @BuildCommand
+    } elseif ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
         & python3 (Join-Path $RootDir "scripts/release/registry-build.py") -- cargo @BuildCommand
     } else {
         & cargo @BuildCommand

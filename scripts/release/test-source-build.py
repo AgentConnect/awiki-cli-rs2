@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('registry_build', ROOT / 'scripts/release/registry-build.py')
@@ -48,7 +47,7 @@ def verify_metadata(metadata, layout):
     result = []
     for name, manifest in expected.items():
         packages = [p for p in metadata['packages'] if p['name'] == name]
-        version = tomllib.loads(manifest.read_text())['package']['version']
+        version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', manifest.read_text()).group(1)
         if (len(packages) != 1 or packages[0].get('source') is not None
                 or packages[0]['version'] != version
                 or Path(packages[0]['manifest_path']).resolve() != manifest.resolve()):

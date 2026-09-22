@@ -6,13 +6,13 @@
       "min_supported_version": "1.0.20-beta.1"
     },
     "stable": {
-      "version": "1.0.52",
+      "version": "1.0.53",
       "min_supported_version": "1.0.52"
     }
   },
   "anp_repository": "agent-network-protocol/anp",
-  "anp_commit": "096ca3e679c122cfa35e6a2ef5703418721ba807",
-  "anp_identity_commit": "bef7757603b004bf4a54873040da49480272738f",
+  "anp_commit": "0ba814aadc6567cdba366a0550f79e433233e687",
+  "anp_identity_commit": "65a79d2644a065942004fad6272ea8b8b6b792f4",
   "archive_keep_versions": 10,
   "targets": [
     "darwin-amd64",

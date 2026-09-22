@@ -18,6 +18,7 @@ Options:
   --arch ARCH        Release arch name: amd64 or arm64. Defaults to current host.
   --target TRIPLE    Rust target triple. Defaults from --os/--arch.
   --dist DIR         Output directory. Defaults to dist/daemon.
+  --test-sources FILE Explicit pinned-source Singapore test build; never a registry release.
   --local-core       Explicit temporary build with committed local Core; other SDKs stay registry.
   --dry-run          Print the plan without building.
 USAGE
@@ -82,6 +83,7 @@ TARGET_TRIPLE=""
 DIST_DIR="${ROOT_DIR}/dist/daemon"
 DRY_RUN=0
 LOCAL_CORE=0
+TEST_SOURCES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -113,6 +115,11 @@ while [[ $# -gt 0 ]]; do
     --dry-run)
       DRY_RUN=1
       shift
+      ;;
+    --test-sources)
+      TEST_SOURCES="${2:-}"
+      [[ -n "${TEST_SOURCES}" ]] || die "--test-sources requires a manifest"
+      shift 2
       ;;
     --local-core)
       LOCAL_CORE=1
@@ -160,7 +167,10 @@ provenance_path="${archive_path}.source.json"
 target_dir="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 case "${target_dir}" in /*) ;; *) target_dir="${ROOT_DIR}/${target_dir}" ;; esac
 build_bin="${target_dir}/${TARGET_TRIPLE}/release/awiki-deamon"
-if [[ "${LOCAL_CORE}" == "1" ]]; then
+if [[ -n "${TEST_SOURCES}" ]]; then
+  [[ "${LOCAL_CORE}" == "0" ]] || die "source modes are mutually exclusive"
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/test-source-build.py" --manifest "${TEST_SOURCES}" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
+elif [[ "${LOCAL_CORE}" == "1" || -n "${TEST_SOURCES}" ]]; then
   [[ "${commit}" == "$(git rev-parse HEAD)" ]] || die "local Core source commit must match HEAD"
   cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/daemon/local-core-build.py" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
 else
@@ -226,8 +236,10 @@ release. The Corresponding Source is provided under Apache License 2.0 as descri
 the accompanying LICENSE file.
 EOF
 
-if [[ "${LOCAL_CORE}" == "1" ]]; then
-  printf '\nDependency mode: local-core (explicit temporary source build)\n\n' >> "${stage_dir}/SOURCE.md"
+if [[ "${LOCAL_CORE}" == "1" || -n "${TEST_SOURCES}" ]]; then
+  mode="local-core"
+  [[ -z "${TEST_SOURCES}" ]] || mode="test-source (Singapore test build; SDKs unpublished)"
+  printf '\nDependency mode: %s\n\n' "${mode}" >> "${stage_dir}/SOURCE.md"
   cat "${provenance_path}" >> "${stage_dir}/SOURCE.md"
 fi
 

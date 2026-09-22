@@ -4,6 +4,11 @@ run-name: CLI ${{ inputs.channel }} ${{ inputs.source_ref }}
 on:
   workflow_dispatch:
     inputs:
+      test_sources:
+        description: Explicit fixed-source Singapore test artifacts; no public SDK publishing
+        required: false
+        default: false
+        type: boolean
       source_ref:
         description: Immutable cli-v* tag to build
         required: true
@@ -24,6 +29,7 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.target_name }}
+    if: ${{ !inputs.test_sources || github.ref == 'refs/heads/test/singapore-full-20260922' }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +59,11 @@ jobs:
       - name: Validate immutable source tag
         shell: bash
         run: |
-          test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
+          if [[ "${{ inputs.test_sources }}" == true ]]; then
+            [[ "${{ inputs.source_ref }}" =~ ^[0-9a-f]{40}$ ]]
+          else
+            test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
+          fi
 
       - name: Checkout awiki-cli-rs2
         uses: actions/checkout@v6
@@ -113,7 +123,11 @@ jobs:
         shell: bash
         working-directory: awiki-cli-rs2
         run: |
-          scripts/release/build-release-artifact.sh \
+          source_args=()
+          if [[ "${{ inputs.test_sources }}" == true ]]; then
+            source_args=(--test-sources scripts/release/singapore-test-sources.json)
+          fi
+          scripts/release/build-release-artifact.sh "${source_args[@]}" \
             --version "${{ inputs.expected_version }}" \
             --os "${{ matrix.os_name }}" \
             --arch "${{ matrix.arch }}" \

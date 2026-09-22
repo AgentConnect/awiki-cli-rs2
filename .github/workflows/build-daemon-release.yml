@@ -4,6 +4,11 @@ run-name: "daemon ${{ inputs.expected_version }} from ${{ inputs.source_ref }}"
 on:
   workflow_dispatch:
     inputs:
+      test_sources:
+        description: Explicit fixed-source Singapore test artifacts; no public SDK publishing
+        required: false
+        default: false
+        type: boolean
       source_ref:
         description: "Git ref to build: branch, tag, or commit SHA."
         required: true
@@ -20,6 +25,7 @@ jobs:
   build:
     name: ${{ matrix.os_name }}/${{ matrix.arch_name }}
     runs-on: ${{ matrix.runner }}
+    if: ${{ !inputs.test_sources || github.ref == 'refs/heads/test/singapore-full-20260922' }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +56,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ inputs.test_sources }}" == true ]]; then
+            [[ "${{ inputs.source_ref }}" =~ ^[0-9a-f]{40}$ ]]
+          fi
           node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
           echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
           echo "anp_identity_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_identity_commit)" >> "${GITHUB_OUTPUT}"
@@ -110,7 +119,11 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           set -euo pipefail
-          scripts/release/daemon/_build-artifact.sh \
+          source_args=()
+          if [[ "${{ inputs.test_sources }}" == true ]]; then
+            source_args=(--test-sources scripts/release/singapore-test-sources.json)
+          fi
+          scripts/release/daemon/_build-artifact.sh "${source_args[@]}" \
             --version "${{ inputs.expected_version }}" \
             --os "${{ matrix.os_name }}" \
             --arch "${{ matrix.arch_name }}" \
