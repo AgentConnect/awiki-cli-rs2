@@ -19,14 +19,16 @@ def arg(k): return args[args.index(k)+1]
 with open(cfg['log'], 'a') as f:
  f.write(json.dumps({'args':args, 'workspace':os.environ.get('AWIKI_CLI_WORKSPACE_HOME_DIR')})+'\n')
 mode=cfg.get('mode','accepted')
-stage='current' if 'current' in args else 'resolve' if 'resolve' in args else 'dry' if '--dry-run' in args else 'send'
+stage='list' if 'list' in args else 'current' if 'current' in args else 'resolve' if 'resolve' in args else 'dry' if '--dry-run' in args else 'send'
 if cfg.get('delay_stage')==stage:
  if cfg.get('spawn_child'):
   p=subprocess.Popen([sys.executable,'-c', 'import time; time.sleep(60)'])
   Path(cfg['pid']).write_text(str(p.pid))
  time.sleep(60)
 if stage=='current':
- data={'identity':{'identity_name': 'wrong' if mode=='wrong_sender' else arg('--identity'), 'did':'did:test:sender'}}
+ data={'identity':{'identity_name':'default-other','did':'did:test:default'}}
+elif stage=='list':
+ data={'identities':[{'identity_name':'default-other','did':'did:test:default'}, {'identity_name':'wrong' if mode=='wrong_sender' else 'agent','did':'did:test:sender'}]}
 elif stage=='resolve':
  data={'resolve':{'did': 'did:test:other' if mode=='wrong_receiver' else arg('--did')}}
 elif stage=='dry':
@@ -97,6 +99,35 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(len({s['args'][s['args'].index('--client-message-id')+1] for s in self.sends()}), 3)
         self.assertIn('请回电脑', self.sends()[0]['args'][self.sends()[0]['args'].index('--text')+1])
         self.assertEqual(self.invoke('send', self.event('oops', 'failed'))['outcome'], 'blocked')
+
+    def test_completed_preflight_failure_retries_same_event_with_nondefault_identity(self):
+        event = self.event('done', 'completed')
+        self.configure(mode='wrong_receiver')
+        first = self.invoke('send', event)
+        self.assertEqual(first['outcome'], 'not_sent')
+        self.assertFalse(json.loads(self.context.read_text()).get('terminal'))
+        self.configure()
+        second = self.invoke('send', event)
+        self.assertEqual(second['outcome'], 'accepted')
+        self.assertEqual(first['client_message_id'], second['client_message_id'])
+        self.assertEqual(first['idempotency_key'], second['idempotency_key'])
+        self.assertEqual(len(self.sends()), 1)
+        self.assertFalse(any('current' in c['args'] for c in self.calls()))
+        self.assertTrue(self.invoke('send', event)['duplicate'])
+
+    def test_legacy_preflight_claim_released_but_send_rejection_stays_claimed(self):
+        event = self.event('done', 'completed')
+        self.configure(mode='wrong_sender')
+        self.invoke('send', event)
+        context = json.loads(self.context.read_text())
+        context['terminal'] = 'completed'
+        context['events']['done'].pop('send_started')
+        self.context.write_text(json.dumps(context))
+        self.configure(mode='rejected')
+        self.assertEqual(self.invoke('send', event)['reason'], 'explicit_rejection')
+        self.configure()
+        self.assertTrue(self.invoke('send', event)['duplicate'])
+        self.assertEqual(len(self.sends()), 1)
 
     def test_bad_identity_receiver_or_plan_never_send(self):
         for mode in ('wrong_sender', 'wrong_receiver', 'wrong_plan'):

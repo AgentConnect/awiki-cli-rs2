@@ -11,6 +11,54 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 #[test]
+fn notify_delta_projects_closed_plain_direct_intent_and_rejects_other_routes() {
+    let fixture = Fixture::new("sync-notify-projection");
+    let client = fixture.client();
+    for (content_type, group, annotation, expected) in [
+        (
+            "text/plain",
+            false,
+            json!({"level":"urgent"}),
+            Some("urgent"),
+        ),
+        (
+            "text/plain",
+            false,
+            json!({"level":"normal"}),
+            Some("normal"),
+        ),
+        (
+            "text/plain",
+            false,
+            json!({"level":"urgent", "authorized":true}),
+            Some("invalid"),
+        ),
+        ("text/plain", true, json!({"level":"urgent"}), None),
+        ("application/e2ee", false, json!({"level":"urgent"}), None),
+    ] {
+        let mut raw = message_created_event("notify-1", "1", "msg-notify", 1);
+        raw["payload"]["message"]["content_type"] = json!(content_type);
+        raw["payload"]["message"]["annotations"] = json!({"awiki.notify.v1":annotation});
+        if group {
+            raw["payload"]["thread"]["kind"] = json!("group");
+            raw["payload"]["message"]["group_did"] = json!("did:example:group");
+        }
+        let page =
+            crate::internal::wire::sync::parse_sync_delta_page(&delta_page(vec![raw], "1", false))
+                .unwrap();
+        let projected = sync_delta_message_from_payload(&client, &page.events[0], true).unwrap();
+        let actual = projected
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attr| attr.key == "notify_level")
+            .map(|attr| attr.value.as_str());
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn system_notification_delta_is_checkpoint_only_and_never_projects_chat_state() {
     let fixture = Fixture::new("sync-delta-system-notification");
     let client = fixture.client();

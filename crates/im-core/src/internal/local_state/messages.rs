@@ -644,7 +644,30 @@ fn upsert_message_record(
         merged_group_projection_value(record.sender_name.as_str(), &group_duplicate_rows, |row| {
             row.sender_name.as_str()
         });
-    let metadata = merged_group_metadata(record.metadata.as_str(), &group_duplicate_rows);
+    let mut metadata = merged_group_metadata(record.metadata.as_str(), &group_duplicate_rows);
+    // A later complete sync/hydration can omit annotations already projected by
+    // realtime. Preserve only validated Notify intent, not arbitrary old metadata.
+    if record.group_did.is_empty() && !record.is_e2ee && content_type == "text/plain" {
+        if let Ok(serde_json::Value::Object(mut attrs)) = serde_json::from_str(&metadata) {
+            if !attrs.contains_key(crate::messages::NOTIFY_LEVEL_ATTRIBUTE) {
+                let previous: Option<String> = connection.query_row(
+                    "SELECT COALESCE(metadata, '{}') FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2
+                     AND wire_thread_kind = 'direct' AND is_e2ee = 0 AND content_type = 'text/plain'",
+                    rusqlite::params![owner_identity_id, msg_id],
+                    |row| row.get(0),
+                ).optional()?;
+                if let Some(level) = previous
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                    .and_then(|value| value.get(crate::messages::NOTIFY_LEVEL_ATTRIBUTE).cloned())
+                    .filter(|value| matches!(value.as_str(), Some("normal" | "urgent" | "invalid")))
+                {
+                    attrs.insert(crate::messages::NOTIFY_LEVEL_ATTRIBUTE.to_owned(), level);
+                    metadata = serde_json::Value::Object(attrs).to_string();
+                }
+            }
+        }
+    }
     let hydration_state = if record.hydration_state == MessageHydrationState::Hydrated
         || group_duplicate_rows
             .iter()
@@ -4896,6 +4919,7 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    mod notify_tests;
 
     #[test]
     fn local_inbox_filters_before_limit_and_returns_unread_newest_first() {

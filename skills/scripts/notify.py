@@ -116,7 +116,18 @@ def send(context, event, persist, binary, timeout):
     previous = context['events'].get(event_id)
     if previous is not None:
         require(previous['status'] == status, 'event_conflict')
-        return dict(previous, duplicate=True)
+        retryable = (previous.get('outcome') == 'not_sent' and
+                     previous.get('reason') in ('preflight_failed', 'preflight_interrupted') and
+                     previous.get('send_started') is not True)
+        if not retryable:
+            return dict(previous, duplicate=True)
+        # Older contexts claimed a terminal result before preflight. Only release
+        # that claim when this receipt proves no message send was attempted.
+        if context.get('terminal') == status and not any(
+                key != event_id and value.get('status') in ('completed', 'failed') and
+                value.get('reason') not in ('preflight_failed', 'preflight_interrupted')
+                for key, value in context['events'].items()):
+            context.pop('terminal', None)
     require(not context.get('terminal'), 'task_already_terminal')
     for key in ('title', 'summary', 'next_action'):
         require(nonempty(event.get(key)), 'missing_' + key)
@@ -129,18 +140,18 @@ def send(context, event, persist, binary, timeout):
     key = hashlib.sha256(json.dumps([binding, event_id], sort_keys=True).encode()).hexdigest()[:40]
     message_id, idem = 'msg-notify-' + key, 'notify-' + key
     receipt = {'status': status, 'outcome': 'not_sent', 'reason': 'preflight_interrupted',
-               'client_message_id': message_id, 'idempotency_key': idem}
+               'client_message_id': message_id, 'idempotency_key': idem, 'send_started': False}
     context['events'][event_id] = receipt
-    if status in ('completed', 'failed'):
-        context['terminal'] = status
-    # Claim before any network work. A lost receipt must never cause another attempt.
+    # Read-only preflight may fail safely; persist its stable message identity.
     persist(context)
     transmitting = False
     try:
-        identity = run_cli(binary, binding, ['id', 'current'], deadline)
-        actual = (identity.get('data') or {}).get('identity') or {}
-        require(identity.get('ok') is True and actual.get('identity_name') == binding['identity']
-                and actual.get('did') == binding['sender_did'], 'sender_mismatch')
+        identity = run_cli(binary, binding, ['id', 'list'], deadline)
+        identities = (identity.get('data') or {}).get('identities') or []
+        selected = [item for item in identities if isinstance(item, dict) and
+                    item.get('identity_name') == binding['identity']]
+        require(identity.get('ok') is True and len(selected) == 1 and
+                selected[0].get('did') == binding['sender_did'], 'sender_mismatch')
         resolved = run_cli(binary, binding, ['id', 'resolve', '--did', binding['receiver_did']], deadline)
         data = resolved.get('data') or {}
         require(resolved.get('ok') is True and
@@ -160,7 +171,10 @@ def send(context, event, persist, binary, timeout):
                 plan.get('client_message_id') == message_id and plan.get('idempotency_key') == idem,
                 'dry_run_mismatch')
         require(time.monotonic() < deadline, 'deadline_before_send')
-        receipt.update(outcome='pending_confirmation', reason='send_started')
+        receipt.update(outcome='pending_confirmation', reason='send_started', send_started=True)
+        if status in ('completed', 'failed'):
+            context['terminal'] = status
+        # Atomic claim immediately before the mutating send, including crashes.
         persist(context)
         transmitting = True
         result = run_cli(binary, binding, args, deadline)

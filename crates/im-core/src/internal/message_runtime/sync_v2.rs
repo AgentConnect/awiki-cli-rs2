@@ -4700,6 +4700,7 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    mod notify_tests;
     mod recovery_tests;
     mod dispatcher_tests {
         include!("sync_dispatcher_tests.rs");

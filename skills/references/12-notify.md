@@ -220,8 +220,13 @@ The one-shot `scripts/notify.py` runner accepts a private task binding with `tas
 `identity`, `sender_did`, `receiver_did`, `allowed_states`, `authorized: true`, and optional `notify_level`.
 It uses `enable|send|status|disable --context <private-file> --input <binding-or-event-json> --cli <binary>`.
 Events contain `task_id`, opaque `event_id`, terminal `status`, `title`, `summary`, and `next_action`.
-A new question needs a new event ID. It claims an event durably before network I/O and does not retry unknown
-outcomes. Reusing the same context/event never starts another send. Disable retains receipts.
+A new question needs a new event ID. Preflight checks the selected binding identity in read-only `id list`
+(not the workspace default returned by `id current`), resolves the recipient, and validates dry-run.
+A known preflight failure/interruption is `not_sent`; the same event can be retried with its original message
+and idempotency keys. The durable event/terminal claim is made immediately before the mutating message send.
+After that claim, retries, explicit rejection, unknown results, crashes and cancellation never start another
+send for the same event. Read-only resolution may use the network; it is not a notification send.
+Disable retains receipts.
 
 Inspect `schema msg.send` and the dry-run `data.plan.notify_level` before sending. The receiver applies local opt-in; there is no new User Service ownership or preference API. Provider acceptance is not device presentation proof.
 The runner requires a live agent invocation and does not install lifecycle hooks or a background listener.
