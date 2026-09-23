@@ -170,7 +170,7 @@ build_bin="${target_dir}/${TARGET_TRIPLE}/release/awiki-deamon"
 if [[ -n "${TEST_SOURCES}" ]]; then
   [[ "${LOCAL_CORE}" == "0" ]] || die "source modes are mutually exclusive"
   cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/test-source-build.py" --manifest "${TEST_SOURCES}" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
-elif [[ "${LOCAL_CORE}" == "1" || -n "${TEST_SOURCES}" ]]; then
+elif [[ "${LOCAL_CORE}" == "1" ]]; then
   [[ "${commit}" == "$(git rev-parse HEAD)" ]] || die "local Core source commit must match HEAD"
   cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/daemon/local-core-build.py" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
 else

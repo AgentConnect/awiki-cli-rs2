@@ -109,7 +109,7 @@ function main() {
   const version = entry.version;
   const channelBaseUrl = `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}`;
   const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl };
-  if (sourceTag !== (testSources ? 'test/singapore-refresh-20260923' : `cli-v${version}`)) die(`source tag ${sourceTag} does not match cli-v${version}`);
+  if (sourceTag !== (testSources ? 'test/singapore-refresh-20260923-2' : `cli-v${version}`)) die(`source tag ${sourceTag} does not match cli-v${version}`);
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
 
