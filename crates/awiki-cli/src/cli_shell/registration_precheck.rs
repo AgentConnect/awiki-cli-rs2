@@ -93,13 +93,30 @@ fn evaluate(envelope: &Value, expected: &str) -> Result<(), ExitError> {
     Ok(())
 }
 
-fn check(
+fn check(input: (String, String, Value, String)) -> Result<(), ExitError> {
+    let client_version = crate::build_info::client_version_info().map_err(|err| {
+        ExitError::new(
+            "invalid_build_info",
+            2,
+            format!("invalid awiki-cli client version metadata: {err}"),
+            "Build awiki-cli with a valid release and version.",
+        )
+    })?;
+    check_with_client_version(input, client_version)
+}
+
+fn check_with_client_version(
     (endpoint, ca, params, expected): (String, String, Value, String),
+    client_version: Option<im_core::ClientVersionInfo>,
 ) -> Result<(), ExitError> {
     let client = new_http_client_with_proxy_env(&ca).map_err(|_| unavailable())?;
-    let request = HttpRequest::new("POST", endpoint).header("Content-Type", "application/json")
+    let mut request = HttpRequest::new("POST", endpoint)
+        .header("Content-Type", "application/json")
         .body(json!({"jsonrpc":"2.0","id":"registration-check","method":"registration_check","params":params}).to_string())
         .timeout(Duration::from_secs(10));
+    if let Some(version) = client_version {
+        request = request.header(im_core::CLIENT_VERSION_HEADER, version.header_value());
+    }
     let response = client.execute(request).map_err(|_| unavailable())?;
     if response.status_code != 200 || response.body.len() > 65536 {
         return Err(unavailable());
