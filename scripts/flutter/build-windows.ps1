@@ -56,7 +56,10 @@ try {
     }
 
     $BuildCommand = @("+$Toolchain", "build", "-p", "im-core-dart", "--release", "--locked", "--target", $Target, "--no-default-features", "--features", $Features)
-    if ($SourceIntegration) {
+    if ($env:AWIKI_TEST_SOURCE_MANIFEST) {
+        if ($SourceIntegration -or $env:AWIKI_RELEASE_REGISTRY -eq '1') { throw 'Conflicting native dependency modes' }
+        & python3 (Join-Path $RootDir 'scripts/release/test-source-build.py') --manifest $env:AWIKI_TEST_SOURCE_MANIFEST --provenance (Join-Path $RootDir 'target/test-source-native.json') -- cargo @BuildCommand
+    } elseif ($SourceIntegration) {
         & python3 (Join-Path $RootDir "scripts/dependencies/build.py") --deps source --source-manifest dependencies.source.json --cargo-command @BuildCommand
     } elseif ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
         & python3 (Join-Path $RootDir "scripts/release/registry-build.py") -- cargo @BuildCommand
