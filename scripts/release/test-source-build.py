@@ -124,7 +124,7 @@ def main(argv=None):
             env = os.environ.copy()
             env['CARGO_TARGET_DIR'] = str(Path(env.get('CARGO_TARGET_DIR', str(ROOT / 'target'))).resolve())
             if '--locked' not in command:
-                command.append('--locked')
+                command.insert(command.index('--') if '--' in command else len(command), '--locked')
             registry.run(command, checkout, env=env)
             if hashlib.sha256((checkout / 'Cargo.lock').read_bytes()).hexdigest() != receipt['lock_sha256']:
                 raise ValueError('Build changed the committed dependency lock')
