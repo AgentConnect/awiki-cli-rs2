@@ -59,7 +59,7 @@ function workspaceDependencyVersion(name) {
   const source = run('git', ['show', 'HEAD:Cargo.toml'])
   const match = source.match(new RegExp(`^${name}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*"([^"]+)"`, 'm'))
   if (!match) fail(`workspace dependency version is missing for ${name}`)
-  return exactDependencyVersion(match[1])
+  return exactDependencyVersion(match[1], { allowPrerelease: localCandidate || process.env.AWIKI_NODE_SOURCE_INTEGRATION === '1' })
 }
 
 function sourceRevision() {
