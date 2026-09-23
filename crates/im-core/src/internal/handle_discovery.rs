@@ -8,6 +8,10 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+#[path = "handle_discovery_did.rs"]
+mod did_discovery;
+pub(crate) use did_discovery::{foreign_binding_from_did, foreign_binding_from_did_async};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectHandleResolution {
     pub(crate) target_did: String,

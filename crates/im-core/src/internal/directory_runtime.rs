@@ -458,7 +458,15 @@ fn lookup_authoritative_did<T: RpcTransport>(
     transport: &mut T,
     did: &str,
 ) -> crate::ImResult<Value> {
-    let hint = lookup_by_did(transport, did)?;
+    let hint = match lookup_by_did(transport, did) {
+        Ok(hint) => hint,
+        Err(error) if home_did_hint_missing(&error) => {
+            return crate::internal::handle_discovery::foreign_binding_from_did(
+                client, transport, did,
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let handle = first_string_value(&hint, &["full_handle", "handle"]);
     let raw = match crate::internal::handle_discovery::foreign_directory_lookup(
         client, transport, &handle,
@@ -494,7 +502,16 @@ async fn lookup_authoritative_did_async<T: AsyncRpcTransport>(
     transport: &mut T,
     did: &str,
 ) -> crate::ImResult<Value> {
-    let hint = lookup_by_did_async(transport, did).await?;
+    let hint = match lookup_by_did_async(transport, did).await {
+        Ok(hint) => hint,
+        Err(error) if home_did_hint_missing(&error) => {
+            return crate::internal::handle_discovery::foreign_binding_from_did_async(
+                client, transport, did,
+            )
+            .await;
+        }
+        Err(error) => return Err(error),
+    };
     let handle = first_string_value(&hint, &["full_handle", "handle"]);
     let raw = match crate::internal::handle_discovery::foreign_directory_lookup_async(
         client, transport, &handle,
@@ -539,6 +556,16 @@ where
         call.params,
     )
     .await
+}
+
+fn home_did_hint_missing(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service {
+            status_code: None | Some(200 | 404),
+            ..
+        }
+    ) && service_error_is_not_found(error)
 }
 
 fn map_directory_not_found(err: crate::ImError, peer: &str) -> crate::ImError {
