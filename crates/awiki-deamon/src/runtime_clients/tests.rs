@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(unix)]
-fn executable(dir: &Path, name: &str, script: &str) -> PathBuf {
+pub(super) fn executable(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -11,11 +11,7 @@ fn executable(dir: &Path, name: &str, script: &str) -> PathBuf {
 #[test]
 fn report_never_leaks_output_and_handles_stderr_versions() {
     for kind in KINDS {
-        let output = if kind == "hermes" {
-            "secret-string /private/path Python 3.14.0\n{\"awiki_hermes_version\":\"1.2.3-rc.1\"}\n"
-        } else {
-            "secret-string /private/path 1.2.3-rc.1"
-        };
+        let output = "secret-string /private/path 1.2.3-rc.1";
         let item = ClientInstallation::result(kind, Ok(output.into()));
         assert_eq!(item.status, "ready");
         assert_eq!(item.version.as_deref(), Some("1.2.3-rc.1"));
@@ -39,22 +35,6 @@ fn report_never_leaks_output_and_handles_stderr_versions() {
         ClientInstallation::result("kimi", Err("launch_failed")).status,
         "unavailable"
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn hermes_inspection_retains_optional_metadata_version() {
-    let root = tempfile::tempdir().unwrap();
-    let binary = executable(
-        root.path(),
-        "python-fixture",
-        "echo '{\"awiki_hermes_version\":\"0.15.1rc2+local\"}'",
-    );
-    let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
-    config.hermes_gateway_cmd = Some(format!("'{}' -m tui_gateway.entry", binary.display()));
-    let item = inspect_one_until(&config, "hermes", Instant::now() + ITEM_TIMEOUT);
-    assert_eq!(item.status, "ready");
-    assert_eq!(item.version.as_deref(), Some("0.15.1rc2+local"));
 }
 
 #[cfg(unix)]
@@ -136,4 +116,11 @@ fn cache_refresh_and_simultaneous_requests_share_one_probe() {
         s.spawn(|| cache.inspect(true, || panic!("joined request must not probe")));
     });
     assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn version_accepts_native_node_prefix_and_keeps_component_pin_exact() {
+    assert_eq!(version("v24.21.0\n").as_deref(), Some("24.21.0"));
+    assert_eq!(version("Codex 0.154.0").as_deref(), Some("0.154.0"));
+    assert_eq!(version("notav24.21.0"), None);
 }

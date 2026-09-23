@@ -24,6 +24,7 @@ mod records;
 mod row_mappers;
 mod runtime_auth;
 mod runtime_profiles;
+pub(crate) mod runtime_retirement;
 mod runtime_tasks;
 mod schema;
 mod sync_probe;

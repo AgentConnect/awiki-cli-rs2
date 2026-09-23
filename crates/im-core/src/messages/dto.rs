@@ -34,6 +34,11 @@ pub enum MessageTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageBody {
+    /// One ordinary plaintext direct message with typed notification intent.
+    NotifyText {
+        text: String,
+        level: super::NotifyLevel,
+    },
     Text {
         text: String,
         kind: MessageKind,

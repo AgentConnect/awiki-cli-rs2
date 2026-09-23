@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "adapters": {
+    "codex": {
+      "package": "@agentclientprotocol/codex-acp",
+      "version": "1.12.0",
+      "entry": "node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+      "executable_env": "CODEX_PATH"
+    },
+    "claude-code": {
+      "package": "@agentclientprotocol/claude-agent-acp",
+      "version": "0.79.0",
+      "entry": "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
+      "executable_env": "CLAUDE_CODE_EXECUTABLE"
+    }
+  },
+  "platforms": [
+    "darwin-arm64",
+    "darwin-amd64",
+    "linux-amd64"
+  ],
+  "runtime": {
+    "kind": "host-node",
+    "minimum_major": 22,
+    "recommended_major": 24
+  }
+}

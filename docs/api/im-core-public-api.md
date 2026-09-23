@@ -2188,3 +2188,9 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 绑定验证，可在没有本地身份时解析 Join 目标；Node/Dart 同名 facade 为
 `resolveHandleForDeviceJoin(handle)`。它验证公开发现结果，不授权 Join，也不从
 个人资料 JSON 推断身份。后续账号验证 grant、当前 Registry 和设备证明仍由原流程核验。
+
+## 文本 Notify v1（开发候选）
+
+`MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
+
+读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。实际展示许可和声振属于 App 本机设置与系统权限，不由注解授予；不新增 User Service Notify 接口；旧客户端仍可读正文。

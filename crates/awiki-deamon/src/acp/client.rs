@@ -48,6 +48,33 @@ struct SetSessionModelRequest {
     model_id: String,
 }
 
+// The current SDK no longer decodes the legacy model update. Preserve that
+// one compatibility variant while retaining SDK validation for all others.
+#[derive(Debug, Clone, Serialize, Deserialize, acp::JsonRpcNotification)]
+#[notification(method = "session/update")]
+#[serde(rename_all = "camelCase")]
+struct SessionNotificationWithModels {
+    session_id: SessionId,
+    update: SessionUpdateWithModels,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SessionUpdateWithModels {
+    Standard(SessionUpdate),
+    Legacy(LegacyModelUpdate),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "sessionUpdate")]
+enum LegacyModelUpdate {
+    #[serde(rename = "current_model_update")]
+    CurrentModel {
+        #[serde(rename = "currentModelId")]
+        current_model_id: String,
+    },
+}
+
 use super::{
     store::{self, Question},
     Brand,
@@ -66,13 +93,16 @@ pub use configuration::{
 
 pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig> {
     let brand = Brand::parse(&profile.driver_id)?;
-    let mut config = AcpAgentConfig::new(
-        profile
-            .binary_path
-            .clone()
-            .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command())),
-    )
-    .args(brand.args().iter().copied());
+    let binary = profile
+        .binary_path
+        .clone()
+        .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command()));
+    let mut config = match brand {
+        Brand::Codex | Brand::ClaudeCode => {
+            super::components::Adapter::discover(brand)?.launch(&binary)?
+        }
+        _ => AcpAgentConfig::new(binary).args(brand.args().iter().copied()),
+    };
     if let Some(path) = crate::cli_runtime_env::cli_child_path() {
         config = config.env("PATH", path.to_string_lossy());
     }
@@ -84,12 +114,19 @@ pub fn launch_config(profile: &CliRuntimeProfileRecord) -> Result<AcpAgentConfig
     }
     if let Some(home) = &profile.config_home {
         let key = match brand {
+            Brand::Hermes => "HERMES_HOME",
+            Brand::Codex => "CODEX_HOME",
+            Brand::ClaudeCode => "CLAUDE_CONFIG_DIR",
             Brand::OpenCode => "OPENCODE_CONFIG_DIR",
             Brand::Gemini => "GEMINI_CLI_HOME",
             Brand::Kimi => "KIMI_CODE_HOME",
             Brand::DeepseekHarness => "DSH_HOME",
         };
         config = config.env(key, home.to_string_lossy());
+    }
+    config = crate::agent_network::apply_acp_network(config);
+    if brand == Brand::Hermes {
+        return super::hermes_profile::isolated_launch(config);
     }
     Ok(config)
 }
@@ -281,7 +318,7 @@ fn gemini_startup_missing(line: &str, id: &str) -> bool {
         || line == format!("Error resuming session: Invalid session identifier \"{id}\".")
 }
 
-async fn session_absent(cx: &ConnectionTo<Agent>, cwd: &std::path::Path, id: &str) -> bool {
+async fn session_exists(cx: &ConnectionTo<Agent>, cwd: &std::path::Path, id: &str) -> Option<bool> {
     // Failure, malformed pages, repeated cursors and excessive pagination are
     // inconclusive. They must never offer destructive context replacement.
     let query = async {
@@ -299,12 +336,21 @@ async fn session_absent(cx: &ConnectionTo<Agent>, cwd: &std::path::Path, id: &st
                 .ok()?;
             for session in page.get("sessions")?.as_array()? {
                 let listed = session.get("sessionId")?.as_str()?;
-                if listed.is_empty() || listed == id {
-                    return Some(false);
+                if listed.is_empty() {
+                    return None;
+                }
+                if listed == id {
+                    if session
+                        .get("cwd")
+                        .is_some_and(|v| v.as_str() != cwd.to_str())
+                    {
+                        return None;
+                    }
+                    return Some(true);
                 }
             }
             cursor = match page.get("nextCursor") {
-                None | Some(Value::Null) => return Some(true),
+                None | Some(Value::Null) => return Some(false),
                 Some(Value::String(next)) if !next.is_empty() && seen.insert(next.clone()) => {
                     Some(next.clone())
                 }
@@ -317,7 +363,10 @@ async fn session_absent(cx: &ConnectionTo<Agent>, cwd: &std::path::Path, id: &st
         .await
         .ok()
         .flatten()
-        == Some(true)
+}
+
+async fn session_absent(cx: &ConnectionTo<Agent>, cwd: &std::path::Path, id: &str) -> bool {
+    session_exists(cx, cwd, id).await == Some(false)
 }
 
 fn mark_context_lost(state: &DaemonState, key: &str, run: &str, native: &str) {
@@ -329,9 +378,14 @@ fn mark_context_lost(state: &DaemonState, key: &str, run: &str, native: &str) {
     });
 }
 
-fn initialize_request() -> InitializeRequest {
+fn initialize_request(interactive: bool) -> InitializeRequest {
     InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
-        serde_json::from_value(json!({"elicitation":{"form":{}}})).expect("ACP v1 capabilities"),
+        serde_json::from_value(if interactive {
+            json!({"elicitation":{"form":{}}})
+        } else {
+            json!({})
+        })
+        .expect("ACP v1 capabilities"),
     )
 }
 
@@ -341,11 +395,24 @@ pub async fn inspect(profile: &CliRuntimeProfileRecord) -> Result<Value> {
         .binary_path
         .clone()
         .unwrap_or_else(|| crate::cli_runtime_env::resolve_cli_binary(brand.command()));
+    let probe_home = if brand == Brand::Hermes {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let mut probe_profile = profile.clone();
+    if let Some(home) = &probe_home {
+        probe_profile.config_home = Some(home.path().to_path_buf());
+    }
     let version = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(binary)
             .envs(crate::cli_runtime_env::cli_child_path().map(|path| ("PATH", path)))
-            .arg("--version")
+            .args(if brand == Brand::Hermes {
+                vec!["acp", "--version"]
+            } else {
+                vec!["--version"]
+            })
             .kill_on_drop(true)
             .output(),
     )
@@ -364,11 +431,14 @@ pub async fn inspect(profile: &CliRuntimeProfileRecord) -> Result<Value> {
         .to_owned();
     let result = Arc::new(Mutex::new(None));
     let output = result.clone();
-    let (launch, _replay_hook) = configure_gemini_replay(brand, launch_config(profile)?)?;
+    let (launch, _replay_hook) = configure_gemini_replay(brand, launch_config(&probe_profile)?)?;
     let connection = acp::Client.builder().connect_with(
         AcpAgent::new(launch),
         async move |cx: ConnectionTo<Agent>| {
-            let initialized = cx.send_request(initialize_request()).block_task().await?;
+            let initialized = cx
+                .send_request(initialize_request(true))
+                .block_task()
+                .await?;
             if initialized.protocol_version != ProtocolVersion::V1 {
                 return Err(acp::Error::invalid_params());
             }
@@ -384,9 +454,6 @@ pub async fn inspect(profile: &CliRuntimeProfileRecord) -> Result<Value> {
     value["binaryVersion"] = json!(binary_version);
     if value["agentInfo"]["version"].as_str().is_none() {
         bail!("acp_version_unavailable");
-    }
-    if value["agentCapabilities"]["mcpCapabilities"]["http"] != true {
-        bail!("acp_question_tool_unsupported");
     }
     Ok(value)
 }
@@ -437,18 +504,27 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
-    let question_tool = super::question_tool::QuestionTool::start(
-        turn.state.clone(),
-        turn.key.clone(),
-        turn.run_id.clone(),
-    )
-    .await?;
-    let brand = Brand::parse(&turn.profile.driver_id)?;
-    let mcp_servers = if brand == Brand::DeepseekHarness {
-        json!([])
+    let interactive = !prior.is_background();
+    let question_tool = if interactive {
+        Some(
+            super::question_tool::QuestionTool::start(
+                turn.state.clone(),
+                turn.key.clone(),
+                turn.run_id.clone(),
+            )
+            .await?,
+        )
     } else {
-        json!([question_tool.config])
+        None
     };
+    let brand = Brand::parse(&turn.profile.driver_id)?;
+    let question_config = question_tool.as_ref().map(|tool| tool.config.clone());
+    let question_executable = turn
+        .environment
+        .iter()
+        .find(|(name, _)| name == "AWIKI_DAEMON_EXECUTABLE")
+        .map(|(_, value)| PathBuf::from(value))
+        .unwrap_or(std::env::current_exe()?);
     let watchdog_state = turn.state.clone();
     let watchdog_key = turn.key.clone();
     let watchdog_run = turn.run_id.clone();
@@ -476,10 +552,17 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
     let output_native = native.clone();
     let output_accepting = accepting.clone();
     let launch = launch_in_workspace(&turn.profile, &turn.cwd, prior.native_session_id.as_deref())?;
-    let (launch, _question_patch) = configure_question_tool(brand, launch, &question_tool.config)?;
+    let (launch, _question_patch) = match question_config.as_ref() {
+        Some(config) => configure_question_tool(brand, launch, config)?,
+        None => (launch, vec![]),
+    };
     let (launch, _replay_hook) = configure_gemini_replay(brand, launch)?;
     let initialized = Arc::new(AtomicBool::new(false));
     let did_initialize = initialized.clone();
+    let model_changes = Arc::new(Mutex::new(
+        configuration::ModelChangeNotifications::default(),
+    ));
+    let observed_model_changes = model_changes.clone();
     let startup_missing = Arc::new(AtomicBool::new(false));
     let saw_missing = startup_missing.clone();
     let startup_native = prior.native_session_id.clone();
@@ -502,7 +585,8 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
         }
     });
     let connection = acp::Client.builder()
-        .on_receive_notification(async move |notification: SessionNotification, _cx| {
+        .on_receive_notification(async move |notification: SessionNotificationWithModels, _cx| {
+            observed_model_changes.lock().unwrap().observe(&notification);
             if !update_accepting.load(Ordering::Acquire) { return Ok(()); }
             if update_native.lock().unwrap().as_deref() != Some(notification.session_id.to_string().as_str()) { return Err(acp::Error::invalid_params()); }
             let update = serde_json::to_value(&notification.update).unwrap();
@@ -525,7 +609,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                     Some("current_model_update") => {
                         if let Some(model)=update["currentModelId"].as_str() {
                             s.model=Some(model.to_owned());
-                            if s.options.is_object() {s.options["currentModelId"]=json!(model);}
+                            super::models::set_current_model(&mut s.options, model);
                         }
                     }
                     // Thoughts and usage are not assistant reply content.
@@ -544,7 +628,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             if allowed && matches!(title.as_str(),"askuserquestion"|"ask_user"|"question") {
                 // No verified native business-question adapter is advertised.
                 // Permission option IDs such as allow_once are not answers.
-                *permission_failure.lock().unwrap()=Some("unsupported_native_question".into());
+                *permission_failure.lock().unwrap()=Some(if interactive { "unsupported_native_question" } else { "background_input_required" }.into());
                 responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))?;
                 return Ok(());
             }
@@ -553,6 +637,15 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             responder.respond(RequestPermissionResponse::new(outcome))
         }, acp::on_receive_request!())
         .on_receive_request(async move |request: CreateElicitationRequest, responder, cx| {
+            if !interactive {
+                *question_failure.lock().unwrap() = Some("background_input_required".into());
+                let _ = store::mutate(&question_state, &question_key, None, |s| {
+                    if s.active_run(&question_run) { s.interaction_error = Some("background_input_required".into()); }
+                    Ok(())
+                });
+                responder.respond(serde_json::from_value::<CreateElicitationResponse>(json!({"action":"cancel"})).unwrap())?;
+                return Ok(());
+            }
             let state=question_state.clone();let key=question_key.clone();let run_id=question_run.clone(); let failed=question_failure.clone();
             let question_id=format!("elicitation:{}",responder.id());
             // Do not hold the connection dispatcher while waiting for a human.
@@ -576,13 +669,18 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
             responder.respond_with_error(acp::Error::method_not_found())
         },acp::on_receive_request!())
         .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
-            let init=cx.send_request(initialize_request()).block_task().await?;
+            let init=cx.send_request(initialize_request(interactive)).block_task().await?;
             did_initialize.store(true, Ordering::Release);
             if init.protocol_version!=ProtocolVersion::V1 { return Err(acp::Error::invalid_params()); }
             let caps=serde_json::to_value(&init.agent_capabilities).unwrap();
-            if caps["mcpCapabilities"]["http"]!=true {return Err(acp::Error::invalid_params());}
+            let mcp_servers = if !interactive || brand == Brand::DeepseekHarness {
+                json!([])
+            } else {
+                json!([super::mcp_stdio::server_config(question_config.as_ref().ok_or_else(acp::Error::internal_error)?, &caps, &question_executable)
+                    .map_err(|_| acp::Error::internal_error())?])
+            };
             let existing=store::load(&turn.state,&turn.key).map_err(|_|acp::Error::internal_error())?;
-            let session_result = open_session(&cx, &caps, &turn.cwd, existing.native_session_id.as_deref(), mcp_servers).await;
+            let session_result = open_session(&cx, brand, &caps, &turn.cwd, existing.native_session_id.as_deref(), mcp_servers).await;
             let session = match session_result {
                 Ok(v)=>v,
                 Err(error)=>{
@@ -608,7 +706,7 @@ pub async fn run(mut turn: Turn) -> Result<TurnResult> {
                 s.native_session_id=Some(id);s.capabilities=caps.clone();s.update_catalog(options.clone());Ok(())
             }).map_err(|_|acp::Error::internal_error())?;
             if let Some(model) = existing.model_selection().or(turn.profile.default_model).or(existing.model.clone()) {
-                let confirmed=configure_model(&cx,&sid,options,&model).await.map_err(|error| {
+                let confirmed=configure_model(&cx,&sid,options,&model,&model_changes).await.map_err(|error| {
                     let _ = store::mutate(&turn.state,&turn.key,None,|s| {
                         s.interaction_error=Some("model_configuration_failed".into());Ok(())
                     });

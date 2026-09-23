@@ -10,7 +10,8 @@ This file is a **workflow reference**, not an entry Skill. Load it only when the
 
 - Status: **partially implemented**
 - Implemented in this workflow:
-  - plain direct-message notification through `awiki-cli msg send`
+  - typed plain direct-message notification through `awiki-cli msg send --notify normal|urgent`
+  - one-shot persisted runner in `scripts/notify.py`, without a listener or Daemon
   - terminal states `completed`, `blocked`, `action_required`, and `failed`
   - dry-run, structured success checks, and one-send-per-state rules
 - Not implemented:
@@ -68,15 +69,17 @@ Select the sender workspace before inspecting the sender:
 Before the dry-run, inspect the sender in the selected workspace with:
 
 ```bash
-awiki-cli id current --format json
+awiki-cli id list --format json
 ```
 
 For a non-default workspace, the command environment must include the exact
 `AWIKI_CLI_WORKSPACE_HOME_DIR` recovered above.
 
-Pin the resolved local identity with the global `--identity <local-alias>` flag when sending. If
-there is no active identity in the selected workspace, or multiple identities make the intended
-sender unclear, stop and ask the user. Do not switch identities or call `id use` as part of Notify.
+Match exactly one entry in `data.identities` to the alias and sender DID already authorized for
+this task. Pin that alias with the global `--identity <local-alias>` flag when sending. `id current`
+reports the workspace default, even when another identity is selected; it cannot validate a pinned
+non-default sender. If the intended sender is unavailable or unclear, stop and ask the user. Do not
+switch the workspace default or call `id use` as part of Notify.
 
 Resolve the authorized receiver with the same pinned identity before planning the send:
 This is the `awiki-cli id resolve` read path.
@@ -98,16 +101,19 @@ below.
 Send one plain-text message using this format:
 
 ```text
-[Coding Agent][<status>] <task_title>
+<status_label> · <task_title>
 <summary>
-Next: <next_action>
+下一步：<next_action>
 ```
 
 Rules:
 
 - Keep `task_title` short and user recognizable.
 - Explain the result or blocker in plain language.
-- Use `Next: No action required` when the user does not need to do anything.
+- Use these display labels: `completed` → `已完成`, `blocked` → `暂时受阻`,
+  `failed` → `执行失败`, `action_required` → `需要你处理`.
+  Keep machine status values in the local event/receipt, not as bracketed body prefixes.
+- Use `下一步：无需处理。` when the user does not need to do anything.
 - Send exactly one terminal state per message.
 - Do not include secrets, Tokens, private keys, phone numbers, full logs, raw command output, or absolute local paths.
 - Do not attach files.
@@ -138,13 +144,13 @@ one-send-per-state rule.
 Always inspect the plan first:
 
 ```text
-["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--dry-run", "--format", "json"]
+["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--notify", "normal", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--dry-run", "--format", "json"]
 ```
 
 Only after the dry-run succeeds, send the message:
 
 ```text
-["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--format", "json"]
+["awiki-cli", "--identity", "<local-alias>", "msg", "send", "--to", "<resolved-did>", "--text", "<message>", "--notify", "normal", "--client-message-id", "<client-message-id>", "--idempotency-key", "<idempotency-key>", "--format", "json"]
 ```
 
 When no stable trusted notification key exists, remove both idempotency arguments from both arrays.
@@ -168,8 +174,8 @@ Do not infer success only from `summary`. Server acceptance does not prove AWiki
 Dry-run is syntactic planning only: it does not prove that an identity exists and does not resolve a
 Handle to a DID. Before the real send, verify the dry-run envelope has `ok: true`,
 `data.plan.action: "direct.send"`, `data.plan.identity` equal to the alias returned by
-`id current`, and `data.plan.target.did` equal to the DID returned by `id resolve`. These checks
-detect argument drift only; `id current` and `id resolve` are the identity and target validation
+`id list` for the pinned sender, and `data.plan.target.did` equal to the DID returned by `id resolve`. These checks
+detect argument drift only; `id list` and `id resolve` are the identity and target validation
 steps. The plan must also report `data.plan.listener_required: false` and a
 `data.plan.transport_policy` value. When explicit idempotency values are used, require
 `data.plan.client_message_id` and `data.plan.idempotency_key` to match them exactly.
@@ -182,7 +188,7 @@ steps. The plan must also report `data.plan.listener_required: false` and a
 - Send at most once for the same task and terminal state.
 - A later, different terminal state may be sent once. For example, `action_required` may later be followed by `completed`.
 - Record the returned message ID in the Agent's current-task context, but do not expose it unless it helps diagnose delivery.
-- No durable send ledger exists in this Skill. If current-task context or the stable notification key is lost, do not assume the message was unsent and retry.
+- The one-shot runner retains a private durable event receipt. It is not a background delivery queue. If that context or the stable notification key is lost, do not assume the message was unsent and retry.
 - Do not send a contradictory terminal state after `failed` or `completed` unless the user explicitly resumes the work as a new task.
 
 ## Product Boundary
@@ -202,3 +208,27 @@ For guaranteed terminal-event production, add a Coding Agent lifecycle hook or D
 - `03-messaging.md`
 - `01-onboarding.md`
 - `05-runtime.md` only when distinguishing host notification from user notification
+
+
+## Text Notify level and persistent one-shot runner
+
+This candidate CLI supports `--notify normal|urgent` only for transport-protected direct text.
+Use `normal` by default; use `urgent` only when the user requests call-like task reminders.
+The level is a delivery intent, not permission to override recipient settings, mute, DND or account scope.
+Older recipients can read the text but are not guaranteed a Notify system alert. Supported Android recipients can opt in
+using device-local, account-scoped task notification settings. Eligible urgent reminders stop on View/Close or after 60 seconds.
+
+The one-shot `scripts/notify.py` runner accepts a private task binding with `task_id`, absolute `workspace`,
+`identity`, `sender_did`, `receiver_did`, `allowed_states`, `authorized: true`, and optional `notify_level`.
+It uses `enable|send|status|disable --context <private-file> --input <binding-or-event-json> --cli <binary>`.
+Events contain `task_id`, opaque `event_id`, terminal `status`, `title`, `summary`, and `next_action`.
+A new question needs a new event ID. Preflight checks the selected binding identity in read-only `id list`
+(not the workspace default returned by `id current`), resolves the recipient, and validates dry-run.
+A known preflight failure/interruption is `not_sent`; the same event can be retried with its original message
+and idempotency keys. The durable event/terminal claim is made immediately before the mutating message send.
+After that claim, retries, explicit rejection, unknown results, crashes and cancellation never start another
+send for the same event. Read-only resolution may use the network; it is not a notification send.
+Disable retains receipts.
+
+Inspect `schema msg.send` and the dry-run `data.plan.notify_level` before sending. The receiver applies local opt-in; there is no new User Service ownership or preference API. Provider acceptance is not device presentation proof.
+The runner requires a live agent invocation and does not install lifecycle hooks or a background listener.

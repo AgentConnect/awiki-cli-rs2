@@ -71,6 +71,12 @@ class BuildDependencyTests(unittest.TestCase):
             self.assertEqual(deps.read_selection(path, 'local')['anp']['path'], '../my-anp')
             with self.assertRaises(ValueError): deps.read_selection(path, 'source')
 
+    def test_anp_only_example_is_valid_debug_local_config(self):
+        example = Path(__file__).with_name('local-anp.example.json')
+        selected = deps.read_selection(example, 'local')
+        self.assertEqual(set(selected), {'anp'})
+        self.assertEqual(selected['anp']['path'], '../anp/anp')
+
     def test_release_cannot_run_local_code(self):
         with patch.object(deps, 'run') as run:
             with self.assertRaises(SystemExit): deps.main(['--profile', 'release', '--deps', 'local'])

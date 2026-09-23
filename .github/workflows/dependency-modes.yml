@@ -14,6 +14,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: node --test scripts/release/node-sdk/source-evidence.test.mjs
       - run: python3 -m unittest discover -s scripts/dependencies -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s tests/skills -p 'test_notify.py' -v
       - run: python3 -m unittest discover -s scripts/release -p 'test_registry_build.py' -v
       - run: python3 -m unittest discover -s scripts/flutter -p 'test_source_artifact.py' -v
       - name: Check selected development dependency graph

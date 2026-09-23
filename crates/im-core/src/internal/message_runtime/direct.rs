@@ -369,6 +369,7 @@ enum OutgoingDirectBody {
     Text {
         text: String,
         kind: crate::messages::MessageKind,
+        notify: Option<crate::messages::NotifyLevel>,
     },
     Payload {
         payload: Value,
@@ -403,7 +404,7 @@ impl OutgoingDirectBody {
 
     fn body_view(&self) -> crate::messages::MessageBodyView {
         match self {
-            Self::Text { text, kind } => crate::messages::MessageBodyView::Text {
+            Self::Text { text, kind, .. } => crate::messages::MessageBodyView::Text {
                 text: text.clone(),
                 kind: kind.clone(),
             },
@@ -430,6 +431,11 @@ impl OutgoingDirectBody {
 
 fn outgoing_body(body: &crate::messages::MessageBody) -> crate::ImResult<OutgoingDirectBody> {
     match body {
+        crate::messages::MessageBody::NotifyText { text, level } => Ok(OutgoingDirectBody::Text {
+            text: text.clone(),
+            kind: crate::messages::MessageKind::Text,
+            notify: Some(*level),
+        }),
         crate::messages::MessageBody::Text { text, kind: _ } if text.trim().is_empty() => {
             Err(crate::ImError::invalid_input(
                 Some("text".to_string()),
@@ -439,6 +445,7 @@ fn outgoing_body(body: &crate::messages::MessageBody) -> crate::ImResult<Outgoin
         crate::messages::MessageBody::Text { text, kind } => Ok(OutgoingDirectBody::Text {
             text: text.clone(),
             kind: kind.clone(),
+            notify: None,
         }),
         crate::messages::MessageBody::Payload { payload } if !payload.is_object() => {
             Err(crate::ImError::invalid_input(
@@ -461,15 +468,20 @@ fn build_direct_payload(
     body: &OutgoingDirectBody,
 ) -> crate::ImResult<crate::internal::wire::direct::DirectPayload> {
     match body {
-        OutgoingDirectBody::Text { text, kind } => {
+        OutgoingDirectBody::Text { text, kind, notify } => {
             let content_type =
                 crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
-            crate::internal::wire::direct::build_direct_text_payload(
+            let mut payload = crate::internal::wire::direct::build_direct_text_payload(
                 sender_did,
                 target_did,
                 text,
                 content_type,
-            )
+            )?;
+            if let Some(level) = notify {
+                payload.body["annotations"] =
+                    serde_json::json!({"awiki.notify.v1": {"level": level.as_str()}});
+            }
+            Ok(payload)
         }
         OutgoingDirectBody::Payload { payload } => {
             crate::internal::wire::direct::build_direct_json_payload(
@@ -1721,5 +1733,47 @@ mod tests {
             "im-core-direct-runtime-{}-{nanos}",
             std::process::id()
         ))
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::*;
+    #[test]
+    fn notify_uses_one_plain_wire_body_and_signed_annotation() {
+        let body = outgoing_body(&crate::messages::MessageBody::NotifyText {
+            text: "Task complete".into(),
+            level: crate::messages::NotifyLevel::Urgent,
+        })
+        .unwrap();
+        let mut payload = build_direct_payload("did:alice", "did:bob", &body).unwrap();
+        let request = crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Direct(
+                crate::ids::PeerRef::parse("did:bob", "").unwrap(),
+            ),
+            body: crate::messages::MessageBody::NotifyText {
+                text: "Task complete".into(),
+                level: crate::messages::NotifyLevel::Urgent,
+            },
+            security: crate::messages::MessageSecurityMode::Plain,
+            client_message_id: Some(crate::ids::MessageId::parse("notify-1").unwrap()),
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("notify-operation".into()),
+                wait_for_final_acceptance: false,
+            },
+            delegated_signing: None,
+        };
+        apply_delivery_overrides(&mut payload.meta, &request, None);
+        assert_eq!(payload.method, "direct.send");
+        assert_eq!(payload.meta["content_type"], "text/plain");
+        assert_eq!(payload.meta["message_id"], "notify-1");
+        assert_eq!(
+            payload.body,
+            serde_json::json!({"text":"Task complete", "annotations":{"awiki.notify.v1":{"level":"urgent"}}})
+        );
+        assert!(matches!(
+            body.body_view(),
+            crate::messages::MessageBodyView::Text { .. }
+        ));
     }
 }

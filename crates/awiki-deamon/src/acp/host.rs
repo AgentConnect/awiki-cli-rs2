@@ -28,6 +28,13 @@ pub fn run(
 ) -> Result<RuntimeTaskRunResult> {
     task.validate()?;
     profile.validate()?;
+    if !crate::runtime::runtime_task_matches_profile_controller_scope(&task, profile) {
+        anyhow::bail!("runtime task does not match profile controller scope");
+    }
+    state.require_runtime_not_retired(&profile.agent_did)?;
+    if profile.runtime_plugin_id != super::PLUGIN_ID {
+        anyhow::bail!("legacy_runtime_disabled_recreate_required");
+    }
     let run = RuntimeRun {
         run_id: run_id.clone(),
         task_id: task.task_id.clone(),
@@ -37,9 +44,9 @@ pub fn run(
         workspace_id: profile.workspace_id.clone(),
         status: RuntimeRunStatus::Pending,
     };
-    state.insert_runtime_task(&task)?;
-    if !state.try_insert_runtime_run(&run)? {
-        return Ok(result(run));
+    let background = super::background::is_background(&task);
+    if background {
+        super::background::binding(state, profile, &task)?;
     }
     let work = Work { task, run_id };
     let session = Session::new(&work.task);
@@ -49,6 +56,20 @@ pub fn run(
         let _guard = gate
             .lock()
             .map_err(|_| anyhow::anyhow!("acp_configuration_interrupted"))?;
+        if let Some(existing) = crate::runtime::host::existing_runtime_run(state, &run)? {
+            return Ok(existing);
+        }
+        // The delegated inbox is already the durable queue. Do not consume a
+        // new source message or create a run until this session can admit it.
+        if background
+            && store::load(state, &key).is_ok_and(|s| s.active.is_some() || s.waiting.is_some())
+        {
+            anyhow::bail!("background_busy");
+        }
+        state.insert_runtime_task(&work.task)?;
+        if !state.try_insert_runtime_run(&run)? {
+            return Ok(result(state.load_runtime_run(&run.run_id)?));
+        }
         store::mutate(state, &key, Some(session), |s| s.submit(work.clone()))
     };
     match admission {
@@ -58,6 +79,9 @@ pub fn run(
         Ok(false) => {}
         Err(error) => {
             state.fail_active_runtime_run(&work.run_id)?;
+            if background {
+                return Ok(result(state.load_runtime_run(&run.run_id)?));
+            }
             let rejection = json!({"schema":"awiki.acp.rejection.v1","agent_did":profile.agent_did,"conversation_id":work.task.conversation_id,"source_message_id":work.task.correlation().source_message_id,"reason":error.to_string()});
             state.connection()?.execute("INSERT OR IGNORE INTO acp_events(event_id,session_key,run_id,snapshot) VALUES(?1,?2,?3,?4)",rusqlite::params![format!("acp-rejected:{}",work.run_id),format!("rejected:{}",work.run_id),work.run_id,serde_json::to_string(&rejection)?])?;
         }
@@ -222,6 +246,7 @@ fn execute_turn(
         });
     }
     let cli = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let cli = super::hermes_profile::for_session(state, &cli, key)?;
     let cwd = workspace(profile, key)?;
     state.update_runtime_run_status(&work.run_id, RuntimeRunStatus::Running)?;
     let issued =
@@ -230,26 +255,14 @@ fn execute_turn(
         state: state.clone(),
         id: issued.token_id.clone(),
     };
-    let invocation = crate::plugins::generic_cli::GenericCliInvocation {
-        run_id: work.run_id.clone(),
-        task_id: work.task.task_id.clone(),
-        message_id: work.task.correlation().source_message_id,
-        conversation_id: work.task.conversation_id.clone(),
-        preferred_language: profile.preferred_language.clone(),
-        context: crate::plugins::generic_cli::GenericCliInvocationContext::from_task(&work.task),
-        task_text: work.task.text.clone(),
-        agent_did: profile.agent_did.clone(),
-        runtime_profile_id: profile.runtime_profile_id.clone(),
-        workspace_root: Some(cwd.clone()),
-        workspace_instance: None,
-        route_session: None,
-        runtime_temp_dir: None,
-        runtime_rpc_token: String::new(),
-        local_socket_path: socket.map(std::path::Path::to_path_buf),
-        callbacks: vec![],
-    };
-    let mut text = crate::plugins::generic_cli::render_invocation_context_prompt(&invocation);
-    text.push_str(&format!("\n[AWiki file delivery]\nWhen authorized to send a file, create the output within the current working directory and use the existing wrapper: {} __runtime-wrapper send-attachment --file <absolute-path> --display-filename <name> --caption <text>. Authentication comes from the process environment. Never print credentials or put them in command arguments. Report a wrapper failure accurately. When you need user input, call awiki_questions request_user_input (or native elicitation) and wait for the actual response. Never choose an answer on their behalf. Treat decline/cancel as final and do not repeat the same question through another tool.\n", file_wrapper_command(super::Brand::parse(&cli.driver_id)?)));
+    let context = crate::runtime::prompt::RuntimeInvocationContext::from_task(&work.task);
+    let mut text =
+        crate::runtime::prompt::render_context_prompt(&context, &profile.preferred_language);
+    if super::background::is_background(&work.task) {
+        text.push_str(super::background::PROMPT);
+    } else {
+        text.push_str(&format!("\n[AWiki file delivery]\nWhen authorized to send a file, create the output within the current working directory and use the existing wrapper: {} __runtime-wrapper send-attachment --file <absolute-path> --display-filename <name> --caption <text>. Authentication comes from the process environment. Never print credentials or put them in command arguments. Report a wrapper failure accurately. When you need user input, call awiki_questions request_user_input (or native elicitation) and wait for the actual response. Never choose an answer on their behalf. Treat decline/cancel as final and do not repeat the same question through another tool.\n", file_wrapper_command(super::Brand::parse(&cli.driver_id)?)));
+    }
     let mut prompt = vec![ContentBlock::Text(TextContent::new(text))];
     prompt.extend(super::attachments::prompt_blocks(state, &work.task)?);
     prompt.push(ContentBlock::Text(TextContent::new(format!(
@@ -310,6 +323,9 @@ fn execute_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let checked: Result<()> = (|| {
+                    if super::background::is_background(&work.task) {
+                        super::background::binding(state, profile, &work.task)?;
+                    }
                     if let Some(binding) = state.load_runtime_daemon_binding(&profile.agent_did)? {
                         if crate::agent_status::controller_identity_change_observed(
                             state,

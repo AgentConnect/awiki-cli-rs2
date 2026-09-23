@@ -17,6 +17,9 @@ use crate::service::{
 use crate::update_policy::{daemon_update_policy_url, load_daemon_update_policy};
 use crate::DaemonConfig;
 
+mod package;
+use package::{extract_archive, validate_extracted_package};
+
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DAEMON_UPGRADE_CANCELLED_ERROR: &str = "daemon upgrade cancelled";
 const RELEASE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1812,29 +1815,6 @@ fn sha256_digest_to_hex(digest: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
-fn extract_archive(archive_path: &Path, stage_dir: &Path) -> Result<()> {
-    let output = std::process::Command::new("tar")
-        .arg("-C")
-        .arg(stage_dir)
-        .arg("-xzf")
-        .arg(archive_path)
-        .output()
-        .context("run tar to extract daemon package")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("extract daemon package failed: {}", sanitize_error(&stderr));
-    }
-    Ok(())
-}
-
-fn validate_extracted_package(dir: &Path) -> Result<()> {
-    let binary = dir.join("awiki-deamon");
-    if !binary.is_file() {
-        bail!("daemon package does not contain awiki-deamon");
-    }
-    Ok(())
-}
-
 fn verify_candidate_binary(binary: &Path, expected_version: &str) -> Result<()> {
     let output = std::process::Command::new(binary)
         .arg("__self-check")
@@ -2039,6 +2019,34 @@ mod tests {
         (root, config)
     }
 
+    fn complete_package_fixture(stage: &Path) {
+        for name in [
+            "awiki-deamon-runtime",
+            "README.txt",
+            "LICENSE",
+            "LICENSE-APACHE",
+            "COMMERCIAL-LICENSING.md",
+            "SOURCE.md",
+        ] {
+            if !stage.join(name).exists() {
+                std::fs::write(stage.join(name), name).unwrap();
+            }
+        }
+        let mut checksums = String::new();
+        for entry in std::fs::read_dir(stage).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() == "checksums.txt" {
+                continue;
+            }
+            checksums.push_str(&format!(
+                "{}  {}\n",
+                sha256_hex(&std::fs::read(&path).unwrap()),
+                path.file_name().unwrap().to_str().unwrap()
+            ));
+        }
+        std::fs::write(stage.join("checksums.txt"), checksums).unwrap();
+    }
+
     fn create_package(root: &Path, version: &str) -> (PathBuf, String) {
         let stage = root.join(format!("stage-{version}"));
         std::fs::create_dir_all(&stage).unwrap();
@@ -2055,14 +2063,24 @@ mod tests {
             format!("runtime {version}"),
         )
         .unwrap();
+        complete_package_fixture(&stage);
         let archive = root.join(format!("awiki-deamon-{version}.tar.gz"));
         let output = std::process::Command::new("tar")
+            .env("COPYFILE_DISABLE", "1")
             .arg("-C")
             .arg(&stage)
             .arg("-czf")
             .arg(&archive)
             .arg("awiki-deamon")
-            .arg("awiki-deamon-runtime")
+            .args([
+                "awiki-deamon-runtime",
+                "README.txt",
+                "LICENSE",
+                "LICENSE-APACHE",
+                "COMMERCIAL-LICENSING.md",
+                "SOURCE.md",
+                "checksums.txt",
+            ])
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -2962,13 +2980,24 @@ mod tests {
         std::fs::create_dir_all(&bad_stage).unwrap();
         std::fs::write(bad_stage.join("awiki-deamon"), "#!/bin/sh\nexit 42\n").unwrap();
         set_executable_mode(&bad_stage.join("awiki-deamon")).unwrap();
+        complete_package_fixture(&bad_stage);
         let bad_archive = root.path().join("bad-package.tar.gz");
         let output = std::process::Command::new("tar")
+            .env("COPYFILE_DISABLE", "1")
             .arg("-C")
             .arg(&bad_stage)
             .arg("-czf")
             .arg(&bad_archive)
-            .arg("awiki-deamon")
+            .args([
+                "awiki-deamon",
+                "awiki-deamon-runtime",
+                "README.txt",
+                "LICENSE",
+                "LICENSE-APACHE",
+                "COMMERCIAL-LICENSING.md",
+                "SOURCE.md",
+                "checksums.txt",
+            ])
             .output()
             .unwrap();
         assert!(output.status.success());

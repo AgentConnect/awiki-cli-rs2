@@ -1,7 +1,7 @@
 //! Resolve one proxy group per agent process; never mutate the daemon environment.
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub const PROXY_MODE_KEY: &str = "AWIKI_DAEMON_AGENT_PROXY_MODE";
@@ -29,6 +29,7 @@ impl AgentNetworkEnv {
         resolve(&env, read_system_proxy, local_proxy_listening)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(&self, command: &mut Command) {
         for key in PROXY_ADDRESS_KEYS.iter().chain(PROXY_EXCLUSION_KEYS) {
             command.env_remove(key);
@@ -37,16 +38,17 @@ impl AgentNetworkEnv {
     }
 }
 
-pub(crate) fn apply_agent_network(command: &mut Command) {
+pub(crate) fn apply_acp_network(
+    config: agent_client_protocol::AcpAgentConfig,
+) -> agent_client_protocol::AcpAgentConfig {
     let network = AgentNetworkEnv::current();
-    // Diagnostics contain neither addresses nor credentials.
     if !matches!(
         network.detail,
         "inherited environment and system routing" | "system proxy applied to agent child"
     ) {
         eprintln!("agent network: {}", network.detail);
     }
-    network.apply(command);
+    config.envs(network.values)
 }
 
 fn resolve(
@@ -221,21 +223,13 @@ fn read_system_proxy() -> Result<BTreeMap<String, String>, &'static str> {
     if !cfg!(target_os = "macos") {
         return Ok(BTreeMap::new());
     }
-    use crate::plugins::generic_cli::process::ManagedChild;
     let mut command = Command::new("/usr/sbin/scutil");
-    command
-        .arg("--proxy")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = ManagedChild::spawn(&mut command, "read macOS system proxy")
-        .and_then(|child| child.wait_timeout("read macOS system proxy", Duration::from_secs(1)))
+    command.arg("--proxy");
+    let output = crate::runtime::probe::run(&mut command, Instant::now() + Duration::from_secs(1))
         .map_err(|_| {
             "system proxy lookup unavailable; inherited environment and routing retained"
         })?;
-    if !output.output.status.success() {
-        return Err("system proxy lookup failed; inherited environment and routing retained");
-    }
-    parse_system_proxy(&String::from_utf8_lossy(&output.output.stdout))
+    parse_system_proxy(&output)
 }
 
 fn parse_system_proxy(raw: &str) -> Result<BTreeMap<String, String>, &'static str> {

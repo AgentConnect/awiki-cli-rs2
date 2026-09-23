@@ -72,14 +72,14 @@ def main():
     command = [binaries["cargo"]]
     if args.cargo_toolchain:
         command.append("+" + args.cargo_toolchain)
-    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--test", "agent_registration_management", "--no-run", "--message-format=json"]
+    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--test", "agent_registration_management", "--test", "acp_routing_contracts", "--test", "acp_subprocess_contracts", "--no-run", "--message-format=json"]
     # Compilation uses normal dependency caches. Only the resulting test process
     # receives the isolated environment; no model calls happen during compilation.
     built = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, timeout=1800)
     if built.returncode:
         return built.returncode
     executable = test_binary(built.stdout)
-    registration = test_binary(built.stdout, "agent_registration_management")
+    integrations = [test_binary(built.stdout, name) for name in ("agent_registration_management", "acp_routing_contracts", "acp_subprocess_contracts")]
     with tempfile.TemporaryDirectory(prefix="acp-contract-") as temporary:
         home = Path(temporary)
         tool_dir = home / "bin"
@@ -87,13 +87,14 @@ def main():
         for name in ("node", "python3", "ps", "sleep"):
             (tool_dir / name).symlink_to(binaries[name])
         environment = test_environment(home, tool_dir)
-        for selection in ("acp", "group_context::tests", "runtime_clients", "cli_runtime_env::tests"):
+        for selection in ("acp", "group_context::tests", "runtime_clients", "cli_runtime_env::tests", "agent_status::tests", "runtime::host::tests", "state::runtime_retirement", "inbox::user_delegated::tests", "app_bridge::action::tests", "cli_wrapper::input_tests", "foreground::tests"):
             result = run_selection(executable, selection, environment)
             if result:
                 return result
-        result = run_selection(registration, "", environment)
-        if result:
-            return result
+        for integration in integrations:
+            result = run_selection(integration, "", environment)
+            if result:
+                return result
     return 0
 
 

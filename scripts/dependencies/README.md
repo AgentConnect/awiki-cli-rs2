@@ -5,15 +5,20 @@
 这里的 Release 指交付入口；直接 `cargo build --release` 仍只是本地优化构建。
 
 ```bash
-# 在修改中的 CLI 工作区使用已发布 SDK，不要求先提交消费者代码。
+# Debug 默认使用已发布 SDK，不要求先提交消费者代码。CLI 与 Daemon 是同一入口。
 python3 scripts/dependencies/build.py --check
-# 本地路径相对于配置文件目录；把 example 复制到仓库根目录后再修改。
+python3 scripts/dependencies/build.py --package awiki-deamon --check
+# 只要把 ANP 改成源码：复制 example 到仓库根目录（路径相对该文件）。
+cp scripts/dependencies/local-anp.example.json dependencies.local.json
+python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
+# 同时替换 Core / Identity / ANP 时用 local.example.json。
 cp scripts/dependencies/local.example.json dependencies.local.json
 python3 scripts/dependencies/build.py --deps local --local-config dependencies.local.json --check
 # 支持 awiki-cli / awiki-deamon / im-core-dart / awiki-im-core-node。
 python3 scripts/dependencies/build.py --package awiki-im-core-node --check
 # 正式构建：只允许 registry，要求已提交源码。
 python3 scripts/dependencies/build.py --profile release --package awiki-cli
+python3 scripts/dependencies/build.py --profile release --package awiki-deamon
 ```
 
 `--resolve-only` 仅用于 Debug 依赖图诊断，不代替编译检查。编译结果与解析记录保存在
@@ -120,63 +125,14 @@ registry-build.py使用指定提交的Git归档构建输入，不再创建worktr
 `.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
 归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。
 
+### 2026-09-23 注册与 Notify 基线源码联调
 
-### 2026-09-20 注册候选源码联调
+本注册 PR 已合入 `release/0910` 的 Notify Core 变更。临时
+`dependencies.source.json` 固定 Core `090d2cda`（包含先前的注册 Core
+`4023161e`）、ANP `6bd11e06` 和 Identity `65a79d26`，并配套提交联调锁。
+ANP 与 Identity 的 review 链接是协调集成记录，不表示各自有独立 PR。
 
-注册分支提交临时 `dependencies.source.json` 与联调锁，固定 Core PR #39 的
-`527146e3d74437bb3b74f064b50def8d22f4b7e0`，用于未发布的 Core 0.1.5。
-ANP 1.0.3、Identity 0.2.3 仍从 registry 解析。联调 CI 分别检查 CLI 和 Dart native
-adapter；本地复现使用上文 source 入口及 `--package im-core-dart`。
-此检查只证明隔离源码依赖解析和 Rust 编译，不产生 Apple XCFramework，也不证明
-Flutter 产品验收。Apple 制品仍需明确消费相同源码与锁，独立记录来源。
-
-registry-check 保持独立，正式 Release 仍拒绝存在临时 source 清单；发布 0.1.5
-并刷新正式锁之后须移除临时清单和锁，重新通过 registry 检查。
-
-
-### Apple source integration artifacts
-
-With a clean committed consumer and the reviewed source manifest/lock, run:
-
-```bash
-AWIKI_APPLE_SOURCE_INTEGRATION=1 scripts/flutter/build-apple.sh --macos --macos-arch arm64
-# Use x86_64 on an Intel host. For all supported iOS slices:
-AWIKI_APPLE_SOURCE_INTEGRATION=1 scripts/flutter/build-apple.sh --ios
-scripts/flutter/verify-native-artifact.sh --macos
-```
-
-Do not combine this explicit integration mode with `AWIKI_RELEASE_REGISTRY=1`.
-It optimizes native libraries but remains a Debug source integration operation,
-not a registry Release. The existing Apple packaging and deployment-target checks
-are retained. Libraries are built under `.artifacts/dependencies/source/target`,
-separate from the default target tree. Each target records the exact consumer,
-selected dependency commits, registry resolutions, manifest/lock hashes and archive
-digest after successful compilation. The XCFramework manifest embeds this evidence;
-verification rejects changed inputs or native bytes without requiring a mode flag.
-Retain these ignored provenance records together with the local build for verification.
-Publishing still requires removing the temporary source manifest/lock and rebuilding
-through the registry entrypoint.
-
-## App 开发 CI 的源码构建与宿主测试
-
-开发阶段不要求先发布正式 SDK。App 显式设置 AWIKI_SOURCE_INTEGRATION=1，并固定已提交的 consumer SHA、dependencies.source.json 与配套锁。通用开发命令复用相同隔离和来源验证：
-
-```bash
-python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command build -p im-core-dart -p awiki-cli
-python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command +1.88.0 test -p im-core-dart --no-default-features --features blocking,sqlite,http,windows,identity-native-anp
-```
-
-仅允许 build/check/test 和精确数字 toolchain，强制 --locked，禁止覆盖 manifest/config/target-dir。输出仍在 .artifacts/dependencies/source/target；成功后 command-result.json 记录实际命令、解析来源、consumer/source SHA 和清单/锁摘要，失败前删除旧成功记录。Windows 原生构建在显式 source 模式读取该输出目录，仍执行 PE 架构与 FRB 实际导出校验；正式 registry 模式与 source 互斥。优化编译不代表发布，正式发布入口与保护不变。
-
-
-### 注册开发 PR 的 Node 构建门禁
-
-本 feature 的 dependency-check 使用提交的 source manifest/lock 检查依赖图；其他分支仍检查 registry。Node Tier 1 PR 构建仅在 Feature/registration-account-first → release/0910 时使用隔离 source builder，保留五个平台编译、manylinux/macOS ABI 基线检查、打包审计与 packed-install。源码模式不用于 main 或手动正式构建。source builder 记录实际 Cargo metadata 摘要；Node 包 SBOM 从同一解析图生成，provenance 标记 source-development，并校验干净 consumer、清单、锁与 metadata 摘要，拒绝过期证据。正式 registry 入口及 source manifest release 拒绝规则保持不变，不发布 npm/crates 版本。
-
-### 2026-09-21 DID Web 基线接续
-
-注册候选的源码清单固定 Core `4023161`、ANP `6bd11e0`、Identity `65a79d2`，
-以同时支持邀请码透传与 DID Web。三个条目的 review 链接指向协调集成的 Core PR #41；
-ANP/Identity 的上述基线合并提交没有独立关联 PR，不将该链接表述为它们各自的 PR。
-Node 来源记录与 SBOM 消费同一隔离解析图；source 与 local-candidate 模式互斥。
-这些仅为未发布源码集成，不证明 registry、正式包或设备验收通过。
+此组合保留 Notify 能力和注册所需的 DID Web / 邀请码能力。使用上文的
+`--deps source --source-manifest dependencies.source.json --check` 验证真实解析和编译。
+它只证明未发布源码集成；registry 门禁、Apple 原生制品、设备验收及正式发布
+仍须各自验证。正式 registry 来源不得使用此临时清单，发布需单独授权。

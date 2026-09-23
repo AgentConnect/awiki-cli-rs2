@@ -2224,10 +2224,11 @@ impl Probe {
                 })?;
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
             let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
-            let ensure_once_key = format!(
-                "app-personal-agent:{}:{}",
-                self.local_did, params.app_instance_id
-            );
+            let ensure_once_key =
+                awiki_deamon::app_bridge::personal_agent::personal_agent_ensure_once_key(
+                    &self.local_did,
+                    &params.app_instance_id,
+                );
             let payload = ProbeBootstrapPayload {
                 schema: "awiki.daemon.bootstrap.v1",
                 bootstrap_id: &bootstrap_id,
@@ -2286,10 +2287,7 @@ impl Probe {
                 json!({
                     "human_did": self.local_did,
                     "daemon_agent_did": daemon_agent_did,
-                    "binding_id": format!(
-                        "app-personal-agent:{}:{}",
-                        self.local_did, params.app_instance_id
-                    ),
+                    "binding_id": ensure_once_key,
                 }),
                 plaintext.as_slice(),
             )
@@ -3805,7 +3803,7 @@ fn parse_agent_snapshot_params(
     let expected_active_state = required_string(params, "expected_active_state", 32)?;
     if !matches!(
         expected_active_state.as_str(),
-        "active" | "inactive" | "revoked" | "archived"
+        "active" | "inactive" | "revoked" | "archived" | "retired"
     ) {
         return Err(ProbeFailure::InvalidRequest);
     }
@@ -4726,6 +4724,7 @@ fn closed_agent_result(
     let mut inactive_count = 0_u64;
     let mut revoked_count = 0_u64;
     let mut archived_count = 0_u64;
+    let mut retired_count = 0_u64;
     let mut match_count = 0_u64;
     let mut matched_expected = false;
     for agent in agents {
@@ -4738,6 +4737,7 @@ fn closed_agent_result(
             "inactive" => inactive_count += 1,
             "revoked" => revoked_count += 1,
             "archived" => archived_count += 1,
+            "retired" => retired_count += 1,
             _ => return Err(ProbeFailure::Runtime),
         }
         let display_name = required_response_string(agent, "display_name")?;
@@ -4775,6 +4775,7 @@ fn closed_agent_result(
         "inactive_count": inactive_count,
         "revoked_count": revoked_count,
         "archived_count": archived_count,
+        "retired_count": retired_count,
         "matched_expected": matched_expected,
     }))
 }
@@ -4841,7 +4842,10 @@ fn closed_agent_remove_result(
         let agent = agent.as_object().ok_or(ProbeFailure::Runtime)?;
         let agent_did = required_response_did(agent, "agent_did")?;
         let active_state = required_response_string(agent, "active_state")?;
-        if !matches!(active_state, "active" | "inactive" | "revoked" | "archived") {
+        if !matches!(
+            active_state,
+            "active" | "inactive" | "revoked" | "archived" | "retired"
+        ) {
             return Err(ProbeFailure::Runtime);
         }
         if agent_did == params.agent_did && active_state == "archived" {
@@ -5379,6 +5383,13 @@ mod tests {
 
     #[test]
     fn probe_bootstrap_desired_personal_agent_includes_exact_preferred_language() {
+        let key = awiki_deamon::app_bridge::personal_agent::personal_agent_ensure_once_key(
+            LOCAL_DID, "app-test",
+        );
+        assert_eq!(
+            key,
+            format!("app-personal-agent:acp-v1:{LOCAL_DID}:app-test")
+        );
         let payload = ProbeBootstrapPayload {
             schema: "awiki.daemon.bootstrap.v1",
             bootstrap_id: "boot-test",
@@ -5401,7 +5412,7 @@ mod tests {
                 runtime_profile: "personal_agent",
                 display_name: "Recovery Continuity Agent",
                 preferred_language: "zh-Hans",
-                ensure_once_key: "app-personal-agent:test",
+                ensure_once_key: &key,
                 runtime_registration_token: "registration-test-token",
             },
             capability_policy: ProbeCapabilityPolicy {
@@ -5427,7 +5438,7 @@ mod tests {
                 "runtime_profile": "personal_agent",
                 "display_name": "Recovery Continuity Agent",
                 "preferred_language": "zh-Hans",
-                "ensure_once_key": "app-personal-agent:test",
+                "ensure_once_key": key,
                 "runtime_registration_token": "registration-test-token",
             })
         );
@@ -8280,6 +8291,7 @@ INSERT INTO runtime_final_outbox (
                 "inactive_count": 0,
                 "revoked_count": 1,
                 "archived_count": 0,
+                "retired_count": 0,
                 "matched_expected": true
             })
         );
@@ -8289,6 +8301,33 @@ INSERT INTO runtime_final_outbox (
         assert!(!serialized.contains("account-secret"));
         assert!(!serialized.contains(LOCAL_DID));
         assert!(!serialized.contains(SERVER_ERROR_SECRET));
+    }
+
+    #[test]
+    fn account_state_retired_agent_remains_a_distinct_counted_terminal_row() {
+        let request = parse_request(r#"{"id":1,"action":"account_state_agent","params":{"agent_did":"did:wba:example.test:agent:runtime","expected_active_state":"retired","expected_display_name":"Runtime","expected_active_mode":"whitelist","expected_whitelist_handles":[],"expected_blacklist_handles":[]}}"#)
+            .unwrap_or_else(|_| panic!("retired state must be accepted"));
+        let Action::AccountStateAgent(params) = request.action else {
+            panic!("expected Agent snapshot action");
+        };
+        let result = closed_agent_result(
+            &json!({
+                "account_id": "account-test-retired",
+                "inventory_version": "9007199254740993",
+                "agents": [{"agent_did": params.agent_did, "active_state": "retired",
+                    "display_name": "Runtime", "invocation_policy": {
+                        "schema": "awiki.agent_invocation_policy.v1",
+                        "active_mode": "whitelist", "whitelist_handles": [], "blacklist_handles": []
+                    }}]
+            }),
+            &params,
+        )
+        .unwrap_or_else(|_| panic!("retired row must remain in inventory"));
+        assert_eq!(result["retired_count"], 1);
+        assert_eq!(result["active_count"], 0);
+        assert_eq!(result["total_count"], 1);
+        assert_eq!(result["matched_expected"], true);
+        assert_eq!(result["inventory_version"], "9007199254740993");
     }
 
     #[test]
