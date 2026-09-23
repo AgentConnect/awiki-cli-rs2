@@ -59,6 +59,54 @@ pub(crate) fn transport_direct_cache_record(
     })
 }
 
+pub(crate) fn transport_group_cache_record(
+    message: &super::messages::MessageRecord,
+) -> Option<AttachmentManifestCacheRecord> {
+    if message.is_e2ee
+        || message.content_type != crate::attachments::manifest::attachment_manifest_content_type()
+        || message.wire_thread_kind != "group"
+        || message.wire_identity_resolution_state != "resolved"
+        || message.hydration_state != super::messages::MessageHydrationState::Hydrated
+        || message.owner_identity_id.trim().is_empty()
+        || message.wire_thread_ref.trim().is_empty()
+        || !message.sender_did.starts_with("did:")
+        || !message.server_seq.is_some_and(|seq| {
+            seq > 0 && message.msg_id == format!("{}:{seq}", message.wire_thread_ref)
+        })
+    {
+        return None;
+    }
+    let content: Value = serde_json::from_str(&message.content).ok()?;
+    if content
+        .get("attachments")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return None;
+    }
+    let wire_message_id = serde_json::from_str::<Value>(&message.metadata)
+        .ok()?
+        .get("raw_message_id")?
+        .as_str()?
+        .trim()
+        .to_owned();
+    if wire_message_id.is_empty() {
+        return None;
+    }
+    Some(AttachmentManifestCacheRecord {
+        owner_identity_id: message.owner_identity_id.clone(),
+        owner_did: message.owner_did.clone(),
+        thread_kind: "group".to_owned(),
+        thread_id: message.wire_thread_ref.clone(),
+        message_id: message.msg_id.clone(),
+        wire_message_id,
+        sender_did: message.sender_did.clone(),
+        message_security_profile: "transport-protected".to_owned(),
+        content: message.content.clone(),
+        stored_at: message.stored_at.clone(),
+    })
+}
+
 #[cfg(feature = "sqlite")]
 pub(crate) fn upsert_attachment_manifest_cache(
     connection: &rusqlite::Connection,
@@ -172,6 +220,91 @@ WHERE owner_identity_id = ?1
         message["raw_message_id"] = Value::String(wire_message_id);
     }
     Ok(Some(message))
+}
+
+/// Recover a transport-protected Group manifest from an already committed,
+/// owner-scoped local timeline row. A Handle Recovery replica may retain this
+/// row while its tail-only remote history no longer exposes the old event.
+/// This only supplies the manifest locator; the current DID must still obtain
+/// a server-authorized download ticket before any object bytes are read.
+#[cfg(feature = "sqlite")]
+pub(crate) fn get_transport_group_local_message(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    group_did: &str,
+    message_id: &str,
+) -> crate::ImResult<Option<Value>> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let group_did = required("group_did", group_did)?;
+    let message_id = required("message_id", message_id)?;
+    let row = connection
+        .query_row(
+            r#"
+SELECT sender_did, content, metadata, server_seq
+FROM messages
+WHERE owner_identity_id = ?1
+  AND msg_id = ?2
+  AND wire_thread_kind = 'group'
+  AND wire_thread_ref = ?3
+  AND wire_identity_resolution_state = 'resolved'
+  AND content_type = ?4
+  AND is_e2ee = 0
+  AND hydration_state = 'hydrated'
+  AND server_seq > 0"#,
+            rusqlite::params![
+                owner_identity_id,
+                message_id,
+                group_did,
+                crate::attachments::manifest::attachment_manifest_content_type(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((sender_did, content, metadata, server_seq)) = row else {
+        return Ok(None);
+    };
+    if !sender_did.starts_with("did:") || message_id != format!("{group_did}:{server_seq}") {
+        return Ok(None);
+    }
+    let wire_message_id = serde_json::from_str::<Value>(&metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("raw_message_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        });
+    let Some(wire_message_id) = wire_message_id else {
+        return Ok(None);
+    };
+    let content = serde_json::from_str::<Value>(&content).ok();
+    let Some(content) = content.filter(|value| {
+        value
+            .get("attachments")
+            .and_then(Value::as_array)
+            .is_some_and(|attachments| !attachments.is_empty())
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::json!({
+        "id": message_id,
+        "message_id": wire_message_id,
+        "sender_did": sender_did,
+        "message_security_profile": "transport-protected",
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "content": content,
+    })))
 }
 
 #[cfg(feature = "sqlite")]

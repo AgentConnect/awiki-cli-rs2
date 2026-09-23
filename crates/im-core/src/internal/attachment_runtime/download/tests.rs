@@ -923,6 +923,202 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
 }
 
 #[test]
+fn group_attachment_download_uses_retained_local_manifest_after_recovery() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group_did = "did:example:group:recovered";
+    let canonical_id = format!("{group_did}:18");
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    crate::internal::local_state::messages::upsert_messages(
+        &connection,
+        &[crate::internal::local_state::messages::MessageRecord {
+            msg_id: canonical_id.clone(),
+            owner_identity_id: owner_identity_id.clone(),
+            // The stable local owner has moved to a new DID, but this exact
+            // pre-Recovery attachment row still belongs to that owner.
+            owner_did: "did:example:alice:before-recovery".to_owned(),
+            thread_id: format!("group:{group_did}"),
+            conversation_id: format!("group:{group_did}"),
+            sender_did: "did:web:example.com:bob".to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            content_type: crate::attachments::manifest::attachment_manifest_content_type()
+                .to_owned(),
+            content: json!({
+                "attachments": [{
+                    "attachment_id": "att-1",
+                    "filename": "report.txt",
+                    "mime_type": "text/plain",
+                    "size": "16",
+                    "digest": {"alg": "sha-256", "value_b64u": "exNCHlmX3QP0Pkz7u3ndQu3b5zESko9lysH2TsoflvQ"},
+                    "access_info": {"object_uri": "https://objects.example/att-1"}
+                }],
+                "primary_attachment_id": "att-1"
+            })
+            .to_string(),
+            metadata: json!({"raw_message_id": "msg-before-recovery"}).to_string(),
+            server_seq: Some(18),
+            stored_at: "2026-09-23T08:12:00Z".to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("group", group_did)],
+    )
+    .unwrap();
+    let seeded = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        &connection,
+        &owner_identity_id,
+        "group",
+        group_did,
+        &canonical_id,
+    )
+    .unwrap()
+    .expect("newly committed Group attachment must seed the internal Manifest cache");
+    assert_eq!(seeded["raw_message_id"], "msg-before-recovery");
+    // Older installations committed this timeline row without seeding the
+    // internal cache. Keep that exact state covered by the lazy fallback.
+    connection
+        .execute(
+            "DELETE FROM attachment_manifest_cache WHERE owner_identity_id = ?1 AND thread_kind = 'group' AND thread_id = ?2 AND message_id = ?3",
+            (&owner_identity_id, group_did, &canonical_id),
+        )
+        .unwrap();
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &connection,
+            &owner_identity_id,
+            "group",
+            group_did,
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none(),
+        "the historical local row must exercise the lazy fallback"
+    );
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+            &connection,
+            "another-owner",
+            group_did,
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+            &connection,
+            &owner_identity_id,
+            "did:example:group:other",
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none()
+    );
+    connection
+        .execute(
+            "UPDATE messages SET is_e2ee = 1 WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (&owner_identity_id, &canonical_id),
+        )
+        .unwrap();
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+            &connection,
+            &owner_identity_id,
+            group_did,
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none(),
+        "E2EE rows must not be treated as plain manifests"
+    );
+    connection
+        .execute(
+            "UPDATE messages SET is_e2ee = 0, hydration_state = 'discovered' WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (&owner_identity_id, &canonical_id),
+        )
+        .unwrap();
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+            &connection,
+            &owner_identity_id,
+            group_did,
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none(),
+        "metadata-only rows must not be trusted as attachment manifests"
+    );
+    connection
+        .execute(
+            "UPDATE messages SET hydration_state = 'hydrated', metadata = '{}' WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (&owner_identity_id, &canonical_id),
+        )
+        .unwrap();
+    assert!(
+        crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+            &connection,
+            &owner_identity_id,
+            group_did,
+            &canonical_id,
+        )
+        .unwrap()
+        .is_none(),
+        "missing original business message ID must fail closed"
+    );
+    connection
+        .execute(
+            "UPDATE messages SET metadata = ?3 WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (
+                &owner_identity_id,
+                &canonical_id,
+                json!({"raw_message_id": "msg-before-recovery"}).to_string(),
+            ),
+        )
+        .unwrap();
+    drop(connection);
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let result = AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+        },
+    )
+    .download(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse(group_did).unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse(&canonical_id).unwrap(),
+            attachment_id: Some("att-1".to_owned()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: None,
+    })
+    .unwrap();
+    assert_eq!(result.selection.requested_id, canonical_id);
+    assert_eq!(result.selection.message_id, "msg-before-recovery");
+    assert!(matches!(
+        result.sdk_result.destination,
+        crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+            if bytes == b"downloaded bytes".to_vec()
+    ));
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 3, "tail-only history must not be queried");
+    let ticket = calls[1].rpc("attachment.get_download_ticket");
+    assert_eq!(ticket.params["body"]["message_id"], "msg-before-recovery");
+    assert_eq!(ticket.params["body"]["group_did"], group_did);
+}
+
+#[test]
 fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache() {
     let fixture = Fixture::new();
     let client = fixture.client();

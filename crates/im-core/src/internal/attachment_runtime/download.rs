@@ -1058,13 +1058,27 @@ fn find_cached_attachment_selection(
         let connection = crate::internal::local_state::open_writable(
             &client.core_inner().sdk_paths().local_state.sqlite_path,
         )?;
-        crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
             &connection,
             client.current_identity().id.as_str(),
             thread_kind,
             thread_id,
             requested_message_id,
-        )
+        )?;
+        if cached.is_some() {
+            return Ok(cached);
+        }
+        match target {
+            DownloadTarget::Group { group } => {
+                crate::internal::local_state::attachment_manifest_cache::get_transport_group_local_message(
+                    &connection,
+                    client.current_identity().id.as_str(),
+                    group.as_str(),
+                    requested_message_id,
+                )
+            }
+            DownloadTarget::Direct { .. } => Ok(None),
+        }
     }
     #[cfg(not(feature = "sqlite"))]
     {

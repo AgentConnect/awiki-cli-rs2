@@ -862,6 +862,15 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `groups`: group lifecycle, members, profile/policy, group message reads, group E2EE lifecycle hooks.
 - Node Group facade 的创建者和加入者身份只使用 identity-bound client 已认证的 DID，不向 Group Base v2 请求附加 Handle 字段。成员输入仍可接受 Handle 或 DID；Handle 由 Core 通过权威目录解析为 DID 后再提交，Browser 不选择线上成员锚定方式。
 - `attachments`: streaming upload, digest, manifest, message send, ticket download, resumable local-file or memory sinks, cancellation and atomic publication.
+
+普通 `transport-protected` 群附件在持久化完整本地消息时一并保存 owner-scoped 内部
+Manifest cache，下载时先使用该缓存。若旧消息在
+Handle Recovery 后仍保留于同一 stable owner 的本地 timeline、但远端新副本的 `tail_only`
+历史不再返回该事件，Core 仅可从精确匹配 owner、Group DID、canonical `{group_did}:{server_seq}`、
+已 hydration 的非 E2EE 本地附件行及其原始业务 `raw_message_id` 恢复 Manifest locator。
+这不是恢复远端历史权限：下载仍必须由当前 DID 获得服务端 ticket，并继续接受当前群成员资格、
+grant、对象有效期和 digest 校验。缺少上述任一确定性绑定时不猜测原始消息 ID，不从其他 owner、
+其他 Group、E2EE 或未 hydration 行读取附件 Manifest。
 - `secure`: Direct E2EE 状态与发送策略；Group E2EE status/prepare/repair；加密编排。阶段五不再公开旧 Direct prepare/repair 或 secure-outbox 操作面。
 - `realtime`: embeddable WebSocket runner, reconnect, notification projection, host notification events.
 - `email`: account, inbox/read/send/mark-read, attachment download, mail notifications.
