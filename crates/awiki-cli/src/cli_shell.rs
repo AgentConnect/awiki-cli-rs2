@@ -24,6 +24,7 @@ mod group_handlers;
 mod handle_helpers;
 mod identity_register_handlers;
 mod identity_services_handlers;
+mod registration_precheck;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
         choose_default_identity_name, create_migration_identity,
@@ -685,6 +686,9 @@ impl App {
     pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let command = identity_register_handlers::command_with_registration_verification(command)?;
         let resolved = self.resolve_config_for_workspace()?;
+        if !self.globals.dry_run {
+            registration_precheck::run(&resolved, &command)?;
+        }
         let result = if self.globals.dry_run {
             crate::m_core_cli_adapter::identity::register_handle_plan_via_im_core(
                 &resolved,
@@ -704,6 +708,9 @@ impl App {
     pub async fn run_id_register_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let command = identity_register_handlers::command_with_registration_verification(command)?;
         let resolved = self.resolve_config_for_workspace()?;
+        if !self.globals.dry_run {
+            registration_precheck::run_async(&resolved, &command).await?;
+        }
         let result = if self.globals.dry_run {
             crate::m_core_cli_adapter::identity::register_handle_plan_via_im_core_async(
                 &resolved,

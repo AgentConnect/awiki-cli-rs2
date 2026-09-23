@@ -26,12 +26,12 @@ spec.loader.exec_module(registry)
 
 
 def run(args, cwd=None, capture=False, env=None):
-    return subprocess.run(args, cwd=cwd, env=env, check=True, text=True,
+    return subprocess.run(args, cwd=cwd, env=env, check=True, text=True, encoding="utf-8",
                           stdout=subprocess.PIPE if capture else None).stdout
 
 
 def read_selection(path, mode):
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     entries = data.get('dependencies')
     if data.get('schema_version') != 1 or not isinstance(entries, dict) or not entries:
         raise ValueError('Expected schema_version=1 and nonempty dependencies')
@@ -98,10 +98,10 @@ def normalize_sdk_roots(roots, versions):
         if name not in roots:
             continue
         manifest = roots[name] / 'Cargo.toml'
-        text = manifest.read_text()
+        text = manifest.read_text(encoding="utf-8")
         for dependency in ('anp', 'anp-identity') if name == 'awiki-im-core' else ('anp',):
             text = registry.registry_dependency(text, dependency, versions[dependency])
-        manifest.write_text(text)
+        manifest.write_text(text, encoding="utf-8")
 
 
 def apply_patches(checkout, roots):
@@ -111,7 +111,7 @@ def apply_patches(checkout, roots):
     for name, root in roots.items():
         directory = root / SPECS[name][1]
         text += f'{json.dumps(name)} = {{ path = {json.dumps(str(directory))} }}\n'
-    with (checkout / 'Cargo.toml').open('a') as stream:
+    with (checkout / 'Cargo.toml').open('a', encoding='utf-8') as stream:
         stream.write(text)
 
 
@@ -129,6 +129,32 @@ def verify_resolution(metadata, versions, roots):
             raise ValueError(f'{name}: unselected SDK must resolve from crates.io')
 
 
+def consumer_environment(commit, target):
+    env = os.environ.copy()
+    if env.get('AWIKI_CLI_COMMIT', commit) != commit:
+        raise ValueError('Build metadata commit differs from the consumer source')
+    env['AWIKI_CLI_COMMIT'] = commit
+    env['CARGO_TARGET_DIR'] = str(target)
+    return env
+
+
+def source_cargo_command(arguments):
+    """Accept only locked development build/check/test operations."""
+    args = list(arguments)
+    prefix = []
+    if args and args[0].startswith('+'):
+        if not re.fullmatch(r'\+[0-9]+\.[0-9]+(?:\.[0-9]+)?', args[0]):
+            raise ValueError('Source Cargo toolchain must be an exact numeric version')
+        prefix.append(args.pop(0))
+    if not args or args[0] not in ('build', 'check', 'test'):
+        raise ValueError('Source Cargo accepts only build, check or test')
+    # These would escape the audited workspace, dependency graph or output root.
+    forbidden = ('--manifest-path', '--lockfile-path', '--target-dir', '--config', '--profile')
+    if any(arg == '--' or arg.split('=')[0] in forbidden or arg.startswith('-Z') for arg in args):
+        raise ValueError('Source Cargo cannot override workspace, configuration or output ownership')
+    return [os.environ.get('CARGO', 'cargo'), *prefix, *args, *([] if '--locked' in args else ['--locked'])]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', choices=['debug', 'release'], default='debug')
@@ -136,10 +162,17 @@ def main(argv=None):
     parser.add_argument('--local-config', type=Path)
     parser.add_argument('--source-manifest', type=Path)
     parser.add_argument('--package', default='awiki-cli', choices=['awiki-cli', 'awiki-deamon', 'im-core-dart', 'awiki-im-core-node'])
+    parser.add_argument('--cargo-command', nargs=argparse.REMAINDER, help='Locked source-only build/check/test command, including optional numeric toolchain')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--resolve-only', action='store_true', help='只校验实际依赖图，不编译')
     parser.add_argument('--refresh-lock', action='store_true', help='仅刷新提交用的源码联调锁文件')
+    parser.add_argument('--target', choices=['aarch64-apple-darwin', 'x86_64-apple-darwin', 'aarch64-apple-ios', 'aarch64-apple-ios-sim', 'x86_64-apple-ios'])
+    parser.add_argument('--features')
+    parser.add_argument('--no-default-features', action='store_true')
+    parser.add_argument('--optimized', action='store_true', help='Optimize a Debug source integration build; not a release gate')
     args = parser.parse_args(argv)
+    if any((args.target, args.features, args.no_default_features, args.optimized)) and (args.deps != 'source' or args.profile != 'debug' or args.package != 'im-core-dart' or args.refresh_lock or args.resolve_only):
+        parser.error('Native build options require a Debug source im-core-dart build/check')
     if args.profile == 'release' and (ROOT / 'dependencies.source.json').exists():
         parser.error('Resolve and remove dependencies.source.json before release')
     if args.profile == 'release' and args.resolve_only:
@@ -153,7 +186,19 @@ def main(argv=None):
         parser.error('Select exactly one matching local config or source manifest')
     if args.refresh_lock and args.deps != 'source':
         parser.error('--refresh-lock is only for source dependencies')
-    command = [os.environ.get('CARGO', 'cargo'), 'check' if args.check else 'build', '-p', args.package]
+    if args.cargo_command is not None and (args.deps != 'source' or args.profile != 'debug' or args.check or args.resolve_only or args.refresh_lock or args.target or args.features or args.no_default_features or args.optimized):
+        parser.error('--cargo-command requires source development mode without fixed build options')
+    if args.cargo_command is not None and os.environ.get('AWIKI_RELEASE_REGISTRY') == '1':
+        parser.error('Source Cargo and registry release mode are mutually exclusive')
+    command = source_cargo_command(args.cargo_command) if args.cargo_command is not None else [os.environ.get('CARGO', 'cargo'), 'check' if args.check else 'build', '-p', args.package]
+    if args.target:
+        command += ['--target', args.target]
+    if args.features:
+        command += ['--features', args.features]
+    if args.no_default_features:
+        command.append('--no-default-features')
+    if args.optimized:
+        command.append('--release')
     if args.profile == 'release':
         command.append('--release')
         # Existing release entrypoint checks clean committed source and registry metadata.
@@ -162,6 +207,8 @@ def main(argv=None):
     entries = read_selection(selection.resolve(), args.deps) if selection else {}
     artifacts = ROOT / '.artifacts/dependencies' / args.deps
     artifacts.mkdir(parents=True, exist_ok=True)
+    if args.cargo_command is not None:
+        (artifacts / 'command-result.json').unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix='awiki-deps-') as temporary:
         layout = Path(temporary)
         checkout = layout / 'consumer'
@@ -178,7 +225,7 @@ def main(argv=None):
         # Apply that exact version only inside this isolated consumer snapshot.
         versions = dict(versions)
         for name, root in roots.items():
-            text = (root / SPECS[name][1] / 'Cargo.toml').read_text()
+            text = (root / SPECS[name][1] / 'Cargo.toml').read_text(encoding="utf-8")
             match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
             if not match:
                 raise ValueError(f'{name}: SDK must declare its package version')
@@ -193,9 +240,8 @@ def main(argv=None):
                 raise ValueError('Source PR requires its committed .Cargo.lock; generate with --refresh-lock')
         if lock.is_file():
             shutil.copy2(lock, checkout / 'Cargo.lock')
-        env = os.environ.copy()
-        env['CARGO_TARGET_DIR'] = str(artifacts / 'target')
-        metadata_cmd = [command[0], 'metadata', '--format-version', '1']
+        env = consumer_environment(evidence['consumer']['commit'], artifacts / 'target')
+        metadata_cmd = [command[0], *([command[1]] if len(command) > 1 and command[1].startswith('+') else []), 'metadata', '--format-version', '1']
         if args.deps != 'local' and not args.refresh_lock:
             metadata_cmd.append('--locked')
         metadata = json.loads(run(metadata_cmd, checkout, True, env))
@@ -204,9 +250,27 @@ def main(argv=None):
             shutil.copy2(checkout / 'Cargo.lock', lock)
         evidence['resolved'] = [{'name': p['name'], 'version': p['version'], 'source': p['source']}
                                 for p in metadata['packages'] if p['name'] in versions]
-        (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        if args.deps == 'source':
+            evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+            evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+            metadata_bytes = (json.dumps(metadata, sort_keys=True) + '\n').encode('utf-8')
+            (artifacts / 'metadata.json').write_bytes(metadata_bytes)
+            evidence['metadata_sha256'] = hashlib.sha256(metadata_bytes).hexdigest()
+        (artifacts / 'resolution.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
         if not args.refresh_lock and not args.resolve_only:
-            run([*command, '--locked'], checkout, env=env)
+            run(command if '--locked' in command else [*command, '--locked'], checkout, env=env)
+            if args.cargo_command is not None:
+                evidence['command'] = command
+                evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+                evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+                (artifacts / 'command-result.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+            if args.target and not args.check:
+                evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
+                evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
+                evidence['build'] = {'target': args.target, 'features': sorted((args.features or '').split(',')), 'optimized': args.optimized, 'no_default_features': args.no_default_features}
+                archive = artifacts / 'target' / args.target / ('release' if args.optimized else 'debug') / 'libawiki_im_core.a'
+                evidence['archive_sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+                (artifacts / (args.target + '.json')).write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
     return 0
 
 

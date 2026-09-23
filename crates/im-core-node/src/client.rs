@@ -704,7 +704,13 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(input.handle, input.phone, None, input.did_method)?;
+        let request = registration_request(
+            input.handle,
+            input.phone,
+            None,
+            input.invite_code,
+            input.did_method,
+        )?;
         let challenge = self
             .inner
             .wait_im(
@@ -773,6 +779,7 @@ impl NativeImCoreNodeClient {
             input.handle,
             input.phone,
             Some(otp.to_owned()),
+            input.invite_code,
             input.did_method,
         )?;
         let result = self
@@ -3092,6 +3099,7 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
         options.did_domain.clone(),
     )
     .map_err(SafeError::from_im)?;
+    config.ca_bundle = options.ca_bundle.clone();
     config.user_service_endpoint = optional_endpoint(options.user_service_endpoint.clone())?;
     config.message_service_endpoint = optional_endpoint(options.message_service_endpoint.clone())?;
     config.mail_service_endpoint = optional_endpoint(options.mail_service_endpoint.clone())?;
@@ -3314,6 +3322,7 @@ fn registration_request(
     handle: String,
     phone: String,
     otp: Option<String>,
+    invite_code: Option<String>,
     did_method: Option<String>,
 ) -> SafeResult<im_core::identity::RegisterHandleRequest> {
     let requested_handle = im_core::ids::Handle::parse(handle, "").map_err(SafeError::from_im)?;
@@ -3326,7 +3335,7 @@ fn registration_request(
         local_alias: Some("default".to_owned()),
         requested_handle,
         verification: im_core::identity::VerificationInput::Phone { phone, otp },
-        invite_code: None,
+        invite_code,
         profile: im_core::identity::InitialProfile {
             display_name: None,
             avatar_url: None,
@@ -3560,6 +3569,39 @@ fn ensure_sync_readable(status: im_core::messages::MessageSyncStatus) -> SafeRes
 mod tests {
     use super::*;
 
+    #[test]
+    fn registration_invitation_survives_both_otp_and_completion() {
+        for otp in [None, Some("123456".to_owned())] {
+            let request = registration_request(
+                "abc".to_owned(),
+                "+15555550123".to_owned(),
+                otp.clone(),
+                Some("invite-test".to_owned()),
+                Some("web".to_owned()),
+            )
+            .unwrap();
+            assert_eq!(request.invite_code.as_deref(), Some("invite-test"));
+            assert_eq!(request.did_method, im_core::identity::DidMethod::Web);
+            match request.verification {
+                im_core::identity::VerificationInput::Phone { phone, otp: actual } => {
+                    assert_eq!(phone, "+15555550123");
+                    assert_eq!(actual, otp);
+                }
+                _ => panic!("phone verification expected"),
+            }
+        }
+        assert!(registration_request(
+            "alice".to_owned(),
+            "+15555550123".to_owned(),
+            None,
+            None,
+            None
+        )
+        .unwrap()
+        .invite_code
+        .is_none());
+    }
+
     #[derive(Default)]
     struct ClearingIdentityProvider {
         identities: std::sync::Mutex<Vec<im_core::provider::ProviderIdentityDescriptor>>,
@@ -3703,6 +3745,7 @@ mod tests {
         NodeOpenOptions {
             state_root: state_root.display().to_string(),
             service_base_url: "https://example.test".to_owned(),
+            ca_bundle: None,
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,

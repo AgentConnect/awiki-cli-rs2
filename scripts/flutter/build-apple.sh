@@ -4,7 +4,32 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+SOURCE_INTEGRATION="${AWIKI_APPLE_SOURCE_INTEGRATION:-0}"
+if [[ "${SOURCE_INTEGRATION}" == "1" && "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+  echo "Source integration and registry release are mutually exclusive." >&2
+  exit 2
+fi
+NATIVE_TARGET_DIR="target"
+if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
+  NATIVE_TARGET_DIR=".artifacts/dependencies/source/target"
+fi
+
 release_cargo() {
+  if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
+    # The Apple caller supplies only the fixed native build options below.
+    shift
+    local translated=()
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -p) translated+=(--package "$2"); shift 2 ;;
+        --release) translated+=(--optimized); shift ;;
+        *) translated+=("$1"); shift ;;
+      esac
+    done
+    python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source \
+      --source-manifest "${ROOT_DIR}/dependencies.source.json" "${translated[@]}"
+    return
+  fi
   if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
     python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
   else
@@ -153,6 +178,10 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
   fi
 fi
 
+if [[ "${SOURCE_INTEGRATION}" == "1" && -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo "Apple source integration requires clean committed consumer input." >&2
+  exit 2
+fi
 rustup target add "${TARGETS[@]}"
 
 for target in "${IOS_TARGETS[@]}"; do
@@ -205,8 +234,8 @@ HEADER
 if [[ "${BUILD_IOS}" == "1" ]]; then
   SIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-ios-sim.XXXXXX")"
   lipo -create \
-    "target/aarch64-apple-ios-sim/release/lib${LIB_NAME}.a" \
-    "target/x86_64-apple-ios/release/lib${LIB_NAME}.a" \
+    "${NATIVE_TARGET_DIR}/aarch64-apple-ios-sim/release/lib${LIB_NAME}.a" \
+    "${NATIVE_TARGET_DIR}/x86_64-apple-ios/release/lib${LIB_NAME}.a" \
     -output "${SIM_DIR}/lib${LIB_NAME}.a"
 
   verify_ios_archive() {
@@ -236,7 +265,7 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
   }
 
   verify_ios_archive \
-    "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
+    "${NATIVE_TARGET_DIR}/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
     arm64 \
     "${IOS_DEPLOYMENT_TARGET}"
   verify_ios_archive \
@@ -250,7 +279,7 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
 
   rm -rf "${IOS_XCFRAMEWORK}"
   xcodebuild -create-xcframework \
-    -library "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
+    -library "${NATIVE_TARGET_DIR}/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
     -headers "${IOS_INCLUDE_DIR}" \
     -library "${SIM_DIR}/lib${LIB_NAME}.a" \
     -headers "${IOS_INCLUDE_DIR}" \
@@ -266,12 +295,12 @@ if [[ "${BUILD_MACOS}" == "1" ]]; then
   MACOS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-macos.XXXXXX")"
   if [[ "${#MACOS_TARGETS[@]}" -eq 1 ]]; then
     cp \
-      "target/${MACOS_TARGETS[0]}/release/lib${LIB_NAME}.a" \
+      "${NATIVE_TARGET_DIR}/${MACOS_TARGETS[0]}/release/lib${LIB_NAME}.a" \
       "${MACOS_DIR}/lib${LIB_NAME}.a"
   else
     lipo -create \
-      "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
-      "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
+      "${NATIVE_TARGET_DIR}/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
+      "${NATIVE_TARGET_DIR}/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
       -output "${MACOS_DIR}/lib${LIB_NAME}.a"
   fi
 

@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::io::Read;
 use zeroize::Zeroize;
 
-const MAX_VERIFICATION_STDIN_BYTES: u64 = 256;
+const MAX_VERIFICATION_STDIN_BYTES: u64 = 1024;
 const REGISTER_USAGE: &str = "awiki-cli id register --handle <handle> --verification-stdin";
 
 #[derive(Deserialize)]
@@ -13,6 +13,8 @@ struct RegistrationVerificationInput {
     phone: String,
     #[serde(default)]
     otp: Option<String>,
+    #[serde(default)]
+    invite_code: Option<String>,
 }
 
 pub(super) fn command_with_registration_verification(
@@ -28,14 +30,14 @@ fn command_with_registration_verification_reader(
     command: &ParsedCommand,
     reader: impl Read,
 ) -> Result<ParsedCommand, ExitError> {
-    if ["phone", "email", "otp"].iter().any(|name| {
+    if ["phone", "email", "otp", "invite-code"].iter().any(|name| {
         command
             .flags
             .get(*name)
             .is_some_and(|value| !value.trim().is_empty())
     }) {
         return Err(invalid_verification_input(
-            "--verification-stdin cannot be combined with --phone, --email, or --otp.",
+            "--verification-stdin cannot be combined with --phone, --email, --otp, or --invite-code.",
         ));
     }
 
@@ -72,7 +74,19 @@ fn command_with_registration_verification_reader(
         ));
     }
 
+    if parsed
+        .invite_code
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty() || value.len() > 512)
+    {
+        return Err(invalid_verification_input("Invitation input is invalid."));
+    }
     let mut augmented = command.clone();
+    if let Some(invite) = parsed.invite_code {
+        augmented
+            .flags
+            .insert("invite-code".to_owned(), invite.trim().to_owned());
+    }
     augmented.flags.insert("phone".to_owned(), phone.to_owned());
     if let Some(otp) = otp {
         augmented.flags.insert("otp".to_owned(), otp.to_owned());
@@ -85,7 +99,7 @@ fn invalid_verification_input(message: impl Into<String>) -> ExitError {
         "invalid_argument",
         2,
         message,
-        format!("Pipe one JSON object with phone and optional otp fields to `{REGISTER_USAGE}`."),
+        format!("Pipe one JSON object with phone and optional otp/invite_code fields to `{REGISTER_USAGE}`."),
     )
 }
 
@@ -103,6 +117,28 @@ mod tests {
             ]),
             ..ParsedCommand::default()
         }
+    }
+
+    #[test]
+    fn registration_invite_is_carried_without_argv() {
+        let command = command_with_registration_verification_reader(
+            &stdin_command(),
+            br#"{"phone":"+15550000001","otp":"123456","invite_code":"local-invite"}"#.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            command.flags.get("invite-code").map(String::as_str),
+            Some("local-invite")
+        );
+        let mut duplicate = stdin_command();
+        duplicate
+            .flags
+            .insert("invite-code".to_owned(), "argv-invite".to_owned());
+        assert!(command_with_registration_verification_reader(
+            &duplicate,
+            br#"{"phone":"+15550000001","invite_code":"stdin-invite"}"#.as_slice()
+        )
+        .is_err());
     }
 
     #[test]

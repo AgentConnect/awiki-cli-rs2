@@ -9945,8 +9945,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartImCoreConfig(
       serviceBaseUrl: dco_decode_String(arr[0]),
       didDomain: dco_decode_String(arr[1]),
@@ -9958,7 +9958,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       mailServiceEndpoint: dco_decode_opt_String(arr[5]),
       anpServiceEndpoint: dco_decode_opt_String(arr[6]),
       anpServiceDid: dco_decode_opt_String(arr[7]),
-      transportPolicy: dco_decode_dart_message_transport_policy(arr[8]),
+      caBundle: dco_decode_opt_String(arr[8]),
+      transportPolicy: dco_decode_dart_message_transport_policy(arr[9]),
     );
   }
 
@@ -14778,6 +14779,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_mailServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_anpServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_anpServiceDid = sse_decode_opt_String(deserializer);
+    var var_caBundle = sse_decode_opt_String(deserializer);
     var var_transportPolicy = sse_decode_dart_message_transport_policy(
       deserializer,
     );
@@ -14790,6 +14792,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       mailServiceEndpoint: var_mailServiceEndpoint,
       anpServiceEndpoint: var_anpServiceEndpoint,
       anpServiceDid: var_anpServiceDid,
+      caBundle: var_caBundle,
       transportPolicy: var_transportPolicy,
     );
   }
@@ -19841,6 +19844,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.mailServiceEndpoint, serializer);
     sse_encode_opt_String(self.anpServiceEndpoint, serializer);
     sse_encode_opt_String(self.anpServiceDid, serializer);
+    sse_encode_opt_String(self.caBundle, serializer);
     sse_encode_dart_message_transport_policy(self.transportPolicy, serializer);
   }
 

@@ -11,6 +11,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/im-core-node-artifacts.yml'
+      - 'scripts/dependencies/**'
+      - 'dependencies.source.json'
+      - 'dependencies.source.Cargo.lock'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/im-core/**'
@@ -24,6 +27,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/im-core-node-artifacts.yml'
+      - 'scripts/dependencies/**'
+      - 'dependencies.source.json'
+      - 'dependencies.source.Cargo.lock'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/im-core/**'
@@ -40,6 +46,7 @@ permissions:
 env:
   RUST_TOOLCHAIN: 1.88.0
   PNPM_VERSION: 10.27.0
+  AWIKI_NODE_SOURCE_INTEGRATION: ${{ github.event_name == 'pull_request' && github.head_ref == 'Feature/registration-account-first' && github.base_ref == 'release/0910' && '1' || '0' }}
 
 jobs:
   build-platform:
@@ -154,12 +161,13 @@ jobs:
           NODE
 
       - name: Prepare published SDK dependency workspace
+        if: env.AWIKI_NODE_SOURCE_INTEGRATION != '1'
         working-directory: awiki-cli-rs2
         shell: bash
         run: python3 scripts/release/registry-build.py --prepare ../awiki-cli-registry
 
       - name: Build release addon on non-Linux targets
-        if: matrix.linux_gnu == false
+        if: matrix.linux_gnu == false && env.AWIKI_NODE_SOURCE_INTEGRATION != '1'
         working-directory: awiki-cli-registry
         shell: bash
         env:
@@ -168,7 +176,7 @@ jobs:
         run: cargo build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
 
       - name: Build Linux addon inside manylinux 2.28
-        if: matrix.linux_gnu
+        if: matrix.linux_gnu && env.AWIKI_NODE_SOURCE_INTEGRATION != '1'
         working-directory: awiki-cli-registry
         shell: bash
         run: |
@@ -185,6 +193,36 @@ jobs:
             "${{ matrix.manylinux_image }}" \
             bash -euxo pipefail -c \
               '"${CARGO_HOME}/bin/cargo" build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"'
+
+      - name: Build locked source addon on non-Linux targets
+        if: matrix.linux_gnu == false && env.AWIKI_NODE_SOURCE_INTEGRATION == '1'
+        working-directory: awiki-cli-rs2
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '13.5'
+        run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command build --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
+
+      - name: Build locked source addon inside manylinux 2.28
+        if: matrix.linux_gnu && env.AWIKI_NODE_SOURCE_INTEGRATION == '1'
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME="${HOME}" -e CARGO_HOME="${HOME}/.cargo" -e RUSTUP_HOME="${HOME}/.rustup" \
+            -e PATH="${HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
+            -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            -v "${HOME}/.cargo:${HOME}/.cargo" -v "${HOME}/.rustup:${HOME}/.rustup:ro" \
+            -w "${PWD}" "${{ matrix.manylinux_image }}" \
+            python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --cargo-command build --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
+
+      - name: Stage source build output for unchanged platform audits
+        if: env.AWIKI_NODE_SOURCE_INTEGRATION == '1'
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          mkdir -p "${{ matrix.target_dir }}/${{ matrix.rust_target }}/release"
+          cp ".artifacts/dependencies/source/target/${{ matrix.rust_target }}/release/${{ matrix.library }}" "${{ matrix.target_dir }}/${{ matrix.rust_target }}/release/${{ matrix.library }}"
 
       - name: Enforce Linux manylinux 2.28 baseline
         if: matrix.linux_gnu
@@ -287,6 +325,9 @@ jobs:
           AWIKI_NODE_SDK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           pnpm install --frozen-lockfile --ignore-scripts
+          if [[ "$AWIKI_NODE_SOURCE_INTEGRATION" == "1" ]]; then
+            python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --resolve-only
+          fi
           pnpm --filter @awiki/im-core-node run build:typescript
           node scripts/release/node-sdk/stage-package.mjs \
             --kind wrapper \

@@ -1831,6 +1831,7 @@ dependencies = [
 name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
+ "apple-native-keyring-store",
  "anyhow",
  "awiki-im-core",
  "chrono",

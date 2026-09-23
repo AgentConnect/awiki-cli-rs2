@@ -125,17 +125,14 @@ registry-build.py使用指定提交的Git归档构建输入，不再创建worktr
 `.awiki-source.json`记录来源，AWIKI_CLI_COMMIT必须与该提交一致。
 归档是不可用作开发的构建输入，修改仍只在主目录；这个选项不发布/提升任何下载渠道。
 
-### Notify PR #43 开发源码联调
+### 2026-09-23 注册与 Notify 基线源码联调
 
-Notify 已迁移到 `release/0910`。`dependencies.source.json` 固定同一 PR 中含 Notify
-及当前基线的 Core 提交，配套 source Cargo.lock；同时保留 0910 基线的 Identity
-`bef7757603b004bf4a54873040da49480272738f` 源码及其 PR #11 归属。
-ANP 1.0.3 保持 registry 来源；不要退回旧 0815 Core 或旧 Identity Node 修复 pin。
+本注册 PR 已合入 `release/0910` 的 Notify Core 变更。临时
+`dependencies.source.json` 固定 Core `090d2cda`（包含先前的注册 Core
+`4023161e`）、ANP `6bd11e06` 和 Identity `65a79d26`，并配套提交联调锁。
+ANP 与 Identity 的 review 链接是协调集成记录，不表示各自有独立 PR。
 
-使用上文的 source `--check --package awiki-cli` 入口验证本候选。
-当前基线的 ANP/Identity 固定版本缺少 Core 所需的 did:web API，source 编译仍有阻塞。
-本地 Core 回归使用 ANP `0ba814aadc6567cdba366a0550f79e433233e687`、Identity
-`65a79d2644a065942004fad6272ea8b8b6b792f4`（各自 release/0910）通过，不能代替提交中
-固定依赖的验证。这不修复或跳过独立 registry 检查；正式 registry 尚缺新 API，仍是合并门禁。
-获得对应发布授权并满足依赖门禁后才能更新正式 pin/lock，再验证 registry。
-开发、基线迁移及提交 PR 都不授权发布依赖或任何版本。
+此组合保留 Notify 能力和注册所需的 DID Web / 邀请码能力。使用上文的
+`--deps source --source-manifest dependencies.source.json --check` 验证真实解析和编译。
+它只证明未发布源码集成；registry 门禁、Apple 原生制品、设备验收及正式发布
+仍须各自验证。正式 registry 来源不得使用此临时清单，发布需单独授权。

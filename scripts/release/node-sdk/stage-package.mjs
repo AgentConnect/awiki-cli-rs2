@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readSourceEvidence } from './source-evidence.mjs'
 import { exactDependencyVersion } from './registry-version.mjs'
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -9,6 +10,9 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '../../..')
 const stagingRoot = resolve(repositoryRoot, 'dist/node-sdk')
 const localCandidate = process.argv.includes('--local-candidate')
+if (localCandidate && process.env.AWIKI_NODE_SOURCE_INTEGRATION === '1') {
+  throw new Error('local-candidate and source integration are mutually exclusive')
+}
 
 function fail(message) {
   throw new Error(message)
@@ -111,7 +115,9 @@ function cargoSbom(manifest, metadata) {
 
 async function writeCommonFiles(output, manifest, target, binary) {
   const source = sourceRevision()
-  const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
+  const development = process.env.AWIKI_NODE_SOURCE_INTEGRATION === '1'
+    ? await readSourceEvidence(repositoryRoot, source.commit) : null
+  const metadata = development?.metadata || JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
   const localDependencies = localCandidate ? ['anp', 'anp-identity'].map(name => {
     const packages = metadata.packages.filter(pkg => pkg.name === name)
     if (packages.length !== 1 || packages[0].source !== null) {
@@ -129,7 +135,8 @@ async function writeCommonFiles(output, manifest, target, binary) {
   const releaseConfig = await json(join(repositoryRoot, 'scripts/release/cli/release-config.json'))
   const imCoreVersion = packageVersion(join(repositoryRoot, 'crates/im-core/Cargo.toml'))
   const nativeBridgeVersion = packageVersion(join(repositoryRoot, 'crates/im-core-node/Cargo.toml'))
-  const anpCommit = localCandidate ? localDependencies.find(pkg => pkg.name === 'anp').commit : releaseConfig.anp_commit
+  const anpCommit = development?.receipt.dependencies?.anp?.commit
+    || (localCandidate ? localDependencies.find(pkg => pkg.name === 'anp').commit : releaseConfig.anp_commit)
   const nativeSource = await readFile(join(repositoryRoot, 'crates/im-core-node/src/lib.rs'), 'utf8')
   const nativeApiVersion = Number(nativeSource.match(/pub fn native_api_version\(\) -> u32\s*\{\s*(\d+)\s*\}/)?.[1])
   if (!Number.isSafeInteger(nativeApiVersion) || nativeApiVersion < 1) fail('native API version is missing')
@@ -157,13 +164,14 @@ async function writeCommonFiles(output, manifest, target, binary) {
     },
     ...(binaryDigest ? { binarySha256: binaryDigest } : {}),
     distributionPolicy: 'apache-2.0',
+    ...(development ? { dependencyMode: 'source-development', dependencyEvidence: development.receipt } : {}),
     ...(localCandidate ? {
       localCandidate: true,
       dependencyResolution: { mode: 'local-candidate', packages: localDependencies },
       cargoLockSha256: await sha256(join(repositoryRoot, 'Cargo.lock')),
     } : {}),
   }
-  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nANP commit: ${anpCommit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
+  const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nDependency mode: ${development ? "source-development (not a registry release)" : "workspace/registry"}\nANP commit: ${anpCommit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
   const notice = `# Notices\n\nThis package is AWiki CLI S2 software distributed under Apache-2.0. Corresponding source and build provenance are identified in SOURCE.md and provenance.json. Third-party components and their declared licenses are enumerated in sbom.cdx.json. The verified GitHub Actions artifact is the approved test channel; npm publication is a separate release action.\n`
 
   await copyFile(join(repositoryRoot, 'LICENSE'), join(output, 'LICENSE'))

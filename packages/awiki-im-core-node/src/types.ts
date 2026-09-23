@@ -1,5 +1,7 @@
 /** State and service configuration owned by the Node host. */
 export interface ImCoreNodeOpenOptions {
+  /** Additional trusted CA bundle; certificate verification remains enabled. */
+  readonly caBundle?: string
   /** Absolute, process-exclusive root for identities, SQLite, cache, and metadata. */
   readonly stateRoot: string
   readonly serviceBaseUrl: string
@@ -343,6 +345,8 @@ export interface UpdateProfileInput {
 
 /** First stage of phone registration. */
 export interface RegistrationInput {
+  /** Creation-only invitation, passed through for OTP and completion. */
+  readonly inviteCode?: string
   readonly didMethod?: 'wba' | 'web'
   readonly handle: string
   readonly phone: string

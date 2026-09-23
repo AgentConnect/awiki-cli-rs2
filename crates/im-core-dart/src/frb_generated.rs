@@ -12514,6 +12514,7 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
         let mut var_mailServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_anpServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_anpServiceDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_caBundle = <Option<String>>::sse_decode(deserializer);
         let mut var_transportPolicy =
             <crate::dto::config::DartMessageTransportPolicy>::sse_decode(deserializer);
         return crate::dto::config::DartImCoreConfig {
@@ -12525,6 +12526,7 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
             mail_service_endpoint: var_mailServiceEndpoint,
             anp_service_endpoint: var_anpServiceEndpoint,
             anp_service_did: var_anpServiceDid,
+            ca_bundle: var_caBundle,
             transport_policy: var_transportPolicy,
         };
     }
@@ -18734,6 +18736,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::config::DartImCoreConfig {
             self.mail_service_endpoint.into_into_dart().into_dart(),
             self.anp_service_endpoint.into_into_dart().into_dart(),
             self.anp_service_did.into_into_dart().into_dart(),
+            self.ca_bundle.into_into_dart().into_dart(),
             self.transport_policy.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -22904,6 +22907,7 @@ impl SseEncode for crate::dto::config::DartImCoreConfig {
         <Option<String>>::sse_encode(self.mail_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.anp_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.anp_service_did, serializer);
+        <Option<String>>::sse_encode(self.ca_bundle, serializer);
         <crate::dto::config::DartMessageTransportPolicy>::sse_encode(
             self.transport_policy,
             serializer,

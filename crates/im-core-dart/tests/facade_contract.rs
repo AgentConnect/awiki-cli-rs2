@@ -1217,15 +1217,27 @@ fn config_maps_mail_service_endpoint_into_im_core() {
         mail_service_endpoint: Some("https://mail.awiki.ai".to_string()),
         anp_service_endpoint: None,
         anp_service_did: None,
+        ca_bundle: Some("/tmp/isolated-test-roots.pem".to_string()),
         transport_policy: awiki_im_core::dto::config::DartMessageTransportPolicy::Auto,
     };
 
+    let default_core: im_core::ImCoreConfig = awiki_im_core::dto::config::DartImCoreConfig {
+        ca_bundle: None,
+        ..config.clone()
+    }
+    .try_into()
+    .expect("default trust store maps without an override");
+    assert_eq!(default_core.ca_bundle, None);
     let core: im_core::ImCoreConfig = config
         .try_into()
         .expect("mail endpoint maps into ImCoreConfig");
     assert_eq!(
         core.mail_service_endpoint.unwrap().as_str(),
         "https://mail.awiki.ai"
+    );
+    assert_eq!(
+        core.ca_bundle.as_deref(),
+        Some("/tmp/isolated-test-roots.pem")
     );
 }
 

@@ -1615,10 +1615,10 @@ fn set_private_file_mode(_path: &std::path::Path) -> Result<(), ExitError> {
     Ok(())
 }
 
-struct RegisterPlanTarget {
-    local_part: String,
-    full_handle: Handle,
-    effective_domain: String,
+pub(crate) struct RegisterPlanTarget {
+    pub(crate) local_part: String,
+    pub(crate) full_handle: Handle,
+    pub(crate) effective_domain: String,
     explicit_domain: bool,
 }
 
@@ -1703,7 +1703,10 @@ async fn register_handle_plan_command_result_async(
     })
 }
 
-fn register_plan_target(raw: &str, did_domain: &str) -> Result<RegisterPlanTarget, ExitError> {
+pub(crate) fn register_plan_target(
+    raw: &str,
+    did_domain: &str,
+) -> Result<RegisterPlanTarget, ExitError> {
     let trimmed = raw.trim().trim_start_matches('@').to_ascii_lowercase();
     if trimmed.is_empty() {
         return Err(ExitError::new(

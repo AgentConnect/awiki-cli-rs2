@@ -65,6 +65,7 @@ class DartImCoreConfig {
   final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
+  final String? caBundle;
   final DartMessageTransportPolicy transportPolicy;
 
   const DartImCoreConfig({
@@ -76,6 +77,7 @@ class DartImCoreConfig {
     this.mailServiceEndpoint,
     this.anpServiceEndpoint,
     this.anpServiceDid,
+    this.caBundle,
     required this.transportPolicy,
   });
 
@@ -89,6 +91,7 @@ class DartImCoreConfig {
       mailServiceEndpoint.hashCode ^
       anpServiceEndpoint.hashCode ^
       anpServiceDid.hashCode ^
+      caBundle.hashCode ^
       transportPolicy.hashCode;
 
   @override
@@ -104,6 +107,7 @@ class DartImCoreConfig {
           mailServiceEndpoint == other.mailServiceEndpoint &&
           anpServiceEndpoint == other.anpServiceEndpoint &&
           anpServiceDid == other.anpServiceDid &&
+          caBundle == other.caBundle &&
           transportPolicy == other.transportPolicy;
 }
 

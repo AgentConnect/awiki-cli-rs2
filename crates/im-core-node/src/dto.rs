@@ -17,6 +17,7 @@ pub struct NodeClientVersionInfo {
 pub struct NodeOpenOptions {
     pub state_root: String,
     pub service_base_url: String,
+    pub ca_bundle: Option<String>,
     pub did_domain: String,
     pub user_service_endpoint: Option<String>,
     pub message_service_endpoint: Option<String>,
@@ -37,6 +38,7 @@ impl Clone for NodeOpenOptions {
         Self {
             state_root: self.state_root.clone(),
             service_base_url: self.service_base_url.clone(),
+            ca_bundle: self.ca_bundle.clone(),
             did_domain: self.did_domain.clone(),
             user_service_endpoint: self.user_service_endpoint.clone(),
             message_service_endpoint: self.message_service_endpoint.clone(),
@@ -713,6 +715,7 @@ pub struct NodeRegistrationInput {
     pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
+    pub invite_code: Option<String>,
 }
 
 #[napi(object)]
@@ -720,6 +723,7 @@ pub struct NodeRegistrationWithOtp {
     pub did_method: Option<String>,
     pub handle: String,
     pub phone: String,
+    pub invite_code: Option<String>,
     pub otp: String,
 }
 
