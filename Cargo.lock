@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.3"
+version = "1.0.4-rc.1"
 dependencies = [
  "base64 0.22.1",
  "bs58",
