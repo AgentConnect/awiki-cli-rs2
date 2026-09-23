@@ -25,6 +25,8 @@ def test_environment(home, tool_dir):
         "LANG": "en_US.UTF-8",
         "NO_PROXY": "127.0.0.1,localhost",
         "PYTHONDONTWRITEBYTECODE": "1",
+        # Keep the bounded host Node probe independent of other ACP tests.
+        "RUST_TEST_THREADS": "1",
     }
 
 

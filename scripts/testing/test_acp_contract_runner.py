@@ -21,6 +21,7 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("/installed/agents", result["PATH"])
         self.assertEqual(result["HOME"], "/temporary home")
         self.assertEqual(result["XDG_CONFIG_HOME"], "/temporary home/config")
+        self.assertEqual(result["RUST_TEST_THREADS"], "1")
 
     def test_build_requires_the_daemon_test_artifact(self):
         artifact = {"reason": "compiler-artifact", "target": {"name": "awiki_deamon"},
