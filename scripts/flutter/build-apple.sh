@@ -15,6 +15,11 @@ if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
 fi
 
 release_cargo() {
+  if [[ -n "${AWIKI_TEST_SOURCE_MANIFEST:-}" ]]; then
+    [[ "${AWIKI_RELEASE_REGISTRY:-0}" != "1" && "${SOURCE_INTEGRATION}" != "1" ]] || { echo 'Conflicting native dependency modes' >&2; return 1; }
+    python3 "${ROOT_DIR}/scripts/release/test-source-build.py" --manifest "${AWIKI_TEST_SOURCE_MANIFEST}" --provenance "${ROOT_DIR}/target/test-source-native.json" -- cargo "$@"
+    return
+  fi
   if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
     # The Apple caller supplies only the fixed native build options below.
     shift

@@ -3,6 +3,10 @@ name: IM Core Node Tier 1 Artifacts
 on:
   workflow_dispatch:
     inputs:
+      test_sources:
+        description: Build fixed-source Singapore Core candidates without npm publication
+        type: boolean
+        default: false
       build_only:
         description: Build release artifacts without running install tests
         required: false
@@ -50,6 +54,7 @@ env:
 
 jobs:
   build-platform:
+    if: ${{ !inputs.test_sources }}
     name: Build Tier 1 ${{ matrix.target_name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -442,3 +447,105 @@ jobs:
           path: channel/*
           if-no-files-found: error
           retention-days: 30
+
+  singapore-native-core:
+    if: ${{ inputs.test_sources && github.ref == 'refs/heads/test/singapore-refresh-20260923-2' }}
+    name: Singapore Core ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-x64-gnu, runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, ext: so, prefix: lib, image: quay.io/pypa/manylinux_2_28_x86_64}
+          - {name: linux-arm64-gnu, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, ext: so, prefix: lib, image: quay.io/pypa/manylinux_2_28_aarch64}
+          - {name: darwin-arm64, runner: macos-15, target: aarch64-apple-darwin, ext: dylib, prefix: lib, image: ''}
+          - {name: darwin-x64, runner: macos-15-intel, target: x86_64-apple-darwin, ext: dylib, prefix: lib, image: ''}
+          - {name: win32-x64-msvc, runner: windows-2022, target: x86_64-pc-windows-msvc, ext: dll, prefix: '', image: ''}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.5'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: awiki-cli-rs2
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp
+          ref: 4208d1ca386c46e68ff3d281535308b3da737363
+          path: anp/anp
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: 0b6369fe5c3950ba8ab06a7099c7f7566aff730d
+          path: anp/anp-identity
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Prepare exact source inputs
+        shell: bash
+        working-directory: awiki-cli-rs2
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup target add --toolchain 1.88.0 ${{ matrix.target }}
+          corepack enable
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          corepack pnpm --filter @awiki/im-core-node run build:typescript
+          python3 scripts/release/test-source-build.py --manifest scripts/release/singapore-test-sources.json --prepare ../native-inputs
+          cmp Cargo.lock scripts/release/test-source.Cargo.lock
+      - name: Build Core for the native target
+        shell: bash
+        env:
+          NATIVE_IMAGE: ${{ matrix.image }}
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/native-target"
+          if [[ -n "$NATIVE_IMAGE" ]]; then
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -e CARGO_HOME="$HOME/.cargo" -e RUSTUP_HOME="$HOME/.rustup" \
+              -e RUSTUP_TOOLCHAIN=1.88.0 -e CARGO_TARGET_DIR -e NATIVE_TARGET \
+              -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$HOME/.cargo:$HOME/.cargo" \
+              -v "$HOME/.rustup:$HOME/.rustup:ro" -w "$GITHUB_WORKSPACE/native-inputs" \
+              "$NATIVE_IMAGE" bash -euc '
+                "$CARGO_HOME/bin/cargo" build --manifest-path awiki-cli-rs2/Cargo.toml --release --locked -p awiki-im-core-node --target "$NATIVE_TARGET"'
+          else
+            cargo +1.88.0 build --manifest-path native-inputs/awiki-cli-rs2/Cargo.toml --release --locked -p awiki-im-core-node --target "$NATIVE_TARGET"
+          fi
+      - name: Stage, audit and load candidate packages
+        shell: bash
+        env:
+          NATIVE_NAME: ${{ matrix.name }}
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_PREFIX: ${{ matrix.prefix }}
+          NATIVE_EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          cd awiki-cli-rs2
+          binary="../native-target/$NATIVE_TARGET/release/${NATIVE_PREFIX}awiki_im_core_node.$NATIVE_EXT"
+          if [[ "$NATIVE_NAME" == linux-* ]]; then
+            highest="$(objdump -T "$binary" | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' | sort -Vu | tail -n 1)"
+            test -n "$highest"
+            dpkg --compare-versions "$highest" le 2.28
+          elif [[ "$NATIVE_NAME" == darwin-* ]]; then
+            test "$(otool -l "$binary" | awk '$1 == "minos" { print $2; exit }')" = '13.5'
+          fi
+          node scripts/release/node-sdk/stage-package.mjs --local-candidate --kind platform --package-dir "packages/awiki-im-core-node-platforms/$NATIVE_NAME" --target "$NATIVE_NAME" --binary "$binary" --output "dist/node-sdk/staged/$NATIVE_NAME"
+          node scripts/release/node-sdk/stage-package.mjs --local-candidate --kind wrapper --package-dir packages/awiki-im-core-node --output dist/node-sdk/staged/wrapper
+          for kind in "$NATIVE_NAME" wrapper; do
+            python3 scripts/release/label-test-package.py --directory "dist/node-sdk/staged/$kind" --version 0.2.10-sg.20260923.2
+            node scripts/release/node-sdk/pack-audit.mjs --package-dir "dist/node-sdk/staged/$kind" --destination dist/node-sdk/tarballs
+          done
+          wrapper="$(find dist/node-sdk/tarballs -name 'awiki-im-core-node-0*.tgz' -print -quit)"
+          platform="$(find dist/node-sdk/tarballs -name "awiki-im-core-node-$NATIVE_NAME-*.tgz" -print -quit)"
+          node scripts/release/node-sdk/verify-packed-install.mjs --wrapper "$wrapper" --platform "$platform"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: singapore-core-${{ matrix.name }}
+          path: |
+            awiki-cli-rs2/dist/node-sdk/tarballs/*
+            native-inputs/source-receipt.json
+          if-no-files-found: error
+          retention-days: 14

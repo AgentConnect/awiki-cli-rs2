@@ -5,7 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 release_cargo() {
-  if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+  if [[ -n "${AWIKI_TEST_SOURCE_MANIFEST:-}" ]]; then
+    [[ "${AWIKI_RELEASE_REGISTRY:-0}" != "1" ]] || { echo 'Conflicting registry and test source modes' >&2; return 1; }
+    python3 "${ROOT_DIR}/scripts/release/test-source-build.py" --manifest "${AWIKI_TEST_SOURCE_MANIFEST}" --provenance "${ROOT_DIR}/target/test-source-native.json" -- cargo "$@"
+  elif [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
     python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
   else
     cargo "$@"

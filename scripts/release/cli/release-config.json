@@ -6,8 +6,8 @@
       "min_supported_version": "1.0.20-beta.1"
     },
     "stable": {
-      "version": "1.0.52",
-      "min_supported_version": "1.0.52"
+      "version": "1.0.55",
+      "min_supported_version": "1.0.48"
     }
   },
   "anp_repository": "agent-network-protocol/anp",

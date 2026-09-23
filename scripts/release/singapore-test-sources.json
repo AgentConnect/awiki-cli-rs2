@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "channel": "singapore-test",
+  "dependencies": {
+    "anp": {
+      "repository": "https://github.com/agent-network-protocol/anp.git",
+      "commit": "4208d1ca386c46e68ff3d281535308b3da737363",
+      "checkout": "anp/anp"
+    },
+    "anp-identity": {
+      "repository": "https://github.com/agent-network-protocol/anp-identity.git",
+      "commit": "0b6369fe5c3950ba8ab06a7099c7f7566aff730d",
+      "checkout": "anp/anp-identity"
+    }
+  }
+}

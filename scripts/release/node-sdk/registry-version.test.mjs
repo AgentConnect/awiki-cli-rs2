@@ -12,3 +12,11 @@ test('floating or malformed requirements cannot become provenance versions', () 
     assert.throws(() => exactDependencyVersion(value), /exact stable SDK version/)
   }
 })
+
+test('only explicit source candidates can record an exact prerelease', () => {
+  assert.throws(() => exactDependencyVersion('=1.0.4-rc.1'), /exact stable SDK version/)
+  assert.equal(exactDependencyVersion('=1.0.4-rc.1', { allowPrerelease: true }), '1.0.4-rc.1')
+  for (const value of ['^1.0.4-rc.1', '1.0.4-rc', '1.0.4-dev.1']) {
+    assert.throws(() => exactDependencyVersion(value, { allowPrerelease: true }), /exact stable SDK version/)
+  }
+})

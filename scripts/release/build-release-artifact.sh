@@ -9,7 +9,7 @@ usage() {
 Build a Rust awiki-cli release archive with the Go release artifact name contract.
 
 Usage:
-  scripts/release/build-release-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--tenant-config FILE] [--dry-run]
+  scripts/release/build-release-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--tenant-config FILE] [--test-sources FILE] [--dry-run]
 
 Options:
   --version VERSION   Package version. Defaults to package.json.version.
@@ -19,6 +19,7 @@ Options:
   --dist DIR         Output directory. Defaults to dist.
   --tenant-config FILE
                      Complete two-slot built-in tenant config. Defaults to the repository config.
+  --test-sources FILE Explicit pinned-source Singapore test build; never a registry release.
   --dry-run          Print the build and archive plan without building.
   -h, --help         Show this help.
 
@@ -115,6 +116,7 @@ TARGET_TRIPLE=""
 DIST_DIR="${ROOT_DIR}/dist"
 TENANT_CONFIG="${ROOT_DIR}/config/builtin-tenants.default.json"
 DRY_RUN=0
+TEST_SOURCES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -146,6 +148,11 @@ while [[ $# -gt 0 ]]; do
     --tenant-config)
       TENANT_CONFIG="${2:-}"
       [[ -n "${TENANT_CONFIG}" ]] || die "--tenant-config requires a value"
+      shift 2
+      ;;
+    --test-sources)
+      TEST_SOURCES="${2:-}"
+      [[ -n "${TEST_SOURCES}" ]] || die "--test-sources requires a manifest"
       shift 2
       ;;
     --dry-run)
@@ -227,11 +234,15 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
-cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+if [[ -n "${TEST_SOURCES}" ]]; then
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/test-source-build.py" --manifest "${TEST_SOURCES}" --provenance "${DIST_DIR}/awiki-cli-${VERSION}-${OS_NAME}-${ARCH_NAME}.source.json" -- "${cargo_cmd[@]}")
+else
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+fi
 
-anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
+anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" "${TEST_SOURCES}" <<'NODE'
 const fs = require('fs');
-const [configPath, version] = process.argv.slice(2);
+const [configPath, version, testSources] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const versions = Object.values(config.channels || {}).map(entry => entry.version);
 if (!versions.includes(version)) {
@@ -240,7 +251,7 @@ if (!versions.includes(version)) {
 if (!/^[a-f0-9]{40}$/i.test(config.anp_commit || '')) {
   throw new Error(`anp_commit in ${configPath} must be a full commit SHA`);
 }
-process.stdout.write(config.anp_commit);
+process.stdout.write(testSources ? JSON.parse(fs.readFileSync(testSources, "utf8")).dependencies.anp.commit : config.anp_commit);
 NODE
 )"
 
@@ -324,6 +335,11 @@ The source location above identifies the exact revision used to build this
 release. The Corresponding Source is provided under Apache License 2.0 as described in
 the accompanying LICENSE file.
 EOF
+
+if [[ -n "${TEST_SOURCES}" ]]; then
+  printf '\nDependency mode: test-source (Singapore test build; SDKs unpublished)\n\n' >> "${stage_dir}/SOURCE.md"
+  cat "${DIST_DIR}/awiki-cli-${VERSION}-${OS_NAME}-${ARCH_NAME}.source.json" >> "${stage_dir}/SOURCE.md"
+fi
 
 archive_entries=(
   "${bin_name}"
