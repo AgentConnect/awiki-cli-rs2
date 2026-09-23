@@ -232,3 +232,35 @@ async fn reverse_discovery_requires_exact_document_and_one_service() {
         .is_err());
     assert!(!t.public_reads.iter().any(|url| url == URL));
 }
+
+#[tokio::test]
+async fn production_foreign_discovery_guards_initial_document_and_binding_reads() {
+    use crate::internal::transport::{AsyncRawJsonTransport, CoreHttpTransport, RawJsonTransport};
+    let fixture = super::super::tests::Fixture::new("public-network-boundary");
+    let client = fixture.client();
+    let mut http = CoreHttpTransport::new(&client);
+    // These are real production transports, not document-returning test doubles.
+    for did in ["did:wba:127.0.0.1:peer", "did:wba:169.254.169.254:peer"] {
+        assert!(foreign_binding_from_did(&client, &mut http, did).is_err());
+        assert!(foreign_binding_from_did_async(&client, &mut http, did)
+            .await
+            .is_err());
+    }
+    let mut discovery = DirectoryDiscovery(&mut http);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let binding_url = format!(
+        "https://{}/.well-known/handle/peer",
+        listener.local_addr().unwrap()
+    );
+    assert!(RawJsonTransport::get_json_url(&mut discovery, &binding_url, BTreeMap::new()).is_err());
+    assert!(
+        AsyncRawJsonTransport::get_json_url(&mut discovery, &binding_url, BTreeMap::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

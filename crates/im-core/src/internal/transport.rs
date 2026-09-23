@@ -1973,9 +1973,12 @@ impl RpcTransport for CoreHttpTransport<'_> {
     fn directory_get_json_url(
         &mut self,
         url: &str,
-        headers: BTreeMap<String, String>,
+        _headers: BTreeMap<String, String>,
     ) -> crate::ImResult<Value> {
-        RawJsonTransport::get_json_url(self, url, headers)
+        crate::internal::public_discovery_http::get_blocking(
+            url,
+            self.client.core_inner().sdk_config().ca_bundle_path(),
+        )
     }
 }
 
@@ -1991,9 +1994,13 @@ impl AsyncRpcTransport for CoreHttpTransport<'_> {
     async fn directory_get_json_url(
         &mut self,
         url: &str,
-        headers: BTreeMap<String, String>,
+        _headers: BTreeMap<String, String>,
     ) -> crate::ImResult<Value> {
-        AsyncRawJsonTransport::get_json_url(self, url, headers).await
+        crate::internal::public_discovery_http::get(
+            url,
+            self.client.core_inner().sdk_config().ca_bundle_path(),
+        )
+        .await
     }
 }
 

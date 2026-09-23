@@ -20,6 +20,7 @@ pub(crate) mod group_runtime;
 pub(crate) mod group_system_events;
 pub(crate) mod handle_discovery;
 pub(crate) mod http;
+pub(crate) mod public_discovery_http;
 pub(crate) mod idempotent_submission;
 pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_custody;
