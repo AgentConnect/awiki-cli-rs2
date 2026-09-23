@@ -87,16 +87,24 @@ fn registration_precheck_uses_read_only_rpc_and_accepts_service_null_error() {
         reader.read_line(&mut line).unwrap();
         assert_eq!(line, "POST /user-service/v1/handle/rpc HTTP/1.1\r\n");
         let mut length = 0;
+        let mut client_version = None;
         loop {
             line.clear();
             reader.read_line(&mut line).unwrap();
             if line == "\r\n" {
                 break;
             }
-            if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+            let lower = line.to_ascii_lowercase();
+            if let Some(value) = lower.strip_prefix("content-length:") {
                 length = value.trim().parse::<usize>().unwrap();
             }
+            if lower.starts_with("x-awiki-client-version:") {
+                client_version = line
+                    .split_once(':')
+                    .map(|(_, value)| value.trim().to_owned());
+            }
         }
+        assert_eq!(client_version.as_deref(), Some("awiki-cli/0910/1.2.3"));
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes).unwrap();
         let request: Value = serde_json::from_slice(&bytes).unwrap();
@@ -112,12 +120,15 @@ fn registration_precheck_uses_read_only_rpc_and_accepts_service_null_error() {
         )
         .unwrap();
     });
-    let result = check((
-        format!("http://{address}/user-service/v1/handle/rpc"),
-        String::new(),
-        json!({"handle":"abc","domain":"registration.test","check_invite":true,"invite_code":"test-only-invitation"}),
-        "abc.registration.test".to_owned(),
-    ));
+    let result = check_with_client_version(
+        (
+            format!("http://{address}/user-service/v1/handle/rpc"),
+            String::new(),
+            json!({"handle":"abc","domain":"registration.test","check_invite":true,"invite_code":"test-only-invitation"}),
+            "abc.registration.test".to_owned(),
+        ),
+        Some(im_core::ClientVersionInfo::new("awiki-cli", "0910", "1.2.3", None).unwrap()),
+    );
     server.join().unwrap();
     assert!(result.is_ok());
 }
