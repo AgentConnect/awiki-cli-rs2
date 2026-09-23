@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.3"
+version = "1.0.4-rc.1"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.104"
+version = "0.1.103"
 dependencies = [
  "agent-client-protocol",
  "anp",
@@ -2105,6 +2105,7 @@ name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apple-native-keyring-store",
  "awiki-im-core",
  "chrono",
  "flutter_rust_bridge",
