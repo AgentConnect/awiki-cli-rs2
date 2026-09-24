@@ -3,18 +3,18 @@
   "dependencies": {
     "awiki-im-core": {
       "repository": "https://github.com/AgentConnect/awiki-cli-rs2.git",
-      "commit": "090d2cda60976dc8209cf59ee0432e5b2db02942",
-      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/43"
+      "commit": "a4b6c81e92ba43b11849eca537df51cef6ad56d9",
+      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/48"
     },
     "anp": {
       "repository": "https://github.com/agent-network-protocol/anp.git",
-      "commit": "6bd11e06ee5681730d12b9aeaf1aa5cf0ff70286",
-      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/41"
+      "commit": "4208d1ca386c46e68ff3d281535308b3da737363",
+      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/48"
     },
     "anp-identity": {
       "repository": "https://github.com/agent-network-protocol/anp-identity.git",
-      "commit": "65a79d2644a065942004fad6272ea8b8b6b792f4",
-      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/41"
+      "commit": "0b6369fe5c3950ba8ab06a7099c7f7566aff730d",
+      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/48"
     }
   }
 }
