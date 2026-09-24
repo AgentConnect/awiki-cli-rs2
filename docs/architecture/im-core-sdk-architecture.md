@@ -338,7 +338,7 @@ tail-only 历史边界，也不适用于验证码/邮箱等待/Join 准备结果
 CLI 收件箱/历史查询将带有 `sync.budget_exhausted` 的 Idle/Changed 结果视为
 未完成错误，不以成功的空投影掩盖仍待处理的分页或超时。
 
-compact recovery 的 manifest 页数预算与单轮增量页数预算分别计数；达到合法的 100 页历史边界不消耗后续增量的 20 页额度。总运行时间预算仍有效，未完成时保留公开的 `sync.budget_exhausted` 可续跑错误。前台处理等待遇到广播通知积压仍按 SQLite 待处理输入和在途任务继续等待，最终返回 `sync.processing_updates_lagged`，由宿主重读已提交视图；不能把丢失通知伪装成完整处理观察。
+compact recovery 的 manifest 页数预算与单轮增量页数预算分别计数；达到合法的 100 页历史边界不消耗后续增量的 20 页额度。单轮总运行时间预算为 75 秒，供大型快照在一次内存累计中收齐；未完成时保留公开的 `sync.budget_exhausted` 可续跑错误。前台处理等待遇到广播通知积压仍按 SQLite 待处理输入和在途任务继续等待，最终返回 `sync.processing_updates_lagged`，由宿主重读已提交视图；不能把丢失通知伪装成完整处理观察。
 
 Legacy identities keep `device_state` absent until an explicit one-time upgrade.
 Only the original device that still has the usable Legacy `key-1` is supported:

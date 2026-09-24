@@ -12,7 +12,7 @@ use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTranspo
 const PENDING_PERSONA_RESOLUTION_LIMIT: u32 = 32;
 const GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS: i64 = 3;
 const SYNC_RUN_MAX_PAGES: u32 = 20;
-const SYNC_RUN_DEADLINE: StdDuration = StdDuration::from_secs(20);
+const SYNC_RUN_DEADLINE: StdDuration = StdDuration::from_secs(75);
 
 pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     client: &'a crate::core::ImClient,
@@ -1821,7 +1821,7 @@ where
             let has_continuation = page.has_more || lane_has_more;
             if has_continuation
                 && (delta_pages_fetched >= SYNC_RUN_MAX_PAGES
-                    || run_started.elapsed() >= SYNC_RUN_DEADLINE)
+                    || run_started.elapsed() >= self.run_deadline)
             {
                 result.warnings.push("sync.budget_exhausted".to_owned());
                 result.changed_conversation_ids.sort();
