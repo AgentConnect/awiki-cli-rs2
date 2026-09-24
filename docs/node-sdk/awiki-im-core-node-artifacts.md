@@ -5,7 +5,7 @@
 打包 private tarball；provenance 与 SOURCE 采用实际解析的 ANP/Identity 提交和 dirty 状态，
 并记录 Cargo lock 摘要。native API 从当前 Rust facade 读取。该候选验证不替代正式 registry
 及平台发布检查，正式配置中的历史 ANP SHA 不可冒充本次本地依赖。
-`workflow_dispatch` 可显式选择 `build_only=true`，仅构建和打包，不执行安装测试；全部构建成功后仍聚合完整六包候选，默认 CI 仍保留安装测试。
+`workflow_dispatch` 默认 `build_only=true`，仅构建和打包，不执行安装测试；全部构建成功后仍聚合完整六包候选。只有用户明确要求安装测试时才在手动触发中选择 `build_only=false`。push/PR CI 仍保留安装测试；未运行测试的手动制品不得标作安装验收通过。
 
 ## 第一版发行决策
 
@@ -115,9 +115,11 @@ wrapper 使用同一脚本的 `--kind wrapper`。`pack-audit.mjs` 会拒绝源�
 ## Apache-2.0 artifact channel
 
 `provenance.json` 强制记录 `apache-2.0`。workflow 先产出五个平台包，
-再产出同版本 wrapper；全部 Node/平台 packed-install 验证通过后，才聚合上传名为
-`im-core-node-apache-artifacts-<run-id>` 的 GitHub Actions artifact，保留 30 天。聚合包包含
-六个 tarball 及各自 SHA-256，是 Step 04 供 `dsh-awiki` 安装验证的批准 channel。
+再产出同版本 wrapper；构建与打包审计通过后聚合上传名为
+`im-core-node-apache-artifacts-<run-id>` 的 GitHub Actions artifact，保留 30 天。只有本轮
+明确选择安装测试时，聚合还要求全部 Node/平台 packed-install 通过；默认手动构建的制品
+没有这项测试证据。聚合包包含六个 tarball 及各自 SHA-256，可供 Step 04 的 `dsh-awiki`
+按显式测试要求做安装验证。
 
 仓库不包含自动 npm publish job。若后续需要正式 npm registry，必须把同一组已验证 tarball
 按“全部平台包 → root wrapper”的顺序发布，再从该 registry 做一次 clean install；不能重建

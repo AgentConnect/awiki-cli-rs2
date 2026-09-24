@@ -119,7 +119,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --target "${{ matrix.target }}"
 
-      - name: Smoke test binary
+      - name: Validate built binary version
         shell: bash
         working-directory: awiki-cli-rs2
         run: |

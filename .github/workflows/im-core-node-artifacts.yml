@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       build_only:
-        description: Build release artifacts without running install tests
+        description: Build release artifacts without install tests (default for manual release runs)
         required: false
-        default: false
+        default: true
         type: boolean
   pull_request:
     paths:
@@ -346,7 +346,7 @@ jobs:
           retention-days: 7
 
   packed-install:
-    if: ${{ !inputs.build_only }}
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build_only }}
     name: Packed install ${{ matrix.target.name }} / Node ${{ matrix.node }}
     needs: [build-platform, build-wrapper]
     runs-on: ${{ matrix.target.runner }}
