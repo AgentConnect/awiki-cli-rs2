@@ -3255,6 +3255,8 @@ fn canonical_generation(value: &str) -> bool {
 mod tests {
     mod registration_cleanup;
     use super::*;
+    #[cfg(feature = "identity-native-anp")]
+    mod multi_handle;
     mod postcommit_authority;
     mod retirement;
     mod state_machine;

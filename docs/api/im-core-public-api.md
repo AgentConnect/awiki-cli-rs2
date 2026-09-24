@@ -1004,6 +1004,11 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 `identity.local_registry_conflict`，Host 应指引用户保留数据并继续已有恢复或联系支持，
 不可把该错误显示为新 Handle 重名或短信验证码错误。旧版已提交恢复的精确重复投影
 可由同一 operation 的 `Resume` 在权威绑定核验后收敛；`inspect` 只读且不自动清理。
+同一索引存在多个重复 Handle 时，每个任务只能修复其已验证的目标；局部修复可落盘，
+但其他冲突仍会阻止普通客户端加载。此时 Resume 返回 `identity.local_registry_conflict`，
+保留原 operation 的 `local_transition_pending`，不宣告 Applied。Host 应允许用户返回处理
+其他 Handle 的已有恢复，再续办本任务；没有可证明的恢复任务时提示保留数据并联系支持。
+不增加 V4 wire 阶段或错误枚举，不允许 Host 直接删改索引。
 
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
 `local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5

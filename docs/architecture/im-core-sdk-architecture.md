@@ -159,7 +159,18 @@ Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完
 account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史记录；唯一的当前
 直接前驱仍须由绑定行与身份索引共同证明。`Conflict` 不得与完全没有本机相关状态的
 `None` 合并为 fresh owner，任何仍占用该 Handle 的孤立活跃凭证也必须阻止首次远端
-提交。所有身份索引写入统一拒绝两个活跃 alias 占用相同完整 Handle。
+提交。普通身份索引写入统一拒绝两个活跃 alias 占用相同完整 Handle。
+
+旧版已提交 Recovery 的精确重复投影使用受限修复：持有索引锁并验证当前 operation、
+远端绑定与前驱/后继后，只移除该任务的失效前驱，其他 Handle 的记录保持不变。
+其他 Handle 的既有重复允许逐项减少，不能通过普通写入新增或扩大。私有备份保持不可变；
+重试只比较本任务的精确前驱/后继，其他独立恢复已改变整份索引不构成拒绝理由。
+默认身份先写、索引最后原子替换；索引替换失败时恢复原默认文件。两步间崩溃仍保留
+重复索引及原恢复标记，可经原任务续办，不能留下“索引已删除前驱、默认文件仍指向前驱”
+而无法进入恢复的状态。补偿失败同样保留任务和备份并返回错误。
+局部索引修复不等于 Recovery 已 Applied：若其他 Handle 仍重复，普通读取及客户端加载
+继续返回 `identity.local_registry_conflict`，原任务保留 `local_transition_pending`。
+处理其他 Handle 后再 Resume，继续完成 JWT、PreKey 和既有 Applied 收尾，不创建新任务。
 
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
