@@ -10,7 +10,15 @@ python3 -m unittest discover -s scripts/testing -p 'test_acp_contract_runner.py'
 支持 macOS 与 Linux；需要仓库要求的 Rust 工具链、Python 3 和 Node.js 20.6+。
 无需安装七种 Agent 客户端、模型 API Key 或运行中的服务。
 依赖首次下载和 Cargo 编译使用正常开发缓存，编译时间单独计算；预热后测试通常为秒级。
-可用 `--cargo-toolchain` 或既有 `AWIKI_DAEMON_RUST_CARGO_TOOLCHAIN` 指定已安装工具链。
+可用 `--cargo-toolchain` 或既有 `AWIKI_DAEMON_RUST_CARGO_TOOLCHAIN` 指定已安装工具链，
+未设置时沿用跨仓入口的 `AWIKI_CLI_RUST_CARGO_TOOLCHAIN`。
+
+显式 `AWIKI_SOURCE_INTEGRATION=1` 时，ACP 编译使用同一
+`scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json`
+入口，在隔离源码和配套锁内构建并复用 `.artifacts/dependencies/source/target`。
+`AWIKI_RELEASE_REGISTRY=1` 则经过原 registry 门禁；两种模式互斥，构建失败不回退。
+未选择这两种 CI 模式时保留本地 workspace 入口。构建来源不改变后续测试选择、
+隔离环境及无模型边界，不发布 SDK。
 
 入口只构建一次 Daemon 单元测试程序，再以临时 HOME/XDG 目录、受限 PATH 和环境白名单执行。
 只向测试提供 Python、Node 与系统工具；不继承模型凭据、个人客户端配置、代理或 `NODE_OPTIONS`。
