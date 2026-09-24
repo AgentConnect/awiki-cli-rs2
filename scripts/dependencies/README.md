@@ -139,7 +139,7 @@ ANP 与 Identity 的 review 链接是协调集成记录，不表示各自有独�
 
 ### 2026-09-24 Handle 连续恢复修复联调
 
-本次 source 清单固定 Core 修复提交 `a4b6c81e`、ANP `1.0.4-rc.1`
+本次 source 清单固定 Core 修复提交 `d3ad7075`、ANP `1.0.4-rc.1`
 标签提交 `4208d1ca`、Identity `0b6369fe`，对应 PR #48 与配套联调锁。
 ANP/Identity 沿用本次手工验收的已提交源码，没有为恢复问题新增修改；
 其 review 链接指向组合来源记录，不表示存在新的独立依赖 PR。
