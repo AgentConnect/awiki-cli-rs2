@@ -19,6 +19,8 @@ python3 -m unittest discover -s scripts/testing -p 'test_acp_contract_runner.py'
 `AWIKI_RELEASE_REGISTRY=1` 则经过原 registry 门禁；两种模式互斥，构建失败不回退。
 未选择这两种 CI 模式时保留本地 workspace 入口。构建来源不改变后续测试选择、
 隔离环境及无模型边界，不发布 SDK。
+Gemini 的 Node 历史契约夹具随测试程序编译，在临时目录中展开并自动清理；执行时
+不依赖已被隔离构建器删除的源码目录，也不读取另一份未参与编译的工作区文件。
 
 入口只构建一次 Daemon 单元测试程序，再以临时 HOME/XDG 目录、受限 PATH 和环境白名单执行。
 只向测试提供 Python、Node 与系统工具；不继承模型凭据、个人客户端配置、代理或 `NODE_OPTIONS`。
