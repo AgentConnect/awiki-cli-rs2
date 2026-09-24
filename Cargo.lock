@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.4-rc.1"
+version = "1.0.5"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anp",
  "base64 0.22.1",

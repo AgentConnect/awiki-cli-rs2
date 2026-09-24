@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8
+
+- Build all five native packages and the wrapper from the release/0910 source
+  with native API v18 and the published ANP 1.0.5, Identity 0.2.4, and IM Core
+  0.1.5 Rust crates.
+- Include the currently unreleased service update, identity, and messaging
+  fixes in the stable npm package set.
+
 ## Unreleased
 
 - Add typed ordinary DID service updates and durable resume/pending inspection.

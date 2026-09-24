@@ -1,7 +1,7 @@
 # `@awiki/im-core-node` 原生制品
 
-当前发布版本为 `0.2.6`，native API 为 `14`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
-本任务源码候选为 native API `18`，尚未正式发布。源码消费者通过显式 `--local-candidate`
+本次 `release/0910` 正式发布目标为 `0.2.8`，native API 为 `18`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+源码消费者通过显式 `--local-candidate`
 打包 private tarball；provenance 与 SOURCE 采用实际解析的 ANP/Identity 提交和 dirty 状态，
 并记录 Cargo lock 摘要。native API 从当前 Rust facade 读取。该候选验证不替代正式 registry
 及平台发布检查，正式配置中的历史 ANP SHA 不可冒充本次本地依赖。
