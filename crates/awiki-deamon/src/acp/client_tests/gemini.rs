@@ -18,7 +18,10 @@ fn history_roundtrip_and_exact_version_hook() {
             "tests/fixtures/gemini_060_history.json",
             include_str!("../../../tests/fixtures/gemini_060_history.json"),
         ),
-        ("src/acp/gemini_replay.mjs", include_str!("../gemini_replay.mjs")),
+        (
+            "src/acp/gemini_replay.mjs",
+            include_str!("../gemini_replay.mjs"),
+        ),
     ] {
         let path = root.path().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
