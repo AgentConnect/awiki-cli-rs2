@@ -8,37 +8,12 @@ on:
         required: false
         default: true
         type: boolean
-  pull_request:
-    paths:
-      - '.github/workflows/im-core-node-artifacts.yml'
-      - 'scripts/dependencies/**'
-      - 'dependencies.source.json'
-      - 'dependencies.source.Cargo.lock'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'crates/im-core/**'
-      - 'crates/im-core-node/**'
-      - 'packages/awiki-im-core-node/**'
-      - 'packages/awiki-im-core-node-platforms/**'
-      - 'scripts/release/node-sdk/**'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/im-core-node-artifacts.yml'
-      - 'scripts/dependencies/**'
-      - 'dependencies.source.json'
-      - 'dependencies.source.Cargo.lock'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'crates/im-core/**'
-      - 'crates/im-core-node/**'
-      - 'packages/awiki-im-core-node/**'
-      - 'packages/awiki-im-core-node-platforms/**'
-      - 'scripts/release/node-sdk/**'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
+      dependency_source:
+        description: Select published registry SDKs or the committed source manifest
+        required: false
+        default: registry
+        type: choice
+        options: [registry, source]
 
 permissions:
   contents: read
@@ -46,7 +21,7 @@ permissions:
 env:
   RUST_TOOLCHAIN: 1.88.0
   PNPM_VERSION: 10.27.0
-  AWIKI_NODE_SOURCE_INTEGRATION: ${{ github.event_name == 'pull_request' && github.head_ref == 'Feature/registration-account-first' && github.base_ref == 'release/0910' && '1' || '0' }}
+  AWIKI_NODE_SOURCE_INTEGRATION: ${{ inputs.dependency_source == 'source' && '1' || '0' }}
 
 jobs:
   build-platform:

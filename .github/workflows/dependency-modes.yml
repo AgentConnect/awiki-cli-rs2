@@ -1,7 +1,13 @@
 name: Dependency modes
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      dependency_source:
+        description: Select the registry dependency graph or the committed source manifest
+        required: false
+        default: registry
+        type: choice
+        options: [registry, source]
 permissions:
   contents: read
 jobs:
@@ -19,7 +25,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts/flutter -p 'test_source_artifact.py' -v
       - name: Check selected development dependency graph
         env:
-          SOURCE_PR: ${{ (github.head_ref || github.ref_name) == 'Feature/registration-account-first' && '1' || '0' }}
+          SOURCE_PR: ${{ inputs.dependency_source == 'source' && '1' || '0' }}
         run: |
           if [[ "$SOURCE_PR" == "1" ]]; then
             python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package awiki-cli

@@ -2,39 +2,13 @@ name: IM Core Node CI
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/im-core-node-ci.yml'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'package.json'
-      - 'crates/im-core/**'
-      - 'crates/im-core-node/**'
-      - 'packages/awiki-im-core-node/**'
-      - 'packages/awiki-im-core-node-platforms/**'
-      - 'scripts/release/node-sdk/**'
-      - 'scripts/release/cli/config.test.js'
-      - 'scripts/release/cli/node-ci-refs.js'
-      - 'dependencies.source.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/im-core-node-ci.yml'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'package.json'
-      - 'crates/im-core/**'
-      - 'crates/im-core-node/**'
-      - 'packages/awiki-im-core-node/**'
-      - 'packages/awiki-im-core-node-platforms/**'
-      - 'scripts/release/node-sdk/**'
-      - 'scripts/release/cli/config.test.js'
-      - 'scripts/release/cli/node-ci-refs.js'
-      - 'dependencies.source.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
+    inputs:
+      dependency_source:
+        description: Select published registry SDKs or the committed source manifest
+        required: false
+        default: registry
+        type: choice
+        options: [registry, source]
 
 permissions:
   contents: read
@@ -53,7 +27,7 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         env:
-          AWIKI_NODE_SOURCE_REFS: ${{ github.event_name == 'pull_request' && github.base_ref == 'release/0910' && github.head_ref == 'Feature/registration-account-first' && '1' || '0' }}
+          AWIKI_NODE_SOURCE_REFS: ${{ inputs.dependency_source == 'source' && '1' || '0' }}
         run: |
           node scripts/release/cli/node-ci-refs.js >> "${GITHUB_OUTPUT}"
 
