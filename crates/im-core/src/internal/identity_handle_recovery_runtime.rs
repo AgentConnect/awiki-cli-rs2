@@ -937,9 +937,19 @@ pub(crate) async fn prepare(
             crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(candidate) => {
                 pending.freeze_local_owner(&candidate, &grant.current_binding.current_did)?;
             }
-            crate::internal::identity_local_owner_matcher::StableOwnerMatch::None
-            | crate::internal::identity_local_owner_matcher::StableOwnerMatch::Conflict => {
+            crate::internal::identity_local_owner_matcher::StableOwnerMatch::None => {
                 pending.freeze_fresh_local_owner(&grant.current_binding.current_did)?;
+            }
+            crate::internal::identity_local_owner_matcher::StableOwnerMatch::Conflict => {
+                persist_nonterminal_error_v4(
+                    core,
+                    &store,
+                    &mut pending,
+                    HandleRecoveryErrorCode::LocalMigrationUnsupported,
+                )?;
+                return Err(recovery_error(
+                    HandleRecoveryErrorCode::LocalMigrationUnsupported,
+                ));
             }
         }
     }
@@ -2288,6 +2298,10 @@ async fn apply_local_transition_v4(
     if marker.phase
         == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
     {
+        // The first pass can move Pending -> IdentitySwitched in this call.
+        // Any pre-existing duplicate must be resolved before opening a client.
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .retire_duplicate_recovery_predecessor(&marker)?;
         let recovered_did = crate::ids::Did::parse(&result.current_did)?;
         let client = core
             .client_async(crate::identity::IdentitySelector::Did(
@@ -3156,6 +3170,13 @@ fn public_error_code(value: &str) -> Option<HandleRecoveryErrorCode> {
 }
 
 fn local_transition_retry_code(error: &crate::ImError) -> Option<HandleRecoveryErrorCode> {
+    if matches!(
+        error,
+        crate::ImError::Service { code: Some(code), .. }
+            if code == "identity.local_registry_conflict"
+    ) {
+        return None;
+    }
     matches!(
         error,
         crate::ImError::TransportUnavailable { .. }
@@ -3234,6 +3255,8 @@ fn canonical_generation(value: &str) -> bool {
 mod tests {
     mod registration_cleanup;
     use super::*;
+    #[cfg(feature = "identity-native-anp")]
+    mod multi_handle;
     mod postcommit_authority;
     mod retirement;
     mod state_machine;
@@ -6142,6 +6165,15 @@ mod tests {
         }
         assert_eq!(
             local_transition_retry_code(&crate::ImError::PermissionDenied),
+            None,
+        );
+        assert_eq!(
+            local_transition_retry_code(&crate::ImError::Service {
+                status_code: None,
+                code: Some("identity.local_registry_conflict".to_owned()),
+                message: "local identity conflict".to_owned(),
+                data: None,
+            }),
             None,
         );
 

@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -139,6 +140,57 @@ pub(crate) struct AnpIdentityProjectionStorage {
 pub(crate) struct AnpIdentityProjectionReplacement<'a> {
     pub(crate) expected_did: &'a str,
     pub(crate) expected_unique_id: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryDuplicateProjection {
+    pub(crate) predecessor_alias: String,
+    pub(crate) successor_alias: String,
+}
+
+/// Only a committed initiator transition at the identity-switched checkpoint
+/// may classify the exact stale predecessor/successor pair. This never guesses
+/// from the greatest generation or the default identity.
+pub(crate) fn recovery_duplicate_projection(
+    index: &IndexPayload,
+    marker: &crate::internal::identity_transition_pending::IdentityTransitionMarker,
+) -> Option<RecoveryDuplicateProjection> {
+    use crate::internal::identity_transition_pending::{TransitionPhase, TransitionSourceKind};
+    if marker.source_kind != TransitionSourceKind::Initiator
+        || marker.phase != TransitionPhase::IdentitySwitched
+    {
+        return None;
+    }
+    let previous_generation =
+        crate::internal::identity_handle_recovery_pending::previous_canonical_generation(
+            &marker.binding_generation,
+        )?;
+    let matches = index
+        .credentials
+        .iter()
+        .filter(|(_, entry)| entry.full_handle == marker.handle)
+        .collect::<Vec<_>>();
+    if matches.len() != 2 {
+        return None;
+    }
+    let predecessor = matches.iter().find(|(_, entry)| {
+        entry.user_id == marker.account_user_id
+            && entry.did == marker.previous_did
+            && entry.binding_generation.as_deref() == Some(previous_generation.as_str())
+            && entry.unique_id != marker.owner_identity_id
+            && entry.identity_custody_backend.as_deref() == Some("anp_identity")
+    })?;
+    let successor = matches.iter().find(|(_, entry)| {
+        entry.user_id == marker.account_user_id
+            && entry.did == marker.current_did
+            && entry.binding_generation.as_deref() == Some(marker.binding_generation.as_str())
+            && entry.unique_id == marker.owner_identity_id
+            && entry.identity_custody_backend.as_deref() == Some("anp_identity")
+    })?;
+    (predecessor.0 != successor.0).then(|| RecoveryDuplicateProjection {
+        predecessor_alias: (*predecessor.0).clone(),
+        successor_alias: (*successor.0).clone(),
+    })
 }
 
 #[derive(Clone)]
@@ -359,6 +411,134 @@ impl<'a> IdentityStore<'a> {
         Self { paths }
     }
 
+    /// Retires only the stale active projection after a verified remote Commit.
+    /// The predecessor identity files, custody and owner-scoped business data
+    /// remain intact. A private copy of the whole preimage precedes the atomic
+    /// index change so a crash or later history repair retains exact evidence.
+    pub(crate) fn retire_duplicate_recovery_predecessor(
+        &self,
+        marker: &crate::internal::identity_transition_pending::IdentityTransitionMarker,
+    ) -> crate::ImResult<bool> {
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let count = index
+            .credentials
+            .values()
+            .filter(|entry| entry.full_handle == marker.handle)
+            .count();
+        if count <= 1 {
+            return Ok(false);
+        }
+        let pair = recovery_duplicate_projection(&index, marker).ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "recovery predecessor projection cannot be proven".to_owned(),
+            }
+        })?;
+        let raw = fs::read(&self.paths.registry_path)?;
+        let backup_name = format!("{:x}.json", Sha256::digest(marker.recovery_id.as_bytes()));
+        let backup_dir = self
+            .paths
+            .identity_root_dir
+            .join(".recovery-registry-backups");
+        if let Err(error) = fs::create_dir(&backup_dir) {
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(crate::ImError::from(error));
+            }
+        }
+        if !fs::symlink_metadata(&backup_dir)?.file_type().is_dir() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        set_private_dir_mode(&backup_dir)?;
+        let backup_path = backup_dir.join(backup_name);
+        match fs::symlink_metadata(&backup_path) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(_) => {
+                let backup =
+                    normalize_index_payload(parse_index_payload(&fs::read(&backup_path)?)?)?;
+                // Another operation may have repaired a different Handle since
+                // this backup was written. Only this operation's exact pair is
+                // a retry precondition; the immutable backup is never replaced.
+                let target_preimage = |index: &IndexPayload| {
+                    serde_json::to_value([
+                        index.credentials.get(&pair.predecessor_alias),
+                        index.credentials.get(&pair.successor_alias),
+                    ])
+                    .map_err(|error| crate::ImError::Serialization {
+                        detail: error.to_string(),
+                    })
+                };
+                if recovery_duplicate_projection(&backup, marker).as_ref() != Some(&pair)
+                    || target_preimage(&backup)? != target_preimage(&index)?
+                {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "recovery registry backup target differs from current preimage"
+                            .to_owned(),
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                write_secure_bytes_atomic(&backup_path, &raw)?;
+            }
+            Err(error) => return Err(crate::ImError::from(error)),
+        }
+        index.credentials.remove(&pair.predecessor_alias);
+        let default_changed = index.default_credential_name == pair.predecessor_alias;
+        if default_changed {
+            index.default_credential_name = pair.successor_alias;
+        }
+        // This private repair only removes the proven predecessor. No caller
+        // can supply a replacement index or relax the ordinary writer. Other
+        // Handles remain byte-for-byte equivalent and their duplicates can be
+        // repaired by their own independently authorized operations.
+        let index = normalize_index_payload(index)?;
+        let raw =
+            serde_json::to_vec_pretty(&index).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })?;
+        self.commit_recovery_index(&lock, &index, default_changed, || {
+            write_secure_bytes_atomic(&self.paths.registry_path, &raw)
+        })?;
+        Ok(true)
+    }
+
+    fn commit_recovery_index(
+        &self,
+        lock: &IdentityIndexMutationLock,
+        index: &IndexPayload,
+        default_changed: bool,
+        write_index: impl FnOnce() -> crate::ImResult<()>,
+    ) -> crate::ImResult<()> {
+        if lock.registry_path != self.paths.registry_path {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if !default_changed {
+            return write_index();
+        }
+        let default_path = self.paths.default_identity_path.as_deref();
+        let previous_default = match default_path.map(fs::read).transpose() {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        self.write_default_identity(&index.default_credential_name)?;
+        // Keep the index last: a crash before it commits retains the exact
+        // duplicate pair, so inspect/resume stays reachable after restart. A
+        // normal write failure compensates the pointer before returning. Even
+        // if compensation fails, the retained pair/backup make retry safe.
+        if let Err(error) = write_index() {
+            if let Some(path) = default_path {
+                match previous_default {
+                    Some(raw) => write_secure_bytes_atomic(path, &raw)?,
+                    None => self.sync_default_identity(None)?,
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Resolves one identity index directory without allowing traversal or an
     /// existing filesystem object that could redirect identity-local writes.
     pub(crate) fn local_identity_dir(&self, dir_name: &str) -> crate::ImResult<PathBuf> {
@@ -410,6 +590,15 @@ impl<'a> IdentityStore<'a> {
         input.handle = handle;
         input.full_handle = full_handle;
         let mut index = self.load_index()?;
+        if index.credentials.iter().any(|(name, entry)| {
+            name != &local_alias
+                && !input.full_handle.is_empty()
+                && entry.full_handle == input.full_handle
+        }) {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "full Handle is already owned by another local identity".to_owned(),
+            });
+        }
         if let Some(existing) = index.credentials.get(&local_alias) {
             let same_binding = existing.identity_custody_backend.as_deref() == Some("anp_identity")
                 && existing.anp_identity_store_id.as_deref() == Some(storage.store_id.as_str())
@@ -1856,6 +2045,16 @@ impl<'a> IdentityStore<'a> {
             set_private_dir_mode(parent)?;
         }
         let index = normalize_index_payload(index)?;
+        let mut handles = std::collections::BTreeSet::new();
+        if index
+            .credentials
+            .values()
+            .any(|entry| !entry.full_handle.is_empty() && !handles.insert(&entry.full_handle))
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "identity index contains duplicate full Handle".to_owned(),
+            });
+        }
         let raw =
             serde_json::to_vec_pretty(&index).map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
@@ -4661,7 +4860,7 @@ mod tests {
         }
     }
 
-    fn test_paths(root: &Path) -> crate::paths::IdentityRegistryPaths {
+    pub(super) fn test_paths(root: &Path) -> crate::paths::IdentityRegistryPaths {
         crate::paths::IdentityRegistryPaths {
             identity_root_dir: root.join("identities"),
             registry_path: root.join("identities").join("registry.json"),
@@ -5376,6 +5575,61 @@ mod tests {
     }
 
     #[test]
+    fn anp_identity_projection_rejects_another_alias_for_the_same_handle_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let storage = |identity_id: &str| AnpIdentityProjectionStorage {
+            store_id: "store-a".to_owned(),
+            identity_id: identity_id.to_owned(),
+            auth: AnpIdentityProjectionAuth::FileCompat,
+            allow_missing_auth: false,
+        };
+        store
+            .save_anp_identity_projection(
+                anp_projection_input("old", "did:example:old", "old-id"),
+                storage("old-custody"),
+            )
+            .unwrap();
+        let mut successor = anp_projection_input("new", "did:example:new", "new-id");
+        successor.handle = "old".to_owned();
+        successor.full_handle = "old.example.com".to_owned();
+        assert!(matches!(
+            store.save_anp_identity_projection(successor, storage("new-custody")),
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(store.load_index().unwrap().credentials.len(), 1);
+        assert!(!paths.identity_root_dir.join("new-id").exists());
+    }
+
+    #[test]
+    fn identity_index_write_rejects_duplicate_full_handles() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let lock = store.lock_index_mutation().unwrap();
+        let mut index = IndexPayload::default();
+        for (alias, did) in [("old", "did:example:old"), ("new", "did:example:new")] {
+            index.credentials.insert(
+                alias.to_owned(),
+                IndexEntry {
+                    credential_name: alias.to_owned(),
+                    dir_name: alias.to_owned(),
+                    unique_id: alias.to_owned(),
+                    did: did.to_owned(),
+                    full_handle: "shared.example.com".to_owned(),
+                    ..IndexEntry::default()
+                },
+            );
+        }
+        assert!(matches!(
+            store.save_index_locked(&lock, index),
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert!(!paths.registry_path.exists());
+    }
+
+    #[test]
     fn anp_identity_projection_retries_every_local_commit_crash_without_key_duplication() {
         for (index, failure) in [
             AnpProjectionFailurePoint::AuthPersisted,
@@ -5479,3 +5733,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "identity_store_recovery_tests.rs"]
+mod recovery_tests;

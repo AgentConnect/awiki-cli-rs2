@@ -155,6 +155,23 @@ Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完
 不能仅依赖会随凭证删除的 Vault pending；历史多设备身份不得误入单设备 genesis 校验。
 已有 Vault pending 的精确续跑保持不变，不删除历史 custody、不放宽设备数或签名校验。
 
+连续恢复选择本机 owner 时，已完成的较早代次绑定只有在对应完成标记证明其
+account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史记录；唯一的当前
+直接前驱仍须由绑定行与身份索引共同证明。`Conflict` 不得与完全没有本机相关状态的
+`None` 合并为 fresh owner，任何仍占用该 Handle 的孤立活跃凭证也必须阻止首次远端
+提交。普通身份索引写入统一拒绝两个活跃 alias 占用相同完整 Handle。
+
+旧版已提交 Recovery 的精确重复投影使用受限修复：持有索引锁并验证当前 operation、
+远端绑定与前驱/后继后，只移除该任务的失效前驱，其他 Handle 的记录保持不变。
+其他 Handle 的既有重复允许逐项减少，不能通过普通写入新增或扩大。私有备份保持不可变；
+重试只比较本任务的精确前驱/后继，其他独立恢复已改变整份索引不构成拒绝理由。
+默认身份先写、索引最后原子替换；索引替换失败时恢复原默认文件。两步间崩溃仍保留
+重复索引及原恢复标记，可经原任务续办，不能留下“索引已删除前驱、默认文件仍指向前驱”
+而无法进入恢复的状态。补偿失败同样保留任务和备份并返回错误。
+局部索引修复不等于 Recovery 已 Applied：若其他 Handle 仍重复，普通读取及客户端加载
+继续返回 `identity.local_registry_conflict`，原任务保留 `local_transition_pending`。
+处理其他 Handle 后再 Resume，继续完成 JWT、PreKey 和既有 Applied 收尾，不创建新任务。
+
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
 against the complete local identity index; if absent, it resolves the active public WNS
@@ -180,6 +197,14 @@ projected as `local_transition_pending`; the host must resume the exact operatio
 start a second Recovery. Successful application clears the stale retry projection. Permission,
 Vault, local invariant, and persistence failures retain their original closed error instead of
 being mislabeled as transient connectivity.
+
+旧客户端若已在远端 Commit 后写出两个相同 Handle 的活跃投影，Core 的只读上下文查询
+仅在唯一活跃 operation、`identity_switched` 标记及前后 owner/account/DID/代次都精确
+闭合时暴露原 operation 的 `Resume`，不在查询时更改凭证。续跑先核对当前 WNS 绑定，
+再保存受限权限的完整身份索引前像，仅退役已失效的前驱活跃投影；其身份文件、Vault
+custody 与 owner-scoped 消息和附件数据保留。索引、标记或远端权威任一不吻合时停止，
+不能猜测要删除的记录。fresh owner 的旧 owner 历史仍不自动迁入，宿主必须准确提示
+该限制；完成本地身份收尾不等于旧消息或附件已接续成功。
 
 The JSON-RPC transport treats an HTTP success with a zero-byte response body as
 `TransportUnavailable` with a fixed, body-free diagnostic. For a V4 Commit this is an ambiguous

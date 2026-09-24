@@ -168,19 +168,63 @@ pub(crate) async fn inspect(
         .values()
         .filter(|entry| entry.full_handle == handle.full)
         .collect::<Vec<_>>();
-    if matches.len() > 1 {
-        return Err(error(Code::UnknownEpoch));
-    }
-    let live = matches.first().copied();
+    // An older client can have crossed the durable identity-switch checkpoint
+    // before writing two aliases for the same Handle. Inspection stays read-only
+    // but must expose that exact committed operation's Resume action.
+    let recovery_duplicate = if matches.len() > 1 {
+        let active = operations::list_handle(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &handle.full,
+        )?
+        .into_iter()
+        .filter(|record| is_actionable(record.lifecycle_class))
+        .collect::<Vec<_>>();
+        let [record] = active.as_slice() else {
+            return Err(error(Code::UnknownEpoch));
+        };
+        let marker = crate::internal::identity_transition_pending::load(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &record.operation_id,
+        )?
+        .ok_or_else(|| error(Code::UnknownEpoch))?;
+        if marker.owner_identity_id != record.owner_identity_id {
+            return Err(error(Code::UnknownEpoch));
+        }
+        Some(
+            crate::internal::identity_store::recovery_duplicate_projection(&index, &marker)
+                .ok_or_else(|| error(Code::UnknownEpoch))?,
+        )
+    } else {
+        None
+    };
+    let live = recovery_duplicate
+        .as_ref()
+        .and_then(|pair| index.credentials.get(&pair.successor_alias))
+        .or_else(|| matches.first().copied());
     let mut explicit_owner = None;
     if let Some(selector) = request.identity {
         if matches!(selector, crate::identity::IdentitySelector::Default) {
             return Err(error(Code::UnknownEpoch));
         }
-        let selected = core.identities().resolve_async(selector).await?;
-        explicit_owner = Some(selected.id.as_str().to_owned());
-        if live.is_none_or(|entry| entry.unique_id != selected.id.as_str()) {
-            return Err(error(Code::UnknownEpoch));
+        if recovery_duplicate.is_some() {
+            let selected = matches.iter().any(|entry| match &selector {
+                crate::identity::IdentitySelector::Id(id) => entry.unique_id == id.as_str(),
+                crate::identity::IdentitySelector::Did(did) => entry.did == did.as_str(),
+                crate::identity::IdentitySelector::LocalAlias(alias) => {
+                    entry.credential_name == *alias
+                }
+                _ => false,
+            });
+            if !selected {
+                return Err(error(Code::UnknownEpoch));
+            }
+            explicit_owner = live.map(|entry| entry.unique_id.clone());
+        } else {
+            let selected = core.identities().resolve_async(selector).await?;
+            explicit_owner = Some(selected.id.as_str().to_owned());
+            if live.is_none_or(|entry| entry.unique_id != selected.id.as_str()) {
+                return Err(error(Code::UnknownEpoch));
+            }
         }
     }
     let path = &core.inner().sdk_paths().local_state.sqlite_path;
