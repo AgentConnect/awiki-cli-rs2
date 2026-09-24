@@ -58,9 +58,31 @@ def run_selection(executable, selection, environment):
         process.wait()
 
 
+def build_command(cargo, toolchain, environment):
+    source = environment.get("AWIKI_SOURCE_INTEGRATION") == "1"
+    registry = environment.get("AWIKI_RELEASE_REGISTRY") == "1"
+    if source and registry:
+        raise ValueError("Source integration and registry release mode are mutually exclusive")
+    command = [cargo]
+    if toolchain:
+        command.append("+" + toolchain)
+    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--test", "agent_registration_management", "--test", "acp_routing_contracts", "--test", "acp_subprocess_contracts", "--no-run", "--message-format=json"]
+    if source:
+        return [sys.executable, str(ROOT / "scripts/dependencies/build.py"),
+                "--deps", "source", "--source-manifest", "dependencies.source.json",
+                "--cargo-command", *command[1:]]
+    if registry:
+        return [sys.executable, str(ROOT / "scripts/release/registry-build.py"),
+                "--", *command]
+    return command
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cargo-toolchain", default=os.environ.get("AWIKI_DAEMON_RUST_CARGO_TOOLCHAIN"))
+    parser.add_argument("--cargo-toolchain", default=(
+        os.environ.get("AWIKI_DAEMON_RUST_CARGO_TOOLCHAIN")
+        or os.environ.get("AWIKI_CLI_RUST_CARGO_TOOLCHAIN")
+    ))
     args = parser.parse_args()
     if sys.platform not in ("darwin", "linux"):
         parser.error("ACP subprocess contracts support macOS and Linux")
@@ -71,10 +93,7 @@ def main():
     node_version = subprocess.check_output([binaries["node"], "-p", "process.versions.node"], text=True)
     if tuple(map(int, node_version.strip().split(".")[:2])) < (20, 6):
         parser.error("Node.js 20.6 or newer is required for the Gemini protocol fixtures")
-    command = [binaries["cargo"]]
-    if args.cargo_toolchain:
-        command.append("+" + args.cargo_toolchain)
-    command += ["test", "--locked", "-p", "awiki-deamon", "--lib", "--test", "agent_registration_management", "--test", "acp_routing_contracts", "--test", "acp_subprocess_contracts", "--no-run", "--message-format=json"]
+    command = build_command(binaries["cargo"], args.cargo_toolchain, os.environ)
     # Compilation uses normal dependency caches. Only the resulting test process
     # receives the isolated environment; no model calls happen during compilation.
     built = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, timeout=1800)
