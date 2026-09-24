@@ -47,6 +47,141 @@ fn local_pending(
     (pending, marker)
 }
 
+fn install_switched_duplicate(
+    core: &crate::ImCore,
+    pending: &PendingHandleRecoveryV4,
+    marker: &IdentityTransitionMarker,
+) -> Vec<u8> {
+    use crate::internal::identity_store::{IndexEntry, IndexPayload};
+    let path = &core.inner().sdk_paths().local_state.sqlite_path;
+    transitions::update_phase(
+        path,
+        &pending.operation_id,
+        TransitionPhase::Pending,
+        TransitionPhase::IdentitySwitched,
+    )
+    .unwrap();
+    let mut index = IndexPayload {
+        default_credential_name: "old".to_owned(),
+        ..IndexPayload::default()
+    };
+    for (alias, owner, did, generation) in [
+        ("old", "prior-owner", marker.previous_did.as_str(), "7"),
+        (
+            "new",
+            marker.owner_identity_id.as_str(),
+            marker.current_did.as_str(),
+            "8",
+        ),
+    ] {
+        index.credentials.insert(
+            alias.to_owned(),
+            IndexEntry {
+                credential_name: alias.to_owned(),
+                dir_name: owner.to_owned(),
+                unique_id: owner.to_owned(),
+                did: did.to_owned(),
+                user_id: marker.account_user_id.clone(),
+                handle: "alice".to_owned(),
+                full_handle: marker.handle.clone(),
+                binding_generation: Some(generation.to_owned()),
+                identity_custody_backend: Some("anp_identity".to_owned()),
+                anp_identity_store_id: (alias == "new").then(|| pending.identity.store_id.clone()),
+                anp_identity_id: (alias == "new").then(|| pending.identity.identity_id.clone()),
+                ..IndexEntry::default()
+            },
+        );
+    }
+    let registry_path = &core.inner().sdk_paths().identities.registry_path;
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let before = serde_json::to_vec_pretty(&index).unwrap();
+    std::fs::write(registry_path, &before).unwrap();
+    before
+}
+
+#[tokio::test]
+async fn switched_duplicate_exposes_exact_resume_without_changing_the_index() {
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [120; 32]);
+    let (pending, marker) = local_pending(&core, "recover-v4-duplicate-resume");
+    let registry_path = &core.inner().sdk_paths().identities.registry_path;
+    let before = install_switched_duplicate(&core, &pending, &marker);
+    let context = core
+        .handle_recovery()
+        .inspect_handle_recovery_context(crate::identity::HandleRecoveryContextRequest {
+            full_handle: marker.handle.clone(),
+            identity: Some(crate::identity::IdentitySelector::Id(
+                crate::ids::IdentityId::parse("prior-owner").unwrap(),
+            )),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        context.allowed_actions,
+        vec![crate::identity::HandleRecoveryAction::Resume]
+    );
+    assert_eq!(
+        context.operation.unwrap().operation_id,
+        pending.operation_id
+    );
+    assert_eq!(
+        context.local_identity_id.unwrap().as_str(),
+        marker.owner_identity_id
+    );
+    assert_eq!(std::fs::read(registry_path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn switched_duplicate_retires_predecessor_only_after_current_remote_binding() {
+    for current_binding in [true, false] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(
+            root.path(),
+            &format!("http://{}", listener.local_addr().unwrap()),
+            [121; 32],
+        );
+        let (pending, marker) = local_pending(&core, "recover-v4-duplicate-authority");
+        let before = install_switched_duplicate(&core, &pending, &marker);
+        let registry_path = &core.inner().sdk_paths().identities.registry_path;
+        let response = json!({
+            "handle": pending.full_handle,
+            "did": if current_binding { marker.current_did.as_str() } else { marker.previous_did.as_str() },
+            "status": "active",
+            "binding_generation": if current_binding { "8" } else { "9" },
+        });
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut stream).starts_with("GET /.well-known/handle/alice "));
+            write_json_response(&mut stream, &response);
+        });
+        // This fixture intentionally has no usable custody files, so the
+        // resumed operation cannot finish activation after the index step.
+        let result = resume(
+            &core,
+            HandleRecoveryResumeRequest {
+                operation_id: pending.operation_id.clone(),
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        server.join().unwrap();
+        let after = std::fs::read(registry_path).unwrap();
+        if current_binding {
+            let index = crate::internal::identity_store::IdentityStore::new(
+                &core.inner().sdk_paths().identities,
+            )
+            .load_index()
+            .unwrap();
+            assert_eq!(index.credentials.len(), 1);
+            assert!(index.credentials.contains_key("new"));
+            assert_ne!(after, before);
+        } else {
+            assert_eq!(after, before);
+        }
+    }
+}
+
 #[tokio::test]
 async fn newer_authoritative_binding_closes_old_local_transition_without_losing_commit() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -155,6 +155,12 @@ Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完
 不能仅依赖会随凭证删除的 Vault pending；历史多设备身份不得误入单设备 genesis 校验。
 已有 Vault pending 的精确续跑保持不变，不删除历史 custody、不放宽设备数或签名校验。
 
+连续恢复选择本机 owner 时，已完成的较早代次绑定只有在对应完成标记证明其
+account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史记录；唯一的当前
+直接前驱仍须由绑定行与身份索引共同证明。`Conflict` 不得与完全没有本机相关状态的
+`None` 合并为 fresh owner，任何仍占用该 Handle 的孤立活跃凭证也必须阻止首次远端
+提交。所有身份索引写入统一拒绝两个活跃 alias 占用相同完整 Handle。
+
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
 against the complete local identity index; if absent, it resolves the active public WNS
@@ -180,6 +186,14 @@ projected as `local_transition_pending`; the host must resume the exact operatio
 start a second Recovery. Successful application clears the stale retry projection. Permission,
 Vault, local invariant, and persistence failures retain their original closed error instead of
 being mislabeled as transient connectivity.
+
+旧客户端若已在远端 Commit 后写出两个相同 Handle 的活跃投影，Core 的只读上下文查询
+仅在唯一活跃 operation、`identity_switched` 标记及前后 owner/account/DID/代次都精确
+闭合时暴露原 operation 的 `Resume`，不在查询时更改凭证。续跑先核对当前 WNS 绑定，
+再保存受限权限的完整身份索引前像，仅退役已失效的前驱活跃投影；其身份文件、Vault
+custody 与 owner-scoped 消息和附件数据保留。索引、标记或远端权威任一不吻合时停止，
+不能猜测要删除的记录。fresh owner 的旧 owner 历史仍不自动迁入，宿主必须准确提示
+该限制；完成本地身份收尾不等于旧消息或附件已接续成功。
 
 The JSON-RPC transport treats an HTTP success with a zero-byte response body as
 `TransportUnavailable` with a fixed, body-free diagnostic. For a V4 Commit this is an ambiguous

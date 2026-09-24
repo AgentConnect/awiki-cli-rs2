@@ -1000,6 +1000,11 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 `state_changed_requires_new_operation`。V3 阶段名和 `handle_recovery_*` 兼容错误别名
 均不存在。
 
+身份注册表出现两个相同完整 Handle 时，普通身份读取返回稳定本地错误码
+`identity.local_registry_conflict`，Host 应指引用户保留数据并继续已有恢复或联系支持，
+不可把该错误显示为新 Handle 重名或短信验证码错误。旧版已提交恢复的精确重复投影
+可由同一 operation 的 `Resume` 在权威绑定核验后收敛；`inspect` 只读且不自动清理。
+
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
 `local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5
 PreKey，并只为 authoritative `required_security_profile=transport-protected` 的 Handle-backed

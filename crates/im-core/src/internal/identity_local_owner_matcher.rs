@@ -314,6 +314,62 @@ struct BindingCandidate {
     identity_generation: String,
 }
 
+fn completed_history_reaches_predecessor(
+    connection: &rusqlite::Connection,
+    authority: &StableOwnerAuthority<'_>,
+    historical_did: &str,
+    historical_generation: &str,
+    predecessor_generation: &str,
+) -> crate::ImResult<bool> {
+    let mut statement = connection
+        .prepare(
+            "SELECT previous_did,current_did,binding_generation FROM identity_transition_pending WHERE phase='completed' AND account_user_id=?1 AND handle=?2 ORDER BY binding_generation,recovery_id",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let transitions = statement
+        .query_map(
+            rusqlite::params![authority.account_user_id, authority.full_handle],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut did = historical_did.to_owned();
+    let mut generation = historical_generation.to_owned();
+    for _ in 0..transitions.len() {
+        if generation == predecessor_generation {
+            break;
+        }
+        let Some(next_generation) =
+            crate::internal::identity_handle_recovery_pending::increment_canonical_generation(
+                &generation,
+            )
+        else {
+            return Ok(false);
+        };
+        let mut next = transitions
+            .iter()
+            .filter(|(previous, _, marker_generation)| {
+                previous == &did && marker_generation == &next_generation
+            });
+        let Some((_, successor, _)) = next.next() else {
+            return Ok(false);
+        };
+        if next.next().is_some() {
+            return Ok(false);
+        }
+        did = successor.clone();
+        generation = next_generation;
+    }
+    Ok(generation == predecessor_generation && did == authority.previous_did)
+}
+
 pub(crate) fn match_stable_owner(
     sqlite_path: &Path,
     index: &crate::internal::identity_store::IndexPayload,
@@ -377,14 +433,60 @@ ORDER BY owner_identity_id"#,
                 identity_generation,
             });
         } else {
-            // A partially matching local binding is not a fresh machine. It
-            // must not be silently downgraded to an ordinary/fresh owner.
-            suspicious_related_state = true;
+            // A completed earlier Recovery may retain its binding row after its
+            // credential has been retired. It is history, not a competing live
+            // owner. Require the exact completed transition as proof; otherwise
+            // even a partial match must close the fresh-owner path.
+            let historical_generation =
+                anp::wns::BindingGeneration::new(identity_generation.clone())
+                    .ok()
+                    .zip(anp::wns::BindingGeneration::new(previous_generation.clone()).ok())
+                    .is_some_and(|(historical, previous)| historical < previous);
+            let still_live = index.credentials.values().any(|entry| {
+                entry.unique_id == owner_identity_id
+                    || (entry.full_handle == authority.full_handle && entry.did == current_did)
+            });
+            let completed_transition: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM identity_transition_pending WHERE phase='completed' AND owner_identity_id=?1 AND account_user_id=?2 AND handle=?3 AND current_did=?4 AND binding_generation=?5",
+                    rusqlite::params![
+                        owner_identity_id,
+                        authority.account_user_id,
+                        authority.full_handle,
+                        current_did,
+                        identity_generation,
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            let proven_chain = if historical_generation && completed_transition == 1 {
+                completed_history_reaches_predecessor(
+                    &connection,
+                    &authority,
+                    &current_did,
+                    &identity_generation,
+                    &previous_generation,
+                )?
+            } else {
+                false
+            };
+            if !proven_chain
+                || account_id != authority.account_user_id
+                || handle_scope.as_deref() != Some(authority.full_handle)
+                || still_live
+            {
+                suspicious_related_state = true;
+            }
         }
     }
 
     if exact.is_empty() {
-        return Ok(if suspicious_related_state {
+        let related_live_credential = index.credentials.values().any(|entry| {
+            entry.user_id == authority.account_user_id
+                || entry.full_handle == authority.full_handle
+                || entry.did == authority.previous_did
+        });
+        return Ok(if suspicious_related_state || related_live_credential {
             StableOwnerMatch::Conflict
         } else {
             StableOwnerMatch::None
@@ -496,6 +598,31 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_completed_recovery(
+        path: &Path,
+        owner: &str,
+        previous_did: &str,
+        current_did: &str,
+        generation: &str,
+    ) {
+        let connection = crate::internal::local_state::open_writable(path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES (?1,1,?2,?3,'initiator',?1,?4,'account-alice',?5,'alice.example.invalid',?6,?7,?8,'completed','2026-08-10T00:00:00Z','2026-08-10T00:00:00Z')",
+                rusqlite::params![
+                    format!("recovery-{owner}"),
+                    crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                    crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH,
+                    crate::internal::identity_transition_pending::state_root_fingerprint(path),
+                    owner,
+                    previous_did,
+                    current_did,
+                    generation,
+                ],
+            )
+            .unwrap();
+    }
+
     fn authority<'a>() -> StableOwnerAuthority<'a> {
         StableOwnerAuthority {
             account_user_id: "account-alice",
@@ -556,7 +683,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("im.sqlite");
         assert_eq!(
-            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            match_stable_owner(
+                &path,
+                &crate::internal::identity_store::IndexPayload::default(),
+                authority(),
+                None,
+                None,
+            )
+            .unwrap(),
             StableOwnerMatch::None
         );
 
@@ -568,6 +702,117 @@ mod tests {
             "did:wba:example.invalid:user:alice:partial",
             "7",
         );
+        assert_eq!(
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn recovery_owner_continuity_ignores_proven_retired_history() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        insert_binding(
+            &path,
+            "owner-historical",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:historical",
+            "6",
+        );
+        insert_completed_recovery(
+            &path,
+            "owner-historical",
+            "did:wba:example.invalid:user:alice:predecessor",
+            "did:wba:example.invalid:user:alice:historical",
+            "6",
+        );
+        insert_completed_recovery(
+            &path,
+            "owner-alice",
+            "did:wba:example.invalid:user:alice:historical",
+            "did:wba:example.invalid:user:alice:old",
+            "7",
+        );
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:old",
+            "7",
+        );
+
+        assert!(matches!(
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            StableOwnerMatch::Exact(StableOwnerCandidate { owner_identity_id, .. })
+                if owner_identity_id == "owner-alice"
+        ));
+    }
+
+    #[test]
+    fn recovery_owner_continuity_does_not_treat_unproven_history_as_fresh() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        insert_binding(
+            &path,
+            "owner-historical",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:historical",
+            "6",
+        );
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:old",
+            "7",
+        );
+        assert_eq!(
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn recovery_owner_continuity_rejects_unlinked_completed_history() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        insert_binding(
+            &path,
+            "owner-historical",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:historical",
+            "6",
+        );
+        insert_completed_recovery(
+            &path,
+            "owner-historical",
+            "did:wba:example.invalid:user:alice:predecessor",
+            "did:wba:example.invalid:user:alice:historical",
+            "6",
+        );
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:old",
+            "7",
+        );
+        assert_eq!(
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn recovery_owner_continuity_rejects_orphaned_live_credential() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
         assert_eq!(
             match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
             StableOwnerMatch::Conflict

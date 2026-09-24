@@ -3762,6 +3762,14 @@ fn validate_unique_registry_value(
         return Ok(());
     }
     if !seen.insert(value.to_owned()) {
+        if label == "handle" {
+            return Err(crate::ImError::Service {
+                status_code: None,
+                code: Some("identity.local_registry_conflict".to_owned()),
+                message: "local identity registry contains a duplicate Handle".to_owned(),
+                data: None,
+            });
+        }
         return Err(registry_invariant_error(format!(
             "duplicate {label} `{value}` in identity registry"
         )));
@@ -3863,7 +3871,11 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_registry_error_contains(err, "duplicate handle");
+        assert!(matches!(
+            err,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "identity.local_registry_conflict"
+        ));
     }
 
     #[test]
