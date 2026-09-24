@@ -45,7 +45,9 @@ python3 scripts/dependencies/build.py --profile release --package awiki-cli
 `dependencies.source.Cargo.lock`；之后执行相同命令并将 `--refresh-lock` 换为 `--check`。
 清单和锁文件要随 PR 提交；个人路径配置、缓存、构建结果不提交。CI 将源 SHA 检出到隔离目录，
 使用联调锁执行 `--locked`，检查实际来源，不能把 registry fallback 当成选中源码。
-源 PR 代码只在无发布凭据的普通 pull_request job 中执行，不使用 pull_request_target。
+用户于 2026-09-24 决定不因提交、更新或合并 PR 自动执行 Dependency modes、Node CI
+或 Tier 1 工作流。需要 CI 证据时由用户明确指定并通过 `workflow_dispatch` 手动启动；
+未运行的检查不能记为通过，也不使用 `pull_request_target` 执行不受信任源码。
 
 `registry-check` 始终独立运行；`source-integration-check` 在存在清单时执行。
 源码联调通过不等于已发布依赖通过。依赖 PR 合并、发布新包后，更新
