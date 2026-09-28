@@ -202,7 +202,56 @@ pub(crate) fn profile_from_value(
         .map(crate::ids::Did::parse)
         .transpose()?
         .unwrap_or_else(|| client.did().clone());
-    let handle = profile_handle_from_value(client, raw, &subject)?;
+    profile_fields_from_value(client, raw, subject, client.handle())
+}
+
+/// Public display fields belong to the requested peer, never to the actor.
+/// A known Handle must come from the independently verified directory binding.
+pub(crate) fn public_profile_from_value(
+    client: &crate::core::ImClient,
+    raw: &Value,
+    expected_subject: &crate::ids::Did,
+    verified_handle: Option<&crate::ids::Handle>,
+) -> crate::ImResult<crate::identity::Profile> {
+    if !raw.is_object() {
+        return Err(crate::ImError::invalid_input(
+            None,
+            "public profile must be an object",
+        ));
+    }
+    for key in ["subject_did", "did", "subject", "id"] {
+        if let Some(value) = string_value(raw, &[key]) {
+            // Legacy `id` may be a provider-private account identifier.
+            if key == "id" && !value.starts_with("did:") {
+                continue;
+            }
+            if value != expected_subject.as_str() {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "Public profile subject does not match requested DID".to_owned(),
+                });
+            }
+        }
+    }
+    let mut profile = profile_fields_from_value(client, raw, expected_subject.clone(), None)?;
+    if let Some(handle) = verified_handle {
+        if profile.handle.as_ref().is_some_and(|value| value != handle) {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "Public profile Handle does not match verified binding".to_owned(),
+            });
+        }
+        profile.handle = Some(handle.clone());
+    }
+    Ok(profile)
+}
+
+fn profile_fields_from_value(
+    client: &crate::core::ImClient,
+    raw: &Value,
+    subject: crate::ids::Did,
+    fallback_handle: Option<&crate::ids::Handle>,
+) -> crate::ImResult<crate::identity::Profile> {
+    let handle =
+        profile_handle_from_value(client, raw, &subject)?.or_else(|| fallback_handle.cloned());
     let display_name = string_value(raw, &["display_name", "nick_name", "name"]);
     let description = string_value(raw, &["description", "bio"]);
     let bio = string_value(raw, &["bio", "description"]);
@@ -287,7 +336,7 @@ fn profile_handle_from_value(
         .or(full_handle.as_deref())
         .or(handle.as_deref());
     let Some(handle) = handle else {
-        return Ok(client.handle().cloned());
+        return Ok(None);
     };
     let default_domain = profile_handle_default_domain(client, raw, subject);
     crate::ids::Handle::parse(handle, &default_domain).map(Some)
