@@ -64,3 +64,16 @@ python3 scripts/dependencies/build.py --deps source \
 
 正式发布仍先发布修复 SDK，再更新 registry pin、撤除临时 source 清单并构建客户端。
 本次整合没有发布 SDK 或客户端；最终复验记录见 awiki-plan 的统一 review 清单。
+
+## 后续 IM Core SDK 发布
+
+2026-09-28 将上述修复随 `awiki-im-core 0.1.6` 发布到 crates.io。公开源码标签
+`im-core-v0.1.6` 指向 `bbdbe9c2b87db48ac948c4bb3dde18c2a1dcf2b1`；
+crate SHA-256 为
+`2ec04c9b5f1fafa33919eb683b211bcf48c37bfc1b3e863e16cb36ba2f15b45b`，
+与 crates.io 版本回执一致。Release 全功能编译和 Cargo 打包预演通过；本次用户仅要求
+发布，未授权发布前测试，因此没有重新运行测试。上文 PR 测试仍仅作为历史证据，
+客户端真实跨域匹配、资料刷新和发送验收仍未由本次发布证明。
+
+正式 registry pin/lock 已更新到 Core `0.1.6`，临时 source 清单及其锁已撤销。
+消费端需要从新的 registry 包重建 native 制品，不能将旧 native 与新的 Dart 源码拼接。
