@@ -273,12 +273,14 @@ pub(crate) async fn foreign_directory_lookup_async<
 
 fn public_directory_value(handle: &str, raw: &Value) -> crate::ImResult<Value> {
     let lookup = authoritative_lookup_from_public_document(handle, raw)?;
-    // Only verified fields enter the identity projection. Provider-private IDs
-    // and the home Directory's foreign profile cannot become authority input.
+    // Authority fields are independently verified; provider-private IDs are ignored.
+    // The provider's optional display profile is validated separately by
+    // directory_runtime::profile_from_lookup and never supplies binding fields.
     Ok(serde_json::json!({
         "handle": lookup.handle.as_str(), "did": lookup.did.as_str(),
         "user_id": lookup.user_id, "domain": lookup.domain,
         "status": lookup.status, "binding_generation": lookup.binding_generation,
+        "profile": raw.get("profile"),
     }))
 }
 

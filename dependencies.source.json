@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "dependencies": {
+    "awiki-im-core": {
+      "repository": "https://github.com/AgentConnect/awiki-cli-rs2.git",
+      "commit": "183c8ae99ca5bc534430ff484b7f228e73d56c50",
+      "pull_request": "https://github.com/AgentConnect/awiki-cli-rs2/pull/53"
+    }
+  }
+}
