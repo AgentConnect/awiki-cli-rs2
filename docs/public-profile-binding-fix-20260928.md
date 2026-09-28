@@ -38,7 +38,7 @@ Directory 又覆盖 subject，掩盖资料与身份的冲突。外域 WNS 的可
 配上新 Dart 源码作为完整修复。
 
 
-## 配套 App 的固定源码联调
+## 首轮配套 App 固定源码联调（历史）
 
 `dependencies.source.json` 固定本 PR 的实现提交 `183c8ae99ca5bc534430ff484b7f228e73d56c50`，
 只有 Core 使用源码，ANP/Identity 使用既有 registry pin；配套
@@ -54,3 +54,13 @@ python3 scripts/dependencies/build.py --deps source \
 
 此清单只用于 review 集成，不改变正式 registry 构建默认值。Core 发布并更新消费者的
 正式 pin/lock 后删除临时清单和锁；不得以源码联调成功替代 SDK 已发布的核验。
+
+## 统一 review 的当前入口
+
+原 #53 的实现与来源提交完整合入发布 PR #52，配套 App #46 整合进 #45。
+当前 source 清单固定整合后的 Core 提交 `bfc3815b5f8056519dde22684ab19f516cf599db`；
+`pull_request` 更新为 #52，联调锁同步 Daemon 0.1.106。Core 的资料实现和测试与原修复
+提交逐文件一致。上节 SHA 和结果保留为首轮历史证据，当前构建请使用本节来源及仓内清单。
+
+正式发布仍先发布修复 SDK，再更新 registry pin、撤除临时 source 清单并构建客户端。
+本次整合没有发布 SDK 或客户端；最终复验记录见 awiki-plan 的统一 review 清单。
