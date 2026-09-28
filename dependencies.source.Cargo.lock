@@ -163,6 +163,8 @@ dependencies = [
 [[package]]
 name = "anp"
 version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "989233db8d978d5ce7e5e0cfe919eb68c50ac8bbbfbb55be4e41f8d9afa5cfae"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -203,6 +205,8 @@ dependencies = [
 [[package]]
 name = "anp-identity"
 version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d1cd10447cabaaf200ed19165e5b9f57ddf68ad1a690c8ed2280ea9abc1b9c"
 dependencies = [
  "anp",
  "base64 0.22.1",
@@ -491,7 +495,6 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2",
- "tempfile",
  "time",
  "tokio",
  "tokio-tungstenite",

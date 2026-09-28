@@ -1,21 +1,21 @@
 {
   "anp": {
-    "commit": "096ca3e679c122cfa35e6a2ef5703418721ba807",
+    "commit": "0308ec5f7df7f9e8958c79a305b25e30ff143430",
     "didTransitionVectorsTreeSha256": "5df77b529d0ce2e12085e2dcc697e09f594c13c58acd5ae88272eeaa6c6ed3ca",
     "pythonWheel": {
-      "filename": "anp-1.0.3-py3-none-any.whl",
-      "sha256": "96039aabcaf51e18504555cd9f41990024f9f4810d40c18a45224a53b525303b"
+      "filename": "anp-1.0.5-py3-none-any.whl",
+      "sha256": "f3bba962647a410ecd169f648aa112c62dde5de1da50a3ccc83b49df7f421110"
     },
     "repository": "https://github.com/agent-network-protocol/anp.git",
-    "rustTreeSha256": "dcc57f7ded266c7cbb7fe7ddb03eacec1c18365fa773abbf5e8b4faaf065f7fe"
+    "rustTreeSha256": "f634ec5524ff5ac15d58446f3807ed07e08fd1ba53500429dea18de8f2d2bbc5"
   },
-  "candidateVersion": "1.0.3",
+  "candidateVersion": "1.0.5",
   "identity": {
-    "commit": "bef7757603b004bf4a54873040da49480272738f",
+    "commit": "c12fecefb39389e2800dc363e5538de80448850b",
     "repository": "https://github.com/agent-network-protocol/anp-identity.git",
-    "rustTreeSha256": "5f9bdfd5d0781fef0913fe5223f940471ff2e59d14f15946d9f62408b4b81133",
-    "version": "0.2.3"
+    "rustTreeSha256": "62cde71421749eb77488c3b8d9c58d50df8ed48438cae888146580a6f41db927",
+    "version": "0.2.4"
   },
   "schemaVersion": 1,
-  "sourceDateEpoch": 1789132636
+  "sourceDateEpoch": 1790254758
 }
