@@ -8,6 +8,7 @@ const PUBLIC_SERVICE_CODE_MAX_LEN: usize = 96;
 const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "anp",
     "attachment",
+    "avatar",
     "awiki",
     "client",
     "device",

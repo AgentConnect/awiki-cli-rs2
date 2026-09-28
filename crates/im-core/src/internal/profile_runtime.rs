@@ -94,6 +94,34 @@ where
     P: AsyncSessionProvider,
     T: AsyncAuthenticatedRpcTransport,
 {
+    pub(crate) async fn mutate_avatar_async(
+        mut self,
+        call: crate::internal::identity_wire::RpcCall,
+    ) -> crate::ImResult<crate::identity::Profile> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)
+            .await?;
+        let raw = self
+            .transport
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        let profile = profile_from_value(self.client, &raw)?;
+        if raw.get("did").and_then(Value::as_str) != Some(self.client.did().as_str())
+            || profile.subject != *self.client.did()
+            || profile.profile_version.is_none()
+            || !profile.has_avatar_update()
+        {
+            return Err(crate::ImError::invalid_input(
+                None,
+                "avatar response must contain the owner's versioned profile",
+            ));
+        }
+        // An exact replay may be older than another device's later update. The
+        // account-state consumer merges by profile_version; never rewrite names
+        // or another mutable projection from a historical mutation receipt here.
+        Ok(profile)
+    }
+
     pub(crate) async fn profile_async(mut self) -> crate::ImResult<ProfileReadResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::UserProfile)
@@ -208,8 +236,9 @@ pub(crate) fn profile_from_value(
     let bio = string_value(raw, &["bio", "description"]);
     let tags = tags_value(raw.get("tags"));
     let markdown = string_value(raw, &["markdown", "profile_md"]);
-    let avatar_uri = string_value(raw, &["avatar_uri", "avatar_url", "avatar"]);
-    let avatar_url = string_value(raw, &["avatar_url", "avatar", "avatar_uri"]);
+    let (avatar_uri_present, avatar_uri, avatar_thumbnail_uri, avatar_upload_enabled) =
+        avatar_fields(raw)?;
+    let avatar_url = avatar_uri.clone();
     let profile_uri = string_value(raw, &["profile_uri", "profile_url"]);
     let subject_type = string_value(raw, &["subject_type"]);
     let agent_kind = string_value(raw, &["agent_kind", "agentKind"]);
@@ -234,6 +263,9 @@ pub(crate) fn profile_from_value(
         markdown,
         avatar_uri,
         avatar_url,
+        avatar_thumbnail_uri,
+        avatar_upload_enabled,
+        avatar_uri_present,
         profile_uri,
         subject_type,
         agent_kind,
@@ -245,6 +277,30 @@ pub(crate) fn profile_from_value(
         proof,
         metadata,
     })
+}
+
+fn avatar_fields(raw: &Value) -> crate::ImResult<(bool, Option<String>, Option<String>, bool)> {
+    let field = ["avatar_uri", "avatar_url", "avatar"]
+        .iter()
+        .find_map(|key| raw.get(*key));
+    let uri = match field {
+        None | Some(Value::Null) => None,
+        Some(Value::String(uri)) => (!uri.trim().is_empty()).then(|| uri.clone()),
+        _ => {
+            return Err(crate::ImError::invalid_input(
+                Some("avatar_uri".to_owned()),
+                "avatar URI must be a string or null",
+            ))
+        }
+    };
+    let thumbnail = uri
+        .as_ref()
+        .and_then(|_| string_value(raw, &["avatar_thumbnail_uri"]));
+    let enabled = raw
+        .get("avatar_upload_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok((field.is_some(), uri, thumbnail, enabled))
 }
 
 fn profile_version_value(raw: &Value) -> crate::ImResult<Option<String>> {
@@ -506,3 +562,7 @@ mod tests {
         assert_eq!(string_list_value(Some(&json!(many))).len(), 16);
     }
 }
+
+#[cfg(test)]
+#[path = "profile_runtime_avatar_tests.rs"]
+mod avatar_tests;

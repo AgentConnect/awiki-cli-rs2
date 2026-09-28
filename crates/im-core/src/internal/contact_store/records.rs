@@ -631,6 +631,7 @@ pub(crate) fn display_profile_from_record(
         display_name: contact.display_name,
         avatar_uri: contact.avatar_uri,
         avatar_url: contact.avatar_url,
+        avatar_thumbnail_uri: None,
         profile_uri: contact.profile_uri,
         subject_type: contact.subject_type,
         cache_hit: true,

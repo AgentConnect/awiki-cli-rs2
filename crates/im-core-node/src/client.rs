@@ -1632,6 +1632,72 @@ impl NativeImCoreNodeClient {
         napi_result(self.update_profile_inner(input).await)
     }
 
+    #[napi(catch_unwind)]
+    pub async fn set_avatar(&self, input: NodeSetAvatarInput) -> napi::Result<NodeProfile> {
+        napi_result(self.set_avatar_inner(input).await)
+    }
+
+    async fn set_avatar_inner(&self, input: NodeSetAvatarInput) -> SafeResult<NodeProfile> {
+        use base64::Engine as _;
+        if input.image_base64.len() > 4 * ((512 * 1024 + 2) / 3) {
+            return Err(SafeError::new(
+                "avatar.upload_too_large",
+                "The avatar is too large.",
+                false,
+            ));
+        }
+        let image_jpeg = base64::engine::general_purpose::STANDARD
+            .decode(input.image_base64)
+            .map_err(|_| {
+                SafeError::new(
+                    "avatar.invalid_image",
+                    "The avatar image is invalid.",
+                    false,
+                )
+            })?;
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let profile = self
+            .inner
+            .wait_im(
+                client
+                    .identity()
+                    .set_avatar_async(im_core::identity::SetAvatarRequest {
+                        request_id: input.request_id,
+                        expected_profile_version: input.expected_profile_version,
+                        image_jpeg,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::profile(profile))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn clear_avatar(&self, input: NodeClearAvatarInput) -> napi::Result<NodeProfile> {
+        napi_result(self.clear_avatar_inner(input).await)
+    }
+
+    async fn clear_avatar_inner(&self, input: NodeClearAvatarInput) -> SafeResult<NodeProfile> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let profile = self
+            .inner
+            .wait_im(
+                client
+                    .identity()
+                    .clear_avatar_async(im_core::identity::ClearAvatarRequest {
+                        request_id: input.request_id,
+                        expected_profile_version: input.expected_profile_version,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::profile(profile))
+    }
+
     async fn update_profile_inner(&self, input: NodeUpdateProfileInput) -> SafeResult<NodeProfile> {
         let display_name = input.display_name.trim().to_owned();
         if display_name.is_empty() {

@@ -793,6 +793,13 @@ pub struct GroupMessagesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupAvatarMember {
+    pub member_key: String,
+    pub member_did: crate::ids::Did,
+    pub member_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupSnapshot {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
@@ -800,6 +807,10 @@ pub struct GroupSnapshot {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub avatar_uri: Option<String>,
+    #[serde(default)]
+    pub avatar_members: Option<Vec<GroupAvatarMember>>,
+    #[serde(default)]
+    pub group_state_version: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -813,6 +824,10 @@ pub struct GroupSummary {
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub avatar_uri: Option<String>,
+    #[serde(default)]
+    pub avatar_members: Option<Vec<GroupAvatarMember>>,
+    #[serde(default)]
+    pub group_state_version: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -881,6 +896,8 @@ fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
         .or_else(|| nested_string(object.get("group_profile"), "display_name"))
         .or_else(|| optional_string(object.get("name")));
     Some(GroupSnapshot {
+        avatar_members: avatar_members_from_value(value),
+        group_state_version: optional_string(object.get("group_state_version")),
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
         name: display_name.clone(),
@@ -910,6 +927,8 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
         .or_else(|| nested_string(object.get("group_profile"), "display_name"))
         .or_else(|| optional_string(object.get("name")));
     Some(GroupSummary {
+        avatar_members: avatar_members_from_value(&value),
+        group_state_version: optional_string(object.get("group_state_version")),
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
         name: display_name.clone(),
@@ -927,6 +946,31 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
         member_count: u32_value(object.get("member_count")),
         last_message_at: optional_string(object.get("last_message_at")),
     })
+}
+
+fn avatar_members_from_value(value: &Value) -> Option<Vec<GroupAvatarMember>> {
+    let version = value.get("group_state_version")?.as_str()?;
+    crate::internal::local_state::sync_v2::validate_decimal("group_state_version", version).ok()?;
+    let rows = value.get("avatar_members")?.as_array()?;
+    if rows.len() > 4 {
+        return None;
+    }
+    let mut members = Vec::<GroupAvatarMember>::new();
+    for row in rows {
+        let key = row.get("member_key")?.as_str()?;
+        if key.is_empty() || key.len() > 128 || members.iter().any(|m| m.member_key == key) {
+            return None;
+        }
+        members.push(GroupAvatarMember {
+            member_key: key.to_owned(),
+            member_did: crate::ids::Did::parse(row.get("member_did")?.as_str()?).ok()?,
+            member_handle: row
+                .get("member_handle")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        });
+    }
+    Some(members)
 }
 
 fn group_member_from_value(value: Value) -> Option<GroupMember> {
@@ -1562,3 +1606,7 @@ mod tests {
             .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "13" }));
     }
 }
+
+#[cfg(test)]
+#[path = "avatar_tests.rs"]
+mod avatar_tests;

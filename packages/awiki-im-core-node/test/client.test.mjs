@@ -330,7 +330,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true, clearedIdentityDids: [] })
 })
 
-test('routes group, profile, and payload operations through native v10 with structured identity errors', async t => {
+test('routes group, profile, and payload operations through native v19 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
@@ -344,6 +344,8 @@ test('routes group, profile, and payload operations through native v10 with stru
   )
   const identityOperations = [
     () => client.getProfile(),
+    () => client.setAvatar({ requestId: '1e15bcb3-97f6-4bc0-a4e7-16eeb70a18fa', expectedProfileVersion: '0', imageBase64: '/9j/2Q==' }),
+    () => client.clearAvatar({ requestId: '1e15bcb3-97f6-4bc0-a4e7-16eeb70a18fa', expectedProfileVersion: '0' }),
     () => client.refreshDisplayProfiles({ peers: ['did:wba:example.test:user:alice'] }),
     () => client.getGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),
     () => client.listGroups(),

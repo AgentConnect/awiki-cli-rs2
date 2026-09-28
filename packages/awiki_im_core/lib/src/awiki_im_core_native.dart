@@ -1384,6 +1384,38 @@ class ProfileApi {
     return profile._toModel();
   }
 
+  Future<UserProfile> setAvatar({
+    required String requestId,
+    required String expectedProfileVersion,
+    required Uint8List imageJpeg,
+  }) async {
+    _client._ensureNotDisposed();
+    final profile = await _mapNativeErrors(
+      () => gen_profile.setAvatar(
+        client: _client._inner,
+        requestId: requestId,
+        expectedProfileVersion: expectedProfileVersion,
+        imageJpeg: imageJpeg,
+      ),
+    );
+    return profile._toModel();
+  }
+
+  Future<UserProfile> clearAvatar({
+    required String requestId,
+    required String expectedProfileVersion,
+  }) async {
+    _client._ensureNotDisposed();
+    final profile = await _mapNativeErrors(
+      () => gen_profile.clearAvatar(
+        client: _client._inner,
+        requestId: requestId,
+        expectedProfileVersion: expectedProfileVersion,
+      ),
+    );
+    return profile._toModel();
+  }
+
   Future<UserProfile> loadPublicProfile(IdentitySubject subject) async {
     _client._ensureNotDisposed();
     final profile = await _mapNativeErrors(
@@ -3494,6 +3526,7 @@ extension on gen_directory_dto.DartDisplayProfile {
     displayName: displayName,
     avatarUri: avatarUri,
     avatarUrl: avatarUrl,
+    avatarThumbnailUri: avatarThumbnailUri,
     profileUri: profileUri,
     subjectType: subjectType,
     cacheHit: cacheHit,
@@ -3549,6 +3582,8 @@ extension on gen_profile_dto.DartUserProfile {
     markdown: markdown,
     avatarUri: avatarUri,
     avatarUrl: avatarUrl,
+    avatarThumbnailUri: avatarThumbnailUri,
+    avatarUploadEnabled: avatarUploadEnabled,
     profileUri: profileUri,
     subjectType: subjectType,
     agentKind: agentKind,
@@ -4574,6 +4609,16 @@ extension on gen_group_dto.DartGroupSummary {
     name: name,
     displayName: displayName,
     avatarUri: avatarUri,
+    avatarMembers: avatarMembers
+        ?.map(
+          (m) => GroupAvatarMember(
+            memberKey: m.memberKey,
+            memberDid: m.memberDid,
+            memberHandle: m.memberHandle,
+          ),
+        )
+        .toList(growable: false),
+    groupStateVersion: groupStateVersion,
     myRole: myRole,
     membershipStatus: membershipStatus,
     memberCount: memberCount,
@@ -4589,6 +4634,16 @@ extension on gen_group_dto.DartGroupSnapshot {
     name: name,
     displayName: displayName,
     avatarUri: avatarUri,
+    avatarMembers: avatarMembers
+        ?.map(
+          (m) => GroupAvatarMember(
+            memberKey: m.memberKey,
+            memberDid: m.memberDid,
+            memberHandle: m.memberHandle,
+          ),
+        )
+        .toList(growable: false),
+    groupStateVersion: groupStateVersion,
     description: description,
     myRole: myRole,
     membershipStatus: membershipStatus,

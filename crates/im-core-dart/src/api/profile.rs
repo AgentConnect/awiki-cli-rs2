@@ -6,6 +6,42 @@ use crate::dto::{
     profile::{DartProfilePatch, DartUserProfile},
 };
 
+pub async fn set_avatar(
+    client: &Arc<crate::api::client::DartImClient>,
+    request_id: String,
+    expected_profile_version: String,
+    image_jpeg: Vec<u8>,
+) -> Result<DartUserProfile, DartImError> {
+    client
+        .clone_inner()?
+        .identity()
+        .set_avatar_async(im_core::identity::SetAvatarRequest {
+            request_id,
+            expected_profile_version,
+            image_jpeg,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn clear_avatar(
+    client: &Arc<crate::api::client::DartImClient>,
+    request_id: String,
+    expected_profile_version: String,
+) -> Result<DartUserProfile, DartImError> {
+    client
+        .clone_inner()?
+        .identity()
+        .clear_avatar_async(im_core::identity::ClearAvatarRequest {
+            request_id,
+            expected_profile_version,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn load_my_profile(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartUserProfile, DartImError> {

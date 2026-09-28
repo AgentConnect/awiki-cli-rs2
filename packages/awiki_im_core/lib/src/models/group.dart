@@ -2,6 +2,17 @@ import 'message.dart';
 
 enum GroupIdentityMode { handle, didOnly }
 
+class GroupAvatarMember {
+  const GroupAvatarMember({
+    required this.memberKey,
+    required this.memberDid,
+    this.memberHandle,
+  });
+  final String memberKey;
+  final String memberDid;
+  final String? memberHandle;
+}
+
 class GroupSummary {
   const GroupSummary({
     required this.conversationId,
@@ -10,6 +21,8 @@ class GroupSummary {
     this.name,
     this.displayName,
     this.avatarUri,
+    this.avatarMembers,
+    this.groupStateVersion,
     this.myRole,
     this.membershipStatus,
     this.memberCount,
@@ -22,6 +35,8 @@ class GroupSummary {
   final String? name;
   final String? displayName;
   final String? avatarUri;
+  final List<GroupAvatarMember>? avatarMembers;
+  final String? groupStateVersion;
   final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
@@ -36,6 +51,8 @@ class GroupSnapshot extends GroupSummary {
     super.name,
     super.displayName,
     super.avatarUri,
+    super.avatarMembers,
+    super.groupStateVersion,
     super.myRole,
     this.description,
     super.membershipStatus,

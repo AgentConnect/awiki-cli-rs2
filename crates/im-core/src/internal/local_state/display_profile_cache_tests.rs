@@ -15,6 +15,84 @@ fn profile(did: &Did, name: Option<&str>) -> Profile {
 }
 
 #[test]
+fn avatar_missing_preserves_and_explicit_null_clears_both_cache_kinds() {
+    for verified in [false, true] {
+        let (db, did) = fixture();
+        if verified {
+            db.execute_batch("INSERT INTO peer_personas(owner_identity_id,peer_persona_id,authority_namespace,authority_subject_id,full_handle,source,verified_at,created_at,updated_at) VALUES ('alice','persona','example','guest','guest.example','verified','100','100','100');
+                INSERT INTO peer_identifiers(owner_identity_id,peer_persona_id,identifier_kind,identifier_value,source,verified_at,first_seen_at,last_seen_at) VALUES ('alice','persona','did','did:example:guest','verified','100','100','100');").unwrap();
+        }
+        let mut image = profile(&did, Some("Guest"));
+        image.avatar_uri = Some("https://example/main.jpg".to_owned());
+        image.avatar_thumbnail_uri = Some("https://example/thumb.jpg".to_owned());
+        let lease = claim(&db, "alice", &did, true, 100).unwrap().unwrap();
+        finish(&db, "alice", &did, &lease, Some(image.clone()), 101).unwrap();
+        let lease = claim(&db, "alice", &did, true, 102).unwrap().unwrap();
+        finish(
+            &db,
+            "alice",
+            &did,
+            &lease,
+            Some(profile(&did, Some("Renamed"))),
+            103,
+        )
+        .unwrap();
+        let hydrate = || {
+            super::super::peer_profiles::display_profile_for_peer(
+                &db,
+                "alice",
+                &crate::ids::PeerRef::parse(did.as_str(), "example").unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(hydrate().avatar_thumbnail_uri, image.avatar_thumbnail_uri);
+        assert_eq!(hydrate().avatar_uri, image.avatar_uri);
+        if verified {
+            // A preceding CLI/Core can still update the main URI while ignoring
+            // the additive thumbnail columns. Never display its stale thumbnail.
+            db.execute(
+                "UPDATE peer_profiles SET avatar_uri='https://example/legacy-new.jpg'",
+                [],
+            )
+            .unwrap();
+            assert_eq!(hydrate().avatar_thumbnail_uri, None);
+        }
+        let old = claim(&db, "alice", &did, true, 104).unwrap().unwrap();
+        let successor = claim(&db, "alice", &did, true, 135).unwrap().unwrap();
+        let mut clear = profile(&did, None);
+        clear.avatar_uri_present = true;
+        finish(&db, "alice", &did, &successor, Some(clear), 136).unwrap();
+        finish(&db, "alice", &did, &old, Some(image), 137).unwrap();
+        assert_eq!(hydrate().avatar_uri, None);
+        assert_eq!(hydrate().avatar_thumbnail_uri, None);
+    }
+}
+
+#[test]
+fn avatar_schema_45_extension_preserves_existing_projection_and_is_idempotent() {
+    let (db, _) = fixture();
+    db.execute_batch("INSERT INTO peer_personas(owner_identity_id,peer_persona_id,authority_namespace,authority_subject_id,full_handle,source,verified_at,created_at,updated_at) VALUES ('alice','persona','example','guest','guest.example','verified','100','100','100');
+        INSERT INTO peer_profiles(owner_identity_id,peer_persona_id,display_name,full_handle,avatar_uri,fetched_at) VALUES ('alice','persona','Guest','guest.example','https://example/main.jpg','100');
+        ALTER TABLE peer_profiles DROP COLUMN avatar_thumbnail_uri;
+        ALTER TABLE peer_profiles DROP COLUMN avatar_thumbnail_source_uri;
+        PRAGMA user_version=45;").unwrap();
+    for _ in 0..2 {
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let row: (String, Option<String>) = db.query_row(
+            "SELECT avatar_uri,avatar_thumbnail_uri FROM peer_profiles WHERE owner_identity_id='alice'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(row, ("https://example/main.jpg".to_owned(), None));
+        assert_eq!(
+            db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            45
+        );
+    }
+}
+
+#[test]
 fn display_cache_merges_requests_retries_failures_and_preserves_owner_isolation() {
     let (db, did) = fixture();
     let lease = claim(&db, "alice", &did, false, 100).unwrap().unwrap();

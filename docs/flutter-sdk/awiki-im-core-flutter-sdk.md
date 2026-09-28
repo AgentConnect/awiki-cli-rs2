@@ -616,6 +616,15 @@ Legacy compatibility fields remain available:
 
 Display fields must not be used for routing, authentication, authorization, service endpoint selection, E2EE binding, or security-profile negotiation. Apps should keep Handle or DID visible on profile and recipient-confirmation surfaces, especially for high-risk operations.
 
+头像：`client.profile.setAvatar(requestId:, expectedProfileVersion:, imageJpeg:)` 和
+`clearAvatar(requestId:, expectedProfileVersion:)` 返回 `UserProfile`，新增
+`avatarThumbnailUri` / `avatarUploadEnabled`。上传是产品准备的 512×512 JPEG ≤512 KiB，
+Core 不持久保存字节。产品在同 owner 会话内保留待重试 UUID 与数据，并按返回的
+profileVersion 交给既有 AccountState 应用层；旧服务能力缺失时禁用编辑。
+`DisplayProfile` 同样透传 thumbnail；`GroupSummary/GroupSnapshot.avatarMembers` 和
+`groupStateVersion` 只用于本地拼图，不授权成员行为。FRB Rust/Dart 生成代码和实际 native
+必须来自同一候选提交并通过源码/ABI 检查。
+
 `client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally, `isStale = true` when the Persona Profile TTL has expired, and `legacyFallback = true` when the visible name only came from an old contact `name/nick_name`. The app may render that stale value immediately and schedule one coalesced remote refresh; it should always fall back through `displayName -> handle -> did` without blocking list rendering. A stored Persona Profile, including one with no display name, takes precedence over legacy contact names. 群成员/发送人展示使用显式 `client.directory.refreshDisplayProfiles(peers, force: false)`：每批最多 100 个 DID，按 owner 合并在途请求、遵守 TTL 和失败重试时间；不会创建联系人、Persona、Direct route 或会话。未知 DID 只进入可丢弃展示缓存，已有 current Persona 的可变资料写入既有投影，已验证 Handle 不变。`hydrateDisplayProfiles` 仍只读本地。`resolvePeer`、`lookupHandle`、`loadPublicProfile` 和发送安全验证继续服务其原有业务入口。 A successful `loadPublicProfile` refresh also persists mutable display fields into an already verified Persona projection, so a later Core/client recreation hydrates the latest nickname and avatar. It does not create a Persona or route for a contact-only peer and does not replace the Persona's verified Handle.
 
 `core.updateDisplayNameProjection(identityId: identityId, displayName: displayName)` updates only the selected local `IdentitySummary.displayName` projection. It is owner-ID scoped and idempotent, and is intended for an App that has already obtained an authoritative Account State Profile snapshot. It never changes the current identity, DID, Handle, device binding, authentication material, or routing state. Apps must still fence the result to the active session before publishing it to UI state.

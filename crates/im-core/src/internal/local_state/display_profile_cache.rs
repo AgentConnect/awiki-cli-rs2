@@ -25,7 +25,7 @@ pub(crate) struct RefreshLease {
 
 fn persona_snapshot(db: &Connection, owner: &str, did: &Did) -> ImResult<Option<(String, String)>> {
     db.query_row(
-        "SELECT i.peer_persona_id, json_array(p.fetched_at,p.display_name,p.avatar_uri,p.profile_version,p.expires_at,p.full_handle,p.subject_type,p.updated_at)
+        "SELECT i.peer_persona_id, json_array(p.fetched_at,p.display_name,p.avatar_uri,p.avatar_thumbnail_uri,p.avatar_thumbnail_source_uri,p.profile_version,p.expires_at,p.full_handle,p.subject_type,p.updated_at)
          FROM peer_identifiers i LEFT JOIN peer_profiles p
            ON p.owner_identity_id=i.owner_identity_id AND p.peer_persona_id=i.peer_persona_id
          WHERE i.owner_identity_id=?1 AND i.identifier_kind='did'
@@ -151,6 +151,13 @@ pub(crate) fn finish(
         )? {
             None
         } else {
+            if !profile.has_avatar_update() {
+                if let Some(previous) = read(&tx, owner, did, now)? {
+                    profile.avatar_uri = previous.avatar_uri;
+                    profile.avatar_url = previous.avatar_url;
+                    profile.avatar_thumbnail_uri = previous.avatar_thumbnail_uri;
+                }
+            }
             Some(
                 serde_json::to_string(&DisplayProfile {
                     did: Some(did.clone()),
@@ -158,6 +165,7 @@ pub(crate) fn finish(
                     display_name: profile.display_name.clone(),
                     avatar_uri: profile.avatar_uri.clone(),
                     avatar_url: profile.avatar_url.clone(),
+                    avatar_thumbnail_uri: profile.avatar_thumbnail_uri.clone(),
                     profile_uri: profile.profile_uri.clone(),
                     subject_type: profile.subject_type.clone(),
                     cache_hit: true,

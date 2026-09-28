@@ -78,6 +78,7 @@ class DisplayProfile {
     this.displayName,
     this.avatarUri,
     this.avatarUrl,
+    this.avatarThumbnailUri,
     this.profileUri,
     this.subjectType,
     required this.cacheHit,
@@ -91,6 +92,7 @@ class DisplayProfile {
   final String? displayName;
   final String? avatarUri;
   final String? avatarUrl;
+  final String? avatarThumbnailUri;
   final String? profileUri;
   final String? subjectType;
   final bool cacheHit;
