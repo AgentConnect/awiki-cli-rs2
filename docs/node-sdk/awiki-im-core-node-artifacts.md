@@ -1,6 +1,6 @@
 # `@awiki/im-core-node` 原生制品
 
-当前待发布版本为 `0.2.9`，固定使用已发布 IM Core `0.1.6`，native API 为 `18`。正式 npm 发布后，wrapper 与五个平台包必须同版；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+当前正式发布版本为 `0.2.9`，固定使用已发布 IM Core `0.1.6`，native API 为 `18`。npm 上的 wrapper 与五个平台包均为 `0.2.9`；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
 源码消费者通过显式 `--local-candidate`
 打包 private tarball；provenance 与 SOURCE 采用实际解析的 ANP/Identity 提交和 dirty 状态，
 并记录 Cargo lock 摘要。native API 从当前 Rust facade 读取。该候选验证不替代正式 registry
