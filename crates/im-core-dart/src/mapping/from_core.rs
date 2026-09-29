@@ -1100,6 +1100,8 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             markdown: value.markdown,
             avatar_uri: value.avatar_uri,
             avatar_url: value.avatar_url,
+            avatar_thumbnail_uri: value.avatar_thumbnail_uri,
+            avatar_upload_enabled: value.avatar_upload_enabled,
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             agent_kind: value.agent_kind,
@@ -1139,6 +1141,7 @@ impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDis
             display_name: value.display_name,
             avatar_uri: value.avatar_uri,
             avatar_url: value.avatar_url,
+            avatar_thumbnail_uri: value.avatar_thumbnail_uri,
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             cache_hit: value.cache_hit,
@@ -2114,6 +2117,10 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
             name: value.name,
             display_name: value.display_name,
             avatar_uri: value.avatar_uri,
+            avatar_members: value
+                .avatar_members
+                .map(|members| members.into_iter().map(Into::into).collect()),
+            group_state_version: value.group_state_version,
             my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
@@ -2133,6 +2140,10 @@ impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
             display_name: value.display_name,
             description: value.description,
             avatar_uri: value.avatar_uri,
+            avatar_members: value
+                .avatar_members
+                .map(|members| members.into_iter().map(Into::into).collect()),
+            group_state_version: value.group_state_version,
             my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
@@ -2792,6 +2803,16 @@ impl From<im_core::messages::MessageProcessingOutcome> for DartMessageProcessing
                 .map(Into::into)
                 .collect(),
             error_code: value.error_code,
+        }
+    }
+}
+
+impl From<im_core::groups::GroupAvatarMember> for crate::dto::group::DartGroupAvatarMember {
+    fn from(value: im_core::groups::GroupAvatarMember) -> Self {
+        Self {
+            member_key: value.member_key,
+            member_did: value.member_did.as_str().to_owned(),
+            member_handle: value.member_handle,
         }
     }
 }

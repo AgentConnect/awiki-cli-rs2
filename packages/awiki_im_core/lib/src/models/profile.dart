@@ -10,6 +10,8 @@ class UserProfile {
     this.markdown,
     this.avatarUri,
     this.avatarUrl,
+    this.avatarThumbnailUri,
+    this.avatarUploadEnabled = false,
     this.profileUri,
     this.subjectType,
     this.agentKind,
@@ -30,6 +32,8 @@ class UserProfile {
   final String? markdown;
   final String? avatarUri;
   final String? avatarUrl;
+  final String? avatarThumbnailUri;
+  final bool avatarUploadEnabled;
   final String? profileUri;
   final String? subjectType;
   final String? agentKind;

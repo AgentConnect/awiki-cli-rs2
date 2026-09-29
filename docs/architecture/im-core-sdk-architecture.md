@@ -80,6 +80,11 @@ parse flags -> build ImCore/ImClient -> call SDK -> render output
 
 CLI may parse `--to`, `--group`, `--text-file`, `--file`, and `--secure`; it passes `MessageTarget`, `MessageBody`, `AttachmentInput`, and `MessageSecurityMode` to SDK services.
 
+头像操作沿用上述分层：Core 拥有鉴权、版本化 set/clear RPC、三态资料投影和刷新租约；
+Dart/Node 只转换类型。产品拥有相册/相机/裁剪和图片字节缓存。Core 不编码图片，不把原图或
+JPEG base64 写入资料或消息数据库。本人返回必须含当前 owner、Profile version 和明确头像字段。
+群头像只透传 Host 的有界稳定成员摘要，不在 Core 扫描 roster 或生成图片。
+
 ## 4. Identity Model
 
 `ImCore` is environment-level and does not bind a current identity. `ImClient` binds one identity and automatically carries actor, auth runtime, local owner, and identity-scoped state.

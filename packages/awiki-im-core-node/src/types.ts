@@ -329,12 +329,33 @@ export interface NodeIdentity {
 
 /** Public editable profile projection. Proofs, metadata, and private state are excluded. */
 export interface NodeProfile {
+  readonly avatarUri?: string
+  readonly avatarThumbnailUri?: string
+  readonly profileVersion?: string
+  readonly avatarUploadEnabled?: boolean
   readonly did: string
   readonly handle?: string
   readonly displayName?: string
   readonly bio?: string
   readonly tags: readonly string[]
   readonly updatedAt?: string
+}
+
+export interface ClearAvatarInput {
+  /** Retain this UUID for retries of the same operation, for at most seven days. */
+  readonly requestId: string
+  readonly expectedProfileVersion: string
+}
+
+export interface SetAvatarInput extends ClearAvatarInput {
+  /** Base64 of the prepared 512x512 JPEG, at most 512 KiB before encoding. */
+  readonly imageBase64: string
+}
+
+export interface GroupAvatarMember {
+  readonly memberKey: string
+  readonly memberDid: string
+  readonly memberHandle?: string
 }
 
 export interface UpdateProfileInput {
@@ -548,6 +569,9 @@ export interface CreateGroupInput {
 
 /** Created group with its canonical conversation route. */
 export interface NodeGroup {
+  readonly avatarUri?: string
+  readonly avatarMembers?: readonly GroupAvatarMember[]
+  readonly groupStateVersion?: string
   readonly did: string
   readonly conversationId: string
   readonly title: string
@@ -611,6 +635,8 @@ export interface DisplayProfileBatchInput {
 
 /** One locally cached display profile. */
 export interface NodeDisplayProfile {
+  readonly avatarUri?: string
+  readonly avatarThumbnailUri?: string
   readonly did?: string
   readonly handle?: string
   readonly displayName?: string
@@ -1075,6 +1101,8 @@ export interface ImCoreNodeClient {
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
+  setAvatar(input: SetAvatarInput): Promise<NodeProfile>
+  clearAvatar(input: ClearAvatarInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]>
   refreshDisplayProfiles(input: DisplayProfileBatchInput, force?: boolean): Promise<readonly NodeDisplayProfile[]>

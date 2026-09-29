@@ -1,3 +1,4 @@
+mod avatar;
 mod creation;
 mod device_revoke;
 mod document;
@@ -10,6 +11,7 @@ mod registry;
 mod root_key_transfer;
 mod service;
 
+pub use self::avatar::{ClearAvatarRequest, SetAvatarRequest};
 pub use self::creation::{IdentityCreationCapabilities, PendingIdentityRegistration};
 pub use self::device_revoke::{
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,

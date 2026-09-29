@@ -54,6 +54,8 @@ import {
   type NodeIdentity,
   type NodeMessage,
   type NodeProfile,
+  type SetAvatarInput,
+  type ClearAvatarInput,
   type NodePeer,
   type OtpChallenge,
   type Page,
@@ -281,6 +283,14 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public getProfile(): Promise<NodeProfile> {
     return call(() => this.native.getProfile())
+  }
+
+  public setAvatar(input: SetAvatarInput): Promise<NodeProfile> {
+    return call(() => this.native.setAvatar(input))
+  }
+
+  public clearAvatar(input: ClearAvatarInput): Promise<NodeProfile> {
+    return call(() => this.native.clearAvatar(input))
   }
 
   public updateProfile(input: UpdateProfileInput): Promise<NodeProfile> {

@@ -718,6 +718,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupAvatarMember dco_decode_dart_group_avatar_member(dynamic raw);
+
+  @protected
   DartGroupIdentityMode dco_decode_dart_group_identity_mode(dynamic raw);
 
   @protected
@@ -1247,6 +1250,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartGroupAvatarMember> dco_decode_list_dart_group_avatar_member(
+    dynamic raw,
+  );
+
+  @protected
   List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
 
   @protected
@@ -1458,6 +1466,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? dco_decode_opt_list_String(dynamic raw);
+
+  @protected
+  List<DartGroupAvatarMember>? dco_decode_opt_list_dart_group_avatar_member(
+    dynamic raw,
+  );
 
   @protected
   int dco_decode_u_16(dynamic raw);
@@ -2257,6 +2270,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupAvatarMember sse_decode_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupIdentityMode sse_decode_dart_group_identity_mode(
     SseDeserializer deserializer,
   );
@@ -2932,6 +2950,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartGroupAvatarMember> sse_decode_list_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartGroupMember> sse_decode_list_dart_group_member(
     SseDeserializer deserializer,
   );
@@ -3185,6 +3208,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<DartGroupAvatarMember>? sse_decode_opt_list_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
 
   @protected
   int sse_decode_u_16(SseDeserializer deserializer);
@@ -4115,6 +4143,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_group_avatar_member(
+    DartGroupAvatarMember self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_group_identity_mode(
     DartGroupIdentityMode self,
     SseSerializer serializer,
@@ -4940,6 +4974,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_group_avatar_member(
+    List<DartGroupAvatarMember> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_group_member(
     List<DartGroupMember> self,
     SseSerializer serializer,
@@ -5230,6 +5270,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_dart_group_avatar_member(
+    List<DartGroupAvatarMember>? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_u_16(int self, SseSerializer serializer);

@@ -1282,6 +1282,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         super::display_profile_cache::create_schema(&transaction)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
         super::sync_inbox::ensure_schema(&transaction)?;
+        ensure_avatar_profile_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1297,6 +1298,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         super::display_profile_cache::create_schema(&transaction)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
         super::sync_inbox::ensure_schema(&transaction)?;
+        ensure_avatar_profile_schema(&transaction)?;
         if !current_schema_shape_is_complete(&transaction)? {
             return Err(crate::ImError::LocalStateUnavailable {
                 detail: "incomplete display cache schema".to_owned(),
@@ -1304,6 +1306,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         }
         ensure_local_deletion_terminal_schema(&transaction)?;
         super::sync_inbox::ensure_schema(&transaction)?;
+        ensure_avatar_profile_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1318,6 +1321,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .map_err(super::local_state_unavailable)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
         super::sync_inbox::ensure_schema(&transaction)?;
+        ensure_avatar_profile_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1332,6 +1336,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .unchecked_transaction()
             .map_err(super::local_state_unavailable)?;
         super::sync_inbox::ensure_schema(&transaction)?;
+        ensure_avatar_profile_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1350,13 +1355,17 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
                     |row| row.get(0),
                 )
                 .map_err(super::local_state_unavailable)?;
-            if !has_column(connection, "sync_lane_inbox", "logical_event_seq")?
+            if !has_column(connection, "peer_profiles", "avatar_thumbnail_uri")?
+                || !has_column(connection, "peer_profiles", "avatar_thumbnail_source_uri")?
+                || !has_column(connection, "peer_profiles", "account_profile_version")?
+                || !has_column(connection, "sync_lane_inbox", "logical_event_seq")?
                 || !inbox_ddl.contains("'baseline'")
                 || !has_table(connection, "sync_input_leases")?
             {
                 let transaction = connection
                     .unchecked_transaction()
                     .map_err(super::local_state_unavailable)?;
+                ensure_avatar_profile_schema(&transaction)?;
                 super::sync_inbox::ensure_schema(&transaction)?;
                 transaction
                     .commit()
@@ -1402,6 +1411,7 @@ fn migrate_release_predecessor_to_v34(
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1464,6 +1474,7 @@ fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> cr
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1550,6 +1561,7 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1573,6 +1585,7 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1596,6 +1609,7 @@ fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1618,6 +1632,7 @@ fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1645,6 +1660,7 @@ fn migrate_v39_to_current(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1671,6 +1687,7 @@ fn migrate_v40_to_current(connection: &Connection) -> crate::ImResult<()> {
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
     ensure_local_deletion_terminal_schema(&transaction)?;
+    ensure_avatar_profile_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1921,6 +1938,19 @@ fn sync_v1b_durable_lane_shape_is_complete(connection: &Connection) -> crate::Im
 fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(schema_v40_shape_is_complete(connection)?
         && sync_v1b_durable_lane_shape_is_complete(connection)?)
+}
+
+// Backward-compatible nullable display-cache extension. Old readers ignore it.
+fn ensure_avatar_profile_schema(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(connection, "peer_profiles", "account_profile_version", "TEXT")?;
+    ensure_column(connection, "peer_profiles", "avatar_thumbnail_uri", "TEXT")?;
+    ensure_column(
+        connection,
+        "peer_profiles",
+        "avatar_thumbnail_source_uri",
+        "TEXT",
+    )?;
+    Ok(())
 }
 
 fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {

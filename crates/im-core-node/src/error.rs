@@ -211,6 +211,23 @@ impl SafeError {
 
 fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
     let code = code.unwrap_or_default().trim().to_ascii_lowercase();
+    if matches!(
+        code.as_str(),
+        "avatar.version_conflict"
+            | "avatar.idempotency_conflict"
+            | "avatar.disabled"
+            | "avatar.person_required"
+            | "avatar.invalid_params"
+            | "avatar.invalid_image"
+            | "avatar.upload_too_large"
+            | "avatar.invalid_version"
+            | "avatar.account_not_found"
+            | "avatar.busy"
+            | "avatar.rate_limited"
+    ) {
+        let retryable = matches!(code.as_str(), "avatar.busy" | "avatar.rate_limited");
+        return SafeError::new(code, "The avatar could not be updated.", retryable);
+    }
     use im_core::identity::HandleRecoveryErrorCode as Recovery;
     if let Some(recovery) = [
         Recovery::FactorRetryRequired,

@@ -1728,6 +1728,36 @@ pub struct Profile {
 做类型展示和交互预判；能力数组只保留前 16 个去重非空字符串。它们不是授权证据，群成员
 准入必须以 Message/User Service 的最终结果为准，也不得从 DID、Handle 或展示文案补造能力。
 
+头像产品扩展新增 `Profile.avatar_thumbnail_uri`、`avatar_upload_enabled`（旧服务默认 false）
+和 `avatar_uri_present`。后者保留 wire 字段出现与否：缺失保留旧值，明确 null 清除主图和
+缩略图，有值替换；canonical `avatar_uri: null` 优先于旧 alias。`to_wire_profile_value`
+保留显式 null。展示 URI 不参与身份、鉴权或路由。
+
+公开资料的可选 canonical `profile_version` 用于头像乱序保护：低版本不能覆盖高版本，
+已缓存版本后，无版本的旧 WNS 投影不能覆盖头像；读取失败或字段缺失保留旧值，
+新版本显式 null 清空。SQLite 可丢弃资料缓存新增 nullable `account_profile_version`，
+与既有存储 opaque `version_id` 的 `peer_profiles.profile_version` 分开；不改变身份或
+路由权威、不改变 `user_version=45`，已有缓存自动补列，旧 CLI 写入仍受兼容约束。
+
+`IdentityService::set_avatar_async(SetAvatarRequest { request_id, expected_profile_version,
+image_jpeg })` 与 `clear_avatar_async(ClearAvatarRequest { request_id, expected_profile_version })`
+操作当前 owner，返回带 Profile version 的权威资料。调用方负责生成并保留 UUID；不确定结果
+沿用同请求 ID/版本/图片重试，七天后重新读取并由用户确认。不自动以新版本覆盖其他设备。
+Core 校验 UUID、服务端版本范围和 512 KiB 字节限额，认证、base64 wire 和 RPC 都在 Core；
+图片预处理、裁剪、压缩及待重试图片字节由产品拥有。头像字节不进入 Core SQLite/资料 JSON，
+请求 Debug 只显示字节数。历史成功回执可能落后于后续资料，消费者必须按 profile_version
+合并；Core 不从头像重放回执回写昵称投影。
+
+`DisplayProfile.avatar_thumbnail_uri` 是可选展示字段。verified Persona 和 display-only
+缓存都遵守上述清空语义与 owner/lease fence；无 TTL 资料默认五分钟过期。Persona 表新增
+nullable thumbnail URI/source URI，查询必须与当前主图匹配，防止旧 Core 只改主图时复用旧缩略图。
+这是 Schema 45 的兼容展示缓存扩展，不升级 user_version，不改身份/消息/路由数据。
+
+`GroupSnapshot` / `GroupSummary` 新增可选 `avatar_members`（最多四位 `member_key`、
+`member_did`、`member_handle`）及 `group_state_version`。只接受带 canonical 版本、唯一 key、
+有效 DID 且长度 ≤4 的完整摘要，保留 Host 顺序；缺失或畸形摘要为 None，由产品字符降级。
+显式群 URI 仍优先，P4/P6 和 CLI/Daemon 功能不新增头像图片读取/上传。
+
 `profile_version` 是 User Service 账号 Profile 域提交后的 canonical non-negative decimal
 string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私有 Profile RPC 返回该版本时存在。
 `version_id` 仍是 WNS DID Subject Profile 的 `versionId` 展示元数据；二者来源和语义独立，

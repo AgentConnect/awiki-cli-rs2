@@ -1046,6 +1046,7 @@ fn display_profile_cache_miss(
         display_name: None,
         avatar_uri: None,
         avatar_url: None,
+        avatar_thumbnail_uri: None,
         profile_uri: None,
         subject_type: None,
         cache_hit: false,

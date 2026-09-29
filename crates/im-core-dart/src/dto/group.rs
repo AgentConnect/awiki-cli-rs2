@@ -1,4 +1,11 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartGroupAvatarMember {
+    pub member_key: String,
+    pub member_did: String,
+    pub member_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupSummary {
     pub conversation_id: String,
     pub id: Option<String>,
@@ -6,6 +13,8 @@ pub struct DartGroupSummary {
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub avatar_uri: Option<String>,
+    pub avatar_members: Option<Vec<DartGroupAvatarMember>>,
+    pub group_state_version: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -21,6 +30,8 @@ pub struct DartGroupSnapshot {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub avatar_uri: Option<String>,
+    pub avatar_members: Option<Vec<DartGroupAvatarMember>>,
+    pub group_state_version: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,

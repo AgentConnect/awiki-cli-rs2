@@ -56,6 +56,8 @@ class DartUserProfile {
   final String? markdown;
   final String? avatarUri;
   final String? avatarUrl;
+  final String? avatarThumbnailUri;
+  final bool avatarUploadEnabled;
   final String? profileUri;
   final String? subjectType;
   final String? agentKind;
@@ -76,6 +78,8 @@ class DartUserProfile {
     this.markdown,
     this.avatarUri,
     this.avatarUrl,
+    this.avatarThumbnailUri,
+    required this.avatarUploadEnabled,
     this.profileUri,
     this.subjectType,
     this.agentKind,
@@ -98,6 +102,8 @@ class DartUserProfile {
       markdown.hashCode ^
       avatarUri.hashCode ^
       avatarUrl.hashCode ^
+      avatarThumbnailUri.hashCode ^
+      avatarUploadEnabled.hashCode ^
       profileUri.hashCode ^
       subjectType.hashCode ^
       agentKind.hashCode ^
@@ -122,6 +128,8 @@ class DartUserProfile {
           markdown == other.markdown &&
           avatarUri == other.avatarUri &&
           avatarUrl == other.avatarUrl &&
+          avatarThumbnailUri == other.avatarThumbnailUri &&
+          avatarUploadEnabled == other.avatarUploadEnabled &&
           profileUri == other.profileUri &&
           subjectType == other.subjectType &&
           agentKind == other.agentKind &&

@@ -1,4 +1,64 @@
+use base64::Engine as _;
 use serde_json::{json, Map, Value};
+
+fn avatar_params(request: crate::identity::ClearAvatarRequest) -> crate::ImResult<Value> {
+    let request_id = uuid::Uuid::parse_str(&request.request_id).map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("request_id".to_owned()),
+            "avatar request_id must be a UUID",
+        )
+    })?;
+    crate::internal::local_state::sync_v2::validate_decimal(
+        "expected_profile_version",
+        &request.expected_profile_version,
+    )?;
+    if request.expected_profile_version.len() > 19
+        || (request.expected_profile_version.len() == 19
+            && request.expected_profile_version.as_str() > "9223372036854775807")
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("expected_profile_version".to_owned()),
+            "avatar profile version exceeds the server range",
+        ));
+    }
+    Ok(
+        json!({"request_id": request_id.to_string(), "expected_profile_version": request.expected_profile_version}),
+    )
+}
+
+pub(crate) fn build_set_avatar_rpc_call(
+    request: crate::identity::SetAvatarRequest,
+) -> crate::ImResult<super::RpcCall> {
+    if request.image_jpeg.is_empty() || request.image_jpeg.len() > 512 * 1024 {
+        return Err(crate::ImError::invalid_input(
+            Some("image_jpeg".to_owned()),
+            "avatar JPEG must be at most 512 KiB",
+        ));
+    }
+    let mut params = avatar_params(crate::identity::ClearAvatarRequest {
+        request_id: request.request_id,
+        expected_profile_version: request.expected_profile_version,
+    })?;
+    params["image_base64"] =
+        json!(base64::engine::general_purpose::STANDARD.encode(request.image_jpeg));
+    Ok(super::rpc_call(
+        super::DID_PROFILE_RPC_ENDPOINT,
+        "set_avatar",
+        super::TransportProfile::RpcDefault,
+        params,
+    ))
+}
+
+pub(crate) fn build_clear_avatar_rpc_call(
+    request: crate::identity::ClearAvatarRequest,
+) -> crate::ImResult<super::RpcCall> {
+    Ok(super::rpc_call(
+        super::DID_PROFILE_RPC_ENDPOINT,
+        "clear_avatar",
+        super::TransportProfile::RpcDefault,
+        avatar_params(request)?,
+    ))
+}
 
 pub(crate) fn build_profile_resolve_rpc_call(did: &str) -> crate::ImResult<super::RpcCall> {
     let did = super::required_trimmed(did, "did")?;

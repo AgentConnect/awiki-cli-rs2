@@ -773,6 +773,13 @@ pub struct Profile {
     pub markdown: Option<String>,
     pub avatar_uri: Option<String>,
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub avatar_thumbnail_uri: Option<String>,
+    #[serde(default)]
+    pub avatar_upload_enabled: bool,
+    /// Distinguishes an omitted avatar field from an authoritative null.
+    #[serde(default)]
+    pub avatar_uri_present: bool,
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub agent_kind: Option<String>,
@@ -811,6 +818,9 @@ impl Profile {
             markdown: None,
             avatar_uri: None,
             avatar_url: None,
+            avatar_thumbnail_uri: None,
+            avatar_upload_enabled: false,
+            avatar_uri_present: false,
             profile_uri: None,
             subject_type: None,
             agent_kind: None,
@@ -830,6 +840,10 @@ impl Profile {
 
     pub fn effective_avatar_uri(&self) -> Option<&String> {
         self.avatar_uri.as_ref().or(self.avatar_url.as_ref())
+    }
+
+    pub fn has_avatar_update(&self) -> bool {
+        self.avatar_uri_present || self.effective_avatar_uri().is_some()
     }
 
     pub fn to_wire_profile_value(&self) -> serde_json::Value {
@@ -886,6 +900,24 @@ impl Profile {
             value.insert(
                 "avatar_url".to_string(),
                 serde_json::Value::String(avatar_url.clone()),
+            );
+        }
+        if self.has_avatar_update() {
+            value
+                .entry("avatar_uri".to_owned())
+                .or_insert(serde_json::Value::Null);
+            value
+                .entry("avatar_url".to_owned())
+                .or_insert(serde_json::Value::Null);
+            value.insert(
+                "avatar_thumbnail_uri".to_owned(),
+                serde_json::json!(self.avatar_thumbnail_uri),
+            );
+        }
+        if self.avatar_upload_enabled {
+            value.insert(
+                "avatar_upload_enabled".to_owned(),
+                serde_json::Value::Bool(true),
             );
         }
         if let Some(profile_uri) = self.profile_uri.as_ref() {

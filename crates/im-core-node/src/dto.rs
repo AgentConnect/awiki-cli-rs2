@@ -701,6 +701,23 @@ pub struct NodeProfile {
     pub bio: Option<String>,
     pub tags: Vec<String>,
     pub updated_at: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
+    pub profile_version: Option<String>,
+    pub avatar_upload_enabled: bool,
+}
+
+#[napi(object)]
+pub struct NodeSetAvatarInput {
+    pub request_id: String,
+    pub expected_profile_version: String,
+    pub image_base64: String,
+}
+
+#[napi(object)]
+pub struct NodeClearAvatarInput {
+    pub request_id: String,
+    pub expected_profile_version: String,
 }
 
 #[napi(object)]
@@ -756,6 +773,8 @@ pub struct NodeDisplayProfile {
     pub did: Option<String>,
     pub handle: Option<String>,
     pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
     pub cache_hit: bool,
     pub is_stale: bool,
 }
@@ -777,6 +796,17 @@ pub struct NodeGroup {
     pub member_count: Option<u32>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_members: Option<Vec<NodeGroupAvatarMember>>,
+    pub group_state_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupAvatarMember {
+    pub member_key: String,
+    pub member_did: String,
+    pub member_handle: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1492,6 +1522,10 @@ pub(crate) fn identity(
 
 pub(crate) fn profile(value: im_core::identity::Profile) -> NodeProfile {
     NodeProfile {
+        avatar_uri: value.avatar_uri.or(value.avatar_url),
+        avatar_thumbnail_uri: value.avatar_thumbnail_uri,
+        profile_version: value.profile_version,
+        avatar_upload_enabled: value.avatar_upload_enabled,
         did: value.subject.as_str().to_owned(),
         handle: value.handle.map(|handle| handle.as_str().to_owned()),
         display_name: value.display_name,
@@ -1538,6 +1572,8 @@ pub(crate) fn display_profiles(
     values
         .into_iter()
         .map(|value| NodeDisplayProfile {
+            avatar_uri: value.avatar_uri.or(value.avatar_url),
+            avatar_thumbnail_uri: value.avatar_thumbnail_uri,
             did: value.did.map(|did| did.as_str().to_owned()),
             handle: value.handle.map(|handle| handle.as_str().to_owned()),
             display_name: value.display_name,
@@ -1602,6 +1638,18 @@ pub(crate) fn created_group_from_snapshot(
         .or_else(|| snapshot.name.clone())
         .unwrap_or_else(|| fallback_title.to_owned());
     NodeGroup {
+        avatar_uri: snapshot.avatar_uri,
+        avatar_members: snapshot.avatar_members.map(|members| {
+            members
+                .into_iter()
+                .map(|m| NodeGroupAvatarMember {
+                    member_key: m.member_key,
+                    member_did: m.member_did.as_str().to_owned(),
+                    member_handle: m.member_handle,
+                })
+                .collect()
+        }),
+        group_state_version: snapshot.group_state_version,
         did: snapshot.did.as_str().to_owned(),
         conversation_id,
         title,
@@ -1622,6 +1670,18 @@ pub(crate) fn group_from_summary(snapshot: im_core::groups::GroupSummary) -> Nod
         .or(snapshot.name)
         .unwrap_or_else(|| snapshot.did.as_str().to_owned());
     NodeGroup {
+        avatar_uri: snapshot.avatar_uri,
+        avatar_members: snapshot.avatar_members.map(|members| {
+            members
+                .into_iter()
+                .map(|m| NodeGroupAvatarMember {
+                    member_key: m.member_key,
+                    member_did: m.member_did.as_str().to_owned(),
+                    member_handle: m.member_handle,
+                })
+                .collect()
+        }),
+        group_state_version: snapshot.group_state_version,
         did: snapshot.did.as_str().to_owned(),
         conversation_id,
         title,
@@ -2413,8 +2473,9 @@ mod tests {
             did: Some(im_core::ids::Did::parse("did:wba:awiki.ai:user:bob").unwrap()),
             handle: Some(im_core::ids::Handle::parse("bob.awiki.ai", "awiki.ai").unwrap()),
             display_name: Some("Bob".to_owned()),
-            avatar_uri: None,
+            avatar_uri: Some("https://example/main.jpg".to_owned()),
             avatar_url: None,
+            avatar_thumbnail_uri: Some("https://example/thumb.jpg".to_owned()),
             profile_uri: None,
             subject_type: None,
             cache_hit: true,
@@ -2422,6 +2483,14 @@ mod tests {
             legacy_fallback: false,
             warnings: Vec::new(),
         }]);
+        assert_eq!(
+            mapped[0].avatar_uri.as_deref(),
+            Some("https://example/main.jpg")
+        );
+        assert_eq!(
+            mapped[0].avatar_thumbnail_uri.as_deref(),
+            Some("https://example/thumb.jpg")
+        );
         assert_eq!(mapped[0].handle.as_deref(), Some("bob.awiki.ai"));
         assert_eq!(mapped[0].display_name.as_deref(), Some("Bob"));
         assert!(mapped[0].cache_hit);

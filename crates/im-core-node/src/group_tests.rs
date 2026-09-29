@@ -57,6 +57,8 @@ fn created_group_uses_core_canonical_conversation_identity() {
         display_name: None,
         description: Some("ships together".to_owned()),
         avatar_uri: None,
+        avatar_members: None,
+        group_state_version: None,
         my_role: Some("owner".to_owned()),
         membership_status: Some("active".to_owned()),
         member_count: Some(1),
