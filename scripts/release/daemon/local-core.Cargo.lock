@@ -162,9 +162,9 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20abaecdca529bea94da57e5b1fc67b95cd5d5d34bae1a1ba90dd245df004b37"
+checksum = "989233db8d978d5ce7e5e0cfe919eb68c50ac8bbbfbb55be4e41f8d9afa5cfae"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -186,6 +186,7 @@ dependencies = [
  "rand 0.8.6",
  "rand 0.9.4",
  "regex",
+ "reqwest",
  "ring",
  "rusqlite",
  "serde",
@@ -196,15 +197,16 @@ dependencies = [
  "thiserror 1.0.69",
  "tiny_http",
  "tokio",
+ "url",
  "x25519-dalek",
  "zeroize",
 ]
 
 [[package]]
 name = "anp-identity"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d3c4524c520777547a3673f2438011fa1471138ccd02beee55c73890eb34828"
+checksum = "18d1cd10447cabaaf200ed19165e5b9f57ddf68ad1a690c8ed2280ea9abc1b9c"
 dependencies = [
  "anp",
  "base64 0.22.1",
@@ -431,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.103"
+version = "0.1.107"
 dependencies = [
  "agent-client-protocol",
  "anp",
@@ -468,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anp",
  "anp-identity",
@@ -2107,6 +2109,7 @@ name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apple-native-keyring-store",
  "awiki-im-core",
  "chrono",
  "flutter_rust_bridge",

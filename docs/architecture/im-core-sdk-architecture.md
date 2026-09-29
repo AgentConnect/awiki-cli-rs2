@@ -1084,6 +1084,17 @@ Every fresh Handle discovery path must receive an active authority binding befor
 
 Directory 的同步/异步 Handle 查询、`resolve_peer`、按 DID 的入站/历史投影与 Direct 发送使用相同的权威选择：本域保留 Home Directory 的稳定账号 subject；外域必须独立校验 Provider WNS，并以完整 Handle 为 subject。Home 的按 DID 查询只提供 Handle 发现提示；外域 WNS 当前 DID 与请求 DID 不一致时不得投影。外域 Handle 身份解析不以 Home 是否提供其 profile 为前提。
 
+公开 Profile 解析与当前账号 get_me/update_me 的兼容回退分开：缺失 DID 只采用本次查询的
+目标 DID，缺失 Handle 只采用已验证的目标绑定或保持为空，永不继承调用者的 Handle。
+显式返回的 DID 与查询目标冲突，或 Handle 与已验证绑定冲突时失败关闭；不得通过覆盖
+Profile.subject 把另一身份的资料贴到目标身份。外域 WNS 的可选 Profile 在绑定验证后
+单独检查 subject/Handle，仅作为展示字段保留；无效 Profile 丢弃并返回 warning，不参与
+Persona、generation 或 route 的构造。Handle/DID resolve 已取得有效 WNS Profile 时，
+使用该资料而不再用 Home 的不完整公共资料覆盖它。公开 DID-only Profile 仍是 display-only。
+该修复不迁移身份或消息表；进程内展示缓存随重启重建，DID-only 的短期展示缓存继续按既有
+TTL/显式刷新更新，Persona 的完整 Handle 始终来自权威绑定。
+
+
 Home 明确返回 Handle 不存在时，按 DID 查询可从经过方法与 proof 校验的 DID 文档发现唯一的 `ANPHandleService`。只接受无凭据、查询参数或 fragment 的标准 HTTPS `/.well-known/handle/<local-part>` 地址；本域仍不得借此绕过 Directory 的稳定账号 subject。外域公开绑定须验证完整 Handle、active 状态、正整数 generation 及与请求 DID 完全相同的当前 DID，之后才可建立 Persona。Home 的认证、网络、权限和身份冲突错误不触发此补充发现路径。缺失、歧义或不合法的服务声明继续保持待解析/失败，不能从 DID 路径、显示资料或通知正文猜测 Handle。
 
 上述公开 Directory 发现（包括首个 WBA DID 文档及后续 WNS 绑定读取）使用独立的公共 HTTPS 读取边界：请求前拒绝非标准端口、凭据、IP 字面量与本地域名；DNS 结果必须全部为公网单播地址且非空，连接固定到已验证地址，不使用环境代理，不跟随重定向。DNS、连接、读取整体限时 30 秒，JSON 响应最多 1 MiB；同步和异步采用同一实现。Web DID 保留 ANP 安全解析器。认证服务请求不共用此边界，任何失败均不落身份投影。
