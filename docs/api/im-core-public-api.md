@@ -1733,6 +1733,12 @@ pub struct Profile {
 缩略图，有值替换；canonical `avatar_uri: null` 优先于旧 alias。`to_wire_profile_value`
 保留显式 null。展示 URI 不参与身份、鉴权或路由。
 
+公开资料的可选 canonical `profile_version` 用于头像乱序保护：低版本不能覆盖高版本，
+已缓存版本后，无版本的旧 WNS 投影不能覆盖头像；读取失败或字段缺失保留旧值，
+新版本显式 null 清空。SQLite 可丢弃资料缓存新增 nullable `account_profile_version`，
+与既有存储 opaque `version_id` 的 `peer_profiles.profile_version` 分开；不改变身份或
+路由权威、不改变 `user_version=45`，已有缓存自动补列，旧 CLI 写入仍受兼容约束。
+
 `IdentityService::set_avatar_async(SetAvatarRequest { request_id, expected_profile_version,
 image_jpeg })` 与 `clear_avatar_async(ClearAvatarRequest { request_id, expected_profile_version })`
 操作当前 owner，返回带 Profile version 的权威资料。调用方负责生成并保留 UUID；不确定结果

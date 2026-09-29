@@ -13,7 +13,7 @@
 //!    and per-device wire message authorization remain identical to normal downloads.
 //! 4. Keep stdout/stderr free of credentials and cryptographic state.
 //! 5. Account-state reads and public mutations return canonical versions, bounded counts, and
-//!    match booleans only; they never return account IDs, DIDs, device IDs, profile values, or
+//!    match booleans or public-avatar URI digests only; they never return account IDs, DIDs, device IDs, profile values, or
 //!    bearer tokens.
 //! 6. The test-only Account State fail-once code is accepted only for Agent Inventory reads and
 //!    is mapped to one secret-free probe code; every other RPC rejection keeps its prior mapping.
@@ -151,6 +151,10 @@ enum Action {
     AccountStateStatus(AgentStatusParams),
     AccountStateProfile(ProfileSnapshotParams),
     AccountStateProfileUpdate(ProfileUpdateParams),
+    AvatarFixtureSet {
+        request_id: String,
+        image_base64: String,
+    },
     AccountStateRegistry(RegistrySnapshotParams),
     RedeemHeldTicket { expected_digest_b64u: String },
     Shutdown,
@@ -1785,6 +1789,38 @@ impl Probe {
                     )
                     .await?;
                 Ok((closed_profile_update_result(&result, &params)?, false))
+            }
+            Action::AvatarFixtureSet {
+                request_id,
+                image_base64,
+            } => {
+                let current = self
+                    .required_user_rpc(&self.me_rpc_url, "get_me", json!({}))
+                    .await?;
+                let version = canonical_decimal_string(
+                    current.as_object().ok_or(ProbeFailure::Runtime)?,
+                    "profile_version",
+                )?;
+                let result = self
+                    .required_user_rpc(
+                        &self.me_rpc_url,
+                        "set_avatar",
+                        json!({
+                            "request_id": request_id,
+                            "expected_profile_version": version,
+                            "image_base64": image_base64,
+                        }),
+                    )
+                    .await?;
+                let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+                let uri = required_response_string(object, "avatar_uri")?;
+                Ok((
+                    json!({
+                        "profile_version": canonical_decimal_string(object, "profile_version")?,
+                        "uri_sha256": format!("{:x}", Sha256::digest(uri.as_bytes())),
+                    }),
+                    false,
+                ))
             }
             Action::AccountStateRegistry(params) => {
                 let result = self
@@ -3661,6 +3697,21 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         }
         "account_state_profile_update" => {
             Action::AccountStateProfileUpdate(parse_profile_update_params(params)?)
+        }
+        "avatar_fixture_set" => {
+            require_exact_keys(params, &["request_id", "image_base64"])?;
+            let request_id = required_string(params, "request_id", 36)?;
+            let image_base64 = required_string(params, "image_base64", 48 * 1024)?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&image_base64)
+                .map_err(|_| ProbeFailure::InvalidRequest)?;
+            if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
+                return Err(ProbeFailure::InvalidRequest);
+            }
+            Action::AvatarFixtureSet {
+                request_id,
+                image_base64,
+            }
         }
         "account_state_registry" => {
             Action::AccountStateRegistry(parse_registry_snapshot_params(params)?)
@@ -7920,6 +7971,23 @@ INSERT INTO runtime_final_outbox (
                 .as_slice(),
             &[true, true, true, true, true]
         );
+    }
+
+    #[test]
+    fn avatar_fixture_request_is_bounded_and_closed() {
+        let good = json!({"id": 1, "action": "avatar_fixture_set", "params": {
+            "request_id": "bfa9ba76-f94b-47eb-b6a8-7a3eb3ee8693",
+            "image_base64": "/9j/2Q=="
+        }});
+        assert!(parse_request(&good.to_string()).is_ok());
+        for value in [json!("not-jpeg"), json!("A".repeat(48 * 1024 + 1))] {
+            let mut invalid = good.clone();
+            invalid["params"]["image_base64"] = value;
+            assert!(parse_request(&invalid.to_string()).is_err());
+        }
+        let mut invalid = good;
+        invalid["params"]["did"] = json!("did:wba:example.com:user:other");
+        assert!(parse_request(&invalid.to_string()).is_err());
     }
 
     #[tokio::test]

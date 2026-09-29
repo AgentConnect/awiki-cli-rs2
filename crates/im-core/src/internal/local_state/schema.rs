@@ -1357,6 +1357,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
                 .map_err(super::local_state_unavailable)?;
             if !has_column(connection, "peer_profiles", "avatar_thumbnail_uri")?
                 || !has_column(connection, "peer_profiles", "avatar_thumbnail_source_uri")?
+                || !has_column(connection, "peer_profiles", "account_profile_version")?
                 || !has_column(connection, "sync_lane_inbox", "logical_event_seq")?
                 || !inbox_ddl.contains("'baseline'")
                 || !has_table(connection, "sync_input_leases")?
@@ -1941,6 +1942,7 @@ fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
 
 // Backward-compatible nullable display-cache extension. Old readers ignore it.
 fn ensure_avatar_profile_schema(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(connection, "peer_profiles", "account_profile_version", "TEXT")?;
     ensure_column(connection, "peer_profiles", "avatar_thumbnail_uri", "TEXT")?;
     ensure_column(
         connection,
