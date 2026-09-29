@@ -1794,8 +1794,10 @@ impl Probe {
                 request_id,
                 image_base64,
             } => {
+                let mut avatar_rpc_url = self.me_rpc_url.clone();
+                avatar_rpc_url.set_path("/user-service/v1/did/profile/rpc");
                 let current = self
-                    .required_user_rpc(&self.me_rpc_url, "get_me", json!({}))
+                    .required_user_rpc(&avatar_rpc_url, "get_me", json!({}))
                     .await?;
                 let version = canonical_decimal_string(
                     current.as_object().ok_or(ProbeFailure::Runtime)?,
@@ -1803,7 +1805,7 @@ impl Probe {
                 )?;
                 let result = self
                     .required_user_rpc(
-                        &self.me_rpc_url,
+                        &avatar_rpc_url,
                         "set_avatar",
                         json!({
                             "request_id": request_id,
@@ -7988,6 +7990,38 @@ INSERT INTO runtime_final_outbox (
         let mut invalid = good;
         invalid["params"]["did"] = json!("did:wba:example.com:user:other");
         assert!(parse_request(&invalid.to_string()).is_err());
+    }
+
+    #[tokio::test]
+    async fn avatar_fixture_uses_canonical_profile_rpc_and_returns_only_digest() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let uri = "https://example.test/avatars/fixture/512.jpg";
+        let server = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut socket).await;
+                assert!(request.starts_with("POST /user-service/v1/did/profile/rpc "));
+                let payload: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(payload["method"], if index == 0 { "get_me" } else { "set_avatar" });
+                if index == 1 {
+                    assert_eq!(payload["params"]["expected_profile_version"], "11");
+                    assert_eq!(payload["params"]["image_base64"], "/9j/2Q==");
+                }
+                let response = json_response(200, json!({"jsonrpc":"2.0", "id":"system-test-probe", "result": {
+                    "profile_version": if index == 0 { "11" } else { "12" }, "avatar_uri": uri,
+                }}));
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let mut probe = test_probe(&base);
+        let output = execute_line(&mut probe, &json!({"id":1,"action":"avatar_fixture_set","params":{
+            "request_id":"bfa9ba76-f94b-47eb-b6a8-7a3eb3ee8693", "image_base64":"/9j/2Q==",
+        }}).to_string()).await;
+        assert_eq!(output["result"], json!({"profile_version":"12", "uri_sha256":format!("{:x}",Sha256::digest(uri.as_bytes()))}));
+        assert!(!output.to_string().contains(uri));
+        assert!(!output.to_string().contains(TOKEN_SECRET));
+        server.await.unwrap();
     }
 
     #[tokio::test]
