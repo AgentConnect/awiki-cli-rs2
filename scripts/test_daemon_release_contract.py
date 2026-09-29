@@ -74,7 +74,14 @@ def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str
         "fake license compatibility notice\n", encoding="utf-8"
     )
     (stage / "SOURCE.md").write_text("Commit: fake-commit\n", encoding="utf-8")
-    (stage / "checksums.txt").write_text("fake inner checksums\n", encoding="utf-8")
+    (stage / "checksums.txt").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+            for path in sorted(stage.iterdir())
+            if path.is_file()
+        ),
+        encoding="utf-8",
+    )
 
     archive = source_dir / f"awiki-deamon-{os_name}-{arch}.tar.gz"
     run_command(

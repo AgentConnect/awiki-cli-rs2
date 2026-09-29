@@ -350,5 +350,10 @@ test('Node CI source refs are exact and scoped without changing release defaults
   source.dependencies.anp.commit = 'main';
   assert.throws(() => selectRefs(true, release, source));
   const step = workflowStep(readImCoreNodeCiWorkflow(), 'Read pinned ANP SDK commit');
-  assert.equal(step.env.AWIKI_NODE_SOURCE_REFS, "${{ github.event_name == 'pull_request' && github.base_ref == 'release/0910' && github.head_ref == 'Feature/registration-account-first' && '1' || '0' }}");
+  assert.equal(step.env.AWIKI_NODE_SOURCE_REFS, "${{ inputs.dependency_source == 'source' && '1' || '0' }}");
+  const triggers = readImCoreNodeCiWorkflow().on;
+  assert.equal(triggers.workflow_dispatch.inputs.dependency_source.default, 'registry');
+  assert.deepEqual(triggers.workflow_dispatch.inputs.dependency_source.options, ['registry', 'source']);
+  assert.equal(Object.hasOwn(triggers, 'pull_request'), false);
+  assert.equal(Object.hasOwn(triggers, 'push'), false);
 });

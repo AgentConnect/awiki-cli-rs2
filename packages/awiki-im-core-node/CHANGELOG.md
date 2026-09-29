@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.9
+
+- Rebuild the wrapper and all five native packages against the published IM Core
+  0.1.6 crate. Native API remains v18.
+- Include the Core 0.1.6 profile and message delivery fixes in the published
+  Node binding without republishing the Rust SDK.
+
 ## 0.2.8
 
 - Build all five native packages and the wrapper from the release/0910 source
