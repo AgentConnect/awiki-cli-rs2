@@ -1097,7 +1097,7 @@ TTL/显式刷新更新，Persona 的完整 Handle 始终来自权威绑定。
 
 Home 明确返回 Handle 不存在时，按 DID 查询可从经过方法与 proof 校验的 DID 文档发现唯一的 `ANPHandleService`。只接受无凭据、查询参数或 fragment 的标准 HTTPS `/.well-known/handle/<local-part>` 地址；本域仍不得借此绕过 Directory 的稳定账号 subject。外域公开绑定须验证完整 Handle、active 状态、正整数 generation 及与请求 DID 完全相同的当前 DID，之后才可建立 Persona。Home 的认证、网络、权限和身份冲突错误不触发此补充发现路径。缺失、歧义或不合法的服务声明继续保持待解析/失败，不能从 DID 路径、显示资料或通知正文猜测 Handle。
 
-上述公开 Directory 发现（包括首个 WBA DID 文档及后续 WNS 绑定读取）使用独立的公共 HTTPS 读取边界：请求前拒绝非标准端口、凭据、IP 字面量与本地域名；DNS 结果必须全部为公网单播地址且非空，连接固定到已验证地址，不使用环境代理，不跟随重定向。DNS、连接、读取整体限时 30 秒，JSON 响应最多 1 MiB；同步和异步采用同一实现。Web DID 保留 ANP 安全解析器。认证服务请求不共用此边界，任何失败均不落身份投影。
+上述公开 Directory 发现使用独立的 HTTPS 读取边界：请求前拒绝非标准端口、凭据、IP 字面量与本地域名，不使用环境代理，不跟随重定向。WBA DID 文档获取不检查 DNS 结果是否属于公网，以兼容操作系统 TUN/Fake-IP；解析结果必须非空，连接仍固定到该次解析的地址，TLS 使用原始域名并保持现有 CA 证书链与域名校验。后续 WNS 绑定读取仍要求全部 DNS 结果为公网单播地址。DNS、连接、读取整体限时 30 秒，JSON 响应最多 1 MiB；同步和异步采用同一实现。Web DID 保留 ANP 的 URL、TLS、文档 ID 和可选 proof 校验，只显式关闭解析地址的公网分类检查，不使用测试 URL override。DID 绑定、系统通知来源、签名与有效期验证保持原有规则，获取失败不落身份投影。启用 TUN 后的最终网络目标由宿主网络处理，DID 文档获取不再承诺目标地址属于公网；此例外不扩展到 WNS 绑定或普通认证服务请求。
 
 历史版本曾把 Home 返回的私有账号 subject 用于外域 Persona。兼容修复只在新鲜公共 WNS 已验证、明确给出客户端 Home 域的投影事务内执行：旧记录必须匹配 `handle_authority` 来源、同一规范 Provider/Handle、可重算的旧 Persona 和唯一当前 route；所有旧 DID 必须是当前 DID 或经 owner 隔离的 proof-verified transition 链到达当前 DID，generation 不得回退。未知来源、跨 owner 证明、其他 Handle、独立存在的目标 Persona、循环或缺失链路继续拒绝。无证明时不清缓存，也不从显示资料推断连续性。
 

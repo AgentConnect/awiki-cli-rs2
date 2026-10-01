@@ -68,6 +68,14 @@ impl RpcTransport for Transport {
         url: &str,
         headers: BTreeMap<String, String>,
     ) -> crate::ImResult<Value> {
+        assert_eq!(url, URL, "WNS reads must retain the public-address policy");
+        self.public(url, headers)
+    }
+    fn directory_get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
         self.public(url, headers)
     }
     fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
@@ -81,6 +89,14 @@ impl AsyncRpcTransport for Transport {
         RpcTransport::rpc(self, endpoint, method, params)
     }
     async fn directory_get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        assert_eq!(url, URL, "WNS reads must retain the public-address policy");
+        self.public(url, headers)
+    }
+    async fn directory_get_did_document_json_url(
         &mut self,
         url: &str,
         headers: BTreeMap<String, String>,

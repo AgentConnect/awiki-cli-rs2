@@ -1,4 +1,4 @@
-//! Unauthenticated Directory discovery must never reach a private network.
+//! Anonymous HTTPS discovery with separate DID and public-binding address policies.
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -64,15 +64,30 @@ fn public_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn check_addresses(addresses: &[SocketAddr]) -> crate::ImResult<()> {
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
+fn check_addresses(addresses: &[SocketAddr], require_public_ip: bool) -> crate::ImResult<()> {
+    if addresses.is_empty() {
+        return Err(denied("DNS returned no addresses"));
+    }
+    if require_public_ip && addresses.iter().any(|address| !public_ip(address.ip())) {
         return Err(denied("DNS must resolve exclusively to public addresses"));
     }
     Ok(())
 }
 
 pub(crate) async fn get(raw: &str, ca_bundle: Option<&str>) -> crate::ImResult<Value> {
-    get_with_resolver(raw, ca_bundle, |host, port| async move {
+    get_with_address_policy(raw, ca_bundle, true).await
+}
+
+pub(crate) async fn get_did_document(raw: &str, ca_bundle: Option<&str>) -> crate::ImResult<Value> {
+    get_with_address_policy(raw, ca_bundle, false).await
+}
+
+async fn get_with_address_policy(
+    raw: &str,
+    ca_bundle: Option<&str>,
+    require_public_ip: bool,
+) -> crate::ImResult<Value> {
+    get_with_resolver(raw, ca_bundle, require_public_ip, |host, port| async move {
         tokio::net::lookup_host((host.as_str(), port))
             .await
             .map(|addresses| addresses.collect())
@@ -84,6 +99,7 @@ pub(crate) async fn get(raw: &str, ca_bundle: Option<&str>) -> crate::ImResult<V
 async fn get_with_resolver<F, Fut>(
     raw: &str,
     ca_bundle: Option<&str>,
+    require_public_ip: bool,
     resolve: F,
 ) -> crate::ImResult<Value>
 where
@@ -93,15 +109,15 @@ where
     tokio::time::timeout(TIMEOUT, async {
         let url = public_url(raw)?;
         let addresses = resolve(url.host_str().unwrap().to_owned(), 443).await?;
-        check_addresses(&addresses)?;
+        check_addresses(&addresses, require_public_ip)?;
         fetch_pinned(&url, &addresses, ca_bundle).await
     })
     .await
     .map_err(|_| denied("request timed out"))?
 }
 
-// Only called with vetted DNS addresses in production. Tests use a local TLS
-// fixture to exercise the real redirect/body/TLS behavior without Internet IO.
+// Pin this resolution while retaining the original URL for TLS domain validation.
+// DID reads allow TUN/Fake-IP mappings; binding reads require public addresses.
 async fn fetch_pinned(
     url: &Url,
     addresses: &[SocketAddr],
@@ -161,6 +177,21 @@ async fn fetch_pinned(
 }
 
 pub(crate) fn get_blocking(raw: &str, ca_bundle: Option<&str>) -> crate::ImResult<Value> {
+    get_blocking_with_address_policy(raw, ca_bundle, true)
+}
+
+pub(crate) fn get_did_document_blocking(
+    raw: &str,
+    ca_bundle: Option<&str>,
+) -> crate::ImResult<Value> {
+    get_blocking_with_address_policy(raw, ca_bundle, false)
+}
+
+fn get_blocking_with_address_policy(
+    raw: &str,
+    ca_bundle: Option<&str>,
+    require_public_ip: bool,
+) -> crate::ImResult<Value> {
     // This sync API can be reached from async registration; never nest runtimes.
     std::thread::scope(|scope| {
         std::thread::Builder::new()
@@ -170,7 +201,7 @@ pub(crate) fn get_blocking(raw: &str, ca_bundle: Option<&str>) -> crate::ImResul
                     .enable_all()
                     .build()
                     .map_err(|_| denied("cannot create runtime"))?
-                    .block_on(get(raw, ca_bundle))
+                    .block_on(get_with_address_policy(raw, ca_bundle, require_public_ip))
             })
             .map_err(|_| denied("cannot create worker"))?
             .join()

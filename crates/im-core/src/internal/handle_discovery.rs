@@ -206,6 +206,14 @@ impl<T: crate::internal::transport::RpcTransport> crate::internal::transport::Ra
         self.0.directory_resolve_web_document(did)
     }
 
+    fn get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.0.directory_get_did_document_json_url(url, headers)
+    }
+
     fn get_json_url(
         &mut self,
         url: &str,
@@ -220,6 +228,16 @@ impl<T: crate::internal::transport::AsyncRpcTransport>
 {
     async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         self.0.directory_resolve_web_document(did).await
+    }
+
+    async fn get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.0
+            .directory_get_did_document_json_url(url, headers)
+            .await
     }
 
     async fn get_json_url(

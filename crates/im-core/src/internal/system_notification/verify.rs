@@ -85,7 +85,7 @@ where
         );
     }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
-    let document = transport.directory_get_json_url(
+    let document = transport.directory_get_did_document_json_url(
         &url,
         BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
     )?;
@@ -104,7 +104,7 @@ where
     }
     let url = crate::internal::discovery::did_document::did_document_url(did)?;
     let document = transport
-        .directory_get_json_url(
+        .directory_get_did_document_json_url(
             &url,
             BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
         )

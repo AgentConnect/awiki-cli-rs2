@@ -10,7 +10,7 @@ where
         transport.resolve_web_document(did)?
     } else {
         let url = did_document_url(did)?;
-        transport.get_json_url(
+        transport.get_did_document_json_url(
             &url,
             BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
         )?
@@ -30,7 +30,7 @@ where
     } else {
         let url = did_document_url(did)?;
         transport
-            .get_json_url(
+            .get_did_document_json_url(
                 &url,
                 BTreeMap::from([("Accept".to_owned(), "application/json".to_owned())]),
             )
