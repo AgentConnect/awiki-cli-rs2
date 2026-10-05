@@ -12,6 +12,9 @@ use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::message_result::CommandResult;
 
+#[path = "identity_registration_join.rs"]
+mod registration_join;
+
 fn identity_raw_response(result: &impl IdentityRawResponse) -> Value {
     result.raw_response().cloned().unwrap_or(Value::Null)
 }
@@ -225,6 +228,9 @@ pub fn register_handle_via_im_core(
         .identities()
         .register_handle(request.clone())
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if result.state == HandleRegistrationState::JoinRequired {
+        return registration_join::begin_blocking(&core, &result);
+    }
     if let Some(selector) = registration_receive_selector(&result)? {
         let outcome = core
             .client(selector)
@@ -257,6 +263,9 @@ pub async fn register_handle_via_im_core_async(
         .register_handle_async(request.clone())
         .await
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if result.state == HandleRegistrationState::JoinRequired {
+        return registration_join::begin(&core, &result).await;
+    }
     if let Some(selector) = registration_receive_selector(&result)? {
         let client = core
             .client_async(selector)

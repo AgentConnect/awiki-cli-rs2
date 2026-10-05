@@ -841,9 +841,10 @@ fn identity_dry_run_and_validation_contracts_match_go() {
 #[test]
 fn identity_import_v1_flat_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
-    let workspace_home = workspace.path().join(".awiki-cli");
-    write_file_compat_config(&workspace_home);
     let home = workspace.path().join("home");
+    // Global legacy discovery is allowed only in this profile's default tenant.
+    let workspace_home = home.join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
     let generated = generated_legacy_identity("example.test", "legacy-flat");
     let legacy = home
         .join(".openclaw")
@@ -868,7 +869,7 @@ fn identity_import_v1_flat_legacy_contract() {
 
     let imported = success_json(&awiki_cmd_with_home(
         &["--migration", "id", "import-v1", "--name", "legacy-flat"],
-        workspace.path(),
+        &home,
         &home,
     ));
     assert_eq!(
@@ -877,7 +878,7 @@ fn identity_import_v1_flat_legacy_contract() {
     );
     let current = success_json(&awiki_cmd_with_home(
         &["id", "current"],
-        workspace.path(),
+        &home,
         &home,
     ));
     assert_eq!(current["data"]["identity"]["identity_name"], "legacy-flat");

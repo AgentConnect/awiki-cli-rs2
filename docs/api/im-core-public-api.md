@@ -748,7 +748,12 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
 Core 将账号验证 token 和可选 Recovery transition 保存在短生命周期、进程内的 opaque
 preparation 中；host 只能读取 preparation ID、typed mode、user-presence 要求、预期 DID 和
-完整 Handle，并通过 `begin_prepared_registration_device_join` 进入 Device Join。若服务端确认该 Handle
+完整 Handle，并通过 `begin_prepared_registration_device_join` 进入 Device Join。
+CLI 的普通手机号 `id register` 消费者在同一次调用、同一个 Core 实例内完成此续接后，
+才返回持久化 Join 会话的安全投影；不能把进程内 preparation ID 留给下一条 CLI 命令。
+需要 Recovery 用户确认的模式保持显式确认门禁，不由普通注册自动授权。
+
+若服务端确认该 Handle
 仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
 原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
 generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。`registered` wire

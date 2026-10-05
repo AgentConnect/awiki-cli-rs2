@@ -88,6 +88,16 @@ cargo run -p awiki-cli -- id register \
 
 Never include example phone numbers or OTPs in real screenshots or logs.
 
+已有账号的手机号验证也使用这两个 `id register` 调用。验证成功后，CLI 在同一个 Core
+进程内消费普通 Join preparation 并创建设备加入会话，返回 `action=device_join_start`、
+`verification_state=join_pending` 和 `result.session.join_session_id`。随后在已登录 App
+审批该请求，新设备运行 `id device join poll --session <join_session_id>` 查看状态并在
+前台终端核对 SAS。手机号验证不能代替管理设备审批，授权 token 和 preparation 不输出、
+不作为命令参数传递。需要 Recovery 用户确认的 preparation 不会自动续接。
+
+自动化调用可用 `--verification-stdin`，分别通过 stdin JSON 提供 `phone`，以及
+`phone` 和 `otp`；不要把真实手机号、验证码写进 argv 或日志。
+
 CLI 在注册完成后，会先为本次注册的身份建立消息同步基线，再返回成功；
 之后到达的普通消息可以直接通过 `msg inbox` / `msg history` 的 HTTP 同步接收，
 无需先启动 WebSocket listener。仅发送验证码、等待邮箱验证或进入设备 Join

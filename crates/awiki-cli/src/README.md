@@ -134,6 +134,7 @@ status 和 id status 的提示；它不安装或启动服务。相邻 `readiness
 | `m_core_cli_adapter/error.rs` | `im-core` error 到 CLI `ExitError` / envelope 的映射。 |
 | `m_core_cli_adapter/groups.rs` | group lifecycle / members / messages 到 `im-core` group API 的适配。 |
 | `m_core_cli_adapter/identity.rs` | id register / bind / recover / profile / resolve / refresh 等到 `im-core` identity API 的适配。 |
+| `m_core_cli_adapter/identity_registration_join.rs` | 手机号验证后的普通 Join 在同一 Core 实例内续接，输出持久会话并拒绝自动 Recovery 确认；授权材料不跨进程导出。 |
 | `m_core_cli_adapter/message_result.rs` | message send / inbox / history / mark-read 结果转换和兼容输出。 |
 | `m_core_cli_adapter/messages.rs` | msg 命令主体适配：发送、收件箱、历史、附件、mark-read、secure 策略；direct send 返回本地 peer-scope `ThreadRef::Thread` 时仍按 direct delivery 渲染，并从 metadata 恢复目标 handle/DID。 |
 | `m_core_cli_adapter/messages_tests.rs` | `messages.rs` 的 test-only 单元测试实现，避免大段测试夹在业务实现文件中。 |
