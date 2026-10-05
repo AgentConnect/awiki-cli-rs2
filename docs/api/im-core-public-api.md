@@ -2239,3 +2239,35 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 `MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
 
 读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。实际展示许可和声振属于 App 本机设置与系统权限，不由注解授予；不新增 User Service Notify 接口；旧客户端仍可读正文。
+
+## 域名注册策略
+
+`ImClient::tenant_registration()` 提供同步及异步 `get_policy`、`list_entries`、
+`configure`、`get_operation`，公开 DTO 位于 `tenant_registration` 模块。
+它通过 UserProfile 认证调用固定 User Service RPC，不依赖 Messaging 初始化。
+`SiteDomain` 是明确的远程 provider domain；本地 tenant profile 只选择后端和身份。
+Core 不存储名单权威或最终准入缓存，服务端按当前有效管理员与策略事务判定。
+
+`IdentityCreationCapabilities.registration_policy` 是可选域名发现元数据。
+查询总是带当前 `SdkConfig.did_domain`；若响应带 policy，其 domain 必须匹配。
+无元数据的旧服务结果保持旧部署能力语义，不报告成租户策略。
+手机号/邮箱准入以本次实际验证因素为准，已有登录/Join/Recovery 不受新建名单收紧影响。
+
+`ConfigureRegistration` 要求规范 UUID、expected revision 和有界原子变更。
+结果不确定时沿用 operation ID 查询，不自动更新 revision 重试覆盖。
+默认 `AllowlistPage` 脱敏，显式 `include_values` 仅用于私密管理导出；Contact Debug
+不显示原文。稳定错误 `tenant_registration.*` 由既有 ImError 服务端错误保留。
+
+CLI：`site registration show|configure|operation|entries list|add|remove|export`。
+每条命令必需 `--domain`；写入必需 `--expected-revision`，支持显式 `--operation-id`。
+`configure --entries-file` 与 `entries add --file` 读取 0600 JSON 联系人数组，
+例如 `[{"contact_type":"email","value":"member@example.test"}]`。
+`entries remove --entry-id` 删除一个明确 UUID；`entries export --output` 创建新 0600
+文件且拒绝覆盖。列表不支持向 stdout 导出原文。写入前在私有 state 目录保存
+operation ID 和请求摘要，进程中断后相同请求仍使用原 ID。`--dry-run` 不发请求。
+
+`id register --verification-stdin` 接收 phone/email 二选一、可选 invite_code；
+只有 phone 可带 otp。邮箱等待及 continuation 沿用既有流程。联系方式、OTP 和
+邀请码无需进入 argv，错误不回显 stdin 内容。
+
+本次能力属于已实现但尚未发布 SDK 的源码功能。验收使用明确记录源码/制品摘要的候选客户端；旧客户端最终仍受服务端策略约束。不能用 CLI 版本号单独推断包含本功能，也不能把候选源码通过报告为 registry SDK 已发布。正式消费端应在相关 SDK 发布后更新固定依赖。

@@ -298,6 +298,10 @@ impl ImClient {
         crate::site::SiteService::new(self)
     }
 
+    pub fn tenant_registration(&self) -> crate::tenant_registration::TenantRegistrationService<'_> {
+        crate::tenant_registration::TenantRegistrationService::new(self)
+    }
+
     pub fn messages(&self) -> crate::messages::MessageService<'_> {
         crate::messages::MessageService::new(self)
     }

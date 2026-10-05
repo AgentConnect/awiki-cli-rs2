@@ -10,7 +10,8 @@ const REGISTER_USAGE: &str = "awiki-cli id register --handle <handle> --verifica
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RegistrationVerificationInput {
-    phone: String,
+    phone: Option<String>,
+    email: Option<String>,
     #[serde(default)]
     otp: Option<String>,
     #[serde(default)]
@@ -59,10 +60,13 @@ fn command_with_registration_verification_reader(
     })?;
     raw.zeroize();
 
-    let phone = parsed.phone.trim();
+    let phone = parsed.phone.as_deref().map(str::trim);
+    let email = parsed.email.as_deref().map(str::trim);
     let otp = parsed.otp.as_deref().map(str::trim);
-    if phone.is_empty()
-        || phone.len() > 64
+    if phone.is_some() == email.is_some()
+        || phone.is_some_and(|value| value.is_empty() || value.len() > 64)
+        || email.is_some_and(|value| value.is_empty() || value.len() > 254)
+        || (email.is_some() && otp.is_some())
         || otp.is_some_and(|value| {
             value.len() != 6
                 || !value.is_ascii()
@@ -87,7 +91,12 @@ fn command_with_registration_verification_reader(
             .flags
             .insert("invite-code".to_owned(), invite.trim().to_owned());
     }
-    augmented.flags.insert("phone".to_owned(), phone.to_owned());
+    if let Some(phone) = phone {
+        augmented.flags.insert("phone".to_owned(), phone.to_owned());
+    }
+    if let Some(email) = email {
+        augmented.flags.insert("email".to_owned(), email.to_owned());
+    }
     if let Some(otp) = otp {
         augmented.flags.insert("otp".to_owned(), otp.to_owned());
     }
@@ -99,99 +108,10 @@ fn invalid_verification_input(message: impl Into<String>) -> ExitError {
         "invalid_argument",
         2,
         message,
-        format!("Pipe one JSON object with phone and optional otp/invite_code fields to `{REGISTER_USAGE}`."),
+        format!("Pipe one JSON object with exactly one of phone/email and optional otp (phone only)/invite_code fields to `{REGISTER_USAGE}`."),
     )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    fn stdin_command() -> ParsedCommand {
-        ParsedCommand {
-            name: "id.register".to_owned(),
-            flags: BTreeMap::from([
-                ("handle".to_owned(), "alice".to_owned()),
-                ("verification-stdin".to_owned(), "true".to_owned()),
-            ]),
-            ..ParsedCommand::default()
-        }
-    }
-
-    #[test]
-    fn registration_invite_is_carried_without_argv() {
-        let command = command_with_registration_verification_reader(
-            &stdin_command(),
-            br#"{"phone":"+15550000001","otp":"123456","invite_code":"local-invite"}"#.as_slice(),
-        )
-        .unwrap();
-        assert_eq!(
-            command.flags.get("invite-code").map(String::as_str),
-            Some("local-invite")
-        );
-        let mut duplicate = stdin_command();
-        duplicate
-            .flags
-            .insert("invite-code".to_owned(), "argv-invite".to_owned());
-        assert!(command_with_registration_verification_reader(
-            &duplicate,
-            br#"{"phone":"+15550000001","invite_code":"stdin-invite"}"#.as_slice()
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn registration_verification_accepts_phone_and_optional_otp_from_stdin() {
-        let request_only = command_with_registration_verification_reader(
-            &stdin_command(),
-            br#"{"phone":"+15550000001"}"#.as_slice(),
-        )
-        .unwrap();
-        assert_eq!(
-            request_only.flags.get("phone").map(String::as_str),
-            Some("+15550000001")
-        );
-        assert!(!request_only.flags.contains_key("otp"));
-
-        let completion = command_with_registration_verification_reader(
-            &stdin_command(),
-            br#"{"phone":"+15550000001","otp":"731946"}"#.as_slice(),
-        )
-        .unwrap();
-        assert_eq!(
-            completion.flags.get("phone").map(String::as_str),
-            Some("+15550000001")
-        );
-        assert_eq!(
-            completion.flags.get("otp").map(String::as_str),
-            Some("731946")
-        );
-    }
-
-    #[test]
-    fn registration_verification_rejects_argv_mix_and_malformed_input_without_echoing_it() {
-        let mut mixed = stdin_command();
-        mixed
-            .flags
-            .insert("phone".to_owned(), "+15550000002".to_owned());
-        let error = command_with_registration_verification_reader(
-            &mixed,
-            br#"{"phone":"+15550000003","otp":"819274"}"#.as_slice(),
-        )
-        .unwrap_err();
-        assert_eq!(error.detail.code, "invalid_argument");
-        assert!(!error.detail.message.contains("819274"));
-
-        for raw in [
-            br#"{"phone":"+15550000003","otp":"81927"}"#.as_slice(),
-            br#"{"phone":"+15550000003","otp":"819274","extra":true}"#.as_slice(),
-            b"not-json".as_slice(),
-        ] {
-            let error =
-                command_with_registration_verification_reader(&stdin_command(), raw).unwrap_err();
-            assert_eq!(error.detail.code, "invalid_argument");
-            assert!(!error.detail.message.contains("819274"));
-        }
-    }
-}
+#[path = "identity_register_tests.rs"]
+mod tests;

@@ -27,6 +27,7 @@ pub mod realtime;
 pub mod secure;
 pub mod site;
 pub mod system_notifications;
+pub mod tenant_registration;
 pub mod vault;
 
 #[doc(hidden)]

@@ -1879,7 +1879,7 @@ fn normalize_registration_phone(phone: &str) -> Result<String, ExitError> {
     Err(super::map_im_error(
         im_core::ImError::invalid_input(
             Some("phone".to_string()),
-            format!("invalid phone number {phone:?}"),
+            "invalid phone number".to_owned(),
         ),
         "id register",
     ))

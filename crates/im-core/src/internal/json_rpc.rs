@@ -18,6 +18,7 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "inbox",
     "read_state",
     "sync",
+    "tenant_registration",
 ];
 
 #[derive(Debug, Deserialize)]

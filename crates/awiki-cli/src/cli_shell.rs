@@ -50,6 +50,7 @@ mod runtime_handlers;
 mod runtime_hermes_handlers;
 mod runtime_host_notify_refresh;
 mod site_handlers;
+mod tenant_registration_handlers;
 pub mod unsupported;
 mod update_handlers;
 pub(super) mod update_preflight;

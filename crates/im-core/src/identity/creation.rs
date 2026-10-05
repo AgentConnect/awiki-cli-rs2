@@ -7,6 +7,8 @@ use super::DidMethod;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityCreationCapabilities {
     pub did_methods: Vec<DidMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_policy: Option<crate::tenant_registration::RegistrationPolicy>,
 }
 
 /// Public continuation hint. Contact values, grants, Vault references and
@@ -71,6 +73,17 @@ impl IdentityCreationCapabilities {
         };
         Ok(Self {
             did_methods: methods,
+            registration_policy: value
+                .pointer("/identity/handle_registration/registration_policy")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    serde_json::from_value(value.clone()).map_err(|_| {
+                        crate::ImError::Serialization {
+                            detail: "Invalid domain registration discovery".to_owned(),
+                        }
+                    })
+                })
+                .transpose()?,
         })
     }
 }

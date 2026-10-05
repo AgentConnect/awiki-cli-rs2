@@ -1730,15 +1730,20 @@ impl<'a> IdentityRegistry<'a> {
         &self,
     ) -> crate::ImResult<super::IdentityCreationCapabilities> {
         use crate::internal::transport::AsyncRestTransport;
+        let domain = self.core.inner().sdk_config().did_domain.clone();
+        let query =
+            std::collections::BTreeMap::from([("registration_domain".to_owned(), domain.clone())]);
         let result = crate::internal::transport::CorePlainTransport::new(self.core)
-            .rest_get(
-                "/user-service/v1/server-info",
-                "GET",
-                &std::collections::BTreeMap::new(),
-            )
+            .rest_get("/user-service/v1/server-info", "GET", &query)
             .await;
         match result {
-            Ok(value) => super::IdentityCreationCapabilities::from_server_info(&value),
+            Ok(value) => {
+                let capabilities = super::IdentityCreationCapabilities::from_server_info(&value)?;
+                if let Some(policy) = &capabilities.registration_policy {
+                    policy.validate(&crate::site::SiteDomain::parse(&domain)?)?;
+                }
+                Ok(capabilities)
+            }
             Err(crate::ImError::Service {
                 status_code: Some(404),
                 ..
