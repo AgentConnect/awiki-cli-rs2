@@ -220,7 +220,8 @@ def local_integration_record(targets: list[str], config_path: str) -> dict[str, 
     records = {}
     for target in targets:
         evidence = json.loads((base / (target + ".json")).read_text())
-        if (evidence.get("mode") != "local" or evidence["consumer"]["commit"] != revision
+        if (run("git", "status", "--porcelain").strip()
+                or evidence.get("mode") != "local" or evidence["consumer"]["commit"] != revision
                 or evidence["consumer"]["dirty"]
                 or evidence["source_manifest_sha256"] != sha256_file(manifest)
                 or evidence["source_lock_sha256"] != sha256_file(base / (target + ".Cargo.lock"))):
