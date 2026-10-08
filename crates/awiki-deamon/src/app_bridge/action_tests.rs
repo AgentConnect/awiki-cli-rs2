@@ -257,6 +257,7 @@ fn fixture_with_desired_actions(
         .unwrap();
     state
         .insert_runtime_task(&RuntimeTask {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: "task_1".into(),
             agent_did: profile.agent_did.clone(),
             agent_handle: profile.agent_handle.clone(),

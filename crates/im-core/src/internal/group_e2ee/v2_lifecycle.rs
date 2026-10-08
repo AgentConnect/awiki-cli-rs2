@@ -332,20 +332,60 @@ pub(crate) async fn publish_stable_key_package(
 /// The creator KeyPackage is published first, then the exact typed P6 create
 /// result is accepted before local state is finalized. Any uncertain Host
 /// response leaves the SDK WAL prepared and returns the error to the caller.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CreateIntent {
+    now_text: String,
+    expires_at: String,
+    publish_operation: String,
+    key_package_id: String,
+    create_operation: String,
+    group_state_ref: V2GroupStateRef,
+}
+
+fn frozen_create_intent(
+    client: &crate::core::ImClient,
+    group_state_ref: V2GroupStateRef,
+) -> crate::ImResult<CreateIntent> {
+    let now = OffsetDateTime::now_utc();
+    let key = format!("mls-create:{}", group_state_ref.group_did);
+    let binding = group_state_ref.group_did.clone();
+    let candidate = CreateIntent {
+        now_text: format_time(now)?,
+        expires_at: format_time(now + KEY_PACKAGE_TTL)?,
+        publish_operation: operation_id("create-key-package"),
+        key_package_id: format!(
+            "kp-{}",
+            crate::internal::wire::common::generate_operation_id()
+        ),
+        create_operation: operation_id("create"),
+        group_state_ref,
+    };
+    let error = |_| crate::ImError::LocalStateUnavailable {
+        detail: "invalid group creation intent".to_owned(),
+    };
+    let frozen = crate::internal::group_runtime::journal::freeze(
+        client,
+        &key,
+        &binding,
+        serde_json::to_value(candidate).map_err(error)?,
+    )?;
+    serde_json::from_value(frozen).map_err(error)
+}
+
 pub(crate) fn initialize_created_group(
     client: &crate::core::ImClient,
     group_state_ref: V2GroupStateRef,
 ) -> crate::ImResult<()> {
     let mut context = production_context(client)?;
     let service_did = service_did(client)?;
-    let now = OffsetDateTime::now_utc();
-    let now_text = format_time(now)?;
-    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
-    let publish_operation = operation_id("create-key-package");
-    let key_package_id = format!(
-        "kp-{}",
-        crate::internal::wire::common::generate_operation_id()
-    );
+    let CreateIntent {
+        now_text,
+        expires_at,
+        publish_operation,
+        key_package_id,
+        create_operation,
+        group_state_ref,
+    } = frozen_create_intent(client, group_state_ref)?;
     let prepared_package = context.product.prepare_current_key_package(
         service_meta(
             client,
@@ -373,7 +413,6 @@ pub(crate) fn initialize_created_group(
         .product
         .publish_current_key_package(&prepared_package)?;
 
-    let create_operation = operation_id("create");
     let submission = context.product.prepare_create(V2CreateGroupInput {
         meta: service_meta(
             client,
@@ -403,14 +442,14 @@ pub(crate) async fn initialize_created_group_async(
 ) -> crate::ImResult<()> {
     let mut context = production_context_async(client).await?;
     let service_did = service_did(client)?;
-    let now = OffsetDateTime::now_utc();
-    let now_text = format_time(now)?;
-    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
-    let publish_operation = operation_id("create-key-package");
-    let key_package_id = format!(
-        "kp-{}",
-        crate::internal::wire::common::generate_operation_id()
-    );
+    let CreateIntent {
+        now_text,
+        expires_at,
+        publish_operation,
+        key_package_id,
+        create_operation,
+        group_state_ref,
+    } = frozen_create_intent(client, group_state_ref)?;
     let prepared_package = context
         .product
         .prepare_current_key_package_async(
@@ -443,7 +482,6 @@ pub(crate) async fn initialize_created_group_async(
         .publish_current_key_package_async(&mut transport, &prepared_package)
         .await?;
 
-    let create_operation = operation_id("create");
     let submission = context.product.prepare_create(V2CreateGroupInput {
         meta: service_meta(
             client,
@@ -2661,31 +2699,8 @@ fn require_exact_group(reference: &V2GroupStateRef) -> crate::ImResult<()> {
 pub(crate) fn current_v2_device(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<CurrentV2Device> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index = crate::internal::identity_store::IdentityStore::new(
-        &client.core_inner().sdk_paths().identities,
-    )
-    .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .filter(|state| {
-            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let authorization = state
-        .authorization
-        .as_ref()
-        .filter(|authorization| {
-            authorization.status
-                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(client)?;
     Ok(CurrentV2Device {
         device_id: authorization.protocol_device_id.as_str().to_owned(),
         signing_key_id: authorization.signing_key_id.clone(),

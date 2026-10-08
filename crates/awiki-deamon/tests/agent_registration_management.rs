@@ -517,6 +517,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
         &outbox,
         &readiness,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_002".to_string(),
             conversation_id: Some("conv_daemon_001".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -663,6 +664,7 @@ fn runtime_create_reports_ready_only_after_retryable_message_readiness_succeeds(
     let outbox = MemoryRuntimeOutbox::default();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let message = || IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: "msg_runtime_readiness".to_owned(),
         conversation_id: Some("conv_runtime_readiness".to_owned()),
         sender_did: "did:human:alice".to_owned(),
@@ -751,6 +753,7 @@ fn runtime_agent_create_rejects_missing_handle() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_product_create_hermes".to_string(),
             conversation_id: Some("conv_daemon_product".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -798,6 +801,7 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
     let outbox = MemoryRuntimeOutbox::default();
 
     let create_message = |command_id: &str| IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: format!("msg_{command_id}"),
         conversation_id: Some("conv_create_idempotent".to_string()),
         sender_did: "did:human:alice".to_string(),
@@ -899,6 +903,7 @@ fn agent_status_query_returns_snapshot_payload_without_chat_content() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_status_query".to_string(),
             conversation_id: Some("conv_daemon_status".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -961,6 +966,7 @@ fn repeated_agent_status_query_is_throttled_by_daemon_and_controller() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: format!("msg_{command_id}"),
                 conversation_id: Some("conv_daemon_status".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -1011,6 +1017,7 @@ fn runtime_rebuild_returns_unsupported_command_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_rebuild".to_string(),
             conversation_id: Some("conv_rebuild".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1055,6 +1062,7 @@ fn daemon_upgrade_rejects_other_daemon_target_without_running_download() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_other_daemon".to_string(),
             conversation_id: Some("conv_upgrade_other_daemon".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1103,6 +1111,7 @@ fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_cancel_idle".to_string(),
             conversation_id: Some("conv_upgrade_cancel_idle".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1172,6 +1181,7 @@ fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_cancel_restarting".to_string(),
             conversation_id: Some("conv_upgrade_cancel_restarting".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1221,6 +1231,7 @@ fn runtime_agent_create_accepts_acp_driver_contract_fields() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_generic_cli".to_string(),
             conversation_id: Some("conv_daemon_generic_cli".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1307,6 +1318,7 @@ fn runtime_agent_create_preserves_codex_product_aliases() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: format!("msg_create_{runtime}"),
                 conversation_id: Some(format!("conv_create_{runtime}")),
                 sender_did: "did:human:alice".to_string(),
@@ -1399,6 +1411,7 @@ fn runtime_agent_create_accepts_workspace_strategy_alias_for_acp() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_workspace_strategy_alias".to_string(),
             conversation_id: Some("conv_create_workspace_strategy_alias".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1458,6 +1471,7 @@ fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_workspace_strategy_conflict".to_string(),
             conversation_id: Some("conv_create_workspace_strategy_conflict".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1517,6 +1531,7 @@ fn runtime_agent_create_rejects_invalid_acp_contract_fields() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_generic_cli_invalid".to_string(),
             conversation_id: Some("conv_daemon_generic_cli_invalid".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1568,6 +1583,7 @@ fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_unauthorized".to_string(),
             conversation_id: None,
             sender_did: "did:human:bob".to_string(),
@@ -1621,6 +1637,7 @@ fn registration_token_failure_sends_failed_status_without_persisting_runtime_age
         &failing_registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_failed_registration".to_string(),
             conversation_id: Some("conv_daemon_001".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1673,6 +1690,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_runtime_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1704,6 +1722,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1769,6 +1788,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1821,6 +1841,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &summary_thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_summary_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1865,6 +1886,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &direct_thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_direct_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1919,6 +1941,7 @@ fn runtime_inbox_query_rejects_unowned_runtime_without_reading_messages() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_unowned".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1969,6 +1992,7 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_runtime_controller_inbox".to_string(),
                 conversation_id: Some("conv_daemon_inbox".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2022,6 +2046,7 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_controller_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2094,6 +2119,7 @@ fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_runtime_scoped_inbox".to_string(),
                 conversation_id: Some("conv_daemon_inbox".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2173,6 +2199,7 @@ fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_scoped_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2242,6 +2269,7 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_for_delete".to_string(),
                 conversation_id: Some("conv_delete".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2277,6 +2305,7 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_delete_runtime".to_string(),
             conversation_id: Some("conv_delete".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2353,6 +2382,7 @@ fn personal_agent_binding_disable_command_stops_active_binding() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_personal_agent".to_string(),
                 conversation_id: Some("conv_personal_agent".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2402,6 +2432,7 @@ fn personal_agent_binding_disable_command_stops_active_binding() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_pause_personal_agent".to_string(),
             conversation_id: Some("conv_personal_agent".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2490,6 +2521,7 @@ fn legacy_message_agent_disable_command_emits_canonical_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_pause_legacy_personal_agent".to_string(),
             conversation_id: Some("conv_personal_agent".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2551,6 +2583,7 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_for_daemon_delete".to_string(),
                 conversation_id: Some("conv_daemon_delete".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2580,6 +2613,7 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_delete_daemon".to_string(),
             conversation_id: Some("conv_daemon_delete".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2678,6 +2712,7 @@ fn hermes_status_uses_shared_acp_diagnostics_without_secrets() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_hermes_status".to_string(),
             conversation_id: Some("conv_daemon_hermes_status".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2752,6 +2787,7 @@ fn runtime_clients_inspection_is_correlated_read_only_and_controller_authorized(
     .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let mut message = IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: "inspect-message".into(),
         conversation_id: Some("inspect-conversation".into()),
         sender_did: "did:human:mallory".into(),
@@ -2817,6 +2853,7 @@ fn unavailable_client_rejects_creation_before_registration_exchange() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "create-missing-client".into(),
             conversation_id: None,
             sender_did: "did:human:alice".into(),
@@ -2882,6 +2919,7 @@ fn acp_create_persists_only_explicit_client_paths_for_all_brands() {
             let suffix = format!("{index}-{}", if explicit { "explicit" } else { "default" });
             let result = handle_agent_payload_message(&config, &state, &registration,
                 &MemoryRuntimeOutbox::default(), IncomingAgentPayloadMessage {
+                    security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                     message_id: format!("msg-path-{suffix}"), conversation_id: None,
                     sender_did: "did:human:alice".into(), target_agent_did: daemon.agent_did.clone(),
                     content_type: "application/json".into(),

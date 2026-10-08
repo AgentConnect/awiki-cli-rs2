@@ -877,6 +877,7 @@ fn delegated_runtime_status_and_final_are_queued_without_plaintext_final() {
     let state = &fixture.state;
     let binding = &fixture.binding;
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_user_msg_1".to_string(),
         agent_did: binding.runtime_agent_did.clone(),
         agent_handle: "alice-hermes".to_string(),
@@ -976,6 +977,7 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
     let state = &fixture.state;
     let binding = &fixture.binding;
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_user_msg_host_final".to_string(),
         agent_did: binding.runtime_agent_did.clone(),
         agent_handle: "alice-hermes".to_string(),
@@ -1215,6 +1217,7 @@ fn insert_delegated_runtime_task_and_run(
     source_message_id: &str,
 ) {
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: task_id.to_string(),
         agent_did: binding.runtime_agent_did.clone(),
         agent_handle: "alice-hermes".to_string(),

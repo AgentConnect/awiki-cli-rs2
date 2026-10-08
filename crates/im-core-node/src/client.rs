@@ -1886,11 +1886,50 @@ impl NativeImCoreNodeClient {
         let result = self
             .inner
             .wait_im(
-                client.groups().get_async(group),
+                client.groups().get_authoritative_group_async(group.clone()),
                 self.inner.operation_timeout,
             )
             .await?;
-        crate::dto::created_group(result, &fallback)
+        let encrypted = result
+            .requires_end_to_end_encryption()
+            .map_err(SafeError::from_im)?;
+        let mut value = crate::dto::created_group(result, &fallback)?;
+        value.encrypted = Some(encrypted);
+        if encrypted {
+            let status = self
+                .inner
+                .wait_im(
+                    client.secure().group(group).status_async(),
+                    self.inner.operation_timeout,
+                )
+                .await?;
+            value.secure_state = Some(format!("{:?}", status.state));
+            value.can_send_secure = Some(status.can_send_secure);
+            value.secure_retryable = Some(status.problem.is_some_and(|p| p.retryable));
+        }
+        Ok(value)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn repair_group_security(&self, input: NodeGroupInput) -> napi::Result<NodeGroup> {
+        napi_result(self.repair_group_security_inner(input).await)
+    }
+
+    async fn repair_group_security_inner(&self, input: NodeGroupInput) -> SafeResult<NodeGroup> {
+        let _mutation = self.inner.mutation.lock().await;
+        {
+            let operation = self.inner.operation().await?;
+            let client = operation.client()?;
+            let group =
+                im_core::ids::GroupRef::parse(&input.group_did).map_err(SafeError::from_im)?;
+            self.inner
+                .wait_im(
+                    client.secure().group(group).repair_async(),
+                    self.inner.operation_timeout,
+                )
+                .await?;
+        }
+        self.get_group_inner(input).await
     }
 
     #[napi(catch_unwind)]
@@ -2405,7 +2444,7 @@ impl NativeImCoreNodeClient {
                     .map_err(SafeError::from_im)?,
                 text: input.text,
                 markdown: input.markdown.unwrap_or(false),
-                security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                security: crate::dto::message_security(input.security.as_deref())?,
                 client_message_id: optional_message_id(input.client_message_id)?,
                 idempotency_key: non_empty_optional(input.idempotency_key),
                 wait_for_final_acceptance: false,
@@ -2443,7 +2482,7 @@ impl NativeImCoreNodeClient {
                     conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
                         .map_err(SafeError::from_im)?,
                     payload,
-                    security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                    security: crate::dto::message_security(input.security.as_deref())?,
                     client_message_id: optional_message_id(input.client_message_id)?,
                     idempotency_key: non_empty_optional(input.idempotency_key),
                     wait_for_final_acceptance: false,
@@ -2488,7 +2527,7 @@ impl NativeImCoreNodeClient {
                     mention_payload: None,
                     mime_type: Some(input.mime_type),
                     filename: Some(input.file_name),
-                    security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                    security: crate::dto::message_security(input.security.as_deref())?,
                     client_message_id: optional_message_id(input.client_message_id)?,
                     idempotency_key: non_empty_optional(input.idempotency_key),
                     wait_for_final_acceptance: false,
@@ -3135,6 +3174,12 @@ fn core_open_options(
         .with_identity_secret_vault(
             im_core::IdentitySecretStoragePolicy::VaultRequired,
             state.identity_vault_options()?,
+        )
+        .with_multi_device_direct_e2ee_enabled(
+            options.multi_device_direct_e2ee_enabled.unwrap_or(false),
+        )
+        .with_multi_device_group_e2ee_enabled(
+            options.multi_device_group_e2ee_enabled.unwrap_or(false),
         )
         .with_multi_device_device_revoke_enabled(
             options.multi_device_device_revoke_enabled.unwrap_or(false),
@@ -3821,6 +3866,8 @@ mod tests {
             client_version_info: None,
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
+            multi_device_direct_e2ee_enabled: None,
+            multi_device_group_e2ee_enabled: None,
             multi_device_device_revoke_enabled: None,
             multi_device_handle_recovery_enabled: None,
             multi_device_audience: None,

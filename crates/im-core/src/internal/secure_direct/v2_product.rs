@@ -457,30 +457,10 @@ fn active_local_endpoint_for_client(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
 ) -> crate::ImResult<ActiveV2LocalEndpoint> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index =
-        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let authorization = state
-        .authorization
-        .as_ref()
-        .filter(|authorization| {
-            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-                && authorization.status
-                    == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let scope =
-        V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), state)?;
+    let _ = core;
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(client)?;
+    let scope = V2OwnerScope::from_client(client)?;
     Ok(ActiveV2LocalEndpoint {
         scope,
         device_id: authorization.protocol_device_id.as_str().to_owned(),
@@ -669,7 +649,7 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
 
 pub(crate) fn local_identity_uses_vnext(client: &crate::core::ImClient) -> crate::ImResult<bool> {
     let Some(alias) = client.current_identity().local_alias.as_deref() else {
-        return Ok(false);
+        return Ok(client.runtime().owner.sync_account.is_some());
     };
     let index = crate::internal::identity_store::IdentityStore::new(
         &client.core_inner().sdk_paths().identities,

@@ -75,7 +75,7 @@ ON CONFLICT(key) DO NOTHING
         task.validate()?;
         let connection = self.connection()?;
         let now = current_time_millis()?;
-        connection.execute(
+        let changed = connection.execute(
             r#"
 INSERT INTO runtime_task (
     task_id,
@@ -96,10 +96,11 @@ INSERT INTO runtime_task (
     reply_recipient_did,
     conversation_id,
     task_text,
+    message_security,
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'created', ?19, ?19)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?20, 'created', ?19, ?19)
 ON CONFLICT(task_id) DO UPDATE SET
     task_text = excluded.task_text,
     agent_handle = excluded.agent_handle,
@@ -114,6 +115,7 @@ ON CONFLICT(task_id) DO UPDATE SET
     reply_recipient_did = excluded.reply_recipient_did,
     conversation_id = excluded.conversation_id,
     updated_at_ms = excluded.updated_at_ms
+WHERE runtime_task.message_security = excluded.message_security
 "#,
             rusqlite::params![
                 task.task_id,
@@ -135,8 +137,12 @@ ON CONFLICT(task_id) DO UPDATE SET
                 task.conversation_id,
                 task.text,
                 now,
+                task.security.as_str(),
             ],
         )?;
+        if changed != 1 {
+            anyhow::bail!("runtime task security cannot change on replay");
+        }
         Ok(())
     }
 
@@ -1123,7 +1129,8 @@ SELECT
     invocation_authority,
     reply_recipient_did,
     conversation_id,
-    task_text
+    task_text,
+    message_security
 FROM runtime_task
 WHERE task_id = ?1
 "#,
@@ -1169,6 +1176,10 @@ WHERE task_id = ?1
                             )
                         })?;
                     Ok(RuntimeTask {
+                        security: crate::outbox::RuntimeMessageSecurity::parse(Some(
+                            &row.get::<_, String>(18)?,
+                        ))
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                         task_id: row.get(0)?,
                         agent_did: row.get(1)?,
                         agent_handle: row.get(2)?,

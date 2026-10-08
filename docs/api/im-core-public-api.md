@@ -2247,3 +2247,11 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 与 `avatarUri`、`avatarThumbnailUri` 同属展示信息，不参与身份、授权或路由。
 DSH 通过既有 hydrate/refreshDisplayProfiles 消费，不读取 User Service 私有 Inventory。
 这是可选增量字段，旧调用者无需改动；旧 native 缺字段时消费者使用静态展示，不猜测 Agent 身份。
+
+### 消息安全意图与候选绑定（2026-10-09）
+
+发送入口在上传附件或落本地发送投影前解析群的权威安全策略。Direct 的 DefaultPlain 保持普通消息，E2eeRequired/SecureDirect 能力不足时失败；Group 的 DefaultPlain 遵循创建时策略，显式冲突要求失败。Node v20 增加发送 security（plain/e2ee-required）、createGroup encrypted/operationId、getGroup 的 encrypted/secureState/canSendSecure/secureRetryable，以及 repairGroupSecurity。未配置的 Core gate 仍默认关闭，APP/DSH/Daemon 候选分别显式开启。旧 native 不可与 v20 包混用。
+
+MessageMetadata::is_end_to_end_encrypted 与 Dart isEndToEndEncrypted 表达 SDK 实际来源。解密后的消息继续保留实际加密属性；输入选择只是发送意图。groups.get_authoritative_group_async 和 GroupReadResult.requires_end_to_end_encryption 为绑定提供经 Core 校验的群策略，不由客户端解析线协议。
+
+带稳定 slug/operationId 的建群使用 Core 的 group_operation_journal 冻结公共请求元数据和 body；相同操作不允许变更内容或群类型。P6 创建使用相同设备、群、时间和 request id 复用协议自身的准备/WAL恢复。表按 owner_identity_id/local_device_id 隔离，随 owner 本地删除清理；不存私钥或历史迁移备份。

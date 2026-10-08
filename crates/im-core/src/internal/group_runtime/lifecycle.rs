@@ -61,6 +61,8 @@ where
             &request,
             service_did,
         )?;
+        #[cfg(feature = "sqlite")]
+        let payload = super::journal::freeze_create_payload(self.client, payload)?;
         self.signed_group_rpc(payload, credentials)
     }
 
@@ -220,6 +222,8 @@ where
             &request,
             service_did,
         )?;
+        #[cfg(feature = "sqlite")]
+        let payload = super::journal::freeze_create_payload(self.client, payload)?;
         self.signed_group_rpc_async(payload, credentials).await
     }
 

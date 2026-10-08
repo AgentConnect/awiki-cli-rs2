@@ -262,6 +262,16 @@ pub(crate) struct V2OwnerScope {
 }
 
 impl V2OwnerScope {
+    pub(crate) fn from_client(client: &crate::core::ImClient) -> crate::ImResult<Self> {
+        let authorization =
+            crate::internal::identity_device_state::active_authorization_for_client(client)?;
+        Ok(Self {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            local_device_id: authorization.protocol_device_id.as_str().to_owned(),
+        })
+    }
+
     /// Creates the P5 v2 storage scope only from the selected local identity's
     /// already-validated vNext authorization projection.
     pub(crate) fn from_identity_state(

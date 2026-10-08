@@ -42,7 +42,13 @@ pub struct ImCoreAdapter {
 
 impl ImCoreAdapter {
     pub fn open(config: &DaemonConfig) -> Result<Self> {
-        let core = ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+        let core = ImCore::new_with_options(
+            config.im_core_config()?,
+            config.im_core_paths(),
+            im_core::ImCoreOpenOptions::default()
+                .with_multi_device_direct_e2ee_enabled(true)
+                .with_multi_device_group_e2ee_enabled(true),
+        )?;
         core.identities()
             .migrate_identity_custody()
             .context("migrate daemon im-core identity custody")?;

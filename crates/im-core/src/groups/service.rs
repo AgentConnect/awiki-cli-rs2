@@ -974,8 +974,7 @@ impl<'a> GroupService<'a> {
         Ok(result)
     }
 
-    #[cfg(feature = "group-e2ee")]
-    fn get_authoritative_group(
+    pub(crate) fn get_authoritative_group(
         &self,
         group: crate::ids::GroupRef,
     ) -> crate::ImResult<super::GroupReadResult> {
@@ -989,7 +988,7 @@ impl<'a> GroupService<'a> {
         Ok(result)
     }
 
-    async fn get_authoritative_group_async(
+    pub async fn get_authoritative_group_async(
         &self,
         group: crate::ids::GroupRef,
     ) -> crate::ImResult<super::GroupReadResult> {

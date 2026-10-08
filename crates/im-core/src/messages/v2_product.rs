@@ -598,31 +598,8 @@ struct CurrentVNextDevice {
 
 #[cfg(feature = "group-e2ee")]
 fn current_vnext_device(client: &crate::core::ImClient) -> crate::ImResult<CurrentVNextDevice> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index = crate::internal::identity_store::IdentityStore::new(
-        &client.core_inner().sdk_paths().identities,
-    )
-    .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .filter(|state| {
-            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let authorization = state
-        .authorization
-        .as_ref()
-        .filter(|authorization| {
-            authorization.status
-                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(client)?;
     Ok(CurrentVNextDevice {
         device_id: authorization.protocol_device_id.as_str().to_owned(),
         signing_key_id: authorization.signing_key_id.clone(),

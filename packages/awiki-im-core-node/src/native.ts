@@ -158,6 +158,7 @@ export interface NativeImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
+  repairGroupSecurity(input: GroupInput): Promise<NodeGroup>
   listGroups(input?: PageInput): Promise<Page<NodeGroup>>
   joinGroup(input: GroupInput): Promise<NodeGroup>
   leaveGroup(input: GroupInput): Promise<void>

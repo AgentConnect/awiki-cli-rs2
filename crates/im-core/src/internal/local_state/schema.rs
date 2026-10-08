@@ -1167,6 +1167,9 @@ fn root_import_plan_shape_is_complete(connection: &Connection) -> crate::ImResul
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     ensure_schema_version(connection)?;
     connection
+        .execute_batch(crate::internal::group_runtime::journal::SCHEMA)
+        .map_err(super::local_state_unavailable)?;
+    connection
         .execute_batch(ROOT_IMPORT_V2_PLAN_SQL)
         .map_err(super::local_state_unavailable)?;
     if !root_import_plan_shape_is_complete(connection)? {
@@ -1942,7 +1945,12 @@ fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
 
 // Backward-compatible nullable display-cache extension. Old readers ignore it.
 fn ensure_avatar_profile_schema(connection: &Connection) -> crate::ImResult<()> {
-    ensure_column(connection, "peer_profiles", "account_profile_version", "TEXT")?;
+    ensure_column(
+        connection,
+        "peer_profiles",
+        "account_profile_version",
+        "TEXT",
+    )?;
     ensure_column(connection, "peer_profiles", "avatar_thumbnail_uri", "TEXT")?;
     ensure_column(
         connection,

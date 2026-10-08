@@ -2273,8 +2273,10 @@ impl<'a> MessageService<'a> {
 
     pub fn send(
         &self,
-        request: super::SendMessageRequest,
+        mut request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        request.security =
+            super::security::resolve(self.client, &request.target, request.security)?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -2404,8 +2406,10 @@ impl<'a> MessageService<'a> {
 
     pub async fn send_async(
         &self,
-        request: super::SendMessageRequest,
+        mut request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        request.security =
+            super::security::resolve_async(self.client, &request.target, request.security).await?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -2567,8 +2571,14 @@ impl<'a> MessageService<'a> {
 
     async fn send_conversation_request_async(
         &self,
-        resolved: ResolvedConversationSendRequest,
+        mut resolved: ResolvedConversationSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        resolved.request.security = super::security::resolve_async(
+            self.client,
+            &resolved.request.target,
+            resolved.request.security,
+        )
+        .await?;
         let secure = conversation_send_uses_security_runtime(&resolved.request.security);
         if secure {
             validate_secure_conversation_send(&resolved.request)?;
@@ -5473,6 +5483,13 @@ mod group_e2ee_public_send_tests {
     fn public_group_e2ee_send_uses_native_provider_and_sends_cipher_only() {
         let fixture = Fixture::vnext();
         let server = RpcTestServer::spawn(vec![
+            // Public security resolution checks authoritative policy before send preflight.
+            json!({"group_snapshot": {"group_did": fixture.group_did,
+                "my_role": "member", "membership_status": "active",
+                "required_security_profile": "transport-protected"}}),
+            json!({"group_did": fixture.group_did, "group_state_version": "p4-state-1",
+                "group_profile": {"display_name": "Public E2EE group"},
+                "group_policy": {"message_security_profile": "group-e2ee"}}),
             // Device-revocation preflight reads the local group before the policy checks.
             json!({
                 "group_snapshot": {
@@ -5575,7 +5592,10 @@ mod group_e2ee_public_send_tests {
             crate::messages::DeliveryState::Accepted
         ));
         let requests = server.requests();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 8);
+        assert_eq!(requests[0].rpc_method, "group.get");
+        assert_eq!(requests[1].rpc_method, "group.get_info");
+        let requests = &requests[2..];
         assert_eq!(requests[0].rpc_method, "group.get");
         assert_eq!(requests[1].rpc_method, "group.get");
         assert_eq!(requests[2].rpc_method, "group.get_info");
@@ -5729,7 +5749,8 @@ mod group_e2ee_public_send_tests {
         let signing_key_id = signer.request_signing_key_id().unwrap();
         let did_document = signer.optional_did_document().unwrap().unwrap();
         let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client).unwrap();
-        let now = "2026-08-29T00:00:00Z".to_owned();
+        let timestamp = chrono::Utc::now();
+        let now = timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let prepared_key_package = runtime
             .prepare_or_resume_key_package_publish(
                 V2PrepareKeyPackagePublishInput {
@@ -5751,7 +5772,8 @@ mod group_e2ee_public_send_tests {
                     verification_method: signing_key_id.clone(),
                     key_package_id: "kp-public-group-e2ee".to_owned(),
                     issued_at: now.clone(),
-                    expires_at: "2026-09-28T00:00:00Z".to_owned(),
+                    expires_at: (timestamp + chrono::Duration::days(30))
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                     now: now.clone(),
                     draft_extension_negotiated: true,
                     request_id: "req-public-group-e2ee-key-package".to_owned(),

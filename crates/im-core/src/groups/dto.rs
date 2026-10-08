@@ -25,6 +25,17 @@ pub struct GroupReadResult {
 }
 
 impl GroupReadResult {
+    /// Classify an authoritative group response without guessing on missing policy.
+    pub fn requires_end_to_end_encryption(&self) -> crate::ImResult<bool> {
+        let group = self
+            .group
+            .as_ref()
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "group snapshot missing".to_owned(),
+            })?;
+        super::authoritative_group_e2ee_classification(group.did.as_str(), self)
+    }
+
     pub(crate) fn from_raw_response(raw: Value, warnings: Vec<String>) -> Self {
         let warnings = merge_raw_warnings(raw.get("warnings"), warnings);
         let group = group_snapshot_from_response(&raw);

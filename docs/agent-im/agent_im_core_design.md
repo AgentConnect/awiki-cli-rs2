@@ -1173,7 +1173,7 @@ pub struct RuntimeTokenScope {
 
 #### `outbox/mod.rs`
 
-当前 `RuntimeMessageSecurity` 只支持 `DefaultPlain`，并显式拒绝 `direct_e2ee` / `group_e2ee`。后续分两步：
+个人助理委托路径仍只支持 `DefaultPlain`。普通 Runtime Agent 已支持触发继承的 `E2eeRequired`（JSON `e2ee_required`）；旧 `direct_e2ee` / `group_e2ee` 别名继续拒绝。持久化和恢复合同见 [ACP runtime](../architecture/acp-runtime.md#消息安全继承2026-10-09-测试候选)。个人助理的分步边界为：
 
 1. MVP：Agent 代发只允许普通非 E2EE `default_plain`，使用 user delegated sender；APP 仍可自己发送 secureDirect，但这不作为 Agent 代发能力。
 2. 二期：支持 Agent 作为合法 E2EE participant 时的 secure send；或由 APP 执行 `message.send` action 完成 E2EE 发送。

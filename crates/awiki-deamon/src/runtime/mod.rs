@@ -42,6 +42,8 @@ pub struct RuntimeAgentProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeTask {
+    #[serde(default)]
+    pub security: crate::outbox::RuntimeMessageSecurity,
     pub task_id: String,
     pub agent_did: String,
     pub agent_handle: String,

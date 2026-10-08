@@ -38,9 +38,11 @@ impl<'a> AttachmentService<'a> {
     fn send_with_optional_client_message_id(
         &self,
         target: crate::messages::MessageTarget,
-        request: super::AttachmentSendRequest,
+        mut request: super::AttachmentSendRequest,
         client_message_id: Option<crate::ids::MessageId>,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        request.security =
+            crate::messages::security::resolve(self.client, &target, request.security)?;
         if attachment_security_is_secure(&request.security) {
             let result =
                 self.client
@@ -114,6 +116,11 @@ impl<'a> AttachmentService<'a> {
         request: super::SendConversationAttachmentRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
         let mut resolved = self.resolve_conversation_attachment_request(request)?;
+        resolved.request.security = crate::messages::security::resolve(
+            self.client,
+            &resolved.target,
+            resolved.request.security,
+        )?;
         if attachment_security_is_secure(&resolved.request.security) {
             let first = self.client.messages().send_secure_attachment(
                 message_request_from_resolved_conversation_attachment(&resolved)?,
@@ -183,6 +190,12 @@ impl<'a> AttachmentService<'a> {
         request: super::SendConversationAttachmentRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
         let mut resolved = self.resolve_conversation_attachment_request(request)?;
+        resolved.request.security = crate::messages::security::resolve_async(
+            self.client,
+            &resolved.target,
+            resolved.request.security,
+        )
+        .await?;
         if attachment_security_is_secure(&resolved.request.security) {
             let first = self
                 .client
@@ -429,9 +442,12 @@ impl<'a> AttachmentService<'a> {
     async fn send_async_with_optional_client_message_id(
         &self,
         target: crate::messages::MessageTarget,
-        request: super::AttachmentSendRequest,
+        mut request: super::AttachmentSendRequest,
         client_message_id: Option<crate::ids::MessageId>,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        request.security =
+            crate::messages::security::resolve_async(self.client, &target, request.security)
+                .await?;
         if attachment_security_is_secure(&request.security) {
             let result = self
                 .client

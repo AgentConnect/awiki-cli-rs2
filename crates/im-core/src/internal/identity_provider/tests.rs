@@ -50,15 +50,8 @@ async fn completion_waiter_refreshes_same_identity_before_http_signing() {
         .await
         .unwrap();
 
-    assert_eq!(
-        waiter
-            .prepare_http_signature(request.clone())
-            .await
-            .unwrap_err()
-            .code,
-        IdentityProviderErrorCode::Conflict
-    );
-    waiter.recover().await.unwrap();
+    // The direct provider refreshes a stale same-identity handle before retrying
+    // crypto work; callers need no explicit recovery after a rejected change.
     let signed_after = waiter.prepare_http_signature(request).await.unwrap();
     assert_eq!(
         waiter.public_identity().await.unwrap().reference,

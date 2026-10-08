@@ -1,5 +1,7 @@
 /** State and service configuration owned by the Node host. */
 export interface ImCoreNodeOpenOptions {
+  readonly multiDeviceDirectE2eeEnabled?: boolean
+  readonly multiDeviceGroupE2eeEnabled?: boolean
   /** Additional trusted CA bundle; certificate verification remains enabled. */
   readonly caBundle?: string
   /** Absolute, process-exclusive root for identities, SQLite, cache, and metadata. */
@@ -563,12 +565,18 @@ export interface NodePeer {
 
 /** Minimal private transport-protected group creation input. */
 export interface CreateGroupInput {
+  readonly operationId?: string
+  readonly encrypted?: boolean
   readonly name: string
   readonly description?: string
 }
 
 /** Created group with its canonical conversation route. */
 export interface NodeGroup {
+  readonly encrypted?: boolean
+  readonly secureState?: string
+  readonly canSendSecure?: boolean
+  readonly secureRetryable?: boolean
   readonly avatarUri?: string
   readonly avatarMembers?: readonly GroupAvatarMember[]
   readonly groupStateVersion?: string
@@ -834,6 +842,9 @@ export interface NodeMessageContent {
 
 /** Canonically routed message projection. */
 export interface NodeMessage {
+  readonly encrypted: boolean
+  readonly decryptionState?: string
+  readonly sendState?: string
   readonly id: string
   readonly conversationId: string
   readonly conversationKind: 'direct' | 'group'
@@ -860,6 +871,7 @@ export interface MarkReadResult {
 }
 
 export interface SendTextInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly text: string
   readonly markdown?: boolean
@@ -869,6 +881,7 @@ export interface SendTextInput {
 
 /** Generic JSON Payload send. ANP-P9 mention payloads are validated again in Rust. */
 export interface SendPayloadInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly payloadJson: string
   readonly clientMessageId?: string
@@ -945,6 +958,7 @@ export interface HandleRecoveryOperationSummary {
 
 /** Single attachment send. `bytes` crosses N-API as Uint8Array, never JSON/base64. */
 export interface SendAttachmentInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly fileName: string
   readonly mimeType: string
@@ -1110,6 +1124,7 @@ export interface ImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
+  repairGroupSecurity(input: GroupInput): Promise<NodeGroup>
   listGroups(input?: PageInput): Promise<Page<NodeGroup>>
   joinGroup(input: GroupInput): Promise<NodeGroup>
   leaveGroup(input: GroupInput): Promise<void>

@@ -27,6 +27,8 @@ pub struct NodeOpenOptions {
     pub client_version_info: Option<NodeClientVersionInfo>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    pub multi_device_direct_e2ee_enabled: Option<bool>,
+    pub multi_device_group_e2ee_enabled: Option<bool>,
     pub multi_device_device_revoke_enabled: Option<bool>,
     pub multi_device_handle_recovery_enabled: Option<bool>,
     pub multi_device_audience: Option<String>,
@@ -48,6 +50,8 @@ impl Clone for NodeOpenOptions {
             client_version_info: self.client_version_info.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
+            multi_device_direct_e2ee_enabled: self.multi_device_direct_e2ee_enabled,
+            multi_device_group_e2ee_enabled: self.multi_device_group_e2ee_enabled,
             multi_device_device_revoke_enabled: self.multi_device_device_revoke_enabled,
             multi_device_handle_recovery_enabled: self.multi_device_handle_recovery_enabled,
             multi_device_audience: self.multi_device_audience.clone(),
@@ -783,6 +787,8 @@ pub struct NodeDisplayProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeCreateGroupInput {
+    pub operation_id: Option<String>,
+    pub encrypted: Option<bool>,
     pub name: String,
     pub description: Option<String>,
 }
@@ -790,6 +796,10 @@ pub struct NodeCreateGroupInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeGroup {
+    pub encrypted: Option<bool>,
+    pub secure_state: Option<String>,
+    pub can_send_secure: Option<bool>,
+    pub secure_retryable: Option<bool>,
     pub did: String,
     pub conversation_id: String,
     pub title: String,
@@ -1022,6 +1032,9 @@ pub struct NodeConversation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeMessage {
+    pub encrypted: bool,
+    pub decryption_state: Option<String>,
+    pub send_state: Option<String>,
     pub id: String,
     pub conversation_id: String,
     pub conversation_kind: String,
@@ -1071,6 +1084,8 @@ pub struct NodeMarkReadResult {
 
 #[napi(object)]
 pub struct NodeSendTextInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub text: String,
     pub markdown: Option<bool>,
@@ -1080,6 +1095,8 @@ pub struct NodeSendTextInput {
 
 #[napi(object)]
 pub struct NodeSendPayloadInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub payload_json: String,
     pub client_message_id: Option<String>,
@@ -1153,6 +1170,8 @@ pub struct NodeHandleRecoveryOperationSummary {
 
 #[napi(object)]
 pub struct NodeSendAttachmentInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub file_name: String,
     pub mime_type: String,
@@ -1597,14 +1616,33 @@ pub(crate) fn group_create_request(
         ));
     }
     let mut request = im_core::groups::GroupCreateRequest::new(name);
+    if let Some(id) = input.operation_id {
+        if id.is_empty()
+            || id.len() > 100
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(SafeError::new(
+                "invalid_input",
+                "Invalid group operation identity.",
+                false,
+            ));
+        }
+        request.slug = Some(id);
+    }
     request.description = input
         .description
         .map(|description| description.trim().to_owned())
         .filter(|description| !description.is_empty());
     request.discoverability = Some(im_core::groups::GroupDiscoverability::Private);
     request.admission_mode = Some(im_core::groups::GroupAdmissionMode::OpenJoin);
-    request.message_security_profile =
-        Some(im_core::groups::GroupMessageSecurityProfile::TransportProtected);
+    request.e2ee = input.encrypted.unwrap_or(false);
+    request.message_security_profile = Some(if request.e2ee {
+        im_core::groups::GroupMessageSecurityProfile::GroupE2ee
+    } else {
+        im_core::groups::GroupMessageSecurityProfile::TransportProtected
+    });
     Ok(request)
 }
 
@@ -1640,6 +1678,10 @@ pub(crate) fn created_group_from_snapshot(
         .or_else(|| snapshot.name.clone())
         .unwrap_or_else(|| fallback_title.to_owned());
     NodeGroup {
+        encrypted: None,
+        secure_state: None,
+        can_send_secure: None,
+        secure_retryable: None,
         avatar_uri: snapshot.avatar_uri,
         avatar_members: snapshot.avatar_members.map(|members| {
             members
@@ -1672,6 +1714,10 @@ pub(crate) fn group_from_summary(snapshot: im_core::groups::GroupSummary) -> Nod
         .or(snapshot.name)
         .unwrap_or_else(|| snapshot.did.as_str().to_owned());
     NodeGroup {
+        encrypted: None,
+        secure_state: None,
+        can_send_secure: None,
+        secure_retryable: None,
         avatar_uri: snapshot.avatar_uri,
         avatar_members: snapshot.avatar_members.map(|members| {
             members
@@ -2163,6 +2209,13 @@ fn message(
         .or_else(|| message_attribute(&value, "senderName"))
         .or_else(|| message_attribute(&value, "sender_name"));
     Ok(NodeMessage {
+        encrypted: value.metadata.is_end_to_end_encrypted(),
+        decryption_state: message_attribute(&value, "decryption_state"),
+        send_state: value
+            .metadata
+            .send_state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state).to_lowercase()),
         id: value.id.as_str().to_owned(),
         conversation_id: canonical_conversation_id,
         conversation_kind: conversation_kind.to_owned(),
@@ -2558,4 +2611,19 @@ pub struct NodeDeviceJoinManagementStatus {
     pub recipient_device_id: String,
     pub phase: String,
     pub attempts: u32,
+}
+
+/// Reject unknown policies rather than silently reverting to plain.
+pub(crate) fn message_security(
+    value: Option<&str>,
+) -> SafeResult<im_core::messages::MessageSecurityMode> {
+    match value {
+        None | Some("plain") => Ok(im_core::messages::MessageSecurityMode::DefaultPlain),
+        Some("e2ee-required") => Ok(im_core::messages::MessageSecurityMode::E2eeRequired),
+        _ => Err(SafeError::new(
+            "invalid_input",
+            "Unknown message security policy.",
+            false,
+        )),
+    }
 }

@@ -1902,3 +1902,7 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 普通 P4 history 没有安全档位字段时，缓存采用 `transport-protected`；仅凭 `group_did`
 不能推断 P6。显式档位、已验证的加密消息标记及完整加密对象仍保留现有安全档位，公开投影
 缺少对象密钥时继续禁止覆盖内部下载缓存。
+
+### Host 设备身份的 E2EE 适配（2026-10-09 候选）
+
+Core 的 active_authorization_for_client 统一读取本地 alias 的当前授权，或已通过 HostBackedDeviceIdentitySigner 校验后生成的 SyncAccountSeed。存在 alias 时必须重新读取当前状态，禁止使用旧 seed 绕过撤销。Direct prekey、加密收发和 Group MLS 使用同一 device_id/signing_key/e2ee_key，密钥留在原 custody。租户由 Core paths 隔离、账号由 owner_identity_id 隔离、设备由 protocol_device_id 隔离。

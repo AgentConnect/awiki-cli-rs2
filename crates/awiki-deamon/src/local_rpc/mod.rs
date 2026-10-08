@@ -145,7 +145,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
     let context = match method {
         RpcMethod::MsgSend => {
-            let message = RuntimeMessageSend::from_params(&request.params)?;
+            let mut message = RuntimeMessageSend::from_params(&request.params)?;
             let preliminary_context =
                 state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
             ensure_personal_agent_runtime_cannot_send(
@@ -154,6 +154,12 @@ pub fn execute_runtime_rpc_request_with_outbox(
                 RpcMethod::MsgSend.as_str(),
             )?;
             ensure_runtime_route_allows_side_effects(state, &preliminary_context)?;
+            let task = state.load_runtime_task_for_run(&preliminary_context.run_id)?;
+            if request.params.get("security").is_some() && message.security != task.security {
+                bail!("reply security must match the triggering message");
+            }
+            message.security = task.security;
+
             if let Some(file_path) = message.file_path.as_ref() {
                 ensure_attachment_under_allowed_roots(
                     state,
@@ -196,7 +202,40 @@ pub fn execute_runtime_rpc_request_with_outbox(
                 &attachment.file_path,
             )?;
             let context = state.authorize_runtime_rpc(&token, &method, None)?;
-            apply_attachment_send_side_effect(state, outbox, &context, &attachment)?;
+            if task.security == crate::outbox::RuntimeMessageSecurity::E2eeRequired {
+                let target = if let Some(group) = task
+                    .conversation_id
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("group:"))
+                {
+                    crate::outbox::RuntimeMessageTarget::Group {
+                        group: group.to_owned(),
+                    }
+                } else {
+                    crate::outbox::RuntimeMessageTarget::Direct {
+                        recipient: task.reply_recipient_did.clone(),
+                        raw_recipient: task.reply_recipient_did.clone(),
+                        resolved_did: Some(task.reply_recipient_did.clone()),
+                    }
+                };
+                let message = RuntimeMessageSend {
+                    target,
+                    text: attachment.caption.clone().unwrap_or_default(),
+                    payload: None,
+                    file_path: Some(attachment.file_path.clone()),
+                    display_filename: attachment.display_filename.clone(),
+                    mime_type: None,
+                    idempotency_key: request
+                        .params
+                        .get("idempotency_key")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    security: task.security,
+                };
+                apply_msg_send_side_effect(state, outbox, &context, &message)?;
+            } else {
+                apply_attachment_send_side_effect(state, outbox, &context, &attachment)?;
+            }
             context
         }
         _ => {
