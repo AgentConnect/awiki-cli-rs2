@@ -267,8 +267,9 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
     let _ = host;
 
-    // Status snapshots must remain an offline contract test even when the
-    // product's fresh-install download host changes.
+    // Tenant policy reads must remain local, even when product defaults change.
+    config.user_service_base_url = "http://127.0.0.1:1".to_owned();
+    // No artifact download is needed for these control-plane fixtures.
     config.download_base_url = format!("file://{}", root.path().join("release-fixture").display());
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
@@ -276,19 +277,70 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     (root, config, state)
 }
 
-fn write_release_status_manifest(root: &std::path::Path, latest: &str) {
-    let releases = root.join("releases");
-    std::fs::create_dir_all(&releases).unwrap();
-    std::fs::write(
-        releases.join("manifest.json"),
-        serde_json::to_vec_pretty(&json!({
-            "latest": latest,
-            "min_supported": "0.1.0",
-            "packages": []
+struct TenantPolicyServer {
+    origin: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TenantPolicyServer {
+    fn new(recommended: &str) -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let body = serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "client_versions": {
+                "schema_version": 1, "channel": "stable", "policy_origin": origin,
+                "policy_revision": 1, "published_at": "2026-10-08T00:00:00Z",
+                "products": { "daemon": {
+                    "enabled": true, "recommended_version": recommended,
+                    "minimum_supported_version": "0.1.0",
+                    "upgrade_url": format!("{origin}/daemon/install.sh"),
+                    "artifact_manifest_url": format!("{origin}/daemon/releases/manifest.json")
+                }}
+            }
         }))
-        .unwrap(),
-    )
-    .unwrap();
+        .unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        let n = stream.read(&mut request).unwrap();
+                        assert!(String::from_utf8_lossy(&request[..n]).starts_with(
+                            "GET /user-service/v1/server-info?client_platform=daemon "
+                        ));
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                        stream.write_all(&body).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("local tenant policy fixture: {error}"),
+                }
+            }
+        });
+        Self {
+            origin,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for TenantPolicyServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
 }
 
 fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
@@ -826,10 +878,9 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
 
 #[test]
 fn agent_status_query_returns_snapshot_payload_without_chat_content() {
-    let (root, mut config, state) = fixture();
-    let release_root = root.path().join("daemon-release");
-    write_release_status_manifest(&release_root, awiki_deamon::upgrade::CURRENT_DAEMON_VERSION);
-    config.download_base_url = format!("file://{}", release_root.display());
+    let (_root, mut config, state) = fixture();
+    let policy = TenantPolicyServer::new(awiki_deamon::upgrade::CURRENT_DAEMON_VERSION);
+    config.user_service_base_url = policy.origin.clone();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
@@ -1076,10 +1127,9 @@ fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
 
 #[test]
 fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
-    let (root, mut config, state) = fixture();
-    let release_root = root.path().join("daemon-release");
-    write_release_status_manifest(&release_root, "9999.0.0");
-    config.download_base_url = format!("file://{}", release_root.display());
+    let (_root, mut config, state) = fixture();
+    let policy = TenantPolicyServer::new("9999.0.0");
+    config.user_service_base_url = policy.origin.clone();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,

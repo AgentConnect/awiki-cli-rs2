@@ -198,6 +198,140 @@ fn anp_identity_signer_reloads_once_after_external_generation_advance() {
             .is_some_and(|id| id.ends_with("#message-v2"))));
 }
 
+#[tokio::test]
+async fn async_identity_crypto_reloads_same_identity_after_external_update() {
+    use crate::internal::identity_provider::*;
+    for owned in [false, true] {
+        for operation in ["http", "sign", "agreement"] {
+            let root = tempfile::tempdir().unwrap();
+            let mut manager =
+                anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                    state_root: root.path().join("store"),
+                    root_key: anp_identity::RootKeySource::Injected(
+                        anp_identity::InjectedStoreKey::new("host", [43; 32]),
+                    ),
+                })
+                .unwrap();
+            let mut external = manager.create(spec()).unwrap();
+            let reference = external.reference();
+            let identity = manager.get(&reference).unwrap();
+            let session = if owned {
+                DirectAnpIdentitySession::new(identity)
+            } else {
+                DirectAnpIdentitySession::from_shared(Arc::new(identity))
+            };
+            commit_external_change(
+                &mut external,
+                anp_identity::DocumentChange::ReplaceServices { services: vec![] },
+            );
+            match operation {
+                "http" => {
+                    let signature = session
+                        .prepare_http_signature(ProviderExactHttpRequest {
+                            key: ProviderKeySelector::Kid(format!("{}#device", reference.did)),
+                            url: "https://example.com/im".into(),
+                            method: "POST".into(),
+                            headers: vec![],
+                            body: Some(b"same-request-body".to_vec()),
+                            options: ProviderHttpSigningOptions::default(),
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(signature.kid, format!("{}#device", reference.did));
+                    assert!(!signature.header_patch.is_empty());
+                }
+                "sign" => {
+                    let result = session
+                        .sign(ProviderSignRequest {
+                            key: ProviderKeySelector::Kid(format!("{}#device", reference.did)),
+                            purpose: ProviderSigningPurpose::DeviceAssertion,
+                            payload: b"same-operation".to_vec(),
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(result.bytes.len(), 64);
+                }
+                _ => {
+                    let peer = x25519_dalek::StaticSecret::from([9; 32]);
+                    session
+                        .derive_shared_secret(ProviderKeyAgreementRequest {
+                            key: ProviderKeySelector::Kid(format!("{}#agreement", reference.did)),
+                            peer_public: x25519_dalek::PublicKey::from(&peer).to_bytes(),
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn async_identity_reload_does_not_restore_removed_key_or_deleted_identity() {
+    use crate::internal::identity_provider::*;
+    for deleted in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: root.path().join("store"),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("host", [44; 32]),
+                ),
+            })
+            .unwrap();
+        let mut external = manager.create(spec()).unwrap();
+        let reference = external.reference();
+        let session =
+            DirectAnpIdentitySession::from_shared(Arc::new(manager.get(&reference).unwrap()));
+        if deleted {
+            manager
+                .delete(&reference, anp_identity::DeleteIdentityRequest::default())
+                .unwrap();
+        } else {
+            commit_external_change(
+                &mut external,
+                anp_identity::DocumentChange::RotateSigningKey {
+                    old_kid: format!("{}#request", reference.did),
+                    new_fragment: "request-v2".into(),
+                },
+            );
+        }
+        assert!(session
+            .prepare_http_signature(ProviderExactHttpRequest {
+                key: ProviderKeySelector::Kid(format!("{}#request", reference.did)),
+                url: "https://example.com/im".into(),
+                method: "POST".into(),
+                headers: vec![],
+                body: None,
+                options: ProviderHttpSigningOptions::default(),
+            })
+            .await
+            .is_err());
+    }
+}
+
+fn commit_external_change(identity: &mut ManagedIdentity, change: anp_identity::DocumentChange) {
+    let mut session = identity
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![change],
+        })
+        .unwrap();
+    let candidate = session.candidate().clone();
+    let attempt = session.begin_publication().unwrap();
+    session
+        .complete(
+            attempt,
+            anp_identity::PublicationResult::Confirmed {
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: 2,
+                    registry_version: 2,
+                    document_digest: candidate.candidate_digest,
+                },
+            },
+        )
+        .unwrap();
+}
+
 fn spec() -> CreateIdentityRequest {
     CreateIdentityRequest {
         profile: CreateIdentityProfile::E1,
