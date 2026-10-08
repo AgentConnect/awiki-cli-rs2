@@ -974,6 +974,11 @@ write the MLS WAL, or build a Commit. The low-sensitivity maintenance object acc
 `reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
 silently projected.
 
+发送前只有活跃群主执行既有 P4 roster 收敛；普通成员的身份设备管理权限不能触发
+全群枚举或阻止其正常加密发送。成员退出引发的暂停允许群主先完成收敛，随后必须
+重新读取权威群状态并通过暂停检查才能加密。设备撤销仍不在发送入口自动修复，旧版
+`device_revocation_pending + true` 与未知维护状态继续 fail closed。
+
 ## 9.1 Key Material Boundary
 
 The full current technical design is documented in

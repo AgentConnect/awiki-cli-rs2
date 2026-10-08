@@ -395,7 +395,7 @@ async fn send_group_async_impl(
     // active owner converge its accepted local tree to the authoritative P4/P2
     // roster. Non-owners and already-converged owners are no-ops.
     if !device_revocation_pending {
-        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
+        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
             client,
             group.clone(),
         )
@@ -689,7 +689,8 @@ async fn group_device_revocation_pending_for_send_async(
 
 #[cfg(feature = "group-e2ee")]
 fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult<bool> {
-    ensure_group_e2ee_v2_send_not_paused(snapshot)?;
+    // Membership maintenance must reach the owner reconciliation below. The
+    // authoritative paused gate is checked again before preparing ciphertext.
     let Some(maintenance) = snapshot.get("e2ee_maintenance") else {
         return Ok(false);
     };
@@ -706,10 +707,19 @@ fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult
             detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
         });
     }
-    Ok(
-        maintenance.get("reason").and_then(Value::as_str) == Some("device_revocation_pending")
-            && maintenance.get("send_paused").and_then(Value::as_bool) == Some(false),
-    )
+    match (
+        maintenance.get("reason").and_then(Value::as_str),
+        maintenance.get("send_paused").and_then(Value::as_bool),
+    ) {
+        (Some("device_revocation_pending"), Some(false)) => Ok(true),
+        (Some("device_revocation_pending"), Some(true)) => {
+            ensure_group_e2ee_v2_send_not_paused(snapshot).map(|()| true)
+        }
+        (Some("group_membership_change_pending"), Some(true)) => Ok(false),
+        _ => Err(crate::ImError::LocalStateUnavailable {
+            detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
+        }),
+    }
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -1105,6 +1115,18 @@ mod tests {
     #[test]
     #[cfg(feature = "group-e2ee")]
     fn p6_v2_send_keeps_device_revocation_pending_out_of_inline_repair() {
+        for maintenance in [
+            serde_json::json!({"reason": "device_revocation_pending", "send_paused": true}),
+            serde_json::json!({"reason": "group_membership_change_pending", "send_paused": "true"}),
+            serde_json::json!({"reason": "unknown", "send_paused": false}),
+        ] {
+            assert!(
+                group_device_revocation_pending_for_send(&serde_json::json!({
+                    "e2ee_maintenance": maintenance
+                }))
+                .is_err()
+            );
+        }
         assert!(
             !group_device_revocation_pending_for_send(&serde_json::json!({
                 "group_did": "did:example:group"
@@ -1122,14 +1144,14 @@ mod tests {
             .unwrap()
         );
         assert!(
-            group_device_revocation_pending_for_send(&serde_json::json!({
+            !group_device_revocation_pending_for_send(&serde_json::json!({
                 "group_did": "did:example:group",
                 "e2ee_maintenance": {
                     "reason": "group_membership_change_pending",
                     "send_paused": true
                 }
             }))
-            .is_err()
+            .unwrap()
         );
     }
 }

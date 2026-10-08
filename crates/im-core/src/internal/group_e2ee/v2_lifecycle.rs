@@ -1427,6 +1427,23 @@ pub(crate) fn reconcile_group_device_roster(
     })
 }
 
+pub(crate) async fn reconcile_group_roster_before_send_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<V2RosterReconcileSummary> {
+    // Sending is not an identity device-management request. Only the active
+    // group owner may enumerate and converge the whole P4 roster inline.
+    let authority = current_actor_reconcile_authority_async(client, group.clone()).await?;
+    if !can_reconcile_roster_before_send(authority) {
+        return Ok(V2RosterReconcileSummary::default());
+    }
+    reconcile_group_device_roster_async(client, group).await
+}
+
+fn can_reconcile_roster_before_send(authority: Option<RosterReconcileAuthority>) -> bool {
+    authority == Some(RosterReconcileAuthority::Owner)
+}
+
 pub(crate) async fn reconcile_group_device_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,

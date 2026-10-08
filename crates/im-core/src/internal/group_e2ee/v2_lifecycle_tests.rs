@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn inline_send_reconciliation_requires_group_owner_not_identity_management() {
+    assert!(can_reconcile_roster_before_send(Some(
+        RosterReconcileAuthority::Owner
+    )));
+    assert!(!can_reconcile_roster_before_send(Some(
+        RosterReconcileAuthority::SelfDidDeviceManager
+    )));
+    assert!(!can_reconcile_roster_before_send(None));
+}
+
+#[test]
 fn p6_remove_trigger_retry_is_bounded_to_host_forbidden() {
     assert!(!p6_remove_trigger_convergence_pending(
         &crate::ImError::Service {
