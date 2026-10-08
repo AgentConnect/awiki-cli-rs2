@@ -105,6 +105,8 @@ Rules:
 
 ### 管理设备接续兄弟设备发布的文档
 
+Core 的同步与原生异步密码操作在 Provider 返回明确的 generation conflict 时，重新加载同一 store / identity ID / DID，并仅重试一次原密码请求。第二次仍由 Provider 核验 generation、身份状态和所选密钥权限；删除、撤销、密钥退役及再次冲突必须失败关闭。此重试不重发 HTTP，不重建消息或 operation ID，不适用于文档发布、Root 导入或其他写事务。
+
 新 Join 的 challenge 准备前，若本地 DID 文档落后于认证 Registry，Core 解析并验真远端文档，再以独立的 sibling convergence 权限同步 controller custody 和本地投影。必须保持 DID、根密钥、本机 signing/E2EE 密钥及 auth generation 不变，本机在 Registry 仍为 active/admin/management_ready，文档和 Registry checkpoint 均不可回退。Provider 必须没有 pending document change，并在原子 adoption 中执行根指纹、当前 generation 和本机密钥授权检查；不借用 Recovery 或已确认 Join 的 pending publication 权限。旧 custody 无此保证时失败关闭。成功后重新打开 client，仍按原有精确文档摘要检查准备 challenge；同步不发送根密钥，也不批准 Join。
 
 ### 4.2 Manifest Handle Recovery boundary
@@ -218,6 +220,8 @@ error `outcome_unknown`, and a later resume first calls `handle_recovery_result_
 result is applied locally; `result_absent` permits the same frozen intent to retry Commit. Core never
 blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
 remains `Serialization`; neither classification exposes response content.
+
+凭证已删除后的再次 Recovery：仅在 OTP exchange 冻结 intent 之前，允许精确匹配远端当前账号、Handle、DID 与直接前驱代次的唯一本地绑定，在无相关活跃凭证、无冲突未完成事务，且存在同 owner / DID / protocol device 的已完成删除证明时进入 fresh owner 路径。保留旧绑定和历史，不迁入旧 owner 数据。普通 Join 的 live predecessor matcher 不获得此例外；缺失证明、错误设备、跨账号或更早代次继续失败关闭。
 
 For a fresh-install Recovery target, a successful factor exchange refreshes only the successor DID
 Document root proof immediately before the first Commit or a `result_absent` retry. The DID, root and

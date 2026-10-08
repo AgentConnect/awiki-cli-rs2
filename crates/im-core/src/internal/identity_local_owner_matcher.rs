@@ -310,6 +310,7 @@ ORDER BY owner_identity_id"#,
 
 #[derive(Debug)]
 struct BindingCandidate {
+    device_id: String,
     owner_identity_id: String,
     identity_generation: String,
 }
@@ -377,6 +378,43 @@ pub(crate) fn match_stable_owner(
     excluded_recovery_operation_id: Option<&str>,
     excluded_transition_source_id: Option<&str>,
 ) -> crate::ImResult<StableOwnerMatch> {
+    match_stable_owner_inner(
+        sqlite_path,
+        None,
+        index,
+        authority,
+        excluded_recovery_operation_id,
+        excluded_transition_source_id,
+    )
+}
+
+/// Only pre-commit Recovery may start fresh after an exact completed deletion.
+/// Join continuity still requires a live predecessor and uses the strict matcher.
+pub(crate) fn match_recovery_owner(
+    sqlite_path: &Path,
+    identity_root_dir: &Path,
+    index: &crate::internal::identity_store::IndexPayload,
+    authority: StableOwnerAuthority<'_>,
+    operation_id: &str,
+) -> crate::ImResult<StableOwnerMatch> {
+    match_stable_owner_inner(
+        sqlite_path,
+        Some(identity_root_dir),
+        index,
+        authority,
+        Some(operation_id),
+        None,
+    )
+}
+
+fn match_stable_owner_inner(
+    sqlite_path: &Path,
+    retirement_root: Option<&Path>,
+    index: &crate::internal::identity_store::IndexPayload,
+    authority: StableOwnerAuthority<'_>,
+    excluded_recovery_operation_id: Option<&str>,
+    excluded_transition_source_id: Option<&str>,
+) -> crate::ImResult<StableOwnerMatch> {
     let canonical =
         crate::internal::identity_wire::handle_recovery::canonical_handle(authority.full_handle)?;
     let Some(previous_generation) =
@@ -393,7 +431,7 @@ pub(crate) fn match_stable_owner(
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     let mut statement = connection
         .prepare(
-            r#"SELECT owner_identity_id,account_id,handle_scope,current_did,identity_generation
+            r#"SELECT owner_identity_id,account_id,handle_scope,current_did,identity_generation,device_id
 FROM identity_account_bindings
 WHERE account_id=?1 OR handle_scope=?2 OR current_did=?3
 ORDER BY owner_identity_id"#,
@@ -413,6 +451,7 @@ ORDER BY owner_identity_id"#,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             },
         )
@@ -423,12 +462,21 @@ ORDER BY owner_identity_id"#,
 
     let mut exact = Vec::new();
     let mut suspicious_related_state = false;
-    for (owner_identity_id, account_id, handle_scope, current_did, identity_generation) in related {
+    for (
+        owner_identity_id,
+        account_id,
+        handle_scope,
+        current_did,
+        identity_generation,
+        device_id,
+    ) in related
+    {
         let exact_scope = account_id == authority.account_user_id
             && handle_scope.as_deref() == Some(authority.full_handle)
             && current_did == authority.previous_did;
         if exact_scope && identity_generation == previous_generation {
             exact.push(BindingCandidate {
+                device_id,
                 owner_identity_id,
                 identity_generation,
             });
@@ -523,6 +571,26 @@ WHERE owner_identity_id=?1
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if unfinished_transition_count != 0 || unfinished_operation_count != 0 {
         return Ok(StableOwnerMatch::Conflict);
+    }
+
+    if let Some(identity_root_dir) = retirement_root {
+        let related_live = index.credentials.values().any(|entry| {
+            entry.unique_id == candidate.owner_identity_id
+                || entry.user_id == authority.account_user_id
+                || entry.full_handle == authority.full_handle
+                || entry.did == authority.previous_did
+        });
+        if !related_live
+            && crate::internal::identity_local_deletion::matches_completed_binding(
+                sqlite_path,
+                identity_root_dir,
+                &candidate.owner_identity_id,
+                authority.previous_did,
+                &candidate.device_id,
+            )?
+        {
+            return Ok(StableOwnerMatch::None);
+        }
     }
 
     let matching_entries = index
@@ -915,6 +983,92 @@ mod tests {
             .unwrap(),
             StableOwnerMatch::Conflict
         );
+    }
+
+    #[test]
+    fn recovery_accepts_only_exact_completed_retirement_without_live_credentials() {
+        for case in [
+            "completed",
+            "missing",
+            "wrong_device",
+            "wrong_generation",
+            "live",
+            "pending",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("im.sqlite");
+            let identities = root.path().join("identities");
+            let did = "did:wba:example.invalid:user:alice:old";
+            insert_binding(
+                &path,
+                "owner-alice",
+                "account-alice",
+                "alice.example.invalid",
+                did,
+                if case == "wrong_generation" { "6" } else { "7" },
+            );
+            if case != "missing" {
+                write_completed_retirement(
+                    &identities,
+                    "owner-alice",
+                    did,
+                    if case == "wrong_device" {
+                        "device-other"
+                    } else {
+                        "device-owner-alice"
+                    },
+                );
+            }
+            if case == "pending" {
+                let operation = crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+                    "other-operation".into(), "owner-alice".into(), "alice.example.invalid".into(),
+                    "pending-key".into(), "2026-10-08T00:00:00Z".into()).unwrap();
+                crate::internal::identity_handle_recovery_operation::insert(&path, &operation)
+                    .unwrap();
+            }
+            let index = if case == "live" {
+                fixture_index()
+            } else {
+                Default::default()
+            };
+            let result = match_recovery_owner(
+                &path,
+                &identities,
+                &index,
+                StableOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: did,
+                    binding_generation: "8",
+                },
+                "new-operation",
+            )
+            .unwrap();
+            if case == "completed" {
+                assert_eq!(result, StableOwnerMatch::None);
+                // Registration/Join must not inherit the pre-commit Recovery exception.
+                assert_eq!(
+                    match_stable_owner(
+                        &path,
+                        &index,
+                        StableOwnerAuthority {
+                            account_user_id: "account-alice",
+                            full_handle: "alice.example.invalid",
+                            previous_did: did,
+                            binding_generation: "8",
+                        },
+                        None,
+                        None
+                    )
+                    .unwrap(),
+                    StableOwnerMatch::Conflict
+                );
+            } else if case == "live" {
+                assert!(matches!(result, StableOwnerMatch::Exact(_)));
+            } else {
+                assert_eq!(result, StableOwnerMatch::Conflict, "{case}");
+            }
+        }
     }
 
     #[test]
