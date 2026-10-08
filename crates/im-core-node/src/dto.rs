@@ -770,6 +770,7 @@ pub struct NodeDisplayProfileBatchInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeDisplayProfile {
+    pub subject_type: Option<String>,
     pub did: Option<String>,
     pub handle: Option<String>,
     pub display_name: Option<String>,
@@ -1572,6 +1573,7 @@ pub(crate) fn display_profiles(
     values
         .into_iter()
         .map(|value| NodeDisplayProfile {
+            subject_type: value.subject_type,
             avatar_uri: value.avatar_uri.or(value.avatar_url),
             avatar_thumbnail_uri: value.avatar_thumbnail_uri,
             did: value.did.map(|did| did.as_str().to_owned()),
@@ -2477,7 +2479,7 @@ mod tests {
             avatar_url: None,
             avatar_thumbnail_uri: Some("https://example/thumb.jpg".to_owned()),
             profile_uri: None,
-            subject_type: None,
+            subject_type: Some("agent".to_owned()),
             cache_hit: true,
             is_stale: false,
             legacy_fallback: false,
@@ -2493,6 +2495,7 @@ mod tests {
         );
         assert_eq!(mapped[0].handle.as_deref(), Some("bob.awiki.ai"));
         assert_eq!(mapped[0].display_name.as_deref(), Some("Bob"));
+        assert_eq!(mapped[0].subject_type.as_deref(), Some("agent"));
         assert!(mapped[0].cache_hit);
 
         let error = display_profile_batch_request(

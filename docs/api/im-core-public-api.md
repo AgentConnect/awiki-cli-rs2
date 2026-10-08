@@ -2239,3 +2239,11 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 `MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
 
 读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。实际展示许可和声振属于 App 本机设置与系统权限，不由注解授予；不新增 User Service Notify 接口；旧客户端仍可读正文。
+
+
+### Node 公开头像展示类型（2026-10-08）
+
+`NodeDisplayProfile.subjectType?: string` 直接透传 Core `DisplayProfile.subject_type`，缺失保持 `None`/省略；
+与 `avatarUri`、`avatarThumbnailUri` 同属展示信息，不参与身份、授权或路由。
+DSH 通过既有 hydrate/refreshDisplayProfiles 消费，不读取 User Service 私有 Inventory。
+这是可选增量字段，旧调用者无需改动；旧 native 缺字段时消费者使用静态展示，不猜测 Agent 身份。

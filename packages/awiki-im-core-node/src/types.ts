@@ -635,6 +635,7 @@ export interface DisplayProfileBatchInput {
 
 /** One locally cached display profile. */
 export interface NodeDisplayProfile {
+  readonly subjectType?: string
   readonly avatarUri?: string
   readonly avatarThumbnailUri?: string
   readonly did?: string
