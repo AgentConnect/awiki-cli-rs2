@@ -149,3 +149,13 @@ ANP/Identity 沿用本次手工验收的已提交源码，没有为恢复问题�
 固定 Core 修复提交可避免消费端从旧的 source 清单构建出不含本次修复的 SDK。
 APP 的 wrapper 来源应再固定到包含此清单与锁的 Core PR 提交。
 本次仅提交修复与源码联调输入，公共 SDK 和正式 registry pin 未发布或升级。
+
+
+### 本地同源 macOS 测试候选
+
+`AWIKI_APPLE_LOCAL_CONFIG=/绝对路径/dependencies.local.json scripts/flutter/build-sdk-native.sh --macos-only --macos-arch arm64`
+使用现有隔离 local 构建机制选择当前 Core、ANP 与 Identity 源码。必须先提交消费者和
+所选依赖；制品核验拒绝未提交来源、变更的提交/配置/解析锁或原生库摘要。
+解析锁及每架构构建证据保存在 `.artifacts/dependencies/local/`，不修改正式 manifest/lock。
+此入口只允许 Debug 候选的优化原生库，Flutter APP 保持 Debug；与 `AWIKI_RELEASE_REGISTRY=1`
+及 `AWIKI_APPLE_SOURCE_INTEGRATION=1` 互斥，不授予正式发布资格。
