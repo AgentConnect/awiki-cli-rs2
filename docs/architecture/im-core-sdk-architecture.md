@@ -688,6 +688,12 @@ the host atomically replaces only that DID/device/key/generation token. A
 persistence failure fails the refresh before Core publishes the token in memory,
 and no callback may rewrite identity keys, generations, or Sync V2 state.
 
+Daemon attaches a Core encryption vault derived with a separate HKDF context
+from its existing protected local vault root. Core owns P5/P6 prekeys and session
+state in that store; agent identity custody and personal-assistant delegated
+identity storage remain unchanged. Runtime realtime startup awaits Core encrypted
+receive preparation and fails closed when the vault or publication is unavailable.
+
 Independent Skill, Daemon, and Runtime Agent accounts share one Core builder.
 `generate_vnext_agent_bootstrap` fixes the DID path to
 `agent/{skill|daemon|runtime}/{canonical-handle-local}`, produces one random

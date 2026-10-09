@@ -46,6 +46,12 @@ impl ImCoreAdapter {
             config.im_core_config()?,
             config.im_core_paths(),
             im_core::ImCoreOpenOptions::default()
+                .with_identity_secret_vault(
+                    // Keep existing identity custody unchanged; P5/P6 always
+                    // require the attached encrypted store for their secrets.
+                    im_core::IdentitySecretStoragePolicy::FileCompat,
+                    crate::secret_vault::im_core_secret_vault_options(config)?,
+                )
                 .with_multi_device_direct_e2ee_enabled(true)
                 .with_multi_device_group_e2ee_enabled(true),
         )?;
