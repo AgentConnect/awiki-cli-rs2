@@ -1,5 +1,6 @@
 #[cfg(feature = "sqlite")]
 mod direct_send_retry;
+mod encryption_preparation;
 
 pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,

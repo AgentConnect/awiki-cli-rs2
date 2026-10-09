@@ -784,6 +784,13 @@ Core 才判定远端未提交并重试同一份注册材料；不得解析错误
 
 ### 5.1 Device Join host facade
 
+外部注册身份的 Host（例如独立 Daemon/Runtime）必须在接收器就绪之前调用
+`client.messages().prepare_encrypted_messaging_async()`。Core 重新验证当前 exact-device
+授权，为启用的 P5/P6 发布接收材料；重试复用现有 PreKey 和确定性的 bootstrap
+KeyPackage，不向 Host 暴露私钥或协议对象。未启用的加密能力不执行发布；已启用但
+准备失败时返回错误，Host 保留重试状态，不能宣称加密接收已就绪。普通账号的现有
+注册与设备激活准备流程不变。
+
 Device Join is an AWiki-local control-plane API and has no host-local rollout
 gate. The host facade provides new-device begin/poll/cancel plus
 management-device Registry, local notification-driven request listing,
