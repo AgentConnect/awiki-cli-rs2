@@ -27,7 +27,7 @@ fn web_creation_and_join_profiles_match_frozen_hosted_contract() {
     let crate::internal::identity_provider::ProviderIdentityExtension::DeviceManifest { devices } =
         &created.spec.extensions[0];
     assert_eq!(serde_json::json!(devices[0].profiles), *expected);
-    assert_eq!(super::vnext_device_profiles()[4], "anp.group.base.v1");
+    assert_eq!(super::vnext_device_profiles()[4], "anp.group.base.v2");
 }
 
 #[test]
@@ -69,6 +69,13 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
         .expect("Manifest should validate")
         .expect("Manifest should exist");
     assert_eq!(manifest.devices.len(), 1);
+    assert!(anp::authentication::find_eligible_device(
+        &generated.did_document,
+        generated.protocol_device_id.as_str(),
+        anp::authentication::PROFILE_GROUP_E2EE_V2,
+    )
+    .expect("current P6 eligibility")
+    .is_some());
     assert_eq!(
         manifest.devices[0].device_id,
         generated.protocol_device_id.as_str()
@@ -88,7 +95,7 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
             "anp.identity.discovery.v1",
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
         ]
     );
@@ -152,7 +159,7 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
             "anp.identity.discovery.v1",
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
             "anp.attachment.v1",
             "anp.federation.relay.v1",

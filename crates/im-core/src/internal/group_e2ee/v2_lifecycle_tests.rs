@@ -128,6 +128,29 @@ fn roster_delta_adds_same_did_device_without_duplicate_business_member() {
 }
 
 #[test]
+fn desired_p6_roster_excludes_read_only_and_incomplete_profile_bundles() {
+    let current = manifest_device("current", true);
+    let mut historical = manifest_device("historical", true);
+    historical.profiles.retain(|p| p != "anp.group.base.v2");
+    historical.profiles.push("anp.group.base.v1".to_owned());
+    let mut draft = manifest_device("all-v2-draft", true);
+    for profile in &mut draft.profiles {
+        if profile == "anp.core.binding.v1" || profile == "anp.identity.discovery.v1" {
+            *profile = profile.replace(".v1", ".v2");
+        }
+    }
+    let mut incomplete = manifest_device("incomplete", true);
+    incomplete
+        .profiles
+        .retain(|p| p != "anp.identity.discovery.v1");
+    let manifest = DeviceManifest {
+        manifest_type: anp::authentication::DEVICE_MANIFEST_TYPE.to_owned(),
+        devices: vec![historical, draft, incomplete, current],
+    };
+    assert_eq!(eligible_device_ids(&manifest), vec!["current".to_owned()]);
+}
+
+#[test]
 fn roster_delta_removes_only_the_revoked_exact_device_and_keeps_siblings() {
     let desired = [
         ("did:example:owner".to_owned(), "device-a1".to_owned()),
@@ -473,7 +496,7 @@ fn manifest_device(device_id: &str, group_e2ee: bool) -> anp::authentication::De
     let mut profiles = vec![
         "anp.core.binding.v1".to_owned(),
         "anp.identity.discovery.v1".to_owned(),
-        "anp.group.base.v1".to_owned(),
+        "anp.group.base.v2".to_owned(),
     ];
     if group_e2ee {
         profiles.push(PROFILE_GROUP_E2EE_V2.to_owned());

@@ -674,7 +674,7 @@ async fn join_start_emits_mixed_profiles() {
             "anp.identity.discovery.v1",
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
         ]
     );

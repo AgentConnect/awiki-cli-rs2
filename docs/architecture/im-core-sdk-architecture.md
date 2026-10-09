@@ -103,6 +103,13 @@ Rules:
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
 
+当前 WBA vNext 新建、Device Join 与既有显式 Legacy upgrade 的设备及服务声明采用
+`core.binding.v1 + identity.discovery.v1 + group.base.v2 + group.e2ee.v2` 的 P6
+依赖组合（均带 `anp.` 前缀），与 ANP SDK `6e14129a08e519cc076416d68919620c48de6ec5`
+一致。旧 `group.base.v1` 或 all-v2 草案 Manifest 仍可读取，但不构成当前 P6 设备资格；
+Core 不替兄弟设备推断能力、不自动重写已签名文档、不迁移 MLS 历史密钥。
+P4 负责 DID 级成员操作，P6 负责设备级 MLS 准备和加密消息；P4 active 不等于设备已就绪。
+
 ### 管理设备接续兄弟设备发布的文档
 
 Core 的同步与原生异步密码操作在 Provider 返回明确的 generation conflict 时，重新加载同一 store / identity ID / DID，并仅重试一次原密码请求。第二次仍由 Provider 核验 generation、身份状态和所选密钥权限；删除、撤销、密钥退役及再次冲突必须失败关闭。此重试不重发 HTTP，不重建消息或 operation ID，不适用于文档发布、Root 导入或其他写事务。

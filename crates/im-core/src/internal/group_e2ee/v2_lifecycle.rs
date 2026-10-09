@@ -2540,10 +2540,22 @@ fn eligible_device_ids(manifest: &DeviceManifest) -> Vec<String> {
         .devices
         .iter()
         .filter(|device| {
-            device
-                .profiles
-                .iter()
-                .any(|profile| profile == PROFILE_GROUP_E2EE_V2)
+            // Historical Manifests remain readable, but only the current
+            // complete P4/P6 bundle participates in desired MLS membership.
+            // Exact device/key eligibility is checked by the SDK before use.
+            [
+                anp::authentication::PROFILE_CORE_BINDING_V1,
+                anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+                anp::authentication::PROFILE_GROUP_BASE_V2,
+                PROFILE_GROUP_E2EE_V2,
+            ]
+            .iter()
+            .all(|required| {
+                device
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.as_str() == *required)
+            })
         })
         .map(|device| device.device_id.clone())
         .collect::<BTreeSet<_>>()
