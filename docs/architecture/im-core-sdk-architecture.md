@@ -853,9 +853,16 @@ For P6, the lane and legacy blocking/async/realtime paths share the same
 internal notice consumer. Once `lanes.p6_group.v1` is negotiated, the legacy
 Inbox piggyback path drops the control candidate without consuming it so only
 the reliable lane owns progress. A standard `group.e2ee.notice` is bound to the current owner
-DID/device, resolved against the current P4 group-member DID documents, and
+DID/device, resolved against current DID documents from the Host's authenticated
+P4 `group.get_info(include_member_list=true, include_policy=true)` snapshot, and
 passed to the SDK's durable, idempotent MLS notice state machine. Controls are
-never projected as messages or events; malformed, unknown-profile, wrong-device,
+never projected as messages or events. The local Home `group.list_members` view
+can be partial for a foreign group and is not a complete roster for Welcome
+validation. The consumer checks group/version, unique DIDs, active-member count,
+local membership and product bounds before calling MLS. It retains the exact
+Remove subject and applicable DID-transition anchors. Incomplete/stale snapshots
+fail before MLS state changes; the SDK atomically rolls back failed Welcome
+consumption and receipts. Malformed, unknown-profile, wrong-device,
 or wrong-group inputs fail closed.
 
 ## 5. Paths and Configuration
