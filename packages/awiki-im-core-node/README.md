@@ -236,3 +236,5 @@ Node 不向 Web 暴露鉴权或本地文件路径。成功结果按版本合并�
 DisplayProfile 透传主图与缩略图；Group 透传 `avatarUri`、有界 `avatarMembers` 和
 `groupStateVersion`。新 JS loader 要求 native v20，避免误载缺少头像方法的旧 addon。
 这不表示发布了公共 SDK；本任务只构建明确 local 来源的候选。
+
+加密候选开关 `multiDeviceDirectE2eeEnabled` / `multiDeviceGroupE2eeEnabled` 在 N-API DTO 中固定原名，避免自动缩写转换为 `E2Ee` 后静默忽略。真实 addon 合同测试覆盖字段解析；默认仍关闭，Host 必须显式启用。

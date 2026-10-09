@@ -27,7 +27,9 @@ pub struct NodeOpenOptions {
     pub client_version_info: Option<NodeClientVersionInfo>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    #[napi(js_name = "multiDeviceDirectE2eeEnabled")]
     pub multi_device_direct_e2ee_enabled: Option<bool>,
+    #[napi(js_name = "multiDeviceGroupE2eeEnabled")]
     pub multi_device_group_e2ee_enabled: Option<bool>,
     pub multi_device_device_revoke_enabled: Option<bool>,
     pub multi_device_handle_recovery_enabled: Option<bool>,
