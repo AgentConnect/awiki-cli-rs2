@@ -1422,6 +1422,8 @@ Provider 准备前检查当前领取；Core 交接事务再次检查输入和尝
 输入的未完成责任，不改写身份 Provider 的转移、晋升或恢复协议。
 
 协商后的 Schema 3 WebSocket inline 输入保留为拉取提示，普通消息与 P5/P6 均通过 HTTP 统一接收表处理。WebSocket 不再先行写普通投影、绕过逐条领取或完成证据；旧的非协商 transport 兼容边界保持由既有协议门禁控制。
+旧形态 `direct.incoming` 与已协商 P5 lane 同时出现时，也必须经过相同 lane ownership 门禁；协商未完成时先等待可靠同步，不得预先消费 ratchet，避免可靠队列失去原子 projection/claim 提交证据。无 lane binding 的旧 transport 继续使用原验证路径。
+
 
 普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。按用户 2026-09-10 的决定，累计已读继续按已展示并读过的后续消息推进，不等待更早输入处理成功；例如 102 处理失败、103 已读时，允许本地已读与服务端累计已读推进到 103。102 仍保留独立的处理失败状态，已读推进不构成它的业务处理成功证据。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
 

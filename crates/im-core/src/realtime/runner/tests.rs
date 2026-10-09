@@ -13,6 +13,109 @@ use std::collections::VecDeque;
 
 use super::*;
 
+#[tokio::test]
+#[cfg(all(feature = "sqlite", feature = "secure-direct"))]
+async fn p5_realtime_cannot_consume_crypto_owned_by_pending_or_negotiated_lane() {
+    use crate::internal::local_state::sync_v2::{IdentityAccountBinding, LaneSyncState};
+    use crate::internal::wire::sync_v2::SyncLaneV3;
+    let fixture = TestClientFixture::new("p5-lane-realtime-owner");
+    let client = fixture.client();
+    let db = client.core_inner().local_state_db().await.unwrap();
+    let owner = client.current_identity().id.as_str().to_owned();
+    db.upsert_identity_account_binding(IdentityAccountBinding {
+        owner_identity_id: owner.clone(),
+        account_id: "account-1".to_owned(),
+        handle_scope: None,
+        current_did: client.did().as_str().to_owned(),
+        protocol_device_id: "device-1".to_owned(),
+        identity_generation: "1".to_owned(),
+        device_auth_generation: "1".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    })
+    .await
+    .unwrap();
+    // An invalid envelope makes any accidental crypto/parser entry observable.
+    let notification = json!({"method": "direct.incoming", "params": {
+        "meta": {"profile": "anp.direct.e2ee.v2"}, "body": {"ciphertext_b64u": "AQ"}
+    }});
+    for negotiated in [false, true] {
+        if negotiated {
+            let instance = db
+                .load_or_create_sync_client_instance_id(&owner)
+                .await
+                .unwrap();
+            let lanes = crate::internal::message_runtime::sync_v2::desired_v1b_lanes(&db, &owner)
+                .await
+                .unwrap();
+            let capabilities = serde_json::to_string(
+                &lanes
+                    .iter()
+                    .map(|lane| lane.capability())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            db.reconcile_sync_lane_capability_v1a(
+                &owner,
+                lanes
+                    .into_iter()
+                    .map(|lane| LaneSyncState {
+                        owner_identity_id: owner.clone(),
+                        lane,
+                        stream_epoch: "1".to_owned(),
+                        scan_seq: "0".to_owned(),
+                        committed_seq: "0".to_owned(),
+                    })
+                    .collect(),
+                "1",
+                instance,
+                capabilities,
+            )
+            .await
+            .unwrap();
+            assert!(db
+                .load_lane_sync_states(owner.clone())
+                .await
+                .unwrap()
+                .iter()
+                .any(|state| state.lane == SyncLaneV3::P5Device));
+        }
+        let outcome = project_p5_v2_realtime_notification(&client, notification.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, DirectRealtimeProjectionResult::Projected { notification: None, additional_notifications, warnings } if additional_notifications.is_empty() && warnings.is_empty())
+        );
+    }
+    db.shutdown().await.unwrap();
+    let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let crypto_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'direct_e2ee_v2_replay'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(crypto_tables, 0, "realtime initialized the crypto store");
+    for table in ["sync_lane_inbox", "messages"] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "realtime mutated {table}");
+    }
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn p5_realtime_without_lane_binding_keeps_legacy_validation() {
+    let fixture = TestClientFixture::new("p5-legacy-realtime-owner");
+    let client = fixture.client();
+    assert!(
+        project_p5_v2_realtime_notification(&client, json!({"params": {}}))
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
     let p5 = json!({

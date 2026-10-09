@@ -3273,7 +3273,7 @@ fn retain_non_p5_messages(raw: &mut Value) {
 }
 
 #[cfg(feature = "sqlite")]
-async fn sync_lane_capability_enabled_async(
+pub(crate) async fn sync_lane_capability_enabled_async(
     client: &crate::core::ImClient,
     lane: crate::internal::wire::sync_v2::SyncLaneV3,
 ) -> crate::ImResult<bool> {
@@ -3312,7 +3312,7 @@ async fn sync_lane_capability_enabled_async(
 }
 
 #[cfg(not(feature = "sqlite"))]
-async fn sync_lane_capability_enabled_async(
+pub(crate) async fn sync_lane_capability_enabled_async(
     _client: &crate::core::ImClient,
     _lane: crate::internal::wire::sync_v2::SyncLaneV3,
 ) -> crate::ImResult<bool> {
