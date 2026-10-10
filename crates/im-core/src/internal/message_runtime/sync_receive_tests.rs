@@ -936,7 +936,52 @@ async fn p6_own_echo_waits_for_acceptance_then_closes_without_decrypting_again()
         "sync.group_sent_projection_pending"
     );
     assert!(crate::internal::message_runtime::sync_processing::retry_at(&error, 1).is_some());
-    seed_cached_p6_plaintext(&client, &binding, group, "7", "accepted own plaintext").await;
+    // Use the production outgoing writer: accepted sends have direction=1 and
+    // no decryption_state attribute, unlike received plaintext fixtures.
+    let mut accepted = crate::internal::message_runtime::local_projection::send_projection_result(
+        &client,
+        &crate::messages::MessageTarget::Group(crate::ids::GroupRef::parse(group).unwrap()),
+        &crate::messages::MessageBody::Text {
+            text: "accepted own plaintext".into(),
+            kind: crate::messages::MessageKind::Text,
+        },
+        &crate::ids::MessageId::parse(format!("{group}:7")).unwrap(),
+        Some("own-send-operation"),
+        crate::messages::DeliveryState::Accepted,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    accepted.message.metadata.server_sequence = Some(7);
+    // Intent or a pending send cannot authorize consuming a secure echo.
+    accepted.message.metadata.delivery_state = Some("pending".into());
+    crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
+        &client,
+        group,
+        "accepted own plaintext",
+        &crate::messages::MessageKind::Text,
+        &accepted,
+    )
+    .await
+    .unwrap();
+    let error = crate::internal::message_runtime::sync_processing::process_p6(&client, claim)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::internal::message_runtime::sync_processing::failure_code(&error),
+        "sync.group_sent_projection_pending"
+    );
+    accepted.message.metadata.delivery_state = Some("accepted".into());
+    crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
+        &client,
+        group,
+        "accepted own plaintext",
+        &crate::messages::MessageKind::Text,
+        &accepted,
+    )
+    .await
+    .unwrap();
     let mut other_device = claim.clone();
     other_device.payload["meta"]["recipient_device_id"] = json!("another-device");
     assert!(matches!(

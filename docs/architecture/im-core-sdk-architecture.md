@@ -865,6 +865,12 @@ fail before MLS state changes; the SDK atomically rolls back failed Welcome
 consumption and receipts. Malformed, unknown-profile, wrong-device,
 or wrong-group inputs fail closed.
 
+P6 同设备发送回显优先复用当前账号已提交的明文投影，不再次解密本设备发出的 MLS Application。
+缓存允许已验证的接收记录，或 `direction=1`、发送者等于 owner、`group-e2ee`、
+`delivery_state=accepted` 且 canonical ID 与正数群序号一致的发送记录；发送意图或排队记录不能命中。
+复用前仍校验目标 owner/device、群、序号和发送者。回显先于发送响应时保留原同步输入并有界退避；
+旧版本误阻塞的同设备回显仅在对应已接受记录存在时由正常队列重新处理。
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

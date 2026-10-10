@@ -1818,9 +1818,16 @@ WHERE owner_identity_id = ?
   AND is_e2ee = 1
   AND CASE
         WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
-        THEN json_extract(COALESCE(NULLIF(metadata, ''), '{{}}'), '$.decryption_state')
-        ELSE NULL
-      END = 'decrypted'"#
+        THEN (
+          json_extract(metadata, '$.decryption_state') = 'decrypted'
+          OR (direction = 1 AND sender_did = owner_did
+            AND group_did <> '' AND server_seq > 0
+            AND msg_id = group_did || ':' || server_seq
+            AND json_extract(metadata, '$.security') = 'group-e2ee'
+            AND json_extract(metadata, '$.delivery_state') = 'accepted')
+        )
+        ELSE 0
+      END"#
     );
     let mut params: Vec<&dyn rusqlite::ToSql> =
         Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);

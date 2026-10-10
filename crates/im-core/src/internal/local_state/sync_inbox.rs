@@ -529,8 +529,10 @@ pub(crate) fn claim_inputs(
          WHERE input_id IN (SELECT i.input_id FROM sync_lane_inbox i JOIN messages m
            ON m.owner_identity_id=i.owner_identity_id
           AND m.msg_id=json_extract(i.raw_payload_json,'$.body.group_did') || ':' || json_extract(i.raw_payload_json,'$.body.group_event_seq')
-          AND m.group_did=i.group_did AND m.sender_did=?2 AND m.owner_did=?2 AND m.direction=-1
-          AND m.is_e2ee=1 AND json_extract(m.metadata,'$.decryption_state')='decrypted'
+          AND m.group_did=i.group_did AND m.sender_did=?2 AND m.owner_did=?2 AND m.direction=1
+          AND m.server_seq=CAST(json_extract(i.raw_payload_json,'$.body.group_event_seq') AS INTEGER)
+          AND m.is_e2ee=1 AND json_extract(m.metadata,'$.security')='group-e2ee'
+          AND json_extract(m.metadata,'$.delivery_state')='accepted'
          WHERE i.owner_identity_id=?1 AND i.device_id_snapshot=?3 AND i.lane='p6_group'
           AND i.event_type='p6.delivery.created' AND i.processing_error_code='sync.processing_blocked'
           AND i.closed_at IS NULL AND i.attempt_token IS NULL AND i.next_attempt_at IS NULL
