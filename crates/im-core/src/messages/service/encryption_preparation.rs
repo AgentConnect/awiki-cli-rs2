@@ -23,9 +23,13 @@ impl super::MessageService<'_> {
         );
         #[cfg(feature = "sqlite")]
         let _guard = lock.lock().await;
+        #[cfg(feature = "sqlite")]
+        preparation_stage(self.client, "authorization")?;
         let (client, _) = self.client.reload_local_authorization_async().await?;
         let core = client.core_handle();
         if core.inner().direct_e2ee_v2_enabled() {
+            #[cfg(feature = "sqlite")]
+            preparation_stage(&client, "direct_prekey")?;
             crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(
                 &core, &client,
             )
@@ -35,6 +39,7 @@ impl super::MessageService<'_> {
             #[cfg(feature = "group-e2ee")]
             {
                 let device_id = client.exact_protocol_device_id()?;
+                preparation_stage(&client, "group_key_package")?;
                 let (operation_id, key_package_id) = crate::internal::identity_registration_runtime::deterministic_registration_group_key_package_ids(client.did(), &device_id);
                 crate::internal::group_e2ee::v2_lifecycle::publish_stable_key_package(
                     &client,
@@ -130,7 +135,7 @@ pub(crate) async fn maintain(client: &crate::core::ImClient) {
     .await;
     let (ready, reason) = match result {
         Ok(Ok(())) => (true, None),
-        Ok(Err(_)) => (false, Some("device_preparation_failed")),
+        Ok(Err(error)) => (false, Some(preparation_failure(&error))),
         Err(_) => (false, Some("device_preparation_timeout")),
     };
     let delay = if ready {
@@ -138,12 +143,66 @@ pub(crate) async fn maintain(client: &crate::core::ImClient) {
     } else {
         (5i64 << attempts.min(6)).min(300)
     };
+    let stage = crate::internal::group_runtime::journal::load(client, key)
+        .ok()
+        .flatten()
+        .and_then(|v| v["stage"].as_str().map(str::to_owned));
     let _ = crate::internal::group_runtime::journal::save(
         client,
         key,
         serde_json::json!({
             "phase": if ready { "ready" } else { "retry" }, "reason": reason,
+            "stage": if ready { Some("complete".to_owned()) } else { stage },
             "attempts": if ready { 0 } else { attempts }, "next_attempt_at": now + delay,
         }),
     );
+}
+
+#[cfg(feature = "sqlite")]
+fn preparation_stage(client: &crate::core::ImClient, stage: &str) -> crate::ImResult<()> {
+    let key = "device-preparation-status";
+    if let Some(mut value) = crate::internal::group_runtime::journal::load(client, key)? {
+        value["stage"] = serde_json::json!(stage);
+        crate::internal::group_runtime::journal::save(client, key, value)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn preparation_failure(error: &crate::ImError) -> &'static str {
+    match error {
+        crate::ImError::PermissionDenied => "device_authorization_denied",
+        crate::ImError::UnsupportedCapability { .. } => "device_preparation_unsupported",
+        crate::ImError::TransportUnavailable { .. } => "device_preparation_transport_failed",
+        crate::ImError::Service { .. } => "device_preparation_service_rejected",
+        crate::ImError::IdentityVault { .. } => "device_preparation_vault_unavailable",
+        crate::ImError::LocalStateUnavailable { .. } => "device_preparation_local_state_failed",
+        _ => "device_preparation_failed",
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn device_preparation_failure_records_category_without_host_payload() {
+        let error = crate::ImError::Service {
+            status_code: Some(503),
+            code: Some("private-host-code".into()),
+            message: "private-host-payload".into(),
+            data: Some(serde_json::json!({"private": true})),
+        };
+        assert_eq!(
+            preparation_failure(&error),
+            "device_preparation_service_rejected"
+        );
+        assert_eq!(
+            preparation_failure(&crate::ImError::PermissionDenied),
+            "device_authorization_denied"
+        );
+        assert_eq!(
+            preparation_failure(&crate::ImError::unsupported("private capability")),
+            "device_preparation_unsupported"
+        );
+    }
 }
