@@ -62,7 +62,10 @@ pub(super) fn commit(
     mut request: MarkConversationReadRequest,
     plan: Plan,
 ) -> crate::ImResult<MarkThreadReadResult> {
-    let result = if let Some(watermark) = plan.ordinary.clone() {
+    let ordinary = plan.ordinary.clone();
+    // Persist exact P5 reads before any ordinary-lane network wait.
+    let local = finish(client, plan, local_result())?;
+    let mut result = if let Some(watermark) = ordinary {
         request.watermark = Some(watermark);
         let mapped = super::mark_read_input_for_conversation(client, request)?;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
@@ -73,9 +76,11 @@ pub(super) fn commit(
         .mark_thread_read(mapped)?
         .sdk_result
     } else {
-        local_result()
+        return Ok(local);
     };
-    finish(client, plan, result)
+    result.updated_count = result.updated_count.saturating_add(local.updated_count);
+    result.effective_watermark = local.effective_watermark;
+    Ok(result)
 }
 
 pub(super) async fn commit_async(
@@ -83,7 +88,10 @@ pub(super) async fn commit_async(
     mut request: MarkConversationReadRequest,
     plan: Plan,
 ) -> crate::ImResult<MarkThreadReadResult> {
-    let result = if let Some(watermark) = plan.ordinary.clone() {
+    let ordinary = plan.ordinary.clone();
+    // Persist exact P5 reads before any ordinary-lane network wait.
+    let local = finish(client, plan, local_result())?;
+    let mut result = if let Some(watermark) = ordinary {
         request.watermark = Some(watermark);
         let mapped = super::mark_read_input_for_conversation_async(client, request).await?;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
@@ -95,7 +103,9 @@ pub(super) async fn commit_async(
         .await?
         .sdk_result
     } else {
-        local_result()
+        return Ok(local);
     };
-    finish(client, plan, result)
+    result.updated_count = result.updated_count.saturating_add(local.updated_count);
+    result.effective_watermark = local.effective_watermark;
+    Ok(result)
 }
