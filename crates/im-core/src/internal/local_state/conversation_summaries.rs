@@ -845,7 +845,7 @@ fn first_unread_mention_for_new_summary(row: &SummaryMessageRow) -> &str {
     }
 }
 
-fn order_key<'a>(
+pub(crate) fn order_key<'a>(
     timestamp: &str,
     encrypted: bool,
     group: &str,

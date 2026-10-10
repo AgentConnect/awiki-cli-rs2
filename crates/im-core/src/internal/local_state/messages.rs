@@ -1,5 +1,7 @@
 #[cfg(feature = "sqlite")]
 pub(crate) mod direct_send_intent;
+#[cfg(feature = "sqlite")]
+pub(crate) mod mixed_read;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "sqlite")]
@@ -927,6 +929,24 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     Ok(touched)
 }
 
+// Same complete authenticated-cache predicate as authenticated_p5_v2_raw_message_id.
+#[cfg(feature = "sqlite")]
+const AUTHENTICATED_P5_READ_SQL: &str = r#"CASE WHEN json_valid(metadata) THEN COALESCE(
+  TRIM(json_extract(metadata, '$.p5_cache_profile')) = 'anp.direct.e2ee.v2'
+  AND json_type(metadata, '$.p5_cache_sender_did') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_sender_did')) <> ''
+  AND json_type(metadata, '$.p5_cache_sender_device_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_sender_device_id')) <> ''
+  AND json_type(metadata, '$.p5_cache_recipient_did') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_recipient_did')) <> ''
+  AND json_type(metadata, '$.p5_cache_recipient_device_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_recipient_device_id')) <> ''
+  AND json_type(metadata, '$.p5_cache_binding_digest') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_binding_digest')) <> ''
+  AND json_type(metadata, '$.raw_message_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.raw_message_id')) <> ''
+, 0) ELSE 0 END"#;
+
 #[cfg(feature = "sqlite")]
 fn inherit_committed_read_watermark(
     connection: &rusqlite::Connection,
@@ -938,7 +958,7 @@ fn inherit_committed_read_watermark(
     // sequence), and apply read truth before updating the conversation summary.
     connection
         .execute(
-            r#"
+            &format!(r#"
 UPDATE messages
 SET is_read = 1
 WHERE owner_identity_id = ?1 AND msg_id = ?2
@@ -946,8 +966,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
   AND wire_identity_resolution_state = 'resolved'
   AND server_seq > 0
   -- P5 device-inbox sequences are not ordinary thread read watermarks.
-  AND COALESCE(CASE WHEN json_valid(metadata)
-      THEN json_extract(metadata, '$.p5_cache_profile') END, '') <> 'anp.direct.e2ee.v2'
+  AND NOT ({AUTHENTICATED_P5_READ_SQL})
   AND EXISTS (
       SELECT 1 FROM thread_read_state AS state
       WHERE state.owner_identity_id = messages.owner_identity_id
@@ -955,7 +974,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
         AND state.thread_id = messages.conversation_id
         AND state.read_watermark_seq IS NOT NULL
         AND messages.server_seq <= CAST(state.read_watermark_seq AS INTEGER)
-  )"#,
+  )"#),
             rusqlite::params![owner_identity_id, message_id],
         )
         .map_err(super::local_state_unavailable)?;
@@ -3338,8 +3357,7 @@ WHERE owner_identity_id = ?
   AND is_read = 0
   AND hydration_state = 'hydrated'
   AND server_seq IS NOT NULL
-  AND COALESCE(CASE WHEN json_valid(metadata)
-      THEN json_extract(metadata, '$.p5_cache_profile') END, '') <> 'anp.direct.e2ee.v2'
+  AND NOT ({AUTHENTICATED_P5_READ_SQL})
   AND server_seq <= CAST(? AS INTEGER)
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
     );

@@ -226,3 +226,91 @@ fn ordinary_read_watermarks_never_consume_p5_device_inbox_sequences() {
         true
     );
 }
+
+#[test]
+fn mixed_conversation_read_uses_authenticated_anchor_and_separate_lanes() {
+    let db = Connection::open_in_memory().unwrap();
+    let plain = record("direct", "plain-high-seq", Some(400));
+    upsert_message(&db, &plain).unwrap();
+    let mut encrypted = record("direct", "encrypted-low-seq", Some(3));
+    encrypted.is_e2ee = true;
+    encrypted.sent_at = "2026-09-11T00:01:00Z".into();
+    encrypted.metadata = serde_json::json!({
+        "p5_cache_profile": "anp.direct.e2ee.v2",
+        "p5_cache_sender_did": "did:example:peer",
+        "p5_cache_sender_device_id": "peer-device",
+        "p5_cache_recipient_did": "did:example:owner",
+        "p5_cache_recipient_device_id": "owner-device",
+        "p5_cache_binding_digest": "authenticated-binding",
+        "raw_message_id": "raw-low-seq"
+    })
+    .to_string();
+    upsert_message(&db, &encrypted).unwrap();
+    let mut future = encrypted.clone();
+    future.msg_id = "future".into();
+    future.sent_at = "2026-09-11T00:02:00Z".into();
+    upsert_message(&db, &future).unwrap();
+    let anchor = crate::messages::ReadWatermark {
+        last_read_message_id: Some(crate::ids::MessageId::parse(&encrypted.msg_id).unwrap()),
+        last_read_thread_seq: Some("999999".into()),
+        read_at: Some(chrono::Utc::now()),
+    };
+    let plan = mixed_read::prepare(&db, "owner", &plain.conversation_id, Some(&anchor))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        plan.ordinary
+            .as_ref()
+            .unwrap()
+            .last_read_thread_seq
+            .as_deref(),
+        Some("400")
+    );
+    assert_eq!(plan.local_ids, [encrypted.msg_id.clone()]);
+    assert_eq!(plan.effective.last_read_thread_seq, None);
+    assert_eq!(
+        plan.effective.read_at.unwrap().to_rfc3339(),
+        "2026-09-11T00:01:00+00:00"
+    );
+    mark_messages_read_for_owner_identity(&db, "owner", "did:example:owner", &plan.local_ids)
+        .unwrap();
+    upsert_message(&db, &encrypted).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT is_read FROM messages WHERE msg_id='encrypted-low-seq'",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap(),
+        true
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT is_read FROM messages WHERE msg_id='future'",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap(),
+        false
+    );
+    let all = mixed_read::prepare(&db, "owner", &plain.conversation_id, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(all.local_ids, ["future"]);
+    let foreign = crate::messages::ReadWatermark {
+        last_read_message_id: Some(
+            crate::ids::MessageId::parse("not-in-this-conversation").unwrap(),
+        ),
+        ..anchor.clone()
+    };
+    assert!(mixed_read::prepare(&db, "owner", &plain.conversation_id, Some(&foreign)).is_err());
+    let seq_only = crate::messages::ReadWatermark {
+        last_read_message_id: None,
+        ..anchor
+    };
+    assert!(
+        mixed_read::prepare(&db, "owner", &plain.conversation_id, Some(&seq_only))
+            .unwrap()
+            .is_none()
+    );
+}

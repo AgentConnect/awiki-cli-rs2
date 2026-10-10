@@ -1,6 +1,8 @@
 #[cfg(feature = "sqlite")]
 mod direct_send_retry;
 mod encryption_preparation;
+#[cfg(feature = "sqlite")]
+mod mixed_conversation_read;
 
 pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,
@@ -968,6 +970,38 @@ mod conversation_mark_read_request_tests {
         )
         .await
         .unwrap();
+
+        assert_eq!(result.updated_count, 1);
+        assert!(result.warnings.is_empty());
+        assert_eq!(fixture.message_is_read("msg-p5-logical"), 1);
+    }
+
+    #[tokio::test]
+    async fn conversation_read_commits_p5_without_exporting_inbox_watermark() {
+        let fixture = Fixture::new("conversation-read-p5-local-only");
+        let client = fixture.client();
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-p5-logical".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            server_seq: Some(77),
+            is_e2ee: true,
+            metadata: p5_projection_metadata(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let result = client.messages().mark_conversation_read_async(
+            crate::messages::MarkConversationReadRequest {
+                conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+                watermark: None,
+                fallback_max_message_ids: None,
+            },
+        ).await.unwrap();
+        assert!(!result.remote_acknowledged);
+        assert!(!result.pending_remote_ack);
+        assert_eq!(result.effective_watermark.as_ref().unwrap().last_read_thread_seq, None);
 
         assert_eq!(result.updated_count, 1);
         assert!(result.warnings.is_empty());
@@ -3646,6 +3680,10 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::MarkThreadReadResult> {
         #[cfg(feature = "blocking")]
         {
+            #[cfg(feature = "sqlite")]
+            if let Some(plan) = mixed_conversation_read::prepare(self.client, &request)? {
+                return mixed_conversation_read::commit(self.client, request, plan);
+            }
             let mapped = mark_read_input_for_conversation(self.client, request)?;
             crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
                 self.client,
@@ -3666,6 +3704,10 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkConversationReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
+        #[cfg(feature = "sqlite")]
+        if let Some(plan) = mixed_conversation_read::prepare(self.client, &request)? {
+            return mixed_conversation_read::commit_async(self.client, request, plan).await;
+        }
         let mapped = mark_read_input_for_conversation_async(self.client, request).await?;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
