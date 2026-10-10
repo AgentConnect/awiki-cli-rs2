@@ -36,6 +36,25 @@ pub(crate) fn freeze(
     )
 }
 
+/// Read only an existing intent owned by this exact identity and device.
+pub(crate) fn load(client: &crate::core::ImClient, key: &str) -> crate::ImResult<Option<Value>> {
+    let device = crate::internal::identity_device_state::active_authorization_for_client(client)?;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let json: Option<String> = connection.query_row(
+        "SELECT intent_json FROM group_operation_journal WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3",
+        (client.current_identity().id.as_str(), device.protocol_device_id.as_str(), key),
+        |row| row.get(0),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    json.map(|json| {
+        serde_json::from_str(&json).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group operation journal".to_owned(),
+        })
+    })
+    .transpose()
+}
+
 fn freeze_on(
     connection: &mut Connection,
     owner: &str,

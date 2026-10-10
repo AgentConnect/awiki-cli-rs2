@@ -210,7 +210,13 @@ fn snapshot_attributes(
 fn is_snapshot_attribute(key: &str) -> bool {
     matches!(
         key,
-        "notify_level"
+        "encryption_required"
+            | "delivery_state"
+            | "security"
+            | "security_profile"
+            | "message_security_profile"
+            | "secure_wire_content_type"
+            | "notify_level"
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
@@ -801,6 +807,8 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         return Vec::new();
     };
     [
+        "delivery_state",
+        "encryption_required",
         "notify_level",
         "raw_message_id",
         "group_event_seq",

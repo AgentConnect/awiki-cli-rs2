@@ -2171,6 +2171,8 @@ impl From<im_core::groups::GroupMember> for DartGroupMember {
 impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
     fn from(value: im_core::groups::GroupReadResult) -> Self {
         Self {
+            encrypted: value.requires_end_to_end_encryption().ok(),
+            secure_status: None,
             group: value.group.map(Into::into),
             groups: value.groups.into_iter().map(Into::into).collect(),
             members: value.members.into_iter().map(Into::into).collect(),

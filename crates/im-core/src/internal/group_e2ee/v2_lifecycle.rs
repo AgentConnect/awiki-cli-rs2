@@ -376,6 +376,7 @@ pub(crate) fn initialize_created_group(
     client: &crate::core::ImClient,
     group_state_ref: V2GroupStateRef,
 ) -> crate::ImResult<()> {
+    let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context(client)?;
     let service_did = service_did(client)?;
     let CreateIntent {
@@ -385,7 +386,7 @@ pub(crate) fn initialize_created_group(
         key_package_id,
         create_operation,
         group_state_ref,
-    } = frozen_create_intent(client, group_state_ref)?;
+    } = intent;
     let prepared_package = context.product.prepare_current_key_package(
         service_meta(
             client,
@@ -436,10 +437,32 @@ pub(crate) fn initialize_created_group(
     Ok(())
 }
 
+/// Resume only the original creator device's durable operation. Never invent
+/// an initial state when an existing group's keys are absent on a new device.
+pub(crate) async fn resume_created_group_async(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+) -> crate::ImResult<()> {
+    let Some(value) = crate::internal::group_runtime::journal::load(
+        client,
+        &format!("mls-create:{}", group.as_str()),
+    )?
+    else {
+        return Ok(());
+    };
+    let intent: CreateIntent =
+        serde_json::from_value(value).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group creation intent".to_owned(),
+        })?;
+    // The protocol WAL makes submission of an accepted operation a no-op.
+    initialize_created_group_async(client, intent.group_state_ref).await
+}
+
 pub(crate) async fn initialize_created_group_async(
     client: &crate::core::ImClient,
     group_state_ref: V2GroupStateRef,
 ) -> crate::ImResult<()> {
+    let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context_async(client).await?;
     let service_did = service_did(client)?;
     let CreateIntent {
@@ -449,7 +472,7 @@ pub(crate) async fn initialize_created_group_async(
         key_package_id,
         create_operation,
         group_state_ref,
-    } = frozen_create_intent(client, group_state_ref)?;
+    } = intent;
     let prepared_package = context
         .product
         .prepare_current_key_package_async(

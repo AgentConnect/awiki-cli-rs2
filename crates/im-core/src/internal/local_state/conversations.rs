@@ -103,7 +103,11 @@ LEFT JOIN messages m
 LEFT JOIN direct_peer_routes d
   ON d.owner_identity_id = r.owner_identity_id
  AND d.conversation_id = r.conversation_id
-WHERE r.owner_identity_id = ?1 AND r.is_active = 1"#,
+WHERE r.owner_identity_id = ?1 AND r.is_active = 1
+AND (r.thread_kind = 'group' OR r.explicitly_opened = 1
+     OR COALESCE(t.message_count, 0) > 0
+     OR NOT EXISTS (SELECT 1 FROM messages m
+       WHERE m.owner_identity_id = r.owner_identity_id AND m.conversation_id = r.conversation_id))"#,
     );
     if cursor.is_some() {
         statement.push_str(

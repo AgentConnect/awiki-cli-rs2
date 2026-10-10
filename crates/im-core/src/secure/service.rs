@@ -219,6 +219,10 @@ impl GroupSecureConversation<'_> {
     }
 
     pub async fn prepare_async(&self) -> crate::ImResult<super::GroupSecurePrepareResult> {
+        self.client
+            .messages()
+            .prepare_encrypted_messaging_async()
+            .await?;
         let status = self.status_async().await?;
         Ok(super::GroupSecurePrepareResult {
             group: status.group,
@@ -272,6 +276,17 @@ impl GroupSecureConversation<'_> {
         {
             if !self.client.core_inner().group_e2ee_v2_enabled() {
                 return Err(crate::ImError::unsupported("group-e2ee-v2"));
+            }
+            self.client
+                .messages()
+                .prepare_encrypted_messaging_async()
+                .await?;
+            if !self.status_async().await?.local_readiness.has_local_state {
+                crate::internal::group_e2ee::v2_lifecycle::resume_created_group_async(
+                    self.client,
+                    &self.group,
+                )
+                .await?;
             }
             let request_id = format!(
                 "im-core-p6-v2-repair-{}",

@@ -1933,3 +1933,15 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 ### Host 设备身份的 E2EE 适配（2026-10-09 候选）
 
 Core 的 active_authorization_for_client 统一读取本地 alias 的当前授权，或已通过 HostBackedDeviceIdentitySigner 校验后生成的 SyncAccountSeed。存在 alias 时必须重新读取当前状态，禁止使用旧 seed 绕过撤销。Direct prekey、加密收发和 Group MLS 使用同一 device_id/signing_key/e2ee_key，密钥留在原 custody。租户由 Core paths 隔离、账号由 owner_identity_id 隔离、设备由 protocol_device_id 隔离。
+
+### 混合消息时间线与发送意图（2026-10-10）
+
+普通 Direct 的线程序号、P5 inbox 序号与 P6 群事件序号不是统一时间轴。
+跨通道合并、摘要和客户端展示先比较解析为 UTC 的服务端消息时间；同时间用安全通道、该通道可比较的序号（P5 不使用 inbox 序号）及稳定消息 ID 决定唯一顺序。
+同步和已读仍使用原有分域游标。临时发送使用固定提交时间与消息 ID，回执归并同一 ID。
+加密发送也提交本地 pending/failed 投影；`encryption_required=true` 只表示不可降级的发送意图，不证明已完成加密。
+该投影不得生成普通消息的自动重试指令。实际安全属性仍由 P5/P6 成功结果或接收解密结果提供。
+
+本轮修复补充：`conversation_registry.explicitly_opened` 区分用户主动创建的空会话与后台控制事件形成的行。最近会话隐藏只有控制消息、没有用户消息且未被主动创建的 Direct；不删除消息，不按 Daemon DID 一概隐藏。当前版本数据库通过加列和重建派生摘要兼容升级，保留消息和密钥。
+
+P4 建群成功后 P6 初始化失败，返回已有群身份及准备未完成 warning；发送仍以 Core 权威策略和本设备状态阻断。原创建设备只能从绑定 owner/device 的冻结 journal 恢复初始化，不允许新设备用修复入口重建历史密钥。Node 外部身份的接收入口补充本设备准备：每次身份激活成功一次；失败间隔 30 秒重试并返回 warning，普通接收继续，秘密留在 Core。

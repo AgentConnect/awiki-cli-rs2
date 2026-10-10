@@ -11770,6 +11770,9 @@ impl SseDecode for crate::dto::group::DartGroupMember {
 impl SseDecode for crate::dto::group::DartGroupReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_encrypted = <Option<bool>>::sse_decode(deserializer);
+        let mut var_secureStatus =
+            <Option<crate::dto::secure::DartGroupSecureStatus>>::sse_decode(deserializer);
         let mut var_group =
             <Option<crate::dto::group::DartGroupSnapshot>>::sse_decode(deserializer);
         let mut var_groups = <Vec<crate::dto::group::DartGroupSummary>>::sse_decode(deserializer);
@@ -11783,6 +11786,8 @@ impl SseDecode for crate::dto::group::DartGroupReadResult {
         let mut var_source = <Option<String>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupReadResult {
+            encrypted: var_encrypted,
+            secure_status: var_secureStatus,
             group: var_group,
             groups: var_groups,
             members: var_members,
@@ -14911,6 +14916,19 @@ impl SseDecode for Option<crate::dto::error::DartDeviceRevokeOutcomeCategory> {
     }
 }
 
+impl SseDecode for Option<crate::dto::secure::DartGroupSecureStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::secure::DartGroupSecureStatus>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::group::DartGroupSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -17890,6 +17908,8 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupMember>
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupReadResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.encrypted.into_into_dart().into_dart(),
+            self.secure_status.into_into_dart().into_dart(),
             self.group.into_into_dart().into_dart(),
             self.groups.into_into_dart().into_dart(),
             self.members.into_into_dart().into_dart(),
@@ -22429,6 +22449,11 @@ impl SseEncode for crate::dto::group::DartGroupMember {
 impl SseEncode for crate::dto::group::DartGroupReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<bool>>::sse_encode(self.encrypted, serializer);
+        <Option<crate::dto::secure::DartGroupSecureStatus>>::sse_encode(
+            self.secure_status,
+            serializer,
+        );
         <Option<crate::dto::group::DartGroupSnapshot>>::sse_encode(self.group, serializer);
         <Vec<crate::dto::group::DartGroupSummary>>::sse_encode(self.groups, serializer);
         <Vec<crate::dto::group::DartGroupMember>>::sse_encode(self.members, serializer);
@@ -24815,6 +24840,16 @@ impl SseEncode for Option<crate::dto::error::DartDeviceRevokeOutcomeCategory> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::error::DartDeviceRevokeOutcomeCategory>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::secure::DartGroupSecureStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::secure::DartGroupSecureStatus>::sse_encode(value, serializer);
         }
     }
 }

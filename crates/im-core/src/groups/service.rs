@@ -75,13 +75,19 @@ impl<'a> GroupService<'a> {
                     detail: "group E2EE create requires created group DID".to_owned(),
                 })?;
             let group_state_ref = group_state_ref_from_result(&group, &result);
-            crate::internal::group_e2ee::v2_lifecycle::initialize_created_group(
-                self.client,
+            let group_state_ref =
                 crate::internal::group_e2ee::v2_lifecycle::required_created_group_state_ref(
                     &group,
                     group_state_ref,
-                )?,
-            )?;
+                )?;
+            if let Err(error) = crate::internal::group_e2ee::v2_lifecycle::initialize_created_group(
+                self.client,
+                group_state_ref,
+            ) {
+                result
+                    .warnings
+                    .push(format!("group.encryption_preparation_pending: {error}"));
+            }
         }
         Ok(result)
     }
@@ -129,11 +135,19 @@ impl<'a> GroupService<'a> {
                     &group,
                     group_state_ref,
                 )?;
-            crate::internal::group_e2ee::v2_lifecycle::initialize_created_group_async(
-                self.client,
-                group_state_ref,
-            )
-            .await?;
+            if let Err(error) =
+                crate::internal::group_e2ee::v2_lifecycle::initialize_created_group_async(
+                    self.client,
+                    group_state_ref,
+                )
+                .await
+            {
+                // P4 succeeded. Return its durable identity and let secure status
+                // gate sending while the exact creation operation is resumed.
+                result
+                    .warnings
+                    .push(format!("group.encryption_preparation_pending: {error}"));
+            }
         }
         Ok(result)
     }

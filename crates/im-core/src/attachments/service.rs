@@ -48,11 +48,11 @@ impl<'a> AttachmentService<'a> {
                 self.client
                     .messages()
                     .send_secure_attachment(message_request_from_attachment(
-                        target,
+                        target.clone(),
                         request,
                         client_message_id,
                     )?)?;
-            return attachment_send_result_from_secure_message(result);
+            return attachment_send_result_from_secure_message(result, &target);
         }
         let resolved_target = resolve_direct_target(self.client, &target)?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
@@ -142,7 +142,7 @@ impl<'a> AttachmentService<'a> {
                     )?
                 }
             };
-            let mut result = attachment_send_result_from_secure_message(message)?;
+            let mut result = attachment_send_result_from_secure_message(message, &resolved.target)?;
             result.message.message.metadata.conversation_identity =
                 Some(resolved.conversation_identity.clone());
             return Ok(result);
@@ -222,7 +222,7 @@ impl<'a> AttachmentService<'a> {
                         .await?
                 }
             };
-            let mut result = attachment_send_result_from_secure_message(message)?;
+            let mut result = attachment_send_result_from_secure_message(message, &resolved.target)?;
             result.message.message.metadata.conversation_identity =
                 Some(resolved.conversation_identity.clone());
             return Ok(result);
@@ -453,12 +453,12 @@ impl<'a> AttachmentService<'a> {
                 .client
                 .messages()
                 .send_secure_attachment_async(message_request_from_attachment(
-                    target,
+                    target.clone(),
                     request,
                     client_message_id,
                 )?)
                 .await?;
-            return attachment_send_result_from_secure_message(result);
+            return attachment_send_result_from_secure_message(result, &target);
         }
         let resolved_target = resolve_direct_target_async(self.client, &target).await?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
@@ -875,18 +875,18 @@ async fn persist_attachment_projection_or_fail_async(
 
 fn attachment_send_result_from_secure_message(
     message: crate::messages::SendMessageResult,
+    target: &crate::messages::MessageTarget,
 ) -> crate::ImResult<super::AttachmentSendResult> {
     let manifest = secure_attachment_manifest_from_message(&message)?;
     let parsed = crate::attachments::manifest::parse_attachment_manifest(&manifest)?;
     let descriptor = selected_attachment_descriptor(&parsed)?;
-    let target_kind = match &message.message.thread {
-        crate::messages::ThreadRef::Direct(_) => "agent".to_owned(),
-        crate::messages::ThreadRef::Group(_) => "group".to_owned(),
-        crate::messages::ThreadRef::Thread(_) => {
-            return Err(crate::ImError::unsupported("thread-attachment-send"));
-        }
+    // The returned thread is a canonical storage route (including peer-scope
+    // threads), not a wire target. Preserve the already resolved send target.
+    let target_kind = match target {
+        crate::messages::MessageTarget::Direct(_) => "agent".to_owned(),
+        crate::messages::MessageTarget::Group(_) => "group".to_owned(),
     };
-    let target_did = secure_attachment_target_did(&message);
+    let target_did = secure_attachment_target_did(&message, target);
     let size_bytes = descriptor.size.trim().parse::<u64>().map_err(|_| {
         crate::ImError::invalid_input(
             Some("size".to_owned()),
@@ -969,9 +969,12 @@ fn selected_attachment_descriptor(
     ))
 }
 
-fn secure_attachment_target_did(message: &crate::messages::SendMessageResult) -> String {
-    match &message.message.thread {
-        crate::messages::ThreadRef::Direct(peer) => message
+fn secure_attachment_target_did(
+    message: &crate::messages::SendMessageResult,
+    target: &crate::messages::MessageTarget,
+) -> String {
+    match target {
+        crate::messages::MessageTarget::Direct(peer) => message
             .message
             .metadata
             .attributes
@@ -987,8 +990,7 @@ fn secure_attachment_target_did(message: &crate::messages::SendMessageResult) ->
                     .map(|peer| peer.as_str().to_owned())
             })
             .unwrap_or_else(|| peer.as_str().to_owned()),
-        crate::messages::ThreadRef::Group(group) => group.as_str().to_owned(),
-        crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
+        crate::messages::MessageTarget::Group(group) => group.as_str().to_owned(),
     }
 }
 
@@ -1181,3 +1183,7 @@ mod tests {
         assert_eq!(resolved.peer_scope.unwrap().user_id, "peer.remote.example");
     }
 }
+
+#[cfg(test)]
+#[path = "secure_result_tests.rs"]
+mod secure_result_tests;

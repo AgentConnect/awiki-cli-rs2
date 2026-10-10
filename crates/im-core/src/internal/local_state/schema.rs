@@ -1351,6 +1351,16 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
     }
     if version == SCHEMA_VERSION {
         if current_schema_shape_is_complete(connection)? {
+            if !has_column(connection, "conversation_registry", "explicitly_opened")? {
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(super::local_state_unavailable)?;
+                super::conversation_registry::create_schema(&transaction)?;
+                super::conversation_summaries::rebuild_all(&transaction)?;
+                transaction
+                    .commit()
+                    .map_err(super::local_state_unavailable)?;
+            }
             let inbox_ddl: String = connection
                 .query_row(
                     "SELECT sql FROM sqlite_master WHERE name='sync_lane_inbox'",

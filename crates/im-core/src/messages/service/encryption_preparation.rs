@@ -5,6 +5,11 @@ impl super::MessageService<'_> {
     /// declaring their message receiver ready. Retrying reuses Core-owned
     /// publication material; no private keys or protocol objects leave Core.
     pub async fn prepare_encrypted_messaging_async(&self) -> crate::ImResult<()> {
+        if !self.client.core_inner().direct_e2ee_v2_enabled()
+            && !self.client.core_inner().group_e2ee_v2_enabled()
+        {
+            return Ok(());
+        }
         let (client, _) = self.client.reload_local_authorization_async().await?;
         let core = client.core_handle();
         if core.inner().direct_e2ee_v2_enabled() {

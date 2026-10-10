@@ -2585,13 +2585,15 @@ impl<'a> MessageService<'a> {
             validate_secure_conversation_send(&resolved.request)?;
         } else {
             validate_plain_conversation_send(&resolved.request)?;
+        }
+        {
             let message_id = resolved
                 .request
                 .client_message_id
                 .as_ref()
                 .expect("conversation send request should always have a client message id")
                 .clone();
-            crate::internal::message_runtime::local_projection::persist_send_projection_async(
+            crate::internal::message_runtime::local_projection::persist_send_projection_with_security_async(
                 self.client,
                 &resolved.request.target,
                 &resolved.request.body,
@@ -2602,6 +2604,7 @@ impl<'a> MessageService<'a> {
                 resolved.target_handle.as_deref(),
                 resolved.peer_scope.as_ref(),
                 Some(&resolved.wire_created_at),
+                secure,
             )
             .await?;
             self.client
@@ -2628,10 +2631,8 @@ impl<'a> MessageService<'a> {
                     Ok(None) => err,
                     Err(resolve_err) => resolve_err,
                 };
-                if !secure {
-                    self.persist_failed_conversation_send_projection_async(&failed_resolved, &err)
-                        .await;
-                }
+                self.persist_failed_conversation_send_projection_async(&failed_resolved, &err)
+                    .await;
                 Err(err)
             }
         }
@@ -2705,7 +2706,7 @@ impl<'a> MessageService<'a> {
             return;
         };
         let failed =
-            crate::internal::message_runtime::local_projection::persist_send_projection_async(
+            crate::internal::message_runtime::local_projection::persist_send_projection_with_security_async(
                 self.client,
                 &resolved.request.target,
                 &resolved.request.body,
@@ -2718,6 +2719,7 @@ impl<'a> MessageService<'a> {
                 resolved.target_handle.as_deref(),
                 resolved.peer_scope.as_ref(),
                 Some(&resolved.wire_created_at),
+                conversation_send_uses_security_runtime(&resolved.request.security),
             )
             .await;
         match failed {

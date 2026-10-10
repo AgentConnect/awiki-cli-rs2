@@ -7565,7 +7565,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
     }
 
     #[test]
-    fn local_state_messages_summary_uses_server_seq_before_skewed_timestamps() {
+    fn local_state_messages_summary_does_not_compare_plain_and_p5_sequences() {
         let db = Connection::open_in_memory().unwrap();
         let owner_identity_id = "owner-id";
         let owner_did = "did:owner";
@@ -7580,7 +7580,8 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             "2026-06-27T19:58:59Z",
             true,
         );
-        outgoing.server_seq = Some(14233);
+        outgoing.server_seq = Some(39758);
+        outgoing.is_e2ee = true;
         upsert_message(&db, &outgoing).unwrap();
 
         let mut incoming = summary_test_message(
@@ -7593,12 +7594,12 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             "2026-06-27T19:58:58Z",
             false,
         );
-        incoming.server_seq = Some(14234);
+        incoming.server_seq = Some(40766);
         upsert_message(&db, &incoming).unwrap();
 
         let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
-        assert_eq!(summary.last_message_id, "msg-a-incoming");
-        assert_eq!(summary.last_content, "cli to app");
+        assert_eq!(summary.last_message_id, "msg-z-outgoing");
+        assert_eq!(summary.last_content, "app to cli");
         assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
     }
 
@@ -8286,6 +8287,60 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
 
         assert_eq!(read_by_msg_id(&db, "msg-control"), 1);
         assert!(!summary_exists(&db, owner_identity_id, conversation_id));
+        super::super::conversation_registry::ensure(
+            &db,
+            &super::super::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                thread_kind: "direct".to_owned(),
+                thread_id: conversation_id.to_owned(),
+                activity_at: "2026-06-30T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        let recents = || {
+            super::super::conversations::list_conversations_for_owner_identity(
+                &db,
+                owner_identity_id,
+                owner_did,
+                &crate::messages::ConversationQuery {
+                    limit: crate::ids::PageLimit(50),
+                    cursor: None,
+                    include_groups: true,
+                    include_direct: true,
+                    unread_only: false,
+                },
+            )
+            .unwrap()
+        };
+        assert!(
+            recents().is_empty(),
+            "control-only registry row must stay hidden"
+        );
+        db.execute(
+            "UPDATE conversation_registry SET explicitly_opened=1 WHERE conversation_id=?1",
+            [conversation_id],
+        )
+        .unwrap();
+        assert_eq!(
+            recents().len(),
+            1,
+            "an explicit user-created empty chat remains visible"
+        );
+        db.execute(
+            "UPDATE conversation_registry SET explicitly_opened=0 WHERE conversation_id=?1",
+            [conversation_id],
+        )
+        .unwrap();
+        let mut user_message = control.clone();
+        user_message.msg_id = "real-user-message".to_owned();
+        user_message.content_type = "text/plain".to_owned();
+        user_message.content = "?".to_owned();
+        upsert_message(&db, &user_message).unwrap();
+        assert_eq!(recents().len(), 1, "real user history must never be hidden");
+        db.execute("DELETE FROM messages WHERE msg_id='real-user-message'", [])
+            .unwrap();
         super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
         assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }

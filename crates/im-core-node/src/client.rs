@@ -45,6 +45,7 @@ struct Environment {
     core: im_core::ImCore,
     client: Option<im_core::ImClient>,
     state: StateRoot,
+    encryption_preparation: tokio::sync::Mutex<(bool, Option<std::time::Instant>)>,
 }
 
 struct ClientInner {
@@ -810,6 +811,7 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         environment.client = Some(client);
+        *environment.encryption_preparation.get_mut() = (false, None);
         let metadata = environment.state.metadata();
         let identity_id = identity.id.as_str().to_owned();
         let registered_at_ms =
@@ -997,6 +999,7 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         environment.client = Some(client);
+        *environment.encryption_preparation.get_mut() = (false, None);
         let metadata = environment.state.metadata();
         let identity_id = identity.id.as_str().to_owned();
         let registered_at_ms =
@@ -2166,10 +2169,30 @@ impl NativeImCoreNodeClient {
                 let operation = self.inner.operation().await?;
                 let client = operation.client()?;
                 let (request, timeout) = sync_request(input, self.inner.sync_timeout)?;
-                let result = self
+                let preparation_pending = {
+                    let mut state = operation.environment()?.encryption_preparation.lock().await;
+                    if !state.0 && state.1.is_none_or(|at| std::time::Instant::now() >= at) {
+                        state.0 = self
+                            .inner
+                            .wait_im(
+                                client.messages().prepare_encrypted_messaging_async(),
+                                self.inner.operation_timeout,
+                            )
+                            .await
+                            .is_ok();
+                        state.1 = Some(std::time::Instant::now() + Duration::from_secs(30));
+                    }
+                    !state.0
+                };
+                let mut result = self
                     .inner
                     .wait_im(client.messages().receive_now_async(request), timeout)
                     .await?;
+                if preparation_pending {
+                    result
+                        .warnings
+                        .push("encrypted_messaging.device_preparation_pending".to_owned());
+                }
                 Ok(crate::dto::receive_result(result))
             }
             .await,
@@ -2894,6 +2917,7 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         environment.client = Some(client);
+        *environment.encryption_preparation.get_mut() = (false, None);
         Ok(())
     }
 
@@ -2924,6 +2948,7 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         environment.client = None;
+        *environment.encryption_preparation.get_mut() = (false, None);
         environment.state.harden_permissions()?;
         Ok(())
     }
@@ -2993,6 +3018,7 @@ impl NativeImCoreNodeClient {
             core,
             client,
             state,
+            ..
         } = environment;
         self.inner
             .wait_im(
@@ -3162,6 +3188,7 @@ async fn initialize_environment(
         core,
         client,
         state,
+        encryption_preparation: tokio::sync::Mutex::new((false, None)),
     })
 }
 
