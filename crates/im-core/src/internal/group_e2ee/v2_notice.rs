@@ -122,6 +122,15 @@ pub(crate) struct PreparedP6Notice {
 
 impl PreparedP6Notice {
     pub(crate) fn apply(self, nonblocking: bool) -> crate::ImResult<V2ProcessNoticeOutput> {
+        self.apply_on(None, nonblocking)
+    }
+
+    pub(crate) fn apply_on(
+        self,
+        connection: Option<&rusqlite::Connection>,
+        nonblocking: bool,
+    ) -> crate::ImResult<V2ProcessNoticeOutput> {
+        let recipient_device_id = self.meta.recipient_device_id.clone();
         let runtime = if nonblocking {
             self.runtime.with_nonblocking_operations()
         } else {
@@ -142,19 +151,23 @@ impl PreparedP6Notice {
             ),
         )?;
         if let Some(notice_id) = replacement {
-            // Idempotent per accepted Welcome; public identifiers only, never MLS state.
-            let key = format!("key-package-replenish:{notice_id}");
-            if crate::internal::group_runtime::journal::load(&self.client, &key)?.is_none() {
-                crate::internal::group_runtime::journal::save(
-                    &self.client,
-                    &key,
-                    serde_json::json!({"notice_id": notice_id, "completed": false}),
-                )?;
-            }
-            crate::internal::group_runtime::journal::save(
-                &self.client,
-                "device-preparation-status",
-                serde_json::json!({"next_attempt_at": 0}),
+            // Reliable sync already holds an IM transaction. Opening a second
+            // writer here would deadlock until the input lease expires.
+            let owned_connection;
+            let connection = match connection {
+                Some(connection) => connection,
+                None => {
+                    owned_connection = crate::internal::local_state::open_writable(
+                        &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+                    )?;
+                    &owned_connection
+                }
+            };
+            crate::internal::group_runtime::journal::schedule_key_package_replenishment_on(
+                connection,
+                self.client.current_identity().id.as_str(),
+                &recipient_device_id,
+                &notice_id,
             )?;
         }
         Ok(result)

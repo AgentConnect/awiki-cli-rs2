@@ -92,6 +92,26 @@ fn save_on(
     Ok(())
 }
 
+/// Enqueue Welcome replenishment in the same transaction as sync completion.
+/// Replayed notices must not reopen an already completed package publication.
+pub(crate) fn schedule_key_package_replenishment_on(
+    connection: &Connection,
+    owner: &str,
+    device: &str,
+    notice_id: &str,
+) -> crate::ImResult<()> {
+    let key = format!("key-package-replenish:{notice_id}");
+    let inserted = connection.execute(
+        "INSERT INTO group_operation_journal VALUES (?1,?2,?3,?3,?4) ON CONFLICT(owner_identity_id,local_device_id,operation_key) DO NOTHING",
+        (owner, device, &key, serde_json::json!({"notice_id": notice_id, "completed": false}).to_string()),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    if inserted != 0 {
+        save_on(connection, owner, device, "device-preparation-status",
+            serde_json::json!({"next_attempt_at": 0}))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn pending(client: &crate::core::ImClient) -> crate::ImResult<Vec<(String, Value)>> {
     entries(client, "recovery:%")
 }

@@ -281,7 +281,7 @@ pub(crate) async fn process_p6(
                     crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(&transaction, &manifest)?;
                 }
             }
-            Prepared::Notice(notice) => { notice.apply(true)?; }
+            Prepared::Notice(notice) => { notice.apply_on(Some(&transaction), true)?; }
         }
         sync_inbox::complete_claim(&transaction, &committed_claim, now())?;
         transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)?;

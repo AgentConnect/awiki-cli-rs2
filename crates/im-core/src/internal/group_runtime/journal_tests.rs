@@ -92,3 +92,29 @@ fn partial_invites_and_backoff_survive_restart_without_overwriting_other_members
         );
     }
 }
+
+#[test]
+fn welcome_replenishment_commits_with_sync_and_replay_keeps_completed_progress() {
+    let root = tempfile::tempdir().unwrap();
+    let mut db = Connection::open(root.path().join("welcome.sqlite")).unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        schedule_key_package_replenishment_on(&tx, "alice", "a1", "welcome-1").unwrap();
+        tx.rollback().unwrap();
+    }
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM group_operation_journal", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+    schedule_key_package_replenishment_on(&tx, "alice", "a1", "welcome-1").unwrap();
+    save_on(&tx, "alice", "a1", "key-package-replenish:welcome-1", serde_json::json!({"completed":true})).unwrap();
+    save_on(&tx, "alice", "a1", "device-preparation-status", serde_json::json!({"next_attempt_at":300})).unwrap();
+    schedule_key_package_replenishment_on(&tx, "alice", "a1", "welcome-1").unwrap();
+    tx.commit().unwrap();
+    let records: Vec<String> = db.prepare("SELECT intent_json FROM group_operation_journal ORDER BY operation_key").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(serde_json::from_str::<Value>(&records[0]).unwrap()["next_attempt_at"], 300);
+    assert_eq!(serde_json::from_str::<Value>(&records[1]).unwrap()["completed"], true);
+    schedule_key_package_replenishment_on(&db, "alice", "a2", "welcome-1").unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM group_operation_journal WHERE local_device_id='a2'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+}
