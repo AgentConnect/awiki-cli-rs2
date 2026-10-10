@@ -283,7 +283,9 @@ pub(crate) async fn publish_stable_key_package(
     base_operation_id: &str,
     base_key_package_id: &str,
 ) -> crate::ImResult<()> {
-    let context = production_context(client)?;
+    // External identity Hosts (Node/DSH) authorize HTTP asynchronously. The
+    // synchronous context cannot cross that bridge, even inside an async API.
+    let context = production_context_async(client).await?;
     require_current_device_selection(Some(expected_device_id), &context.device.device_id)?;
     let service_did = service_did(client)?;
     let now = OffsetDateTime::now_utc();
