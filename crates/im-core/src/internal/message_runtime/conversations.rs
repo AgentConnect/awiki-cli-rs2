@@ -1925,13 +1925,11 @@ mod tests {
     }
 
     fn unique_temp_root() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // Wall-clock precision can be coarser than parallel test startup.
         std::env::temp_dir().join(format!(
-            "im-core-conversations-runtime-{}-{nanos}",
-            std::process::id()
+            "im-core-conversations-runtime-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ))
     }
 }
