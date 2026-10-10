@@ -2058,8 +2058,10 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
     }
 
     fn transaction(&self) -> crate::ImResult<Transaction<'_>> {
-        self.connection
-            .unchecked_transaction()
+        // Every caller reads and then writes ratchet/prekey state. Reserve the
+        // writer before taking that read snapshot: a deferred WAL upgrade can
+        // fail immediately with SQLITE_BUSY_SNAPSHOT during concurrent sync.
+        Transaction::new_unchecked(self.connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(crate::internal::local_state::local_state_unavailable)
     }
 }
@@ -2340,7 +2342,7 @@ mod tests {
         ))
     }
 
-    fn store<'a>(db: &'a Connection, dir: &std::path::Path) -> SqliteV2DirectStateStore<'a> {
+    pub(super) fn store<'a>(db: &'a Connection, dir: &std::path::Path) -> SqliteV2DirectStateStore<'a> {
         SqliteV2DirectStateStore::new_with_secret_vault(db, vault(dir), owner_scope()).unwrap()
     }
 
@@ -3592,3 +3594,7 @@ VALUES ('post-v31-sentinel', 'device', 'operation');
         assert_eq!(loaded.revision, 2);
     }
 }
+
+#[cfg(test)]
+#[path = "v2_store_concurrency_tests.rs"]
+mod concurrency_tests;

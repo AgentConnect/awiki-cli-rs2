@@ -1738,6 +1738,7 @@ The coordinator does not own a second owner-wide local-state operation mutex. Ne
 Realtime, and P5/P6 waits never hold a lock that blocks an unrelated committed local projection
 read. SQLite actor commands, atomic apply transactions, `run_generation`, and the existing
 per-input attempt fences remain the write-side serialization and stale-result fences.
+P5 的棘轮、预密钥和待发状态写事务使用 `BEGIN IMMEDIATE`，在读取写入依据之前等待其他写者；不在 deferred WAL 快照上直接升级写锁。既有 revision/CAS 与精确密文重试保持不变，事务中不包含网络等待。
 Consequently `local_inbox_projection` and `local_history` may return the latest committed view while
 a sync run is still in flight; they do not claim that view is remotely fresh. Operations whose
 contract requires freshness still await the coordinated sync result and fail closed when it fails.
