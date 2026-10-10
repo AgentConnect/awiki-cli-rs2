@@ -2061,7 +2061,11 @@ pub(crate) fn uploaded_attachment(
             id: value.attachment.attachment_id,
             file_name: value.attachment.filename,
             mime_type: value.attachment.mime_type,
-            size_bytes: value.attachment.size,
+            size_bytes: value
+                .attachment
+                .plaintext_size_bytes
+                .map(|size| size.to_string())
+                .unwrap_or(value.attachment.size),
             sha256_hex: digest_hex(&value.attachment.digest_b64u),
             digest_b64u: value.attachment.digest_b64u,
         }),
@@ -2079,6 +2083,17 @@ pub(crate) fn uploaded_attachment(
 pub(crate) fn downloaded_attachment(
     value: im_core::attachments::DownloadedAttachment,
 ) -> SafeResult<NodeDownload> {
+    use sha2::Digest as _;
+    let bytes: Buffer = match value.destination {
+        im_core::attachments::DownloadedAttachmentDestination::Memory(bytes) => bytes.into(),
+        im_core::attachments::DownloadedAttachmentDestination::LocalFile(_) => {
+            return Err(SafeError::internal());
+        }
+    };
+    // Core has already verified the object and authenticated decryption. The
+    // download DTO describes these returned bytes, not their encrypted object.
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(bytes.as_ref()));
     let selection = value.selection;
     let attachment = NodeAttachment {
         id: selection
@@ -2095,24 +2110,9 @@ pub(crate) fn downloaded_attachment(
             .map(|item| item.mime_type.clone())
             .or(value.mime_type)
             .unwrap_or_else(|| "application/octet-stream".to_owned()),
-        size_bytes: selection
-            .as_ref()
-            .map(|item| item.size.clone())
-            .or_else(|| value.size_bytes.map(|size| size.to_string()))
-            .unwrap_or_else(|| "0".to_owned()),
-        digest_b64u: selection
-            .as_ref()
-            .map(|item| item.digest_b64u.clone())
-            .unwrap_or_default(),
-        sha256_hex: selection
-            .as_ref()
-            .and_then(|item| digest_hex(&item.digest_b64u)),
-    };
-    let bytes = match value.destination {
-        im_core::attachments::DownloadedAttachmentDestination::Memory(bytes) => bytes.into(),
-        im_core::attachments::DownloadedAttachmentDestination::LocalFile(_) => {
-            return Err(SafeError::internal());
-        }
+        size_bytes: bytes.len().to_string(),
+        sha256_hex: digest_hex(&digest),
+        digest_b64u: digest,
     };
     Ok(NodeDownload { attachment, bytes })
 }
@@ -2263,7 +2263,10 @@ fn message_content(
                                 id: attachment.attachment_id.clone(),
                                 file_name: attachment.filename.clone(),
                                 mime_type: attachment.mime_type.clone(),
-                                size_bytes: attachment.size.clone(),
+                                size_bytes: attachment
+                                    .plaintext_size
+                                    .clone()
+                                    .unwrap_or_else(|| attachment.size.clone()),
                                 digest_b64u: attachment.digest_b64u.clone(),
                                 sha256_hex: digest_hex(&attachment.digest_b64u),
                             }),
@@ -2351,6 +2354,10 @@ fn digest_hex(value: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "conversation_dto_tests.rs"]
 mod conversation_tests;
+
+#[cfg(test)]
+#[path = "attachment_dto_tests.rs"]
+mod attachment_tests;
 
 #[cfg(test)]
 mod tests {
