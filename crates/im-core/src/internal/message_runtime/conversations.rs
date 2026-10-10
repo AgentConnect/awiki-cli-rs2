@@ -215,6 +215,7 @@ fn is_snapshot_attribute(key: &str) -> bool {
             | "security"
             | "security_profile"
             | "message_security_profile"
+            | "decryption_state"
             | "secure_wire_content_type"
             | "notify_level"
             | "peer_user_id"
@@ -938,6 +939,17 @@ mod tests {
             metadata_attribute(&message.metadata, "secure_wire_content_type"),
             Some("application/anp-direct-init+json")
         );
+        // Restarted consumers read conversation snapshots, not the original
+        // Message DTO. Preserve authenticated decryption provenance there too.
+        let snapshot = snapshot_message(&message);
+        assert!(
+            snapshot
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == "decryption_state"
+                    && attribute.value == "decrypted")
+        );
+        assert_eq!(snapshot.body.text.as_deref(), Some("decrypted text"));
     }
 
     #[test]
