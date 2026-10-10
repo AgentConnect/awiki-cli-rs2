@@ -72,17 +72,14 @@ pub(crate) fn consume_for_client(
         }
         Err(error) => return Err(error),
     };
-    consume_with_runtime(
-        &context.runtime,
+    PreparedP6Notice {
+        client: client.clone(),
+        runtime: context.runtime,
         meta,
         notice,
         member_documents,
-        crate::internal::wire::common::now_rfc3339(),
-        format!(
-            "p6-v2-notice-{}",
-            crate::internal::wire::common::generate_operation_id()
-        ),
-    )
+    }
+    .apply(false)
 }
 
 pub(crate) async fn prepare_for_client_async(
@@ -107,6 +104,7 @@ pub(crate) async fn prepare_for_client_async(
         Err(error) => return Err(error),
     };
     Ok(PreparedP6Notice {
+        client: client.clone(),
         runtime: context.runtime,
         meta,
         notice,
@@ -115,6 +113,7 @@ pub(crate) async fn prepare_for_client_async(
 }
 
 pub(crate) struct PreparedP6Notice {
+    client: crate::core::ImClient,
     runtime: GroupE2eeV2Runtime,
     meta: V2GroupNoticeMetadata,
     notice: V2E2eeNotice,
@@ -128,7 +127,10 @@ impl PreparedP6Notice {
         } else {
             self.runtime
         };
-        consume_with_runtime(
+        let replacement = (self.notice.welcome_b64u.is_some()
+            && self.notice.subject_did == self.client.did().as_str())
+        .then(|| self.notice.notice_id.clone());
+        let result = consume_with_runtime(
             &runtime,
             self.meta,
             self.notice,
@@ -138,7 +140,24 @@ impl PreparedP6Notice {
                 "p6-v2-notice-{}",
                 crate::internal::wire::common::generate_operation_id()
             ),
-        )
+        )?;
+        if let Some(notice_id) = replacement {
+            // Idempotent per accepted Welcome; public identifiers only, never MLS state.
+            let key = format!("key-package-replenish:{notice_id}");
+            if crate::internal::group_runtime::journal::load(&self.client, &key)?.is_none() {
+                crate::internal::group_runtime::journal::save(
+                    &self.client,
+                    &key,
+                    serde_json::json!({"notice_id": notice_id, "completed": false}),
+                )?;
+            }
+            crate::internal::group_runtime::journal::save(
+                &self.client,
+                "device-preparation-status",
+                serde_json::json!({"next_attempt_at": 0}),
+            )?;
+        }
+        Ok(result)
     }
 }
 

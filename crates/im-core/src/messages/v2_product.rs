@@ -387,6 +387,10 @@ async fn send_group_async_impl(
             "P6 v2 group target must be a DID",
         ));
     }
+    let group_lock = client
+        .core_inner()
+        .group_lifecycle_lock(client.current_identity().id.as_str(), group_did);
+    let _group_guard = group_lock.lock().await;
     let device = current_vnext_device(client)?;
     let device_revocation_pending =
         group_device_revocation_pending_for_send_async(client, group_did).await?;
@@ -400,6 +404,18 @@ async fn send_group_async_impl(
             group.clone(),
         )
         .await?;
+    }
+    if !device_revocation_pending
+        && !client
+            .secure()
+            .group(group.clone())
+            .status_async()
+            .await?
+            .can_send_secure
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "group_membership_change_pending".to_owned(),
+        });
     }
     let logical_message_id = required_message_id(&request)?.to_owned();
     let operation_id = request

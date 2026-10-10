@@ -88,6 +88,7 @@ pub struct DartJoinGroupRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupReadResult {
+    pub operation_json: Option<String>,
     pub encrypted: Option<bool>,
     pub secure_status: Option<crate::dto::secure::DartGroupSecureStatus>,
     pub group: Option<DartGroupSnapshot>,

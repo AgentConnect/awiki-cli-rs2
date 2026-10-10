@@ -798,10 +798,12 @@ pub struct NodeCreateGroupInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeGroup {
+    pub operation: Option<NodeGroupOperation>,
     pub encrypted: Option<bool>,
     pub secure_state: Option<String>,
     pub can_send_secure: Option<bool>,
     pub secure_retryable: Option<bool>,
+    pub secure_problem: Option<String>,
     pub did: String,
     pub conversation_id: String,
     pub title: String,
@@ -833,6 +835,7 @@ pub struct NodeAddGroupMemberInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeGroupMember {
+    pub operation: Option<NodeGroupOperation>,
     pub did: String,
     pub handle: Option<String>,
 }
@@ -1035,6 +1038,7 @@ pub struct NodeConversation {
 #[napi(object)]
 pub struct NodeMessage {
     pub encrypted: bool,
+    pub encryption_required: bool,
     pub decryption_state: Option<String>,
     pub send_state: Option<String>,
     pub id: String,
@@ -1663,7 +1667,16 @@ pub(crate) fn created_group(
     fallback_title: &str,
 ) -> SafeResult<NodeGroup> {
     let snapshot = value.group.ok_or_else(SafeError::internal)?;
-    Ok(created_group_from_snapshot(snapshot, fallback_title))
+    let mut group = created_group_from_snapshot(snapshot, fallback_title);
+    group.operation = value.operation.map(Into::into);
+    if let Some(status) = value.secure_status {
+        group.encrypted = Some(true);
+        group.secure_state = Some(format!("{:?}", status.state));
+        group.can_send_secure = Some(status.can_send_secure);
+        group.secure_problem = status.problem.as_ref().map(group_problem_message);
+        group.secure_retryable = Some(status.problem.is_some_and(|p| p.retryable));
+    }
+    Ok(group)
 }
 
 pub(crate) fn created_group_from_snapshot(
@@ -1680,10 +1693,12 @@ pub(crate) fn created_group_from_snapshot(
         .or_else(|| snapshot.name.clone())
         .unwrap_or_else(|| fallback_title.to_owned());
     NodeGroup {
+        operation: None,
         encrypted: None,
         secure_state: None,
         can_send_secure: None,
         secure_retryable: None,
+        secure_problem: None,
         avatar_uri: snapshot.avatar_uri,
         avatar_members: snapshot.avatar_members.map(|members| {
             members
@@ -1716,10 +1731,12 @@ pub(crate) fn group_from_summary(snapshot: im_core::groups::GroupSummary) -> Nod
         .or(snapshot.name)
         .unwrap_or_else(|| snapshot.did.as_str().to_owned());
     NodeGroup {
+        operation: None,
         encrypted: None,
         secure_state: None,
         can_send_secure: None,
         secure_retryable: None,
+        secure_problem: None,
         avatar_uri: snapshot.avatar_uri,
         avatar_members: snapshot.avatar_members.map(|members| {
             members
@@ -1910,11 +1927,14 @@ pub(crate) fn added_group_member(
     value: im_core::groups::GroupReadResult,
 ) -> SafeResult<NodeGroupMember> {
     let member = value.resolved_member.ok_or_else(SafeError::internal)?;
-    Ok(group_member(member))
+    let mut member = group_member(member);
+    member.operation = value.operation.map(Into::into);
+    Ok(member)
 }
 
 pub(crate) fn group_member(member: im_core::groups::GroupMemberResolution) -> NodeGroupMember {
     NodeGroupMember {
+        operation: None,
         did: member.did.as_str().to_owned(),
         handle: member.handle.map(|handle| handle.as_str().to_owned()),
     }
@@ -2212,6 +2232,8 @@ fn message(
         .or_else(|| message_attribute(&value, "sender_name"));
     Ok(NodeMessage {
         encrypted: value.metadata.is_end_to_end_encrypted(),
+        encryption_required: message_attribute(&value, "encryption_required").as_deref()
+            == Some("true"),
         decryption_state: message_attribute(&value, "decryption_state"),
         send_state: value
             .metadata
@@ -2634,5 +2656,39 @@ pub(crate) fn message_security(
             "Unknown message security policy.",
             false,
         )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupOperation {
+    pub operation_id: String,
+    pub group_did: String,
+    pub phase: String,
+    pub business_committed: bool,
+    pub encryption_ready: bool,
+    pub reason: Option<String>,
+    pub next_action: String,
+}
+impl From<im_core::groups::GroupOperationStatus> for NodeGroupOperation {
+    fn from(v: im_core::groups::GroupOperationStatus) -> Self {
+        Self {
+            operation_id: v.operation_id,
+            group_did: v.group_did,
+            phase: v.phase,
+            business_committed: v.business_committed,
+            encryption_ready: v.encryption_ready,
+            reason: v.reason,
+            next_action: v.next_action,
+        }
+    }
+}
+
+pub(crate) fn group_problem_message(problem: &im_core::secure::SecureProblem) -> String {
+    match problem.message.as_str() {
+        "请在原群主设备上完成加密准备"
+        | "等待成员完成加密准备"
+        | "加密准备未完成，请检查连接后重试" => problem.message.clone(),
+        _ => "正在准备加密聊天…".to_owned(),
     }
 }

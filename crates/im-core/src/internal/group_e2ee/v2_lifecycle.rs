@@ -2194,6 +2194,261 @@ fn prepared_membership_submission(
     })
 }
 
+fn lease_key(group: &str, member: &str, device: &str) -> String {
+    format!("member-lease:{group}:{member}:{device}")
+}
+
+fn retained_package(
+    client: &crate::core::ImClient,
+    key: &str,
+) -> crate::ImResult<Option<anp::group_e2ee::V2GetKeyPackageResult>> {
+    let Some(value) = crate::internal::group_runtime::journal::load(client, key)? else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let package: anp::group_e2ee::V2GetKeyPackageResult =
+        serde_json::from_value(value).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid retained member KeyPackage".to_owned(),
+        })?;
+    if package
+        .group_key_package
+        .expires_at
+        .as_deref()
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .is_some_and(|at| at.timestamp() <= chrono::Utc::now().timestamp())
+    {
+        crate::internal::group_runtime::journal::save(client, key, Value::Null)?;
+        crate::internal::group_runtime::journal::save(
+            client,
+            &format!("{key}:request"),
+            Value::Null,
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(package))
+}
+
+fn member_not_ready() -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some("group.member_encryption_not_ready".to_owned()),
+        message: "尚未加入：对方尚未完成加密准备，请对方打开客户端后重试".to_owned(),
+        data: None,
+    }
+}
+
+/// Lease all missing exact-device packages before changing business membership.
+pub(crate) async fn preflight_member_async(
+    client: &crate::core::ImClient,
+    group: &str,
+    member: &str,
+) -> crate::ImResult<()> {
+    let document = resolve_member_document_fresh_async(client, member).await?;
+    let manifest = validated_p6_manifest(member, &document)?;
+    let desired = eligible_device_ids(&manifest);
+    if desired.is_empty() {
+        return Err(member_not_ready());
+    }
+    let mut context = production_context_async(client).await?;
+    let endpoints = context
+        .product
+        .list_local_group_member_endpoints(endpoint_inventory_input(
+            client,
+            &context.device,
+            group,
+            "invite-preflight",
+        ))?;
+    for device in desired {
+        if endpoints
+            .member_endpoints
+            .iter()
+            .any(|e| e.member_did == member && e.member_device_id == device)
+        {
+            continue;
+        }
+        lease_member_package_async(client, &mut context, group, member, &device, &document).await?;
+    }
+    Ok(())
+}
+
+async fn lease_member_package_async(
+    client: &crate::core::ImClient,
+    context: &mut ProductionV2Context<'_>,
+    group: &str,
+    member: &str,
+    device: &str,
+    document: &Value,
+) -> crate::ImResult<anp::group_e2ee::V2GetKeyPackageResult> {
+    let key = lease_key(group, member, device);
+    if let Some(package) = retained_package(client, &key)? {
+        return Ok(package);
+    }
+    let service = anp::direct_e2ee::message_service_did_from_document(document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let request_key = format!("{key}:request");
+    let retained = crate::internal::group_runtime::journal::load(client, &request_key)?;
+    let meta = match retained.filter(|v| !v.is_null()) {
+        Some(value) => {
+            serde_json::from_value(value).map_err(|_| crate::ImError::PermissionDenied)?
+        }
+        None => {
+            let meta = service_meta(
+                client,
+                &context.device,
+                &service,
+                &operation_id("get-key-package"),
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &format_time(OffsetDateTime::now_utc())?,
+            );
+            crate::internal::group_runtime::journal::save(
+                client,
+                &request_key,
+                serde_json::to_value(&meta).map_err(|_| crate::ImError::PermissionDenied)?,
+            )?;
+            meta
+        }
+    };
+    let package = context
+        .product
+        .get_target_key_package_async(
+            meta,
+            V2GetKeyPackageBody {
+                target_did: member.to_owned(),
+                target_device_id: device.to_owned(),
+                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
+                require_fresh: Some(true),
+            },
+        )
+        .await
+        .map_err(|error| {
+            if matches!(&error, crate::ImError::Service { code: Some(code), .. }
+                if code == "anp.target_not_found" || code == "group.key_package_not_found")
+            {
+                member_not_ready()
+            } else {
+                error
+            }
+        })?;
+    crate::internal::group_runtime::journal::save(
+        client,
+        &key,
+        serde_json::to_value(&package).map_err(|_| crate::ImError::Internal {
+            message: "serialize member package".to_owned(),
+        })?,
+    )?;
+    Ok(package)
+}
+
+/// Read-only readiness uses a complete, version-bound P4 roster. P2 device
+/// authorization and exact-device reconciliation remain in the mutation path.
+fn roster_inputs(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<(String, usize)> {
+    let snapshot = authoritative
+        .group
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if snapshot.did.as_str() != group.as_str()
+        || snapshot.membership_status.as_deref() != Some("active")
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let raw = authoritative
+        .raw_response()
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    let state = super::state_ref::group_state_ref_from_group_response(group.as_str(), raw)
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    let _ = current_v2_device(client)?;
+    Ok((
+        state.group_state_version,
+        super::member_collector::product_max_members(raw)?,
+    ))
+}
+
+fn roster_matches(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+    members: super::member_collector::CompleteGroupMembers,
+) -> crate::ImResult<bool> {
+    let runtime = super::v2_runtime::runtime_for_client(client)?;
+    let device = current_v2_device(client)?;
+    let endpoints = runtime.list_local_group_member_endpoints(endpoint_inventory_input(
+        client,
+        &device,
+        group.as_str(),
+        "readiness",
+    ))?;
+    let expected = members
+        .members
+        .into_iter()
+        .map(|m| {
+            m.did
+                .map(|did| did.as_str().to_owned())
+                .ok_or(crate::ImError::InventoryIncomplete)
+        })
+        .collect::<crate::ImResult<BTreeSet<_>>>()?;
+    let actual = endpoints
+        .member_endpoints
+        .into_iter()
+        .map(|e| e.member_did)
+        .collect::<BTreeSet<_>>();
+    Ok(expected == actual)
+}
+
+pub(crate) fn roster_consistent(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<bool> {
+    let (version, max) = roster_inputs(client, &group, authoritative)?;
+    let members = super::member_collector::collect_complete_group_members(
+        client,
+        group.clone(),
+        Some(&version),
+        max,
+    )?;
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy(group.clone())?;
+    Ok(
+        group_state_version_matches(refreshed.raw_response(), &version)
+            && roster_matches(client, &group, members)?,
+    )
+}
+
+pub(crate) async fn roster_consistent_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<bool> {
+    let (version, max) = roster_inputs(client, &group, authoritative)?;
+    let members = super::member_collector::collect_complete_group_members_async(
+        client,
+        group.clone(),
+        Some(&version),
+        max,
+    )
+    .await?;
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group.clone())
+    .await?;
+    Ok(
+        group_state_version_matches(refreshed.raw_response(), &version)
+            && roster_matches(client, &group, members)?,
+    )
+}
+
 fn submit_exact_add(
     client: &crate::core::ImClient,
     context: &mut ProductionV2Context<'_>,
@@ -2250,29 +2505,16 @@ async fn submit_exact_add_async(
     member_device_id: &str,
     member_document: Value,
 ) -> crate::ImResult<()> {
-    let target_service_did = anp::direct_e2ee::message_service_did_from_document(&member_document)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    let lookup_now = format_time(OffsetDateTime::now_utc())?;
-    let lookup_operation = operation_id("get-key-package");
-    let package = context
-        .product
-        .get_target_key_package_async(
-            service_meta(
-                client,
-                &context.device,
-                &target_service_did,
-                &lookup_operation,
-                GROUP_E2EE_TRANSPORT_PROFILE_V2,
-                &lookup_now,
-            ),
-            V2GetKeyPackageBody {
-                target_did: member_did.to_owned(),
-                target_device_id: member_device_id.to_owned(),
-                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
-                require_fresh: Some(true),
-            },
-        )
-        .await?;
+    let package = lease_member_package_async(
+        client,
+        context,
+        &group_state_ref.group_did,
+        member_did,
+        member_device_id,
+        &member_document,
+    )
+    .await?;
+    let lease = lease_key(&group_state_ref.group_did, member_did, member_device_id);
     let now_text = format_time(OffsetDateTime::now_utc())?;
     let add_operation = operation_id("add");
     let submission = context.product.prepare_add(V2AddMemberInput {
@@ -2290,7 +2532,13 @@ async fn submit_exact_add_async(
         pending_commit_id: format!("pending-{add_operation}"),
         request_id: format!("{add_operation}-prepare"),
     })?;
-    submit_prepared_add_async(context, &submission, format!("{add_operation}-finalize")).await
+    submit_prepared_add_async(context, &submission, format!("{add_operation}-finalize")).await?;
+    crate::internal::group_runtime::journal::save(
+        client,
+        &format!("{lease}:request"),
+        Value::Null,
+    )?;
+    crate::internal::group_runtime::journal::save(client, &lease, Value::Null)
 }
 
 fn submit_exact_remove(

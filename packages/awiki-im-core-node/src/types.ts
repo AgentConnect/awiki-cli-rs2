@@ -573,10 +573,12 @@ export interface CreateGroupInput {
 
 /** Created group with its canonical conversation route. */
 export interface NodeGroup {
+  readonly operation?: GroupOperationStatus
   readonly encrypted?: boolean
   readonly secureState?: string
   readonly canSendSecure?: boolean
   readonly secureRetryable?: boolean
+  readonly secureProblem?: string
   readonly avatarUri?: string
   readonly avatarMembers?: readonly GroupAvatarMember[]
   readonly groupStateVersion?: string
@@ -598,6 +600,7 @@ export interface AddGroupMemberInput {
 
 /** Authoritative member identity returned after group membership mutation. */
 export interface NodeGroupMember {
+  readonly operation?: GroupOperationStatus
   readonly did: string
   readonly handle?: string
 }
@@ -842,6 +845,7 @@ export interface NodeMessageContent {
 
 /** Canonically routed message projection. */
 export interface NodeMessage {
+  readonly encryptionRequired?: boolean
   readonly encrypted: boolean
   readonly decryptionState?: string
   readonly sendState?: string
@@ -1184,4 +1188,14 @@ export interface PendingIdentityRegistration {
   readonly displayName: string
   readonly verificationKind: string
   readonly phase: 'prepared' | 'remote_committed' | 'local_committed'
+}
+
+export interface GroupOperationStatus {
+  readonly operationId: string
+  readonly groupDid: string
+  readonly phase: string
+  readonly businessCommitted: boolean
+  readonly encryptionReady: boolean
+  readonly reason?: string
+  readonly nextAction: string
 }

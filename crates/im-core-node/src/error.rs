@@ -289,6 +289,13 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             true,
         );
     }
+    if code == "group.member_encryption_not_ready" {
+        return SafeError::new(
+            "group_member_encryption_not_ready",
+            "The member has not prepared encrypted messaging.",
+            true,
+        );
+    }
     if code == "group.not_member" {
         return SafeError::new(
             "group_not_member",

@@ -2262,3 +2262,13 @@ DSH 通过既有 hydrate/refreshDisplayProfiles 消费，不读取 User Service 
 MessageMetadata::is_end_to_end_encrypted 与 Dart isEndToEndEncrypted 表达 SDK 实际来源。解密后的消息继续保留实际加密属性；输入选择只是发送意图。groups.get_authoritative_group_async 和 GroupReadResult.requires_end_to_end_encryption 为绑定提供经 Core 校验的群策略，不由客户端解析线协议。
 
 带稳定 slug/operationId 的建群使用 Core 的 group_operation_journal 冻结公共请求元数据和 body；相同操作不允许变更内容或群类型。P6 创建使用相同设备、群、时间和 request id 复用协议自身的准备/WAL恢复。表按 owner_identity_id/local_device_id 隔离，随 owner 本地删除清理；不存私钥或历史迁移备份。
+
+### 2026-10-10 设备准备与群操作衔接
+
+`messages.maintain_encrypted_messaging_async()` 是 Host 激活/恢复与两种同步入口共用的有界、幂等设备准备入口。阶段、重试次数及下次尝试时间保存在当前身份/协议设备作用域的既有 operation journal；失败不回滚普通消息同步。每日轮换稳定 KeyPackage 发布标识，成功消费 Welcome 后补包；私钥与 MLS 状态不进入公共结果。
+
+`GroupReadResult.operation` 表达 operation_id、group_did、phase、business_committed、encryption_ready、reason、next_action，`secure_status` 返回本次操作后的就绪投影。业务提交成功后的加密异常保留原群/原操作，由同步调度续接；宿主不可依赖 warnings 判断是否建群或加成员成功。邀请在 P4 写入前校验目标设备并取得租约，续接复用原租约及请求元数据，缺包返回稳定码 `group.member_encryption_not_ready`。
+
+群状态与发送共用完整 P4 roster 校验：版本绑定分页、结束版本复查及本地 MLS DID 集合必须一致；普通成员可执行只读校验，P2 精确设备授权/变更仍走现有受权限约束的协调入口。创建、邀请、修复与发送在 Core 按群串行。新表单关闭不取消已提交操作。
+
+Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表示实际加密。自己的 pending/failed/retry 可使用意图锁；成功及收到的消息必须依据实际属性。

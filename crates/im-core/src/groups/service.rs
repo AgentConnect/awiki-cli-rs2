@@ -50,52 +50,25 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        let secure_required = group_create_uses_e2ee(&request);
-        #[cfg(not(feature = "group-e2ee"))]
-        if secure_required {
-            return Err(crate::ImError::unsupported("group-e2ee"));
-        }
-        #[cfg(feature = "group-e2ee")]
-        if secure_required {
-            require_group_e2ee_v2(self.client)?;
-        }
-        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .create(request, None)?;
-        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
-        self.refresh_group_state(&mut result, true);
-        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
-        #[cfg(feature = "group-e2ee")]
-        if secure_required {
-            let group =
-                group_did(&result).ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                    detail: "group E2EE create requires created group DID".to_owned(),
-                })?;
-            let group_state_ref = group_state_ref_from_result(&group, &result);
-            let group_state_ref =
-                crate::internal::group_e2ee::v2_lifecycle::required_created_group_state_ref(
-                    &group,
-                    group_state_ref,
-                )?;
-            if let Err(error) = crate::internal::group_e2ee::v2_lifecycle::initialize_created_group(
-                self.client,
-                group_state_ref,
-            ) {
-                result
-                    .warnings
-                    .push(format!("group.encryption_preparation_pending: {error}"));
-            }
-        }
-        Ok(result)
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| crate::ImError::Internal {
+                message: format!("build group lifecycle runtime: {error}"),
+            })?;
+        runtime.block_on(self.create_async(request))
     }
 
     pub async fn create_async(
         &self,
-        request: super::GroupCreateRequest,
+        mut request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        if request.slug.is_none() {
+            request.slug = Some(format!(
+                "group-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ));
+        }
         let secure_required = group_create_uses_e2ee(&request);
         #[cfg(not(feature = "group-e2ee"))]
         if secure_required {
@@ -104,6 +77,28 @@ impl<'a> GroupService<'a> {
         #[cfg(feature = "group-e2ee")]
         if secure_required {
             require_group_e2ee_v2(self.client)?;
+        }
+        #[cfg(feature = "group-e2ee")]
+        let recovery_key = format!(
+            "recovery:create:{}",
+            request.slug.as_deref().unwrap_or(&request.name)
+        );
+        #[cfg(feature = "group-e2ee")]
+        let lock = self
+            .client
+            .core_inner()
+            .group_lifecycle_lock(self.client.current_identity().id.as_str(), &recovery_key);
+        #[cfg(feature = "group-e2ee")]
+        let _guard = lock.lock().await;
+        #[cfg(feature = "group-e2ee")]
+        {
+            crate::internal::group_runtime::recovery::record(
+                self.client,
+                &recovery_key,
+                "",
+                serde_json::to_value(&request).ok(),
+                false,
+            )?;
         }
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
@@ -112,6 +107,16 @@ impl<'a> GroupService<'a> {
         )
         .create_async(request, None)
         .await?;
+        #[cfg(feature = "group-e2ee")]
+        if let Some(group) = group_did(&result) {
+            result.operation = Some(crate::internal::group_runtime::recovery::record(
+                self.client,
+                &recovery_key,
+                &group,
+                None,
+                !secure_required,
+            )?);
+        }
         let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
             self.client,
             &result,
@@ -129,24 +134,73 @@ impl<'a> GroupService<'a> {
                 group_did(&result).ok_or_else(|| crate::ImError::LocalStateUnavailable {
                     detail: "group E2EE create requires created group DID".to_owned(),
                 })?;
-            let group_state_ref = group_state_ref_from_result(&group, &result);
-            let group_state_ref =
-                crate::internal::group_e2ee::v2_lifecycle::required_created_group_state_ref(
-                    &group,
-                    group_state_ref,
-                )?;
-            if let Err(error) =
+            result.operation = Some(crate::internal::group_runtime::recovery::record(
+                self.client,
+                &recovery_key,
+                &group,
+                None,
+                false,
+            )?);
+            let group_lock = self
+                .client
+                .core_inner()
+                .group_lifecycle_lock(self.client.current_identity().id.as_str(), &group);
+            let _group_guard = group_lock.lock().await;
+            let initialization = async {
+                let reference =
+                    crate::internal::group_e2ee::v2_lifecycle::required_created_group_state_ref(
+                        &group,
+                        group_state_ref_from_result(&group, &result),
+                    )?;
                 crate::internal::group_e2ee::v2_lifecycle::initialize_created_group_async(
                     self.client,
-                    group_state_ref,
+                    reference,
                 )
                 .await
-            {
+            }
+            .await;
+            if let Err(error) = initialization {
                 // P4 succeeded. Return its durable identity and let secure status
                 // gate sending while the exact creation operation is resumed.
+                crate::internal::group_runtime::recovery::failed(
+                    self.client,
+                    &recovery_key,
+                    &error,
+                )?;
                 result
                     .warnings
-                    .push(format!("group.encryption_preparation_pending: {error}"));
+                    .push("group.encryption_preparation_pending".to_owned());
+            }
+        }
+        #[cfg(feature = "group-e2ee")]
+        if secure_required {
+            if let Some(group) = group_did(&result) {
+                let status = self
+                    .client
+                    .secure()
+                    .group(crate::ids::GroupRef::parse(&group)?)
+                    .status_async()
+                    .await?;
+                result.operation = Some(crate::internal::group_runtime::recovery::record(
+                    self.client,
+                    &recovery_key,
+                    &group,
+                    None,
+                    status.can_send_secure,
+                )?);
+                result.secure_status = Some(status);
+            }
+        }
+        #[cfg(feature = "group-e2ee")]
+        if !secure_required {
+            if let Some(group) = group_did(&result) {
+                result.operation = Some(crate::internal::group_runtime::recovery::record(
+                    self.client,
+                    &recovery_key,
+                    &group,
+                    None,
+                    true,
+                )?);
             }
         }
         Ok(result)
@@ -257,102 +311,13 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        let group = request.group.as_str().to_string();
-        #[cfg(feature = "group-e2ee")]
-        let requested_member_is_did = request.member.is_did();
-        let resolved_member = resolve_group_member(self.client, &request.member)?;
-        #[cfg(feature = "group-e2ee")]
-        let expected_member_did =
-            requested_member_is_did.then(|| resolved_member.did.as_str().to_owned());
-        #[cfg(not(feature = "group-e2ee"))]
-        if request.security.required() {
-            return Err(crate::ImError::unsupported("group-e2ee"));
-        }
-        #[cfg(feature = "group-e2ee")]
-        let v2_route = {
-            let authoritative = self.get_authoritative_group(request.group.clone())?;
-            v2_member_mutation_route(&group, &authoritative, request.security.required())?
-        };
-        #[cfg(feature = "group-e2ee")]
-        let use_v2_p6 = v2_route == V2MemberMutationRoute::OwnerP6;
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            require_group_e2ee_v2(self.client)?;
-            crate::internal::group_e2ee::v2_lifecycle::preflight_current_controller(
-                self.client,
-                &group,
-            )?;
-        }
-        #[allow(unused_mut)]
-        let mut request = resolved_group_member_request(request, &resolved_member);
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            request.security = super::GroupSecurityRequirement::Default;
-        }
-        let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .add_member(request, None);
-        #[cfg(feature = "group-e2ee")]
-        let mut result = match p4_result {
-            Ok(result) => result,
-            Err(error) if use_v2_p6 && group_error_is_already_member(&error) => {
-                let authoritative_member = self.authoritative_active_member(
-                    crate::ids::GroupRef::parse(&group)?,
-                    &resolved_member,
-                )?
-                .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                    detail: "group.add reported an existing member but the authoritative roster did not identify it"
-                        .to_owned(),
-                })?;
-                let authoritative =
-                    self.get_authoritative_group(crate::ids::GroupRef::parse(&group)?)?;
-                let state_ref =
-                    group_state_ref_from_result(&group, &authoritative).ok_or_else(|| {
-                        crate::ImError::LocalStateUnavailable {
-                            detail: "authoritative group.get omitted group_state_ref".to_owned(),
-                        }
-                    })?;
-                crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices(
-                    self.client,
-                    crate::internal::group_e2ee::v2_lifecycle::v2_group_state_ref(state_ref),
-                    authoritative_member.did.as_str(),
-                )?;
-                let mut result = authoritative;
-                result.resolved_member = Some(authoritative_member);
-                self.refresh_group_state_for(&mut result, &group, true);
-                return Ok(result);
-            }
-            Err(error) => return Err(error),
-        };
-        #[cfg(not(feature = "group-e2ee"))]
-        let mut result = p4_result?;
-        result.resolved_member = Some(resolved_member.clone());
-        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
-        project_group_system_event_best_effort(self.client, &group, &mut result);
-        self.refresh_group_state_for(&mut result, &group, true);
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            let transition = crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
-                &group,
-                expected_member_did.as_deref(),
-                "active",
-                &result,
-            )?;
-            let authoritative_member = super::GroupMemberResolution {
-                did: crate::ids::Did::parse(&transition.member_did)?,
-                handle: resolved_member.handle.clone(),
-            };
-            result.resolved_member = Some(authoritative_member);
-            crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices(
-                self.client,
-                transition.group_state_ref,
-                &transition.member_did,
-            )?;
-        }
-        Ok(result)
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| crate::ImError::Internal {
+                message: format!("build group lifecycle runtime: {error}"),
+            })?;
+        runtime.block_on(self.add_member_async(request))
     }
 
     pub async fn add_member_async(
@@ -363,6 +328,11 @@ impl<'a> GroupService<'a> {
         let requested_member_is_did = request.member.is_did();
         let secure_required = request.security.required();
         let group = request.group.as_str().to_string();
+        let lock = self
+            .client
+            .core_inner()
+            .group_lifecycle_lock(self.client.current_identity().id.as_str(), &group);
+        let _guard = lock.lock().await;
         let resolved_member = resolve_group_member_async(self.client, &request.member).await?;
         #[cfg(feature = "group-e2ee")]
         let expected_member_did =
@@ -388,12 +358,28 @@ impl<'a> GroupService<'a> {
                 &group,
             )
             .await?;
+            crate::internal::group_e2ee::v2_lifecycle::preflight_member_async(
+                self.client,
+                &group,
+                resolved_member.did.as_str(),
+            )
+            .await?;
         }
         #[allow(unused_mut)]
         let mut request = resolved_group_member_request(request, &resolved_member);
         #[cfg(feature = "group-e2ee")]
         if use_v2_p6 {
             request.security = super::GroupSecurityRequirement::Default;
+        }
+        #[cfg(feature = "group-e2ee")]
+        if use_v2_p6 {
+            crate::internal::group_runtime::recovery::record(
+                self.client,
+                &format!("recovery:member:{group}:{}", resolved_member.did.as_str()),
+                "",
+                serde_json::to_value(&request).ok(),
+                false,
+            )?;
         }
         let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
@@ -425,16 +411,17 @@ impl<'a> GroupService<'a> {
                             detail: "authoritative group.get omitted group_state_ref".to_owned(),
                         }
                     })?;
-                crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices_async(
+                let _ = crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices_async(
                     self.client,
                     crate::internal::group_e2ee::v2_lifecycle::v2_group_state_ref(state_ref),
                     authoritative_member.did.as_str(),
                 )
-                .await?;
+                .await;
                 let mut result = authoritative;
                 result.resolved_member = Some(authoritative_member);
                 self.refresh_group_state_for_async(&mut result, &group, true)
                     .await;
+                self.project_member_operation(&group, &mut result).await?;
                 return Ok(result);
             }
             Err(error) => return Err(error),
@@ -442,6 +429,16 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         let mut result = p4_result?;
         result.resolved_member = Some(resolved_member.clone());
+        #[cfg(feature = "group-e2ee")]
+        if use_v2_p6 {
+            result.operation = Some(crate::internal::group_runtime::recovery::record(
+                self.client,
+                &format!("recovery:member:{group}:{}", resolved_member.did.as_str()),
+                &group,
+                None,
+                false,
+            )?);
+        }
         let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
             self.client,
             &result,
@@ -452,120 +449,95 @@ impl<'a> GroupService<'a> {
             .await;
         #[cfg(feature = "group-e2ee")]
         if use_v2_p6 {
-            let transition = crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
-                &group,
-                expected_member_did.as_deref(),
-                "active",
-                &result,
-            )?;
-            let authoritative_member = super::GroupMemberResolution {
-                did: crate::ids::Did::parse(&transition.member_did)?,
-                handle: resolved_member.handle.clone(),
-            };
-            result.resolved_member = Some(authoritative_member);
-            crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices_async(
-                self.client,
-                transition.group_state_ref,
-                &transition.member_did,
-            )
-            .await?;
+            let preparation = async {
+                let transition =
+                    crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
+                        &group,
+                        expected_member_did.as_deref(),
+                        "active",
+                        &result,
+                    )?;
+                let authoritative_member = super::GroupMemberResolution {
+                    did: crate::ids::Did::parse(&transition.member_did)?,
+                    handle: resolved_member.handle.clone(),
+                };
+                result.resolved_member = Some(authoritative_member);
+                crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices_async(
+                    self.client,
+                    transition.group_state_ref,
+                    &transition.member_did,
+                )
+                .await?;
+                Ok::<(), crate::ImError>(())
+            }
+            .await;
+            self.project_member_operation(&group, &mut result).await?;
+            if let Err(error) = preparation {
+                if let Some(operation) = result.operation.as_mut() {
+                    crate::internal::group_runtime::recovery::failed(
+                        self.client,
+                        &operation.operation_id,
+                        &error,
+                    )?;
+                    operation.phase = "retry".to_owned();
+                    operation.reason = Some("encryption_preparation_failed".to_owned());
+                    operation.next_action = "retry".to_owned();
+                }
+            }
         }
         Ok(result)
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    async fn project_member_operation(
+        &self,
+        group: &str,
+        result: &mut super::GroupReadResult,
+    ) -> crate::ImResult<()> {
+        let status = self
+            .client
+            .secure()
+            .group(crate::ids::GroupRef::parse(group)?)
+            .status_async()
+            .await?;
+        result.operation = Some(crate::internal::group_runtime::recovery::record(
+            self.client,
+            &format!(
+                "recovery:member:{group}:{}",
+                result
+                    .resolved_member
+                    .as_ref()
+                    .map(|m| m.did.as_str())
+                    .unwrap_or("unknown")
+            ),
+            group,
+            None,
+            status.can_send_secure,
+        )?);
+        if status.can_send_secure {
+            if let Some(member) = result.resolved_member.as_ref() {
+                crate::internal::group_runtime::journal::save(
+                    self.client,
+                    &format!("member-wire:{group}:{}", member.did.as_str()),
+                    serde_json::Value::Null,
+                )?;
+            }
+        }
+        result.secure_status = Some(status);
+        Ok(())
     }
 
     pub fn remove_member(
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        #[cfg(feature = "group-e2ee")]
-        let secure_required = request.security.required();
-        let group = request.group.as_str().to_string();
-        #[cfg(feature = "group-e2ee")]
-        let requested_member_is_did = request.member.is_did();
-        let resolved_member = resolve_group_member(self.client, &request.member)?;
-        #[cfg(not(feature = "group-e2ee"))]
-        if request.security.required() {
-            return Err(crate::ImError::unsupported("group-e2ee"));
-        }
-        #[cfg(feature = "group-e2ee")]
-        let v2_route = {
-            let authoritative = self.get_authoritative_group(request.group.clone())?;
-            v2_member_mutation_route(&group, &authoritative, secure_required)?
-        };
-        #[cfg(feature = "group-e2ee")]
-        let use_v2_p6 = v2_route == V2MemberMutationRoute::OwnerP6;
-        #[cfg(feature = "group-e2ee")]
-        let resolved_member = if use_v2_p6 {
-            require_group_e2ee_v2(self.client)?;
-            self.authoritative_active_member(
-                crate::ids::GroupRef::parse(&group)?,
-                &resolved_member,
-            )?
-            .unwrap_or_else(|| resolved_member.clone())
-        } else {
-            resolved_member
-        };
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            crate::internal::group_e2ee::v2_lifecycle::preflight_current_controller(
-                self.client,
-                &group,
-            )?;
-        }
-        #[allow(unused_mut)]
-        let mut p4_request = resolved_group_member_request(request, &resolved_member);
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            p4_request.security = super::GroupSecurityRequirement::Default;
-        }
-        let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .remove_member(p4_request, None);
-        #[cfg(feature = "group-e2ee")]
-        let mut result = match p4_result {
-            Ok(result) => result,
-            Err(error) if use_v2_p6 && group_error_is_not_member(&error) => {
-                let authoritative =
-                    self.get_authoritative_group(crate::ids::GroupRef::parse(&group)?)?;
-                crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster(
-                    self.client,
-                    crate::ids::GroupRef::parse(&group)?,
-                )?;
-                let mut result = authoritative;
-                result.resolved_member = requested_member_is_did.then_some(resolved_member);
-                self.refresh_group_state_for(&mut result, &group, true);
-                return Ok(result);
-            }
-            Err(error) => return Err(error),
-        };
-        #[cfg(not(feature = "group-e2ee"))]
-        let mut result = p4_result?;
-        result.resolved_member = Some(resolved_member.clone());
-        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
-        self.refresh_group_state_for(&mut result, &group, true);
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            let transition = crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
-                &group,
-                Some(resolved_member.did.as_str()),
-                "removed",
-                &result,
-            )?;
-            crate::internal::group_e2ee::v2_lifecycle::remove_inactive_member_devices(
-                self.client,
-                transition.group_state_ref,
-                &transition.member_did,
-            )?;
-            result.resolved_member = Some(super::GroupMemberResolution {
-                did: crate::ids::Did::parse(&transition.member_did)?,
-                handle: resolved_member.handle,
-            });
-            self.refresh_group_state_for(&mut result, &group, true);
-        }
-        Ok(result)
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| crate::ImError::Internal {
+                message: format!("build group lifecycle runtime: {error}"),
+            })?;
+        runtime.block_on(self.remove_member_async(request))
     }
 
     pub async fn remove_member_async(
@@ -574,6 +546,11 @@ impl<'a> GroupService<'a> {
     ) -> crate::ImResult<super::GroupReadResult> {
         let secure_required = request.security.required();
         let group = request.group.as_str().to_string();
+        let lock = self
+            .client
+            .core_inner()
+            .group_lifecycle_lock(self.client.current_identity().id.as_str(), &group);
+        let _guard = lock.lock().await;
         #[cfg(feature = "group-e2ee")]
         let requested_member_is_did = request.member.is_did();
         let resolved_member = resolve_group_member_async(self.client, &request.member).await?;

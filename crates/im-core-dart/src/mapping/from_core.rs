@@ -2172,7 +2172,11 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
     fn from(value: im_core::groups::GroupReadResult) -> Self {
         Self {
             encrypted: value.requires_end_to_end_encryption().ok(),
-            secure_status: None,
+            operation_json: value
+                .operation
+                .as_ref()
+                .and_then(|v| serde_json::to_string(v).ok()),
+            secure_status: value.secure_status.map(Into::into),
             group: value.group.map(Into::into),
             groups: value.groups.into_iter().map(Into::into).collect(),
             members: value.members.into_iter().map(Into::into).collect(),

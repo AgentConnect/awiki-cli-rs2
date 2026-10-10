@@ -992,16 +992,26 @@ mod conversation_mark_read_request_tests {
             ..Fixture::message_record_defaults()
         });
 
-        let result = client.messages().mark_conversation_read_async(
-            crate::messages::MarkConversationReadRequest {
-                conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        let result = client
+            .messages()
+            .mark_conversation_read_async(crate::messages::MarkConversationReadRequest {
+                conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob")
+                    .unwrap(),
                 watermark: None,
                 fallback_max_message_ids: None,
-            },
-        ).await.unwrap();
+            })
+            .await
+            .unwrap();
         assert!(!result.remote_acknowledged);
         assert!(!result.pending_remote_ack);
-        assert_eq!(result.effective_watermark.as_ref().unwrap().last_read_thread_seq, None);
+        assert_eq!(
+            result
+                .effective_watermark
+                .as_ref()
+                .unwrap()
+                .last_read_thread_seq,
+            None
+        );
 
         assert_eq!(result.updated_count, 1);
         assert!(result.warnings.is_empty());
@@ -4023,7 +4033,22 @@ impl<'a> MessageService<'a> {
                 let client = client.clone();
                 Box::pin(async move { execute_message_receive_once(client, request).await })
             });
-        coordinator.execute(request, kind, executor).await
+        #[cfg(feature = "sqlite")]
+        let (_, received) = tokio::join!(
+            encryption_preparation::maintain(self.client),
+            coordinator.execute(request, kind, executor)
+        );
+        #[cfg(not(feature = "sqlite"))]
+        let received = coordinator.execute(request, kind, executor).await;
+        #[cfg(feature = "group-e2ee")]
+        {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                crate::internal::group_runtime::recovery::maintain(self.client),
+            )
+            .await;
+        }
+        received
     }
 
     /// Gives independently committed P5/P6 inputs a bounded processing window.
@@ -5526,15 +5551,41 @@ mod group_e2ee_public_send_tests {
     #[cfg(feature = "blocking")]
     #[test]
     fn public_group_e2ee_send_uses_native_provider_and_sends_cipher_only() {
+        verify_public_group_send(false);
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn public_group_send_rejects_locally_ready_mls_with_an_unprepared_business_member() {
+        verify_public_group_send(true);
+    }
+
+    #[cfg(feature = "blocking")]
+    fn verify_public_group_send(pending_member: bool) {
         let fixture = Fixture::vnext();
-        let server = RpcTestServer::spawn(vec![
+        let identity_core = crate::core::ImCore::new_with_options(
+            fixture.config("http://127.0.0.1:9".to_owned()),
+            fixture.paths(),
+            fixture.vnext_open_options(),
+        )
+        .unwrap();
+        let own_did = identity_core
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+            .did()
+            .as_str()
+            .to_owned();
+        drop(identity_core);
+        let mut responses = vec![
             // Public security resolution checks authoritative policy before send preflight.
             json!({"group_snapshot": {"group_did": fixture.group_did,
                 "my_role": "member", "membership_status": "active",
                 "required_security_profile": "transport-protected"}}),
-            json!({"group_did": fixture.group_did, "group_state_version": "p4-state-1",
+            json!({"group_did": fixture.group_did, "group_state_version": "1",
                 "group_profile": {"display_name": "Public E2EE group"},
-                "group_policy": {"message_security_profile": "group-e2ee"}}),
+                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
             // Device-revocation preflight reads the local group before the policy checks.
             json!({
                 "group_snapshot": {
@@ -5554,7 +5605,7 @@ mod group_e2ee_public_send_tests {
             }),
             json!({
                 "group_did": fixture.group_did,
-                "group_state_version": "p4-state-1",
+                "group_state_version": "1",
                 "group_profile": {"display_name": "Public E2EE group"},
                 "group_policy": {"message_security_profile": "group-e2ee"}
             }),
@@ -5568,22 +5619,43 @@ mod group_e2ee_public_send_tests {
             }),
             json!({
                 "group_did": fixture.group_did,
-                "group_state_version": "p4-state-1",
+                "group_state_version": "1",
                 "group_profile": {"display_name": "Public E2EE group"},
                 "group_policy": {"message_security_profile": "group-e2ee"}
             }),
+            // Readiness checks the complete roster for ordinary members.
+            json!({"group_did": fixture.group_did, "group_state_version": "1",
+                "members": [{"agent_did": own_did,
+                    "status": "active", "role": "member"}], "total": 1, "has_more": false}),
+            json!({"group_snapshot": {"group_did": fixture.group_did,
+                "my_role": "member", "membership_status": "active"}}),
+            json!({"group_did": fixture.group_did, "group_state_version": "1",
+                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
+            // Send obtains the version used by its exact encrypted wire operation.
+            json!({"group_snapshot": {"group_did": fixture.group_did,
+                "my_role": "member", "membership_status": "active"}}),
+            json!({"group_did": fixture.group_did, "group_state_version": "1",
+                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
             json!({
                 "accepted": true,
                 "group_did": fixture.group_did,
                 "message_id": "msg-public-group-e2ee",
                 "operation_id": "op-public-group-e2ee",
                 "group_event_seq": "91",
-                "group_state_version": "p4-state-1",
+                "group_state_version": "1",
                 "accepted_at": "2026-05-21T00:00:00Z",
                 "epoch": "0",
                 "group_receipt": {"test": true}
             }),
-        ]);
+        ];
+        if pending_member {
+            responses[7]["members"].as_array_mut().unwrap().push(
+                json!({"agent_did":"did:example:unprepared", "status":"active", "role":"member"}),
+            );
+            responses[7]["total"] = json!(2);
+            responses.truncate(10);
+        }
+        let server = RpcTestServer::spawn(responses);
         let core = crate::core::ImCore::new_with_options(
             fixture.config(server.base_url()),
             fixture.paths(),
@@ -5597,34 +5669,41 @@ mod group_e2ee_public_send_tests {
             .unwrap();
         prepare_local_mls_group(&client, &fixture.group_did);
 
-        let result = client
-            .messages()
-            .send(crate::messages::SendMessageRequest {
-                target: crate::messages::MessageTarget::Group(
-                    crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
-                ),
-                body: crate::messages::MessageBody::Text {
-                    text: "public group secret".to_owned(),
-                    kind: crate::messages::MessageKind::Text,
-                },
-                security: crate::messages::MessageSecurityPolicy::E2eeRequired,
-                client_message_id: Some(
-                    crate::ids::MessageId::parse("msg-public-group-e2ee").unwrap(),
-                ),
-                delivery: crate::messages::MessageDeliveryOptions {
-                    idempotency_key: Some("op-public-group-e2ee".to_owned()),
-                    wait_for_final_acceptance: true,
-                },
-                delegated_signing: None,
-            })
-            .unwrap_or_else(|error| {
-                let methods: Vec<_> = server
-                    .requests()
-                    .into_iter()
-                    .map(|rpc| rpc.rpc_method)
-                    .collect();
-                panic!("public send failed: {error}; RPC methods: {methods:?}");
-            });
+        let result = client.messages().send(crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Group(
+                crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
+            ),
+            body: crate::messages::MessageBody::Text {
+                text: "public group secret".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            security: crate::messages::MessageSecurityPolicy::E2eeRequired,
+            client_message_id: Some(crate::ids::MessageId::parse("msg-public-group-e2ee").unwrap()),
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("op-public-group-e2ee".to_owned()),
+                wait_for_final_acceptance: true,
+            },
+            delegated_signing: None,
+        });
+        if pending_member {
+            assert!(matches!(
+                result,
+                Err(crate::ImError::LocalStateUnavailable { .. })
+            ));
+            assert!(!server
+                .requests()
+                .iter()
+                .any(|r| r.rpc_method == "group.e2ee.send" || r.rpc_method == "group.send"));
+            return;
+        }
+        let result = result.unwrap_or_else(|error| {
+            let methods: Vec<_> = server
+                .requests()
+                .into_iter()
+                .map(|rpc| rpc.rpc_method)
+                .collect();
+            panic!("public send failed: {error}; RPC methods: {methods:?}");
+        });
 
         assert!(result
             .message
@@ -5637,15 +5716,11 @@ mod group_e2ee_public_send_tests {
             crate::messages::DeliveryState::Accepted
         ));
         let requests = server.requests();
-        assert_eq!(requests.len(), 8);
-        assert_eq!(requests[0].rpc_method, "group.get");
-        assert_eq!(requests[1].rpc_method, "group.get_info");
-        let requests = &requests[2..];
-        assert_eq!(requests[0].rpc_method, "group.get");
-        assert_eq!(requests[1].rpc_method, "group.get");
-        assert_eq!(requests[2].rpc_method, "group.get_info");
-        assert_eq!(requests[3].rpc_method, "group.get");
-        assert_eq!(requests[4].rpc_method, "group.get_info");
+        assert_eq!(requests.len(), 13);
+        assert!(requests
+            .iter()
+            .any(|r| r.rpc_method == "group.list_members"));
+        let requests = &requests[requests.len() - 6..];
         assert_eq!(requests[5].rpc_method, "group.e2ee.send");
         assert_eq!(
             requests[5].params["meta"]["security_profile"],
@@ -5657,7 +5732,7 @@ mod group_e2ee_public_send_tests {
         );
         assert_eq!(
             requests[5].params["body"]["group_state_ref"]["group_state_version"],
-            "p4-state-1"
+            "1"
         );
         assert!(
             requests[5].params["body"]["private_message_b64u"]

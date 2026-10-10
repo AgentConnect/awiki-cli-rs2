@@ -107,7 +107,54 @@ impl GroupSecureConversation<'_> {
                     .status(self.group.clone());
             match status.and_then(|status| overlay_group_maintenance_status(status, &authoritative))
             {
-                Ok(status) => Ok(status),
+                Ok(mut status) => {
+                    if status.can_send_secure
+                        && !crate::internal::group_e2ee::v2_lifecycle::roster_consistent(
+                            self.client,
+                            self.group.clone(),
+                            &authoritative,
+                        )
+                        .unwrap_or(false)
+                    {
+                        status.can_send_secure = false;
+                        status.state = super::GroupSecureState::WaitingForMembershipUpdate;
+                        status.problem = Some(super::SecureProblem {
+                            code: super::SecureProblemCode::GroupStateUnavailable,
+                            message: "等待成员完成加密准备".to_owned(),
+                            retryable: false,
+                        });
+                    }
+                    if !status.can_send_secure {
+                        if let Some(problem) =
+                            crate::internal::group_runtime::recovery::problem_for_group(
+                                self.client,
+                                self.group.as_str(),
+                            )?
+                        {
+                            status.problem = Some(problem);
+                        }
+                    }
+                    if !status.can_send_secure
+                        && authoritative.group.as_ref().is_some_and(|g| {
+                            g.my_role.as_deref() == Some("owner")
+                                && g.membership_status.as_deref() == Some("active")
+                        })
+                    {
+                        let key = format!("recovery:repair:{}", self.group.as_str());
+                        if crate::internal::group_runtime::journal::load(self.client, &key)?
+                            .is_none_or(|v| v["phase"] == "completed")
+                        {
+                            let _ = crate::internal::group_runtime::recovery::record(
+                                self.client,
+                                &key,
+                                self.group.as_str(),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                    Ok(status)
+                }
                 Err(err) if group_status_can_downgrade_error(&err) => {
                     Ok(group_status_unavailable(self.group.clone(), err))
                 }
@@ -189,7 +236,55 @@ impl GroupSecureConversation<'_> {
             })?;
             match status.and_then(|status| overlay_group_maintenance_status(status, &authoritative))
             {
-                Ok(status) => Ok(status),
+                Ok(mut status) => {
+                    if status.can_send_secure
+                        && !crate::internal::group_e2ee::v2_lifecycle::roster_consistent_async(
+                            self.client,
+                            self.group.clone(),
+                            &authoritative,
+                        )
+                        .await
+                        .unwrap_or(false)
+                    {
+                        status.can_send_secure = false;
+                        status.state = super::GroupSecureState::WaitingForMembershipUpdate;
+                        status.problem = Some(super::SecureProblem {
+                            code: super::SecureProblemCode::GroupStateUnavailable,
+                            message: "等待成员完成加密准备".to_owned(),
+                            retryable: false,
+                        });
+                    }
+                    if !status.can_send_secure {
+                        if let Some(problem) =
+                            crate::internal::group_runtime::recovery::problem_for_group(
+                                self.client,
+                                self.group.as_str(),
+                            )?
+                        {
+                            status.problem = Some(problem);
+                        }
+                    }
+                    if !status.can_send_secure
+                        && authoritative.group.as_ref().is_some_and(|g| {
+                            g.my_role.as_deref() == Some("owner")
+                                && g.membership_status.as_deref() == Some("active")
+                        })
+                    {
+                        let key = format!("recovery:repair:{}", self.group.as_str());
+                        if crate::internal::group_runtime::journal::load(self.client, &key)?
+                            .is_none_or(|v| v["phase"] == "completed")
+                        {
+                            let _ = crate::internal::group_runtime::recovery::record(
+                                self.client,
+                                &key,
+                                self.group.as_str(),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                    Ok(status)
+                }
                 Err(err) if group_status_can_downgrade_error(&err) => {
                     Ok(group_status_unavailable(self.group.clone(), err))
                 }
@@ -235,30 +330,13 @@ impl GroupSecureConversation<'_> {
     pub fn repair(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
-            if !self.client.core_inner().group_e2ee_v2_enabled() {
-                return Err(crate::ImError::unsupported("group-e2ee-v2"));
-            }
-            let roster = crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster(
-                self.client,
-                self.group.clone(),
-            )?;
-            let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
-            let mut result =
-                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                    .repair(
-                        self.group.clone(),
-                        format!(
-                            "im-core-p6-v2-repair-{}",
-                            crate::internal::wire::common::generate_operation_id()
-                        ),
-                    )?;
-            result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
-            result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
-            result.remaining_devices = u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
-            result.repaired |= roster.added_devices > 0
-                || roster.removed_devices > 0
-                || roster.repaired_wal_entries > 0;
-            Ok(result)
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| crate::ImError::Internal {
+                    message: format!("build group repair runtime: {error}"),
+                })?;
+            runtime.block_on(self.repair_async())
         }
         #[cfg(all(feature = "group-e2ee", not(feature = "blocking")))]
         {
@@ -274,6 +352,11 @@ impl GroupSecureConversation<'_> {
     pub async fn repair_async(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(feature = "group-e2ee")]
         {
+            let lock = self.client.core_inner().group_lifecycle_lock(
+                self.client.current_identity().id.as_str(),
+                self.group.as_str(),
+            );
+            let _guard = lock.lock().await;
             if !self.client.core_inner().group_e2ee_v2_enabled() {
                 return Err(crate::ImError::unsupported("group-e2ee-v2"));
             }
@@ -308,6 +391,29 @@ impl GroupSecureConversation<'_> {
             result.repaired |= roster.added_devices > 0
                 || roster.removed_devices > 0
                 || roster.repaired_wal_entries > 0;
+            let status = self.status_async().await?;
+            result.state = status.state;
+            result.problem = status.problem;
+            if status.can_send_secure {
+                for (key, value) in crate::internal::group_runtime::journal::pending(self.client)? {
+                    if value["group_did"] == self.group.as_str() {
+                        crate::internal::group_runtime::recovery::record(
+                            self.client,
+                            &key,
+                            self.group.as_str(),
+                            None,
+                            true,
+                        )?;
+                        if let Some(member) = value["request"]["member"].as_str() {
+                            crate::internal::group_runtime::journal::save(
+                                self.client,
+                                &format!("member-wire:{}:{member}", self.group.as_str()),
+                                serde_json::Value::Null,
+                            )?;
+                        }
+                    }
+                }
+            }
             Ok(result)
         }
         #[cfg(not(feature = "group-e2ee"))]

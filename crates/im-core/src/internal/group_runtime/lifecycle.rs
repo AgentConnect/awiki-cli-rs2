@@ -265,6 +265,8 @@ where
             self.client.did().as_str(),
             &request,
         )?;
+        #[cfg(feature = "sqlite")]
+        let payload = super::journal::freeze_member_payload(self.client, payload)?;
         self.signed_group_rpc_async(payload, credentials).await
     }
 

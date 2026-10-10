@@ -3,6 +3,10 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupReadResult {
+    #[serde(default)]
+    pub operation: Option<GroupOperationStatus>,
+    #[serde(default)]
+    pub secure_status: Option<crate::secure::GroupSecureStatus>,
     pub group: Option<GroupSnapshot>,
     pub groups: Vec<GroupSummary>,
     pub members: Vec<GroupMember>,
@@ -75,6 +79,8 @@ impl GroupReadResult {
             .then(|| optional_string(raw.get("group_state_version")))
             .flatten();
         Self {
+            operation: None,
+            secure_status: None,
             group,
             groups,
             members,
@@ -1621,3 +1627,15 @@ mod tests {
 #[cfg(test)]
 #[path = "avatar_tests.rs"]
 mod avatar_tests;
+
+/// Redacted progress shared by hosts; wire requests and key material stay in Core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupOperationStatus {
+    pub operation_id: String,
+    pub group_did: String,
+    pub phase: String,
+    pub business_committed: bool,
+    pub encryption_ready: bool,
+    pub reason: Option<String>,
+    pub next_action: String,
+}

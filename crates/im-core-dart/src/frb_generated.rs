@@ -11770,6 +11770,7 @@ impl SseDecode for crate::dto::group::DartGroupMember {
 impl SseDecode for crate::dto::group::DartGroupReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_operationJson = <Option<String>>::sse_decode(deserializer);
         let mut var_encrypted = <Option<bool>>::sse_decode(deserializer);
         let mut var_secureStatus =
             <Option<crate::dto::secure::DartGroupSecureStatus>>::sse_decode(deserializer);
@@ -11786,6 +11787,7 @@ impl SseDecode for crate::dto::group::DartGroupReadResult {
         let mut var_source = <Option<String>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupReadResult {
+            operation_json: var_operationJson,
             encrypted: var_encrypted,
             secure_status: var_secureStatus,
             group: var_group,
@@ -17908,6 +17910,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupMember>
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupReadResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.operation_json.into_into_dart().into_dart(),
             self.encrypted.into_into_dart().into_dart(),
             self.secure_status.into_into_dart().into_dart(),
             self.group.into_into_dart().into_dart(),
@@ -22449,6 +22452,7 @@ impl SseEncode for crate::dto::group::DartGroupMember {
 impl SseEncode for crate::dto::group::DartGroupReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.operation_json, serializer);
         <Option<bool>>::sse_encode(self.encrypted, serializer);
         <Option<crate::dto::secure::DartGroupSecureStatus>>::sse_encode(
             self.secure_status,

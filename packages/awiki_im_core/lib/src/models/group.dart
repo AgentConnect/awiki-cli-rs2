@@ -206,6 +206,7 @@ class JoinGroupRequest {
 
 class GroupReadResult {
   const GroupReadResult({
+    this.operationJson,
     this.encrypted,
     this.secureStatus,
     this.group,
@@ -221,6 +222,7 @@ class GroupReadResult {
     this.warnings = const [],
   });
 
+  final String? operationJson;
   final bool? encrypted;
   final GroupSecureStatus? secureStatus;
   final GroupSnapshot? group;
