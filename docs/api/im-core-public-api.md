@@ -2272,3 +2272,5 @@ MessageMetadata::is_end_to_end_encrypted 与 Dart isEndToEndEncrypted 表达 SDK
 群状态与发送共用完整 P4 roster 校验：版本绑定分页、结束版本复查及本地 MLS DID 集合必须一致；普通成员可执行只读校验，P2 精确设备授权/变更仍走现有受权限约束的协调入口。创建、邀请、修复与发送在 Core 按群串行。新表单关闭不取消已提交操作。
 
 Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表示实际加密。自己的 pending/failed/retry 可使用意图锁；成功及收到的消息必须依据实际属性。
+
+P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。

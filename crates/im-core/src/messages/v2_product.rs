@@ -762,6 +762,21 @@ fn group_result(
     accepted: &anp::group_e2ee::V2GroupSendResult,
     attachment_projection: Option<&Value>,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
+    // P4 history/receive identify a group event by group DID + sequence.
+    // Keep the original P6 message ID as an alias so the queued bubble is
+    // atomically replaced by the same canonical row after Host acceptance.
+    let canonical_id = crate::ids::MessageId::parse(format!(
+        "{}:{}",
+        accepted.group_did, accepted.group_event_seq
+    ))?;
+    let server_sequence = accepted
+        .group_event_seq
+        .parse::<i64>()
+        .ok()
+        .filter(|sequence| *sequence > 0)
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "accepted group event sequence cannot be projected".to_owned(),
+        })?;
     let projection_body = attachment_projection
         .map(|payload| crate::messages::MessageBody::Payload {
             payload: payload.clone(),
@@ -771,10 +786,7 @@ fn group_result(
         client,
         &request.target,
         &projection_body,
-        request
-            .client_message_id
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?,
+        &canonical_id,
         Some(accepted.operation_id.as_str()),
         crate::messages::DeliveryState::Accepted,
         None,
@@ -795,6 +807,8 @@ fn group_result(
             &crate::attachments::manifest::manifest_content_string(manifest),
         );
     }
+    result.message.metadata.server_sequence = Some(server_sequence);
+    add_product_attribute(&mut result, "raw_message_id", &accepted.message_id);
     result.message.sent_at = Some(accepted.accepted_at.clone());
     add_product_attribute(&mut result, "security", "group-e2ee");
     add_product_attribute(&mut result, "message_security_profile", "group-e2ee");
@@ -1050,6 +1064,64 @@ mod tests {
 
         let result = group_result(&client, &request, &accepted, None).unwrap();
 
+        assert_eq!(result.message.id.as_str(), "did:example:group:7");
+        assert_eq!(result.message.metadata.server_sequence, Some(7));
+        assert_eq!(
+            result
+                .message
+                .metadata
+                .send_state
+                .as_ref()
+                .unwrap()
+                .message_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "did:example:group:7"
+        );
+        assert!(result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "raw_message_id"
+                && attribute.value == "msg-group-final"));
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        let pending = crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-group-final".to_owned(),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            conversation_id: "group:did:example:group".to_owned(),
+            thread_id: "group:did:example:group".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            sender_did: client.did().as_str().to_owned(),
+            direction: 1,
+            content: "hello group".to_owned(),
+            content_type: "text/plain".to_owned(),
+            ..Default::default()
+        }
+        .with_resolved_wire_thread("group", "did:example:group");
+        crate::internal::local_state::messages::upsert_message(&connection, &pending).unwrap();
+        crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
+            &client,
+            "did:example:group",
+            "hello group",
+            &crate::messages::MessageKind::Text,
+            &result,
+        )
+        .unwrap();
+        let rows: Vec<(String, i64, bool)> = connection
+            .prepare("SELECT msg_id, server_seq, is_e2ee FROM messages")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![("did:example:group:7".to_owned(), 7, true)]);
         assert_eq!(result.delivery, crate::messages::DeliveryState::Accepted);
         assert!(result
             .message
