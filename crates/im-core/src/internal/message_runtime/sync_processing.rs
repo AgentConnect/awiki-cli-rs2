@@ -208,13 +208,33 @@ pub(crate) async fn process_p6(
         return Err(crate::ImError::unsupported("group-e2ee-v2"));
     }
     enum Prepared {
+        Cached,
         Message(super::read::PreparedP6Incoming),
         Notice(crate::internal::group_e2ee::v2_notice::PreparedP6Notice),
     }
     let prepared = match claim.event_type.as_str() {
-        "p6.delivery.created" => Prepared::Message(
-            super::read::prepare_p6_v2_incoming_message(client, &claim.payload).await?,
-        ),
+        "p6.delivery.created" => {
+            // A device cannot MLS-decrypt its own outgoing echo. Reuse only a
+            // previously authenticated projection bound to this owner/group/seq/sender.
+            if claim.payload.pointer("/meta/target/did").and_then(Value::as_str) != Some(client.did().as_str())
+                || claim.payload.pointer("/meta/recipient_device_id").and_then(Value::as_str) != Some(claim.device_id.as_str()) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let mut projected = super::sync_v2::p6_projection_for_application(&claim.payload)?;
+            let cached = super::read::apply_cached_group_e2ee_messages_async(
+                client, std::slice::from_mut(&mut projected),
+            ).await;
+            if cached.contains(&0) {
+                Prepared::Cached
+            } else if claim.payload.pointer("/meta/sender_did").and_then(Value::as_str) == Some(client.did().as_str())
+                && claim.payload.pointer("/meta/sender_device_id").and_then(Value::as_str) == Some(claim.device_id.as_str()) {
+                // The notification can beat the send response. Keep the input and
+                // wait for the accepted send projection, without advancing MLS.
+                return Err(sync_inbox::error("sync.group_sent_projection_pending", "own group delivery awaits its accepted send projection"));
+            } else {
+                Prepared::Message(super::read::prepare_p6_v2_incoming_message(client, &claim.payload).await?)
+            }
+        },
         "p6.control.notice" => Prepared::Notice(
             crate::internal::group_e2ee::v2_notice::prepare_for_client_async(
                 client,
@@ -243,6 +263,7 @@ pub(crate) async fn process_p6(
         let mut conversations = Vec::new();
         let mut committed = Vec::new();
         match prepared {
+            Prepared::Cached => {}
             Prepared::Message(message) => {
                 let mut projected = super::read::project_prepared_p6_incoming(&committing_client, message, true)?;
                 let manifest = super::read::attachment_manifest_cache_record(&committing_client, &projected);
@@ -354,6 +375,7 @@ pub(crate) fn retry_at(error: &crate::ImError, attempts: i64) -> Option<i64> {
     ) || matches!(
         code.as_str(),
         "sync.peer_resolution_pending"
+            | "sync.group_sent_projection_pending"
             | "sync.baseline_pending"
             | "sync.group_state_pending"
             | "group.e2ee.epoch_conflict"

@@ -521,6 +521,25 @@ pub(crate) fn claim_inputs(
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .map_err(local_state_unavailable)?;
     require_binding(&transaction, binding)?;
+    // Older clients could permanently block an already accepted own P6 echo.
+    // Reclaim only this exact owner/device delivery once an authenticated local
+    // send projection exists; the business reducer still validates the envelope.
+    transaction.execute(
+        "UPDATE sync_lane_inbox SET next_attempt_at=?4, processing_error_code='sync.group_sent_projection_pending'
+         WHERE input_id IN (SELECT i.input_id FROM sync_lane_inbox i JOIN messages m
+           ON m.owner_identity_id=i.owner_identity_id
+          AND m.msg_id=json_extract(i.raw_payload_json,'$.body.group_did') || ':' || json_extract(i.raw_payload_json,'$.body.group_event_seq')
+          AND m.group_did=i.group_did AND m.sender_did=?2 AND m.owner_did=?2 AND m.direction=-1
+          AND m.is_e2ee=1 AND json_extract(m.metadata,'$.decryption_state')='decrypted'
+         WHERE i.owner_identity_id=?1 AND i.device_id_snapshot=?3 AND i.lane='p6_group'
+          AND i.event_type='p6.delivery.created' AND i.processing_error_code='sync.processing_blocked'
+          AND i.closed_at IS NULL AND i.attempt_token IS NULL AND i.next_attempt_at IS NULL
+          AND json_extract(i.raw_payload_json,'$.meta.sender_did')=?2
+          AND json_extract(i.raw_payload_json,'$.meta.sender_device_id')=?3
+          AND json_extract(i.raw_payload_json,'$.meta.target.did')=?2
+          AND json_extract(i.raw_payload_json,'$.meta.recipient_device_id')=?3 LIMIT 64)",
+        params![binding.owner_identity_id, binding.current_did, binding.protocol_device_id, now],
+    ).map_err(local_state_unavailable)?;
     transaction
         .execute("DELETE FROM sync_input_leases WHERE deadline<=?1", [now])
         .map_err(local_state_unavailable)?;
