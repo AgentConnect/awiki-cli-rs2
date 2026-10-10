@@ -158,3 +158,71 @@ fn read_watermark_never_crosses_owner_conversation_or_unknown_sequence() {
         (3, 0)
     );
 }
+
+#[test]
+fn ordinary_read_watermarks_never_consume_p5_device_inbox_sequences() {
+    let mut encrypted = record("direct", "p5-after-plain", Some(3));
+    encrypted.is_e2ee = true;
+    encrypted.metadata = serde_json::json!({
+        "p5_cache_profile": "anp.direct.e2ee.v2",
+        "p5_cache_sender_did": "did:example:peer",
+        "p5_cache_sender_device_id": "peer-device",
+        "p5_cache_recipient_did": "did:example:owner",
+        "p5_cache_recipient_device_id": "owner-device",
+        "p5_cache_binding_digest": "authenticated-binding",
+        "raw_message_id": "p5-raw"
+    })
+    .to_string();
+    let (db, _) = database_with_watermark(&encrypted);
+    upsert_message(&db, &encrypted).unwrap();
+    upsert_message(&db, &encrypted).unwrap();
+    let plain = record("direct", "ordinary", Some(11));
+    upsert_message(&db, &plain).unwrap();
+    assert_eq!(
+        mark_thread_messages_read_up_to_seq(&db, "owner", &[plain.conversation_id.clone()], "11")
+            .unwrap(),
+        1
+    );
+    let unread: i64 = db
+        .query_row(
+            "SELECT unread_count FROM conversation_summaries WHERE owner_identity_id='owner'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unread, 1,
+        "new P5 message must stay unread across ordinary watermark application"
+    );
+    let resolution = resolve_v2_mark_read_watermarks_for_owner_identity(
+        &db,
+        "owner",
+        &[encrypted.msg_id.clone()],
+    )
+    .unwrap();
+    assert!(resolution.watermarks.is_empty());
+    assert_eq!(
+        resolution.local_only_message_ids,
+        [encrypted.msg_id.clone()]
+    );
+    assert_eq!(
+        mark_messages_read_for_owner_identity(
+            &db,
+            "owner",
+            "did:example:owner",
+            &resolution.local_only_message_ids
+        )
+        .unwrap(),
+        1
+    );
+    upsert_message(&db, &encrypted).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT is_read FROM messages WHERE msg_id='p5-after-plain'",
+            [],
+            |row| row.get::<_, bool>(0)
+        )
+        .unwrap(),
+        true
+    );
+}

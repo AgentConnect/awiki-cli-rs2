@@ -945,6 +945,9 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
   AND direction = 0 AND is_read = 0 AND hydration_state = 'hydrated'
   AND wire_identity_resolution_state = 'resolved'
   AND server_seq > 0
+  -- P5 device-inbox sequences are not ordinary thread read watermarks.
+  AND COALESCE(CASE WHEN json_valid(metadata)
+      THEN json_extract(metadata, '$.p5_cache_profile') END, '') <> 'anp.direct.e2ee.v2'
   AND EXISTS (
       SELECT 1 FROM thread_read_state AS state
       WHERE state.owner_identity_id = messages.owner_identity_id
@@ -3335,6 +3338,8 @@ WHERE owner_identity_id = ?
   AND is_read = 0
   AND hydration_state = 'hydrated'
   AND server_seq IS NOT NULL
+  AND COALESCE(CASE WHEN json_valid(metadata)
+      THEN json_extract(metadata, '$.p5_cache_profile') END, '') <> 'anp.direct.e2ee.v2'
   AND server_seq <= CAST(? AS INTEGER)
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
     );
