@@ -131,3 +131,15 @@ Codex、Claude Code 的固定适配器复用宿主机 Node；检测与执行共�
 显式非空路径保存并优先使用；路径失效时明确失败，不静默调用另一份客户端。schema 38 仅一次性清除已保存成功创建探测、属于 ACP profile、原始配置明确未指定 `binary_path` 的绝对默认路径；显式配置（包括异常值）、旧运行时、缺少来源证据或无法解析的配置均保留。迁移不修改身份、工作目录、会话或模型设置。
 
 个人助理新建使用 `app-personal-agent:acp-v1:{userDid}:{appInstanceId}`，加密 envelope 的 `binding_id` 与 payload 的 `ensure_once_key` 相同。Daemon 与 Rust System Test 探针共用生成函数；旧代际请求继续拒绝，不自动创建替代身份。
+
+
+## 消息安全继承（2026-10-09 测试候选）
+
+普通 Runtime Agent 的触发消息经 Core 成功解密后，与普通消息进入同一会话。
+`runtime_tasks.message_security`（Daemon schema 39）持久化 `default_plain` 或
+`e2ee_required`；旧行默认普通。入队时固定该字段，重复 task 不允许改变类型。
+自动 final outbox、结构化状态、分段回复和附件回调继承任务类型；local RPC 省略
+security 时使用任务值，显式冲突或排队记录不匹配时停止发送。无法解密的内容不进入
+模型；不从 UI 当前选择推断触发类型。个人助理委托路径仍只允许既有普通消息能力。
+
+这只是候选源码接入，不代表真实模型兼容性或远程验收通过。自动化采用模拟模型。

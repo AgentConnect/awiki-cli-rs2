@@ -48,6 +48,7 @@ struct SummaryMessageRow {
     mentions_current_user: bool,
     sort_at: String,
     server_seq: Option<i64>,
+    is_e2ee: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,8 @@ struct SummaryStateRow {
     last_message_id: String,
     last_message_at: String,
     last_server_seq: Option<i64>,
+    last_is_e2ee: bool,
+    last_group_did: String,
 }
 
 impl SummaryMessageRow {
@@ -241,7 +244,7 @@ SELECT msg_id,
        sender_name,
        mentions_current_user,
        COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at,
-       server_seq
+       server_seq, is_e2ee
 FROM messages
 WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         (&owner_identity_id, &msg_id),
@@ -448,7 +451,7 @@ SELECT msg_id,
        sender_name,
        mentions_current_user,
        COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at,
-       server_seq
+       server_seq, is_e2ee
 FROM messages
 WHERE owner_identity_id = ?1
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
@@ -673,7 +676,9 @@ SELECT t.message_count,
        t.first_unread_mention_message_id,
        t.last_message_id,
        t.last_message_at,
-       m.server_seq AS last_server_seq
+       m.server_seq AS last_server_seq,
+       m.is_e2ee AS last_is_e2ee,
+       m.group_did AS last_group_did
 FROM conversation_summaries t
 LEFT JOIN messages m
   ON m.owner_identity_id = t.owner_identity_id
@@ -697,6 +702,10 @@ WHERE t.owner_identity_id = ?1 AND t.conversation_id = ?2"#,
                     .get::<_, Option<String>>("last_message_at")?
                     .unwrap_or_default(),
                 last_server_seq: row.get::<_, Option<i64>>("last_server_seq")?,
+                last_is_e2ee: row.get::<_, Option<i64>>("last_is_e2ee")?.unwrap_or(0) != 0,
+                last_group_did: row
+                    .get::<_, Option<String>>("last_group_did")?
+                    .unwrap_or_default(),
             })
         },
     );
@@ -836,30 +845,60 @@ fn first_unread_mention_for_new_summary(row: &SummaryMessageRow) -> &str {
     }
 }
 
+pub(crate) fn order_key<'a>(
+    timestamp: &str,
+    encrypted: bool,
+    group: &str,
+    sequence: Option<i64>,
+    id: &'a str,
+) -> (
+    Option<chrono::DateTime<chrono::FixedOffset>>,
+    bool,
+    i64,
+    &'a str,
+) {
+    (
+        chrono::DateTime::parse_from_rfc3339(timestamp).ok(),
+        encrypted,
+        if encrypted && group.is_empty() {
+            0
+        } else {
+            sequence.unwrap_or(0)
+        },
+        id,
+    )
+}
+
 fn message_is_later_than_summary(row: &SummaryMessageRow, summary: &SummaryStateRow) -> bool {
-    match (row.server_seq, summary.last_server_seq) {
-        (Some(server_seq), Some(last_server_seq)) if server_seq != last_server_seq => {
-            return server_seq > last_server_seq;
-        }
-        _ => {}
-    }
-    if row.sort_at.as_str() != summary.last_message_at.as_str() {
-        return row.sort_at.as_str() > summary.last_message_at.as_str();
-    }
-    row.msg_id.as_str() > summary.last_message_id.as_str()
+    order_key(
+        &row.sort_at,
+        row.is_e2ee,
+        &row.group_did,
+        row.server_seq,
+        &row.msg_id,
+    ) > order_key(
+        &summary.last_message_at,
+        summary.last_is_e2ee,
+        &summary.last_group_did,
+        summary.last_server_seq,
+        &summary.last_message_id,
+    )
 }
 
 fn message_is_later_than_message(row: &SummaryMessageRow, current: &SummaryMessageRow) -> bool {
-    match (row.server_seq, current.server_seq) {
-        (Some(server_seq), Some(current_server_seq)) if server_seq != current_server_seq => {
-            return server_seq > current_server_seq;
-        }
-        _ => {}
-    }
-    if row.sort_at != current.sort_at {
-        return row.sort_at > current.sort_at;
-    }
-    row.msg_id > current.msg_id
+    order_key(
+        &row.sort_at,
+        row.is_e2ee,
+        &row.group_did,
+        row.server_seq,
+        &row.msg_id,
+    ) > order_key(
+        &current.sort_at,
+        current.is_e2ee,
+        &current.group_did,
+        current.server_seq,
+        &current.msg_id,
+    )
 }
 
 fn distinct_owner_identity_ids(connection: &Connection) -> crate::ImResult<Vec<String>> {
@@ -947,6 +986,7 @@ fn summary_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryMessa
             != 0,
         sort_at: row.get::<_, Option<String>>("sort_at")?.unwrap_or_default(),
         server_seq: row.get::<_, Option<i64>>("server_seq")?,
+        is_e2ee: row.get::<_, Option<i64>>("is_e2ee")?.unwrap_or(0) != 0,
     })
 }
 

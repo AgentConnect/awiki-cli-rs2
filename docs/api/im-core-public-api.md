@@ -784,6 +784,13 @@ Core 才判定远端未提交并重试同一份注册材料；不得解析错误
 
 ### 5.1 Device Join host facade
 
+外部注册身份的 Host（例如独立 Daemon/Runtime）必须在接收器就绪之前调用
+`client.messages().prepare_encrypted_messaging_async()`。Core 重新验证当前 exact-device
+授权，为启用的 P5/P6 发布接收材料；重试复用现有 PreKey 和确定性的 bootstrap
+KeyPackage，不向 Host 暴露私钥或协议对象。未启用的加密能力不执行发布；已启用但
+准备失败时返回错误，Host 保留重试状态，不能宣称加密接收已就绪。普通账号的现有
+注册与设备激活准备流程不变。
+
 Device Join is an AWiki-local control-plane API and has no host-local rollout
 gate. The host facade provides new-device begin/poll/cancel plus
 management-device Registry, local notification-driven request listing,
@@ -2239,3 +2246,33 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 `MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
 
 读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。实际展示许可和声振属于 App 本机设置与系统权限，不由注解授予；不新增 User Service Notify 接口；旧客户端仍可读正文。
+
+
+### Node 公开头像展示类型（2026-10-08）
+
+`NodeDisplayProfile.subjectType?: string` 直接透传 Core `DisplayProfile.subject_type`，缺失保持 `None`/省略；
+与 `avatarUri`、`avatarThumbnailUri` 同属展示信息，不参与身份、授权或路由。
+DSH 通过既有 hydrate/refreshDisplayProfiles 消费，不读取 User Service 私有 Inventory。
+这是可选增量字段，旧调用者无需改动；旧 native 缺字段时消费者使用静态展示，不猜测 Agent 身份。
+
+### 消息安全意图与候选绑定（2026-10-09）
+
+发送入口在上传附件或落本地发送投影前解析群的权威安全策略。Direct 的 DefaultPlain 保持普通消息，E2eeRequired/SecureDirect 能力不足时失败；Group 的 DefaultPlain 遵循创建时策略，显式冲突要求失败。Node v20 增加发送 security（plain/e2ee-required）、createGroup encrypted/operationId、getGroup 的 encrypted/secureState/canSendSecure/secureRetryable，以及 repairGroupSecurity。未配置的 Core gate 仍默认关闭，APP/DSH/Daemon 候选分别显式开启。旧 native 不可与 v20 包混用。
+
+MessageMetadata::is_end_to_end_encrypted 与 Dart isEndToEndEncrypted 表达 SDK 实际来源。解密后的消息继续保留实际加密属性；输入选择只是发送意图。groups.get_authoritative_group_async 和 GroupReadResult.requires_end_to_end_encryption 为绑定提供经 Core 校验的群策略，不由客户端解析线协议。
+
+带稳定 slug/operationId 的建群使用 Core 的 group_operation_journal 冻结公共请求元数据和 body；相同操作不允许变更内容或群类型。P6 创建使用相同设备、群、时间和 request id 复用协议自身的准备/WAL恢复。表按 owner_identity_id/local_device_id 隔离，随 owner 本地删除清理；不存私钥或历史迁移备份。
+
+### 2026-10-10 设备准备与群操作衔接
+
+`messages.maintain_encrypted_messaging_async()` 是 Host 激活/恢复与两种同步入口共用的有界、幂等设备准备入口。阶段、重试次数及下次尝试时间保存在当前身份/协议设备作用域的既有 operation journal；失败不回滚普通消息同步。每日轮换稳定 KeyPackage 发布标识，成功消费 Welcome 后补包；私钥与 MLS 状态不进入公共结果。
+
+`GroupReadResult.operation` 表达 operation_id、group_did、phase、business_committed、encryption_ready、reason、next_action，`secure_status` 返回本次操作后的就绪投影。业务提交成功后的加密异常保留原群/原操作，由同步调度续接；宿主不可依赖 warnings 判断是否建群或加成员成功。邀请在 P4 写入前校验目标设备并取得租约，续接复用原租约及请求元数据，缺包返回稳定码 `group.member_encryption_not_ready`。
+
+群状态与发送共用完整 P4 roster 校验：版本绑定分页、结束版本复查及本地 MLS DID 集合必须一致；普通成员可执行只读校验，P2 精确设备授权/变更仍走现有受权限约束的协调入口。创建、邀请、修复与发送在 Core 按群串行。新表单关闭不取消已提交操作。
+
+Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表示实际加密。自己的 pending/failed/retry 可使用意图锁；成功及收到的消息必须依据实际属性。
+
+P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。
+
+会话快照与消息 DTO 一样保留本地认证后的 `decryption_state`，重启后的客户端据此区分已解密内容和不可用密文；不重新消耗 MLS 密文，也不由 UI 猜测解密结果。

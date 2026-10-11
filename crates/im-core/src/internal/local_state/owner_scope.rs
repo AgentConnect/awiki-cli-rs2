@@ -10,6 +10,10 @@ pub(crate) struct OwnerDeleteTable {
 
 pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
     OwnerDeleteTable {
+        table: "group_operation_journal",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
         table: "attachment_manifest_cache",
         delete_owner_dids: true,
     },

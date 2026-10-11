@@ -2095,7 +2095,7 @@ pub(crate) async fn publish_v2_group_key_package_after_registration_async(
 }
 
 #[cfg(feature = "group-e2ee")]
-fn deterministic_registration_group_key_package_ids(
+pub(crate) fn deterministic_registration_group_key_package_ids(
     did: &crate::ids::Did,
     device_id: &str,
 ) -> (String, String) {

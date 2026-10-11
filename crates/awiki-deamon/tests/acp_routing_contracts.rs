@@ -101,6 +101,7 @@ fn acp_controller_text_route_preserves_verified_sender_did() {
     let routed = route_controller_text_task(
         &profile,
         ControllerTextMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_001".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -129,6 +130,7 @@ fn acp_controller_text_route_preserves_verified_sender_did() {
         &profile,
         &verified_sender,
         ControllerTextMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_002".to_string(),
             conversation_id: None,
             sender_did: "did:human:alice-new".to_string(),
@@ -147,6 +149,7 @@ fn acp_controller_text_route_preserves_verified_sender_did() {
     let wrong_target = route_controller_text_task(
         &profile,
         ControllerTextMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_003".to_string(),
             conversation_id: None,
             sender_did: "did:human:alice".to_string(),

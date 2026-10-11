@@ -171,8 +171,8 @@ def main(argv=None):
     parser.add_argument('--no-default-features', action='store_true')
     parser.add_argument('--optimized', action='store_true', help='Optimize a Debug source integration build; not a release gate')
     args = parser.parse_args(argv)
-    if any((args.target, args.features, args.no_default_features, args.optimized)) and (args.deps != 'source' or args.profile != 'debug' or args.package != 'im-core-dart' or args.refresh_lock or args.resolve_only):
-        parser.error('Native build options require a Debug source im-core-dart build/check')
+    if any((args.target, args.features, args.no_default_features, args.optimized)) and (args.deps not in {'local', 'source'} or args.profile != 'debug' or args.package != 'im-core-dart' or args.refresh_lock or args.resolve_only):
+        parser.error('Native build options require a Debug local/source im-core-dart build/check')
     if args.profile == 'release' and (ROOT / 'dependencies.source.json').exists():
         parser.error('Resolve and remove dependencies.source.json before release')
     if args.profile == 'release' and args.resolve_only:
@@ -265,6 +265,9 @@ def main(argv=None):
                 evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
                 (artifacts / 'command-result.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
             if args.target and not args.check:
+                if args.deps == 'local':
+                    lock = artifacts / (args.target + '.Cargo.lock')
+                    shutil.copy2(checkout / 'Cargo.lock', lock)
                 evidence['source_manifest_sha256'] = hashlib.sha256(selection.read_bytes()).hexdigest()
                 evidence['source_lock_sha256'] = hashlib.sha256(lock.read_bytes()).hexdigest()
                 evidence['build'] = {'target': args.target, 'features': sorted((args.features or '').split(',')), 'optimized': args.optimized, 'no_default_features': args.no_default_features}

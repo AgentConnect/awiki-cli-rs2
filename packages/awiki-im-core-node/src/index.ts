@@ -321,6 +321,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.addGroupMember(input))
   }
 
+  public repairGroupSecurity(input: GroupInput): Promise<NodeGroup> {
+    return call(() => this.native.repairGroupSecurity(input))
+  }
+
   public getGroup(input: GroupInput): Promise<NodeGroup> {
     return call(() => this.native.getGroup(input))
   }

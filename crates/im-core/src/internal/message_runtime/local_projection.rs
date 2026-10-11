@@ -403,7 +403,6 @@ pub(crate) async fn persist_group_outgoing_result_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
 pub(crate) async fn persist_send_projection_async(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
@@ -415,6 +414,58 @@ pub(crate) async fn persist_send_projection_async(
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     stable_created_at: Option<&str>,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    persist_send_projection_with_security_async(
+        client,
+        target,
+        body,
+        message_id,
+        operation_id,
+        delivery,
+        target_did,
+        target_handle,
+        peer_scope,
+        stable_created_at,
+        false,
+    )
+    .await
+}
+
+fn apply_send_security_intent(result: &mut crate::messages::SendMessageResult, required: bool) {
+    if !required {
+        return;
+    }
+    result
+        .message
+        .metadata
+        .attributes
+        .push(crate::messages::MessageMetadataAttribute {
+            key: "encryption_required".to_owned(),
+            value: "true".to_owned(),
+        });
+    // Ordinary retry actions must never replay an encrypted intent as plaintext.
+    result.message.metadata.retry_plan = Some(crate::messages::MessageRetryPlan {
+        retryable: false,
+        action: crate::messages::MessageRetryAction::None,
+        operation_id: result.message.metadata.operation_id.clone(),
+        message_id: Some(result.message.id.clone()),
+        reason: Some("Retry with the original encrypted send intent".to_owned()),
+    });
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_send_projection_with_security_async(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+    body: &crate::messages::MessageBody,
+    message_id: &crate::ids::MessageId,
+    operation_id: Option<&str>,
+    delivery: crate::messages::DeliveryState,
+    target_did: Option<&str>,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    stable_created_at: Option<&str>,
+    encryption_required: bool,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let mut sdk_result = send_projection_result(
         client,
@@ -433,6 +484,7 @@ pub(crate) async fn persist_send_projection_async(
     {
         sdk_result.message.sent_at = Some(created_at.to_owned());
     }
+    apply_send_security_intent(&mut sdk_result, encryption_required);
     let record = send_projection_record(
         client,
         target,
@@ -453,7 +505,7 @@ pub(crate) async fn persist_send_projection_async(
 }
 
 #[cfg(not(feature = "sqlite"))]
-pub(crate) async fn persist_send_projection_async(
+pub(crate) async fn persist_send_projection_with_security_async(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
     body: &crate::messages::MessageBody,
@@ -464,6 +516,7 @@ pub(crate) async fn persist_send_projection_async(
     _target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     stable_created_at: Option<&str>,
+    encryption_required: bool,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let mut result = send_projection_result(
         client,
@@ -482,6 +535,7 @@ pub(crate) async fn persist_send_projection_async(
     {
         result.message.sent_at = Some(created_at.to_owned());
     }
+    apply_send_security_intent(&mut result, encryption_required);
     Ok(result)
 }
 
@@ -1915,7 +1969,8 @@ where
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "notify_level"
+            "encryption_required"
+            | "notify_level"
             | "raw_message_id"
             | "group_event_seq"
             | "group_state_version"
@@ -2110,7 +2165,8 @@ where
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "notify_level"
+            "encryption_required"
+            | "notify_level"
             | "raw_message_id"
             | "group_event_seq"
             | "group_state_version"
@@ -2407,7 +2463,8 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "notify_level"
+            "encryption_required"
+            | "notify_level"
             | "raw_message_id"
             | "sync_event_id"
             | "sync_event_seq"
@@ -2607,6 +2664,68 @@ mod tests {
         );
         let stored: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(stored, payload);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn encrypted_pending_and_failure_retain_intent_without_plain_retry() {
+        let fixture = Fixture::new("encrypted-send-projection");
+        let client = fixture.client();
+        let target = crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let body = crate::messages::MessageBody::Text {
+            text: "local plaintext".to_owned(),
+            kind: crate::messages::MessageKind::Text,
+        };
+        let id = crate::ids::MessageId::parse("encrypted-intent").unwrap();
+        for delivery in [
+            crate::messages::DeliveryState::StoredLocally,
+            crate::messages::DeliveryState::Failed {
+                reason: "offline".to_owned(),
+            },
+        ] {
+            persist_send_projection_with_security_async(
+                &client,
+                &target,
+                &body,
+                &id,
+                Some("op-encrypted-intent"),
+                delivery,
+                Some("did:example:bob"),
+                None,
+                None,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+            let page = client
+                .messages()
+                .local_conversation_timeline_with_metadata_async(
+                    crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+                    crate::messages::LocalHistoryQuery {
+                        limit: crate::ids::PageLimit(20),
+                        cursor: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let message = &page.items[0];
+            assert!(message
+                .metadata
+                .attributes
+                .iter()
+                .any(|a| a.key == "encryption_required" && a.value == "true"));
+            assert!(!message
+                .metadata
+                .attributes
+                .iter()
+                .any(|a| a.key == "security"));
+            let retry = message.metadata.retry_plan.as_ref().unwrap();
+            assert!(!retry.retryable);
+            assert_eq!(retry.action, crate::messages::MessageRetryAction::None);
+        }
     }
 
     #[cfg(feature = "sqlite")]

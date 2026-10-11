@@ -2389,6 +2389,7 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     state.initialize().unwrap();
 
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::E2eeRequired,
         task_id: "task_state_roundtrip".to_string(),
         agent_did: "did:agent:hermes".to_string(),
         agent_handle: "alice-hermes".to_string(),
@@ -2437,6 +2438,21 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     );
     assert_eq!(loaded.reply_recipient_did, "did:human:bob");
     assert_eq!(loaded.text, task.text);
+    assert_eq!(
+        loaded.security,
+        crate::outbox::RuntimeMessageSecurity::E2eeRequired
+    );
+    let mut downgraded = task.clone();
+    downgraded.security = crate::outbox::RuntimeMessageSecurity::DefaultPlain;
+    assert!(state.insert_runtime_task(&downgraded).is_err());
+    assert_eq!(
+        state
+            .load_runtime_task_for_run("run_state_roundtrip")
+            .unwrap()
+            .security,
+        task.security
+    );
+    state.insert_runtime_task(&task).unwrap();
 }
 
 fn failed_runtime_run(run_id: &str, task_id: &str) -> RuntimeRun {

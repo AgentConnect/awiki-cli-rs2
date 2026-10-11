@@ -194,8 +194,11 @@ finally {
 - `registeredAtMs` 和附件 byte size 是十进制字符串；其他时间是 RFC 3339。
 - 可选输出字段缺失时是 `undefined`，只有 `getDefaultIdentity` 明确用 `null` 表示未注册。
 - 上传、下载使用 `Uint8Array`/Buffer 直接跨 N-API；附件正文不经 JSON/base64。
+- 加密附件的显示大小取 `plaintext_size`；对象传输长度保留在 Core 的对象描述中。
+  `downloadAttachment` 返回的大小及摘要描述已校验、已解密的返回 bytes，供 Host/Browser
+  缓存校验；消息附件中的摘要仍是对象描述摘要，不能用于校验解密后的文件。
 - 当前范围只有单附件，不扩展多附件 UI 或领域 API。
-- `createGroup` 的 Node 产品契约固定为 private、open-join、transport-protected；返回的
+- `createGroup` 固定 private、open-join；通过 `encrypted` 选择群安全类型，默认普通群，返回的
   canonical conversation ID 由 Core 生成，Host 不拼接。初始成员由 `addGroupMember` 逐个添加，
   该方法接受 Handle 或 DID 并返回 Core 权威解析后的身份。
 - External HTTP body 只用 `Uint8Array`/Buffer 跨 N-API；response body 永不跨该接口。

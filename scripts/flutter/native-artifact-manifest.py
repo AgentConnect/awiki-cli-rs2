@@ -212,7 +212,43 @@ def source_integration_record(targets: list[str]) -> dict[str, Any]:
     return records
 
 
-def current_source_record(source_targets: list[str] | None = None) -> dict[str, Any]:
+def local_integration_record(targets: list[str], config_path: str) -> dict[str, Any]:
+    manifest = pathlib.Path(config_path).resolve()
+    selections = json.loads(manifest.read_text())["dependencies"]
+    revision = run("git", "rev-parse", "HEAD").decode().strip()
+    base = ROOT / ".artifacts/dependencies/local"
+    records = {}
+    for target in targets:
+        evidence = json.loads((base / (target + ".json")).read_text())
+        if (run("git", "status", "--porcelain").strip()
+                or evidence.get("mode") != "local" or evidence["consumer"]["commit"] != revision
+                or evidence["consumer"]["dirty"]
+                or evidence["source_manifest_sha256"] != sha256_file(manifest)
+                or evidence["source_lock_sha256"] != sha256_file(base / (target + ".Cargo.lock"))):
+            raise ManifestError("local integration input provenance changed")
+        for name, selection in selections.items():
+            repo = (manifest.parent / selection["path"]).resolve()
+            dependency = evidence["dependencies"][name]
+            if (dependency["dirty"] or dependency["commit"] != run("git", "rev-parse", "HEAD", cwd=repo).decode().strip()
+                    or run("git", "status", "--porcelain", cwd=repo).strip()):
+                raise ManifestError("local integration dependency provenance changed")
+        build = evidence["build"]
+        if build["target"] != target or not build["optimized"] or not build["no_default_features"]:
+            raise ManifestError("local integration native build options mismatch")
+        if evidence["archive_sha256"] != sha256_file(base / "target" / target / "release/libawiki_im_core.a"):
+            raise ManifestError("local integration archive changed")
+        records[target] = evidence
+    return records
+
+
+def current_source_record(source_targets: list[str] | None = None, local_config: str | None = None) -> dict[str, Any]:
+    if local_config is not None:
+        return {
+            "repositories": [repository_record("awiki-cli-rs2", ROOT, SOURCE_INPUTS)],
+            "bridge": bridge_record(),
+            "localConfig": str(pathlib.Path(local_config).resolve()),
+            "localIntegration": local_integration_record(source_targets or [], local_config),
+        }
     if source_targets is not None:
         return {
             "repositories": [repository_record("awiki-cli-rs2", ROOT, SOURCE_INPUTS)],
@@ -240,7 +276,7 @@ def write_manifest(platform: str, targets: str, features: str) -> None:
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z"),
-        "source": current_source_record(sorted(item for item in targets.split(",") if item) if os.environ.get("AWIKI_APPLE_SOURCE_INTEGRATION") == "1" else None),
+        "source": current_source_record(sorted(item for item in targets.split(",") if item) if os.environ.get("AWIKI_APPLE_SOURCE_INTEGRATION") == "1" or os.environ.get("AWIKI_APPLE_LOCAL_CONFIG") else None, os.environ.get("AWIKI_APPLE_LOCAL_CONFIG")),
         "build": {
             "targets": sorted(item for item in targets.split(",") if item),
             "features": sorted(item for item in features.split(",") if item),
@@ -280,8 +316,9 @@ def verify_manifest(platform: str) -> None:
         raise ManifestError("native artifact manifest schema or platform is invalid")
 
     differences: list[str] = []
-    integration = recorded.get("source", {}).get("sourceIntegration")
-    current_source = current_source_record(sorted(integration) if integration is not None else None)
+    source = recorded.get("source", {})
+    integration = source.get("localIntegration", source.get("sourceIntegration"))
+    current_source = current_source_record(sorted(integration) if integration is not None else None, source.get("localConfig"))
     if recorded.get("source") != current_source:
         differences.append("source revision, source inputs, or generated bridge changed")
     current_artifact = xcframework_record(platform)

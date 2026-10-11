@@ -30,6 +30,37 @@ fn core(root: &std::path::Path) -> ImCore {
     .unwrap()
 }
 
+#[tokio::test]
+async fn host_encryption_preparation_with_disabled_capabilities_does_not_contact_network() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path());
+    core.bootstrap()
+        .initialize_local_state_async()
+        .await
+        .unwrap();
+    let bootstrap = core
+        .generate_vnext_agent_bootstrap(AgentIdentityKind::Runtime, "receive-preparation")
+        .unwrap();
+    let client = core
+        .client_with_device_identity_material(host_backed_material(
+            &bootstrap,
+            "agent-account-prepare",
+        ))
+        .unwrap();
+    // awiki.test has no server. Disabled features must not publish material or
+    // turn an ordinary receiver into a network-dependent crypto bootstrap.
+    client
+        .messages()
+        .prepare_encrypted_messaging_async()
+        .await
+        .unwrap();
+    client
+        .messages()
+        .prepare_encrypted_messaging_async()
+        .await
+        .unwrap();
+}
+
 fn device_access_token(
     bootstrap: &VNextAgentBootstrapMaterial,
     account_id: &str,

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS conversation_registry (
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     is_active         INTEGER NOT NULL DEFAULT 1,
+    explicitly_opened INTEGER NOT NULL DEFAULT 0,
     peer_persona_id   TEXT,
     canonical_group_did TEXT,
     lifecycle_state   TEXT NOT NULL DEFAULT 'active',
@@ -50,6 +51,7 @@ pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
         .execute_batch(TABLE_ONLY_SQL)
         .map_err(super::local_state_unavailable)?;
     for (column, definition) in [
+        ("explicitly_opened", "INTEGER NOT NULL DEFAULT 0"),
         ("peer_persona_id", "TEXT"),
         ("canonical_group_did", "TEXT"),
         ("lifecycle_state", "TEXT NOT NULL DEFAULT 'active'"),
@@ -269,7 +271,12 @@ LIMIT 1"#,
             activity_at: now_utc_like(),
         },
     )?;
-    require_active_resolved(connection, owner_identity_id, conversation_id)
+    require_active_resolved(connection, owner_identity_id, conversation_id)?;
+    connection.execute(
+        "UPDATE conversation_registry SET explicitly_opened = 1 WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+        (owner_identity_id, conversation_id),
+    ).map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 pub(crate) fn require_active_resolved(

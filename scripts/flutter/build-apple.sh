@@ -5,17 +5,29 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 SOURCE_INTEGRATION="${AWIKI_APPLE_SOURCE_INTEGRATION:-0}"
+LOCAL_CONFIG="${AWIKI_APPLE_LOCAL_CONFIG:-}"
+if [[ -n "$LOCAL_CONFIG" && "$SOURCE_INTEGRATION" == "1" ]]; then
+  echo "Select local or source integration, not both." >&2
+  exit 2
+fi
+if [[ -n "$LOCAL_CONFIG" && "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+  echo "Local native candidates cannot use registry release mode." >&2
+  exit 2
+fi
 if [[ "${SOURCE_INTEGRATION}" == "1" && "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
   echo "Source integration and registry release are mutually exclusive." >&2
   exit 2
 fi
 NATIVE_TARGET_DIR="target"
+if [[ -n "$LOCAL_CONFIG" ]]; then
+  NATIVE_TARGET_DIR=".artifacts/dependencies/local/target"
+fi
 if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
   NATIVE_TARGET_DIR=".artifacts/dependencies/source/target"
 fi
 
 release_cargo() {
-  if [[ "${SOURCE_INTEGRATION}" == "1" ]]; then
+  if [[ "${SOURCE_INTEGRATION}" == "1" || -n "$LOCAL_CONFIG" ]]; then
     # The Apple caller supplies only the fixed native build options below.
     shift
     local translated=()
@@ -26,8 +38,13 @@ release_cargo() {
         *) translated+=("$1"); shift ;;
       esac
     done
-    python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source \
-      --source-manifest "${ROOT_DIR}/dependencies.source.json" "${translated[@]}"
+    if [[ -n "$LOCAL_CONFIG" ]]; then
+      python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps local \
+        --local-config "$LOCAL_CONFIG" "${translated[@]}"
+    else
+      python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source \
+        --source-manifest "${ROOT_DIR}/dependencies.source.json" "${translated[@]}"
+    fi
     return
   fi
   if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then

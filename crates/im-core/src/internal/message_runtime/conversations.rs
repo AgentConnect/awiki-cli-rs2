@@ -210,7 +210,14 @@ fn snapshot_attributes(
 fn is_snapshot_attribute(key: &str) -> bool {
     matches!(
         key,
-        "notify_level"
+        "encryption_required"
+            | "delivery_state"
+            | "security"
+            | "security_profile"
+            | "message_security_profile"
+            | "decryption_state"
+            | "secure_wire_content_type"
+            | "notify_level"
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
@@ -801,6 +808,8 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         return Vec::new();
     };
     [
+        "delivery_state",
+        "encryption_required",
         "notify_level",
         "raw_message_id",
         "group_event_seq",
@@ -930,6 +939,17 @@ mod tests {
             metadata_attribute(&message.metadata, "secure_wire_content_type"),
             Some("application/anp-direct-init+json")
         );
+        // Restarted consumers read conversation snapshots, not the original
+        // Message DTO. Preserve authenticated decryption provenance there too.
+        let snapshot = snapshot_message(&message);
+        assert!(
+            snapshot
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == "decryption_state"
+                    && attribute.value == "decrypted")
+        );
+        assert_eq!(snapshot.body.text.as_deref(), Some("decrypted text"));
     }
 
     #[test]
@@ -1905,13 +1925,11 @@ mod tests {
     }
 
     fn unique_temp_root() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // Wall-clock precision can be coarser than parallel test startup.
         std::env::temp_dir().join(format!(
-            "im-core-conversations-runtime-{}-{nanos}",
-            std::process::id()
+            "im-core-conversations-runtime-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ))
     }
 }

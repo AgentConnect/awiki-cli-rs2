@@ -4668,6 +4668,9 @@ extension on gen_group_dto.DartGroupMember {
 
 extension on gen_group_dto.DartGroupReadResult {
   GroupReadResult _toModel() => GroupReadResult(
+    operationJson: operationJson,
+    encrypted: encrypted,
+    secureStatus: secureStatus?._toModel(),
     group: group?._toModel(),
     groups: groups.map((group) => group._toModel()).toList(),
     members: members.map((member) => member._toModel()).toList(),

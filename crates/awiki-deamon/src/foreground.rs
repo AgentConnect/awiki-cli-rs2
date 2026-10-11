@@ -1549,6 +1549,7 @@ async fn route_message(
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
             let payload_message = IncomingAgentPayloadMessage {
+                security: RuntimeMessageSecurity::from_message(message),
                 message_id: message.id.as_str().to_string(),
                 conversation_id: conversation_id.clone(),
                 sender_did: sender_did.clone(),
@@ -1623,6 +1624,7 @@ async fn route_message(
                     sender_did.clone(),
                     Some(verified_sender),
                     task_text,
+                    RuntimeMessageSecurity::from_message(message),
                 )?;
                 return Ok(true);
             }
@@ -1668,6 +1670,7 @@ async fn route_message(
                 conversation_id,
                 sender_did,
                 text.clone(),
+                RuntimeMessageSecurity::from_message(message),
             )?;
             Ok(true)
         }
@@ -1743,19 +1746,12 @@ fn record_recoverable_attachment_manifest_projection(
 }
 
 fn is_opaque_group_e2ee_message(message: &Message) -> bool {
-    matches!(message.thread, ThreadRef::Group(_))
-        && !matches!(message.body, MessageBodyView::Text { .. })
-        && (message.metadata.attributes.iter().any(|attribute| {
-            matches!(
-                attribute.key.as_str(),
-                "security" | "message_security_profile" | "security_profile"
-            ) && attribute.value == "group-e2ee"
-        }) || matches!(
-            &message.body,
-            MessageBodyView::Payload { payload }
-                if payload.get("group_cipher_object").is_some()
-                    || payload.get("ciphertext_b64u").is_some()
-        ))
+    message.metadata.is_end_to_end_encrypted()
+        && !message
+            .metadata
+            .attributes
+            .iter()
+            .any(|a| a.key == "decryption_state" && a.value == "decrypted")
 }
 
 async fn try_route_group_agent_mention<C>(
@@ -1869,12 +1865,14 @@ where
         ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
-    );
+    )
+    .with_message_security(RuntimeMessageSecurity::from_message(message));
     run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
         ControllerTextMessage {
+            security: RuntimeMessageSecurity::from_message(message),
             message_id: task_message_id,
             conversation_id: conversation_id.clone(),
             sender_did: message.sender.as_str().to_string(),
@@ -2030,7 +2028,7 @@ fn send_group_invocation_denied_feedback(
             message.id.as_str(),
             Some(&mention_context.mention_id),
         )),
-        security: RuntimeMessageSecurity::DefaultPlain,
+        security: RuntimeMessageSecurity::from_message(message),
     };
     message_sender.send_runtime_message(&feedback)?;
     Ok(())
@@ -2302,6 +2300,7 @@ fn route_runtime_controller_text(
     sender_did: String,
     verified_sender: Option<VerifiedControllerSender>,
     text: String,
+    security: RuntimeMessageSecurity,
 ) -> Result<()> {
     if is_group_conversation_id(conversation_id.as_deref()) {
         verify_runtime_group_sender(state, target_agent_did, &sender_did)?;
@@ -2347,12 +2346,14 @@ fn route_runtime_controller_text(
         ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
-    );
+    )
+    .with_message_security(security);
     run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
         ControllerTextMessage {
+            security,
             message_id: message_id.to_string(),
             conversation_id,
             sender_did: sender_did.clone(),
@@ -2381,6 +2382,7 @@ fn route_runtime_direct_text<C>(
     conversation_id: Option<String>,
     sender_did: String,
     text: String,
+    security: RuntimeMessageSecurity,
 ) -> Result<()>
 where
     C: AgentInventoryClient,
@@ -2403,6 +2405,7 @@ where
             sender_did,
             Some(verified_sender),
             text,
+            security,
         ),
         Err(controller_error) => route_runtime_external_direct_text(
             config,
@@ -2416,6 +2419,7 @@ where
             sender_did,
             text,
             &controller_error,
+            security,
         ),
     }
 }
@@ -2432,6 +2436,7 @@ fn route_runtime_external_direct_text<C>(
     sender_did: String,
     text: String,
     controller_error: &anyhow::Error,
+    security: RuntimeMessageSecurity,
 ) -> Result<()>
 where
     C: AgentInventoryClient,
@@ -2472,6 +2477,7 @@ where
             authorization.sender_full_handle.as_deref(),
             authorization.reason.as_str(),
             authorization.active_mode.as_str(),
+            security,
         )?;
         return Ok(());
     }
@@ -2505,12 +2511,14 @@ where
         ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
-    );
+    )
+    .with_message_security(security);
     run_runtime_text_message(
         config,
         state,
         &runtime_outbox,
         ControllerTextMessage {
+            security,
             message_id: task_message_id,
             conversation_id,
             sender_did,
@@ -2546,6 +2554,7 @@ fn emit_external_direct_invocation_rejection(
     sender_full_handle: Option<&str>,
     reason: &str,
     active_mode: &str,
+    security: RuntimeMessageSecurity,
 ) -> Result<()> {
     state.insert_audit_event_json(
         "daemon.direct_invocation.rejected",
@@ -2594,7 +2603,8 @@ fn emit_external_direct_invocation_rejection(
         ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
-    );
+    )
+    .with_message_security(security);
     let context = crate::state::AuthorizedRuntimeContext {
         token_id: "host-direct-invocation-rejected".to_string(),
         agent_did: target_agent_did.to_string(),
@@ -2619,6 +2629,7 @@ fn emit_external_direct_invocation_rejection(
         target_agent_did,
         source_message_id,
         sender_did,
+        security,
     )?;
     Ok(())
 }
@@ -2628,6 +2639,7 @@ fn send_direct_invocation_denied_feedback(
     target_agent_did: &str,
     source_message_id: &str,
     sender_did: &str,
+    security: RuntimeMessageSecurity,
 ) -> Result<()> {
     let feedback = RuntimeMessageSend {
         target: RuntimeMessageTarget::Direct {
@@ -2645,7 +2657,7 @@ fn send_direct_invocation_denied_feedback(
             source_message_id,
             None,
         )),
-        security: RuntimeMessageSecurity::DefaultPlain,
+        security,
     };
     message_sender.send_runtime_message(&feedback)?;
     Ok(())
@@ -2947,8 +2959,10 @@ fn run_runtime_task_command(
         message.conversation_id.clone(),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
-    );
+    )
+    .with_message_security(message.security);
     let task_message = ControllerTextMessage {
+        security: message.security,
         message_id,
         conversation_id: message.conversation_id,
         sender_did: verified_sender.sender_did,

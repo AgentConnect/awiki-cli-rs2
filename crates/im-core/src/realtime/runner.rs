@@ -1482,6 +1482,17 @@ async fn project_p5_v2_realtime_notification(
     client: &crate::core::ImClient,
     notification: Value,
 ) -> crate::ImResult<DirectRealtimeProjectionResult> {
+    // A legacy WebSocket frame can coexist with a negotiated P5 lane. Only
+    // the durable lane processor may consume its ratchet and commit projection.
+    // The shared gate also defers while lane negotiation is still pending.
+    if crate::internal::message_runtime::read::sync_lane_capability_enabled_async(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+    )
+    .await?
+    {
+        return Ok(dropped_v2_session_control_projection());
+    }
     let params = notification
         .get("params")
         .cloned()

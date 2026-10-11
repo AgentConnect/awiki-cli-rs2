@@ -112,6 +112,8 @@ const SYSTEM_TEST_UNISSUED_REGISTRATION_TOKEN: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingAgentPayloadMessage {
+    #[serde(default)]
+    pub security: crate::outbox::RuntimeMessageSecurity,
     pub message_id: String,
     pub conversation_id: Option<String>,
     pub sender_did: String,

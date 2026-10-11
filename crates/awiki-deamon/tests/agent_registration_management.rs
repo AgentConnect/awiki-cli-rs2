@@ -267,8 +267,9 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
     let _ = host;
 
-    // Status snapshots must remain an offline contract test even when the
-    // product's fresh-install download host changes.
+    // Tenant policy reads must remain local, even when product defaults change.
+    config.user_service_base_url = "http://127.0.0.1:1".to_owned();
+    // No artifact download is needed for these control-plane fixtures.
     config.download_base_url = format!("file://{}", root.path().join("release-fixture").display());
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
@@ -276,19 +277,70 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     (root, config, state)
 }
 
-fn write_release_status_manifest(root: &std::path::Path, latest: &str) {
-    let releases = root.join("releases");
-    std::fs::create_dir_all(&releases).unwrap();
-    std::fs::write(
-        releases.join("manifest.json"),
-        serde_json::to_vec_pretty(&json!({
-            "latest": latest,
-            "min_supported": "0.1.0",
-            "packages": []
+struct TenantPolicyServer {
+    origin: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TenantPolicyServer {
+    fn new(recommended: &str) -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let body = serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "client_versions": {
+                "schema_version": 1, "channel": "stable", "policy_origin": origin,
+                "policy_revision": 1, "published_at": "2026-10-08T00:00:00Z",
+                "products": { "daemon": {
+                    "enabled": true, "recommended_version": recommended,
+                    "minimum_supported_version": "0.1.0",
+                    "upgrade_url": format!("{origin}/daemon/install.sh"),
+                    "artifact_manifest_url": format!("{origin}/daemon/releases/manifest.json")
+                }}
+            }
         }))
-        .unwrap(),
-    )
-    .unwrap();
+        .unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        let n = stream.read(&mut request).unwrap();
+                        assert!(String::from_utf8_lossy(&request[..n]).starts_with(
+                            "GET /user-service/v1/server-info?client_platform=daemon "
+                        ));
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                        stream.write_all(&body).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("local tenant policy fixture: {error}"),
+                }
+            }
+        });
+        Self {
+            origin,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for TenantPolicyServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
 }
 
 fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
@@ -465,6 +517,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
         &outbox,
         &readiness,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_002".to_string(),
             conversation_id: Some("conv_daemon_001".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -611,6 +664,7 @@ fn runtime_create_reports_ready_only_after_retryable_message_readiness_succeeds(
     let outbox = MemoryRuntimeOutbox::default();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let message = || IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: "msg_runtime_readiness".to_owned(),
         conversation_id: Some("conv_runtime_readiness".to_owned()),
         sender_did: "did:human:alice".to_owned(),
@@ -699,6 +753,7 @@ fn runtime_agent_create_rejects_missing_handle() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_product_create_hermes".to_string(),
             conversation_id: Some("conv_daemon_product".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -746,6 +801,7 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
     let outbox = MemoryRuntimeOutbox::default();
 
     let create_message = |command_id: &str| IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: format!("msg_{command_id}"),
         conversation_id: Some("conv_create_idempotent".to_string()),
         sender_did: "did:human:alice".to_string(),
@@ -826,10 +882,9 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
 
 #[test]
 fn agent_status_query_returns_snapshot_payload_without_chat_content() {
-    let (root, mut config, state) = fixture();
-    let release_root = root.path().join("daemon-release");
-    write_release_status_manifest(&release_root, awiki_deamon::upgrade::CURRENT_DAEMON_VERSION);
-    config.download_base_url = format!("file://{}", release_root.display());
+    let (_root, mut config, state) = fixture();
+    let policy = TenantPolicyServer::new(awiki_deamon::upgrade::CURRENT_DAEMON_VERSION);
+    config.user_service_base_url = policy.origin.clone();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
@@ -848,6 +903,7 @@ fn agent_status_query_returns_snapshot_payload_without_chat_content() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_status_query".to_string(),
             conversation_id: Some("conv_daemon_status".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -910,6 +966,7 @@ fn repeated_agent_status_query_is_throttled_by_daemon_and_controller() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: format!("msg_{command_id}"),
                 conversation_id: Some("conv_daemon_status".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -960,6 +1017,7 @@ fn runtime_rebuild_returns_unsupported_command_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_rebuild".to_string(),
             conversation_id: Some("conv_rebuild".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1004,6 +1062,7 @@ fn daemon_upgrade_rejects_other_daemon_target_without_running_download() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_other_daemon".to_string(),
             conversation_id: Some("conv_upgrade_other_daemon".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1052,6 +1111,7 @@ fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_cancel_idle".to_string(),
             conversation_id: Some("conv_upgrade_cancel_idle".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1076,10 +1136,9 @@ fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
 
 #[test]
 fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
-    let (root, mut config, state) = fixture();
-    let release_root = root.path().join("daemon-release");
-    write_release_status_manifest(&release_root, "9999.0.0");
-    config.download_base_url = format!("file://{}", release_root.display());
+    let (_root, mut config, state) = fixture();
+    let policy = TenantPolicyServer::new("9999.0.0");
+    config.user_service_base_url = policy.origin.clone();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
@@ -1122,6 +1181,7 @@ fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_upgrade_cancel_restarting".to_string(),
             conversation_id: Some("conv_upgrade_cancel_restarting".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1171,6 +1231,7 @@ fn runtime_agent_create_accepts_acp_driver_contract_fields() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_generic_cli".to_string(),
             conversation_id: Some("conv_daemon_generic_cli".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1257,6 +1318,7 @@ fn runtime_agent_create_preserves_codex_product_aliases() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: format!("msg_create_{runtime}"),
                 conversation_id: Some(format!("conv_create_{runtime}")),
                 sender_did: "did:human:alice".to_string(),
@@ -1349,6 +1411,7 @@ fn runtime_agent_create_accepts_workspace_strategy_alias_for_acp() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_workspace_strategy_alias".to_string(),
             conversation_id: Some("conv_create_workspace_strategy_alias".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1408,6 +1471,7 @@ fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_workspace_strategy_conflict".to_string(),
             conversation_id: Some("conv_create_workspace_strategy_conflict".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1467,6 +1531,7 @@ fn runtime_agent_create_rejects_invalid_acp_contract_fields() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_generic_cli_invalid".to_string(),
             conversation_id: Some("conv_daemon_generic_cli_invalid".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1518,6 +1583,7 @@ fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_unauthorized".to_string(),
             conversation_id: None,
             sender_did: "did:human:bob".to_string(),
@@ -1571,6 +1637,7 @@ fn registration_token_failure_sends_failed_status_without_persisting_runtime_age
         &failing_registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_failed_registration".to_string(),
             conversation_id: Some("conv_daemon_001".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1623,6 +1690,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_runtime_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1654,6 +1722,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1719,6 +1788,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1771,6 +1841,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &summary_thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_summary_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1815,6 +1886,7 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
         &registration,
         &direct_thread_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_direct_thread".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1869,6 +1941,7 @@ fn runtime_inbox_query_rejects_unowned_runtime_without_reading_messages() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_inbox_unowned".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -1919,6 +1992,7 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_runtime_controller_inbox".to_string(),
                 conversation_id: Some("conv_daemon_inbox".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -1972,6 +2046,7 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_controller_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2044,6 +2119,7 @@ fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_runtime_scoped_inbox".to_string(),
                 conversation_id: Some("conv_daemon_inbox".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2123,6 +2199,7 @@ fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
         &registration,
         &inbox_outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_query_runtime_scoped_inbox".to_string(),
             conversation_id: Some("conv_daemon_inbox".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2192,6 +2269,7 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_for_delete".to_string(),
                 conversation_id: Some("conv_delete".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2227,6 +2305,7 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_delete_runtime".to_string(),
             conversation_id: Some("conv_delete".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2303,6 +2382,7 @@ fn personal_agent_binding_disable_command_stops_active_binding() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_personal_agent".to_string(),
                 conversation_id: Some("conv_personal_agent".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2352,6 +2432,7 @@ fn personal_agent_binding_disable_command_stops_active_binding() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_pause_personal_agent".to_string(),
             conversation_id: Some("conv_personal_agent".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2440,6 +2521,7 @@ fn legacy_message_agent_disable_command_emits_canonical_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_pause_legacy_personal_agent".to_string(),
             conversation_id: Some("conv_personal_agent".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2501,6 +2583,7 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
+                security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_create_for_daemon_delete".to_string(),
                 conversation_id: Some("conv_daemon_delete".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -2530,6 +2613,7 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_delete_daemon".to_string(),
             conversation_id: Some("conv_daemon_delete".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2628,6 +2712,7 @@ fn hermes_status_uses_shared_acp_diagnostics_without_secrets() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_create_hermes_status".to_string(),
             conversation_id: Some("conv_daemon_hermes_status".to_string()),
             sender_did: "did:human:alice".to_string(),
@@ -2702,6 +2787,7 @@ fn runtime_clients_inspection_is_correlated_read_only_and_controller_authorized(
     .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let mut message = IncomingAgentPayloadMessage {
+        security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
         message_id: "inspect-message".into(),
         conversation_id: Some("inspect-conversation".into()),
         sender_did: "did:human:mallory".into(),
@@ -2767,6 +2853,7 @@ fn unavailable_client_rejects_creation_before_registration_exchange() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "create-missing-client".into(),
             conversation_id: None,
             sender_did: "did:human:alice".into(),
@@ -2832,6 +2919,7 @@ fn acp_create_persists_only_explicit_client_paths_for_all_brands() {
             let suffix = format!("{index}-{}", if explicit { "explicit" } else { "default" });
             let result = handle_agent_payload_message(&config, &state, &registration,
                 &MemoryRuntimeOutbox::default(), IncomingAgentPayloadMessage {
+                    security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
                     message_id: format!("msg-path-{suffix}"), conversation_id: None,
                     sender_did: "did:human:alice".into(), target_agent_did: daemon.agent_did.clone(),
                     content_type: "application/json".into(),

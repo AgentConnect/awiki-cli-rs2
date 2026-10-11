@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 38;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 39;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -674,6 +674,12 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_audit_log_v2(connection)?;
     migrate_runtime_run_v3(connection)?;
     migrate_runtime_task_v3(connection)?;
+    add_column_if_missing(
+        connection,
+        "runtime_task",
+        "message_security",
+        "TEXT NOT NULL DEFAULT 'default_plain'",
+    )?;
     migrate_agent_definition_v4(connection)?;
     migrate_agent_auth_state_v5(connection)?;
     migrate_hermes_profiles_v6(connection)?;

@@ -11,7 +11,7 @@ const VNEXT_DEVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
     anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
-    anp::authentication::PROFILE_GROUP_BASE_V1,
+    anp::authentication::PROFILE_GROUP_BASE_V2,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
 ];
 
@@ -20,7 +20,7 @@ const VNEXT_SERVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
     anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
-    anp::authentication::PROFILE_GROUP_BASE_V1,
+    anp::authentication::PROFILE_GROUP_BASE_V2,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
     "anp.attachment.v1",
     "anp.federation.relay.v1",
