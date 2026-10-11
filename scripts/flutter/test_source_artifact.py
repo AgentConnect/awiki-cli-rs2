@@ -75,3 +75,37 @@ class SourceArtifactTests(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(artifact.ManifestError, 'build options'):
             self.verify()
+
+
+class LocalArtifactTests(SourceArtifactTests):
+    def setUp(self):
+        super().setUp()
+        self.manifest = self.root / 'dependencies.local.json'
+        self.manifest.write_text(json.dumps({'dependencies': {'awiki-im-core': {'path': '.'}}}))
+        self.base = self.root / '.artifacts/dependencies/local'
+        self.archive = self.base / 'target' / self.target / 'release/libawiki_im_core.a'
+        self.archive.parent.mkdir(parents=True)
+        self.archive.write_bytes(b'native-library')
+        self.lock = self.base / (self.target + '.Cargo.lock')
+        self.lock.write_text('locked-dependencies')
+        self.evidence.update(mode='local', source_manifest_sha256=artifact.sha256_file(self.manifest),
+            source_lock_sha256=artifact.sha256_file(self.lock),
+            dependencies={'awiki-im-core': {'commit': self.sha, 'dirty': False}})
+        self.save()
+
+    def verify(self):
+        def run(*args, **kwargs):
+            return b'' if 'status' in args else self.sha.encode()
+        with patch.object(artifact, 'ROOT', self.root), patch.object(artifact, 'run', side_effect=run):
+            return artifact.local_integration_record([self.target], str(self.manifest))
+
+    def test_changed_lock_is_rejected(self):
+        self.lock.write_text('different-dependency')
+        with self.assertRaisesRegex(artifact.ManifestError, 'input provenance'):
+            self.verify()
+
+    def test_dirty_dependency_is_rejected(self):
+        self.evidence['dependencies']['awiki-im-core']['dirty'] = True
+        self.save()
+        with self.assertRaisesRegex(artifact.ManifestError, 'dependency provenance'):
+            self.verify()

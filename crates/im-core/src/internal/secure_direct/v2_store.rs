@@ -262,6 +262,16 @@ pub(crate) struct V2OwnerScope {
 }
 
 impl V2OwnerScope {
+    pub(crate) fn from_client(client: &crate::core::ImClient) -> crate::ImResult<Self> {
+        let authorization =
+            crate::internal::identity_device_state::active_authorization_for_client(client)?;
+        Ok(Self {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            local_device_id: authorization.protocol_device_id.as_str().to_owned(),
+        })
+    }
+
     /// Creates the P5 v2 storage scope only from the selected local identity's
     /// already-validated vNext authorization projection.
     pub(crate) fn from_identity_state(
@@ -2048,8 +2058,10 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
     }
 
     fn transaction(&self) -> crate::ImResult<Transaction<'_>> {
-        self.connection
-            .unchecked_transaction()
+        // Every caller reads and then writes ratchet/prekey state. Reserve the
+        // writer before taking that read snapshot: a deferred WAL upgrade can
+        // fail immediately with SQLITE_BUSY_SNAPSHOT during concurrent sync.
+        Transaction::new_unchecked(self.connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(crate::internal::local_state::local_state_unavailable)
     }
 }
@@ -2330,7 +2342,7 @@ mod tests {
         ))
     }
 
-    fn store<'a>(db: &'a Connection, dir: &std::path::Path) -> SqliteV2DirectStateStore<'a> {
+    pub(super) fn store<'a>(db: &'a Connection, dir: &std::path::Path) -> SqliteV2DirectStateStore<'a> {
         SqliteV2DirectStateStore::new_with_secret_vault(db, vault(dir), owner_scope()).unwrap()
     }
 
@@ -3582,3 +3594,7 @@ VALUES ('post-v31-sentinel', 'device', 'operation');
         assert_eq!(loaded.revision, 2);
     }
 }
+
+#[cfg(test)]
+#[path = "v2_store_concurrency_tests.rs"]
+mod concurrency_tests;

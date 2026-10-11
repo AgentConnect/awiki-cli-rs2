@@ -222,6 +222,14 @@ class MessageMetadata {
   final String? contentType;
   final ConversationIdentity? conversationIdentity;
   final List<MessageMetadataAttribute> attributes;
+
+  /// Actual message provenance survives decryption and local-history loading.
+  bool get isEndToEndEncrypted => attributes.any((attribute) =>
+      const {'security', 'security_profile', 'message_security_profile'}.contains(attribute.key) &&
+          const {'direct-e2ee', 'group-e2ee'}.contains(attribute.value) ||
+      attribute.key == 'secure_wire_content_type' && attribute.value.isNotEmpty) ||
+      const {'application/anp-direct-init+json', 'application/anp-direct-cipher+json',
+        'application/anp-group-cipher+json'}.contains(contentType);
 }
 
 class ConversationIdentity {
@@ -728,6 +736,14 @@ class ConversationSnapshotMessage {
   final int? serverSequence;
   final String? contentType;
   final List<MessageMetadataAttribute> attributes;
+
+  /// Actual message provenance survives decryption and local-history loading.
+  bool get isEndToEndEncrypted => attributes.any((attribute) =>
+      const {'security', 'security_profile', 'message_security_profile'}.contains(attribute.key) &&
+          const {'direct-e2ee', 'group-e2ee'}.contains(attribute.value) ||
+      attribute.key == 'secure_wire_content_type' && attribute.value.isNotEmpty) ||
+      const {'application/anp-direct-init+json', 'application/anp-direct-cipher+json',
+        'application/anp-group-cipher+json'}.contains(contentType);
 }
 
 class ConversationSnapshotMessageBody {

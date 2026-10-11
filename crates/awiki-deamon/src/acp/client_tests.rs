@@ -43,6 +43,7 @@ impl Fixture {
         let mut profile = CliRuntimeProfileRecord::for_driver("profile-acp", "kimi").unwrap();
         profile.binary_path = Some(executable);
         let task = RuntimeTask {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: "task_a".into(),
             agent_did: "did:agent:fixture".into(),
             agent_handle: "fixture".into(),

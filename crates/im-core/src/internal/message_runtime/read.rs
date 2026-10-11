@@ -1269,14 +1269,32 @@ fn compare_messages_desc(
     left: &crate::messages::Message,
     right: &crate::messages::Message,
 ) -> std::cmp::Ordering {
-    match (
-        left.metadata.server_sequence,
-        right.metadata.server_sequence,
-    ) {
-        (Some(a), Some(b)) if a != b => b.cmp(&a),
-        _ => message_timestamp(right)
-            .cmp(message_timestamp(left))
-            .then_with(|| right.id.as_str().cmp(left.id.as_str())),
+    timeline_timestamp(right)
+        .cmp(&timeline_timestamp(left))
+        .then_with(|| timeline_lane(right).cmp(&timeline_lane(left)))
+        .then_with(|| timeline_sequence(right).cmp(&timeline_sequence(left)))
+        .then_with(|| right.id.as_str().cmp(left.id.as_str()))
+}
+
+fn timeline_timestamp(
+    message: &crate::messages::Message,
+) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(message_timestamp(message)).ok()
+}
+
+fn timeline_lane(message: &crate::messages::Message) -> bool {
+    message
+        .metadata
+        .attributes
+        .iter()
+        .any(|a| a.key == "security" && a.value.contains("e2ee"))
+}
+
+fn timeline_sequence(message: &crate::messages::Message) -> i64 {
+    if timeline_lane(message) && message.group.is_none() {
+        0
+    } else {
+        message.metadata.server_sequence.unwrap_or(0)
     }
 }
 
@@ -3273,7 +3291,7 @@ fn retain_non_p5_messages(raw: &mut Value) {
 }
 
 #[cfg(feature = "sqlite")]
-async fn sync_lane_capability_enabled_async(
+pub(crate) async fn sync_lane_capability_enabled_async(
     client: &crate::core::ImClient,
     lane: crate::internal::wire::sync_v2::SyncLaneV3,
 ) -> crate::ImResult<bool> {
@@ -3312,7 +3330,7 @@ async fn sync_lane_capability_enabled_async(
 }
 
 #[cfg(not(feature = "sqlite"))]
-async fn sync_lane_capability_enabled_async(
+pub(crate) async fn sync_lane_capability_enabled_async(
     _client: &crate::core::ImClient,
     _lane: crate::internal::wire::sync_v2::SyncLaneV3,
 ) -> crate::ImResult<bool> {
@@ -6034,6 +6052,7 @@ fn metadata_attributes_from_object(
         });
     }
     for key in [
+        "encryption_required",
         "peer_user_id",
         "peer_full_handle",
         "peer_current_did",

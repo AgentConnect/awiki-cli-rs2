@@ -1408,3 +1408,9 @@ Native App 明确调用 `confirmDeviceJoinWithManagement`，选择 Core `confirm
 阶段为 `awaiting_join`、`scheduled`、`attempting`、`waiting_for_recipient`、`management_registered`、`failed`。`management_registered` 只证明 Registry；本机 App 必须另外用 `identityDeviceSummary.readiness == adminReady` 才开放管理功能。
 
 历史已签名任务未携带 `max_attempts` 时仍保持原三次预算，升级不重置或扩充该预算。
+
+### 群安全状态投影（2026-10-10）
+
+`GroupReadResult` 增加可选 `encrypted`、`secureStatus`；`getGroup` 从权威 P4 策略读取群类型，并对加密群提供本设备的高层准备状态。创建后的部分成功不等于可以发送：宿主先进入返回的群，再以 `canSendSecure` 展示准备状态；群主的显式重试复用 `secure.group(...).repair()`。这些字段不包含密钥，不根据外层传输安全类型推断群类型。
+
+2026-10-10：创建结果即时携带 `secureStatus`，Dart `GroupReadResult.operationJson` 是 Core 脱敏操作投影的 JSON（snake_case 字段）；与 Node `operation` 的 camelCase 字段含义相同。Host 解析公开状态供 UI 展示，不解析 MLS 报文。操作关闭后 Core 继续核实，重新打开建群窗口始终是空白普通群草稿。

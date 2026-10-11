@@ -8052,6 +8052,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartGroupSecureStatus dco_decode_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_group_secure_status(raw);
+  }
+
+  @protected
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_group_snapshot(raw);
@@ -9454,20 +9462,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return DartGroupReadResult(
-      group: dco_decode_opt_box_autoadd_dart_group_snapshot(arr[0]),
-      groups: dco_decode_list_dart_group_summary(arr[1]),
-      members: dco_decode_list_dart_group_member(arr[2]),
-      messages: dco_decode_dart_message_page(arr[3]),
-      total: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      nextCursor: dco_decode_opt_String(arr[5]),
-      hasMore: dco_decode_bool(arr[6]),
-      pageGroupDid: dco_decode_opt_String(arr[7]),
-      groupStateVersion: dco_decode_opt_String(arr[8]),
-      source: dco_decode_opt_String(arr[9]),
-      warnings: dco_decode_list_String(arr[10]),
+      operationJson: dco_decode_opt_String(arr[0]),
+      encrypted: dco_decode_opt_box_autoadd_bool(arr[1]),
+      secureStatus: dco_decode_opt_box_autoadd_dart_group_secure_status(arr[2]),
+      group: dco_decode_opt_box_autoadd_dart_group_snapshot(arr[3]),
+      groups: dco_decode_list_dart_group_summary(arr[4]),
+      members: dco_decode_list_dart_group_member(arr[5]),
+      messages: dco_decode_dart_message_page(arr[6]),
+      total: dco_decode_opt_box_autoadd_u_32(arr[7]),
+      nextCursor: dco_decode_opt_String(arr[8]),
+      hasMore: dco_decode_bool(arr[9]),
+      pageGroupDid: dco_decode_opt_String(arr[10]),
+      groupStateVersion: dco_decode_opt_String(arr[11]),
+      source: dco_decode_opt_String(arr[12]),
+      warnings: dco_decode_list_String(arr[13]),
     );
   }
 
@@ -11704,6 +11715,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartGroupSecureStatus? dco_decode_opt_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_group_secure_status(raw);
+  }
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   ) {
@@ -12360,6 +12381,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_download_attachment_request(deserializer));
+  }
+
+  @protected
+  DartGroupSecureStatus sse_decode_box_autoadd_dart_group_secure_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_group_secure_status(deserializer));
   }
 
   @protected
@@ -14114,6 +14143,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_operationJson = sse_decode_opt_String(deserializer);
+    var var_encrypted = sse_decode_opt_box_autoadd_bool(deserializer);
+    var var_secureStatus = sse_decode_opt_box_autoadd_dart_group_secure_status(
+      deserializer,
+    );
     var var_group = sse_decode_opt_box_autoadd_dart_group_snapshot(
       deserializer,
     );
@@ -14128,6 +14162,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_source = sse_decode_opt_String(deserializer);
     var var_warnings = sse_decode_list_String(deserializer);
     return DartGroupReadResult(
+      operationJson: var_operationJson,
+      encrypted: var_encrypted,
+      secureStatus: var_secureStatus,
       group: var_group,
       groups: var_groups,
       members: var_members,
@@ -17160,6 +17197,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartGroupSecureStatus? sse_decode_opt_box_autoadd_dart_group_secure_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_group_secure_status(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   ) {
@@ -18018,6 +18068,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_download_attachment_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_group_secure_status(self, serializer);
   }
 
   @protected
@@ -19449,6 +19508,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.operationJson, serializer);
+    sse_encode_opt_box_autoadd_bool(self.encrypted, serializer);
+    sse_encode_opt_box_autoadd_dart_group_secure_status(
+      self.secureStatus,
+      serializer,
+    );
     sse_encode_opt_box_autoadd_dart_group_snapshot(self.group, serializer);
     sse_encode_list_dart_group_summary(self.groups, serializer);
     sse_encode_list_dart_group_member(self.members, serializer);
@@ -21788,6 +21853,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         self,
         serializer,
       );
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_group_secure_status(self, serializer);
     }
   }
 

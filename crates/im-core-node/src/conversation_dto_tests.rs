@@ -45,3 +45,65 @@ fn empty_direct_conversation_keeps_other_peer_and_unresolved_routes_fail() {
     direct.resolution_state = im_core::messages::ConversationResolutionState::LegacyUnresolved;
     assert!(conversation(direct, owner).is_err());
 }
+
+#[test]
+fn message_intent_survives_queue_failure_retry_and_is_distinct_from_actual_encryption() {
+    use im_core::messages::*;
+    let mut value = Message {
+        id: im_core::ids::MessageId::parse("message-intent").unwrap(),
+        thread: ThreadRef::Direct(im_core::ids::PeerRef::parse("did:example:bob", "").unwrap()),
+        direction: MessageDirection::Outgoing,
+        sender: im_core::ids::PeerRef::parse("did:example:alice", "").unwrap(),
+        receiver: None,
+        group: None,
+        body: MessageBodyView::Text {
+            text: "secret".to_owned(),
+            kind: MessageKind::Text,
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: MessageMetadata::default(),
+    };
+    assert!(
+        !message(value.clone(), Some("dm:bob"))
+            .unwrap()
+            .encryption_required
+    );
+    value.metadata.attributes.push(MessageMetadataAttribute {
+        key: "encryption_required".to_owned(),
+        value: "true".to_owned(),
+    });
+    for body in [
+        value.body.clone(),
+        MessageBodyView::Payload {
+            payload: serde_json::json!({"type": "structured", "text": "secret"}),
+        },
+        MessageBodyView::Payload {
+            payload: serde_json::json!({"attachments": []}),
+        },
+    ] {
+        value.body = body;
+        for state in [
+            MessageSendStateKind::Pending,
+            MessageSendStateKind::Failed,
+            MessageSendStateKind::Pending,
+        ] {
+            value.metadata.send_state = Some(MessageSendState {
+                state,
+                operation_id: None,
+                message_id: Some(value.id.clone()),
+                reason: None,
+                updated_at: None,
+            });
+            let mapped = message(value.clone(), Some("dm:bob")).unwrap();
+            assert!(mapped.encryption_required);
+            assert!(!mapped.encrypted);
+            assert_eq!(mapped.id, "message-intent");
+        }
+    }
+    value.metadata.attributes.push(MessageMetadataAttribute {
+        key: "security".to_owned(),
+        value: "direct-e2ee".to_owned(),
+    });
+    assert!(message(value, Some("dm:bob")).unwrap().encrypted);
+}

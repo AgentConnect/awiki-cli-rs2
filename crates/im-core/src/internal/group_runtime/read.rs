@@ -76,6 +76,24 @@ where
         ))
     }
 
+    #[cfg(feature = "group-e2ee")]
+    /// Read the Host's P4 roster, rather than a possibly partial Home projection.
+    pub(crate) fn authoritative_members(
+        mut self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<Value> {
+        self.ensure_group_session()?;
+        let mut params = crate::internal::wire::group::build_group_get_info_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            &crate::internal::wire::common::generate_operation_id(),
+            true,
+        )?;
+        params["body"]["include_member_list"] = Value::Bool(true);
+        self.transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get_info", params)
+    }
+
     pub(crate) fn list(
         mut self,
         request: crate::groups::GroupListRequest,
@@ -200,6 +218,25 @@ where
             merged,
             Vec::new(),
         ))
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    /// Read the Host's P4 roster, rather than a possibly partial Home projection.
+    pub(crate) async fn authoritative_members_async(
+        mut self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<Value> {
+        self.ensure_group_session_async().await?;
+        let mut params = crate::internal::wire::group::build_group_get_info_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            &crate::internal::wire::common::generate_operation_id(),
+            true,
+        )?;
+        params["body"]["include_member_list"] = Value::Bool(true);
+        self.transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get_info", params)
+            .await
     }
 
     pub(crate) async fn list_async(
@@ -577,6 +614,52 @@ mod tests {
         assert_eq!(calls[3].method, "group.list_messages");
         assert_eq!(calls[3].params["body"]["limit"], 5);
         assert_eq!(calls[3].params["body"]["since_seq"], "42");
+    }
+
+    #[test]
+    #[cfg(feature = "group-e2ee")]
+    fn authoritative_members_requests_host_roster_without_local_projection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({"member_list":[]}),
+        };
+        GroupReadRuntime::new(&client, ReadyGroupSessionProvider, transport)
+            .authoritative_members(crate::ids::GroupRef::parse("did:example:group").unwrap())
+            .unwrap();
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.get_info");
+        assert_eq!(
+            calls[0].params["body"],
+            json!({"include_policy":true,"include_member_list":true})
+        );
+        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v2");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "group-e2ee")]
+    async fn authoritative_members_async_requests_host_roster_without_local_projection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({"member_list":[]}),
+        };
+        GroupReadRuntime::new(&client, ReadyGroupSessionProvider, transport)
+            .authoritative_members_async(crate::ids::GroupRef::parse("did:example:group").unwrap())
+            .await
+            .unwrap();
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.get_info");
+        assert_eq!(
+            calls[0].params["body"],
+            json!({"include_policy":true,"include_member_list":true})
+        );
     }
 
     #[test]

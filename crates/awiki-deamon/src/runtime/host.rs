@@ -206,6 +206,14 @@ pub fn flush_runtime_final_outbox(
             }
             Err(error) => return Err(error),
         };
+        if RuntimeMessageSecurity::parse(Some(&record.security))? != task.security {
+            state.mark_runtime_final_outbox_failed_terminal(
+                &record.idempotency_key,
+                "message_security_mismatch",
+                "Reply security differs from its durable trigger; delivery is fenced",
+            )?;
+            continue;
+        }
         if crate::acp::background::is_background(&task) {
             let binding = state
                 .load_runtime_agent_profile(&record.agent_did)
@@ -695,7 +703,11 @@ pub(crate) fn issue_acp_runtime_token(
         Some(policy.allowed_recipients),
         Duration::from_secs(30 * 60),
     )?;
-    scope.allowed_message_security = Some(policy.allowed_message_security);
+    scope.allowed_message_security = Some(if crate::acp::background::is_background(task) {
+        policy.allowed_message_security
+    } else {
+        vec![task.security.as_str().to_owned()]
+    });
     let issued = issue_runtime_token(scope)?;
     state.store_runtime_token(&issued)?;
     Ok(issued)

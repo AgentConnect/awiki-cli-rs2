@@ -1261,7 +1261,7 @@ fn vnext_profiles() -> Vec<String> {
         anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
         anp::authentication::PROFILE_DIRECT_BASE_V1,
         anp::authentication::PROFILE_DIRECT_E2EE_V2,
-        anp::authentication::PROFILE_GROUP_BASE_V1,
+        anp::authentication::PROFILE_GROUP_BASE_V2,
         anp::authentication::PROFILE_GROUP_E2EE_V2,
     ]
     .into_iter()

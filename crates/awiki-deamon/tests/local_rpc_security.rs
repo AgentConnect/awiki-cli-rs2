@@ -78,6 +78,7 @@ fn insert_runtime_task_context(
     }
     state
         .insert_runtime_task(&RuntimeTask {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: "task_attachment".to_string(),
             agent_did: agent_did.to_string(),
             agent_handle: "test-runtime".to_string(),
@@ -181,6 +182,7 @@ fn valid_token_authorizes_allowed_method_and_uses_token_context() {
 #[test]
 fn method_and_recipient_scope_are_enforced() {
     let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -294,6 +296,7 @@ fn msg_send_requires_recipient_text_and_supported_security() {
 #[test]
 fn msg_send_records_direct_message_side_effect_with_security_mode() {
     let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -508,6 +511,7 @@ fn msg_send_records_group_text_and_attachment_messages() {
 #[test]
 fn msg_send_allows_authorized_non_controller_did_and_records_send_audit() {
     let (root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -548,6 +552,7 @@ fn msg_send_allows_authorized_non_controller_did_and_records_send_audit() {
 #[test]
 fn msg_send_authorizes_raw_handle_after_resolve_to_did() {
     let (root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -597,6 +602,7 @@ fn msg_send_authorizes_raw_handle_after_resolve_to_did() {
 #[test]
 fn msg_send_rejects_unresolved_or_unauthorized_handle_without_side_effect() {
     let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -927,6 +933,7 @@ fn app_action_request_records_message_sync_side_effect() {
         .unwrap();
     state
         .insert_runtime_task(&RuntimeTask {
+            security: awiki_deamon::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: "task_1".into(),
             agent_did: profile.agent_did.clone(),
             agent_handle: profile.agent_handle.clone(),

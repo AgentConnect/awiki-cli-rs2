@@ -205,7 +205,7 @@ Recovery progress includes Core-derived `allowedActions`. `resumeHandleRecovery`
 `refreshDisplayProfiles({ peers }, force = false)` 补齐展示资料，每批最多 100 个 DID。
 Core 拥有去重、并发上限、TTL、失败保留和 owner 隔离；调用不建立联系人、Direct 会话或身份绑定。
 成功但没有昵称的 `cacheHit: true` 结果应清除旧昵称并回退到 Handle/DID；失败保留缓存。
-本接口需要 native API v19，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。
+本接口需要 native API v20，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。
 
 
 ### DID 方法与未完成注册
@@ -225,7 +225,7 @@ pending 时先继续原操作，不提交另一份文档；Web member 不展示�
 `resolveHandleForDeviceJoin(handle)` 在未登录时复用 Core 的公开 Handle 绑定验证；
 Web 的 DID 域可以与 Provider 域不同。该公开解析不授予账号准入或设备权限。
 
-### 用户与群头像（候选源码，native API v19）
+### 用户与群头像（候选源码，native API v20）
 
 `getProfile()` 返回可选 `avatarUri`、`avatarThumbnailUri`、`profileVersion` 和 `avatarUploadEnabled`。
 `setAvatar({requestId,expectedProfileVersion,imageBase64})` / `clearAvatar({requestId,expectedProfileVersion})`
@@ -234,5 +234,7 @@ Node 不向 Web 暴露鉴权或本地文件路径。成功结果按版本合并�
 保留稳定 `avatar.*` 错误码，不解析错误文案。
 
 DisplayProfile 透传主图与缩略图；Group 透传 `avatarUri`、有界 `avatarMembers` 和
-`groupStateVersion`。新 JS loader 要求 native v19，避免误载缺少头像方法的旧 addon。
+`groupStateVersion`。新 JS loader 要求 native v20，避免误载缺少头像方法的旧 addon。
 这不表示发布了公共 SDK；本任务只构建明确 local 来源的候选。
+
+加密候选开关 `multiDeviceDirectE2eeEnabled` / `multiDeviceGroupE2eeEnabled` 在 N-API DTO 中固定原名，避免自动缩写转换为 `E2Ee` 后静默忽略。真实 addon 合同测试覆盖字段解析；默认仍关闭，Host 必须显式启用。

@@ -921,8 +921,9 @@ pub(crate) async fn prepare(
                 &grant.current_binding.binding_generation,
             )
             .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
-        let owner_match = crate::internal::identity_local_owner_matcher::match_stable_owner(
+        let owner_match = crate::internal::identity_local_owner_matcher::match_recovery_owner(
             sqlite_path,
+            &core.inner().sdk_paths().identities.identity_root_dir,
             &local_index,
             crate::internal::identity_local_owner_matcher::StableOwnerAuthority {
                 account_user_id: &grant.current_binding.account_user_id,
@@ -930,8 +931,7 @@ pub(crate) async fn prepare(
                 previous_did: &grant.current_binding.current_did,
                 binding_generation: &expected_committed_generation,
             },
-            Some(&operation_id),
-            None,
+            &operation_id,
         )?;
         match owner_match {
             crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(candidate) => {

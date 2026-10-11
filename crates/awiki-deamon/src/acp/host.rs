@@ -122,7 +122,7 @@ pub fn execute(
             Ok(output) if !output.text.trim().is_empty() => {
                 let persisted = (|| {
                     let run = state.load_runtime_run(&work.run_id)?;
-                    let record = runtime_final_outbox_record(
+                    let mut record = runtime_final_outbox_record(
                         profile,
                         &work.task.controller_did,
                         &work.task.reply_recipient_did,
@@ -131,6 +131,7 @@ pub fn execute(
                         &output.text,
                         "acp",
                     )?;
+                    record.security = work.task.security.as_str().to_owned();
                     store::finish_with_final(state, key, &record)
                 })();
                 match persisted {
@@ -475,7 +476,7 @@ pub fn flush_events(
                     display_filename: None,
                     mime_type: None,
                     idempotency_key: Some(event.clone()),
-                    security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
+                    security: state.load_runtime_task_for_run(&run_id)?.security,
                 },
             )?;
             db.execute("UPDATE acp_events SET sent=1 WHERE event_id=?1", [&event])?;

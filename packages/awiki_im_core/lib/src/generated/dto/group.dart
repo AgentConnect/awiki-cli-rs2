@@ -6,6 +6,7 @@
 import '../frb_generated.dart';
 import 'message.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'secure.dart';
 
 class DartCreateGroupRequest {
   final String name;
@@ -173,6 +174,9 @@ class DartGroupMember {
 }
 
 class DartGroupReadResult {
+  final String? operationJson;
+  final bool? encrypted;
+  final DartGroupSecureStatus? secureStatus;
   final DartGroupSnapshot? group;
   final List<DartGroupSummary> groups;
   final List<DartGroupMember> members;
@@ -186,6 +190,9 @@ class DartGroupReadResult {
   final List<String> warnings;
 
   const DartGroupReadResult({
+    this.operationJson,
+    this.encrypted,
+    this.secureStatus,
     this.group,
     required this.groups,
     required this.members,
@@ -201,6 +208,9 @@ class DartGroupReadResult {
 
   @override
   int get hashCode =>
+      operationJson.hashCode ^
+      encrypted.hashCode ^
+      secureStatus.hashCode ^
       group.hashCode ^
       groups.hashCode ^
       members.hashCode ^
@@ -218,6 +228,9 @@ class DartGroupReadResult {
       identical(this, other) ||
       other is DartGroupReadResult &&
           runtimeType == other.runtimeType &&
+          operationJson == other.operationJson &&
+          encrypted == other.encrypted &&
+          secureStatus == other.secureStatus &&
           group == other.group &&
           groups == other.groups &&
           members == other.members &&

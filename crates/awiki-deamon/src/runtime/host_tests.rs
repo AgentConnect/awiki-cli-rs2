@@ -79,6 +79,7 @@ fn runtime_final_outbox_is_fenced_after_controller_identity_change() {
     };
     state
         .insert_runtime_task(&RuntimeTask {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: run.task_id.clone(),
             agent_did: runtime.agent_did.clone(),
             agent_handle: runtime.handle.clone(),

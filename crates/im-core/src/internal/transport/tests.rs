@@ -1231,3 +1231,28 @@ async fn web_sync_resolution_inside_multi_thread_runtime_keeps_network_policy() 
         Err(crate::ImError::TransportUnavailable { .. })
     ));
 }
+
+#[test]
+fn host_backed_device_reuses_validated_endpoint_for_direct_and_group_encryption() {
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), "https://example.test");
+    let (client, bootstrap, _) = host_backed_client(&core);
+    assert!(client.current_identity().local_alias.is_none());
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(&client).unwrap();
+    assert_eq!(
+        authorization.protocol_device_id,
+        bootstrap.protocol_device_id
+    );
+    assert_eq!(authorization.e2ee_key_id, bootstrap.device_e2ee_key_id);
+    assert!(
+        crate::internal::secure_direct::v2_product::local_identity_uses_vnext(&client).unwrap()
+    );
+    crate::internal::secure_direct::v2_store::V2OwnerScope::from_client(&client).unwrap();
+    #[cfg(feature = "group-e2ee")]
+    {
+        let device = crate::internal::group_e2ee::v2_lifecycle::current_v2_device(&client).unwrap();
+        assert_eq!(device.device_id, bootstrap.protocol_device_id.as_str());
+        assert_eq!(device.signing_key_id, bootstrap.device_signing_key_id);
+    }
+}

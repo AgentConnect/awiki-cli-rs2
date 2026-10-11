@@ -6,6 +6,7 @@ pub use notify::{
     NOTIFY_LEVEL_ATTRIBUTE,
 };
 mod processing;
+pub(crate) mod security;
 mod service;
 mod v2_product;
 

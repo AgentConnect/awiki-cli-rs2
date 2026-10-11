@@ -283,7 +283,9 @@ pub(crate) async fn publish_stable_key_package(
     base_operation_id: &str,
     base_key_package_id: &str,
 ) -> crate::ImResult<()> {
-    let context = production_context(client)?;
+    // External identity Hosts (Node/DSH) authorize HTTP asynchronously. The
+    // synchronous context cannot cross that bridge, even inside an async API.
+    let context = production_context_async(client).await?;
     require_current_device_selection(Some(expected_device_id), &context.device.device_id)?;
     let service_did = service_did(client)?;
     let now = OffsetDateTime::now_utc();
@@ -332,20 +334,61 @@ pub(crate) async fn publish_stable_key_package(
 /// The creator KeyPackage is published first, then the exact typed P6 create
 /// result is accepted before local state is finalized. Any uncertain Host
 /// response leaves the SDK WAL prepared and returns the error to the caller.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CreateIntent {
+    now_text: String,
+    expires_at: String,
+    publish_operation: String,
+    key_package_id: String,
+    create_operation: String,
+    group_state_ref: V2GroupStateRef,
+}
+
+fn frozen_create_intent(
+    client: &crate::core::ImClient,
+    group_state_ref: V2GroupStateRef,
+) -> crate::ImResult<CreateIntent> {
+    let now = OffsetDateTime::now_utc();
+    let key = format!("mls-create:{}", group_state_ref.group_did);
+    let binding = group_state_ref.group_did.clone();
+    let candidate = CreateIntent {
+        now_text: format_time(now)?,
+        expires_at: format_time(now + KEY_PACKAGE_TTL)?,
+        publish_operation: operation_id("create-key-package"),
+        key_package_id: format!(
+            "kp-{}",
+            crate::internal::wire::common::generate_operation_id()
+        ),
+        create_operation: operation_id("create"),
+        group_state_ref,
+    };
+    let error = |_| crate::ImError::LocalStateUnavailable {
+        detail: "invalid group creation intent".to_owned(),
+    };
+    let frozen = crate::internal::group_runtime::journal::freeze(
+        client,
+        &key,
+        &binding,
+        serde_json::to_value(candidate).map_err(error)?,
+    )?;
+    serde_json::from_value(frozen).map_err(error)
+}
+
 pub(crate) fn initialize_created_group(
     client: &crate::core::ImClient,
     group_state_ref: V2GroupStateRef,
 ) -> crate::ImResult<()> {
+    let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context(client)?;
     let service_did = service_did(client)?;
-    let now = OffsetDateTime::now_utc();
-    let now_text = format_time(now)?;
-    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
-    let publish_operation = operation_id("create-key-package");
-    let key_package_id = format!(
-        "kp-{}",
-        crate::internal::wire::common::generate_operation_id()
-    );
+    let CreateIntent {
+        now_text,
+        expires_at,
+        publish_operation,
+        key_package_id,
+        create_operation,
+        group_state_ref,
+    } = intent;
     let prepared_package = context.product.prepare_current_key_package(
         service_meta(
             client,
@@ -373,7 +416,6 @@ pub(crate) fn initialize_created_group(
         .product
         .publish_current_key_package(&prepared_package)?;
 
-    let create_operation = operation_id("create");
     let submission = context.product.prepare_create(V2CreateGroupInput {
         meta: service_meta(
             client,
@@ -397,20 +439,42 @@ pub(crate) fn initialize_created_group(
     Ok(())
 }
 
+/// Resume only the original creator device's durable operation. Never invent
+/// an initial state when an existing group's keys are absent on a new device.
+pub(crate) async fn resume_created_group_async(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+) -> crate::ImResult<()> {
+    let Some(value) = crate::internal::group_runtime::journal::load(
+        client,
+        &format!("mls-create:{}", group.as_str()),
+    )?
+    else {
+        return Ok(());
+    };
+    let intent: CreateIntent =
+        serde_json::from_value(value).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group creation intent".to_owned(),
+        })?;
+    // The protocol WAL makes submission of an accepted operation a no-op.
+    initialize_created_group_async(client, intent.group_state_ref).await
+}
+
 pub(crate) async fn initialize_created_group_async(
     client: &crate::core::ImClient,
     group_state_ref: V2GroupStateRef,
 ) -> crate::ImResult<()> {
+    let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context_async(client).await?;
     let service_did = service_did(client)?;
-    let now = OffsetDateTime::now_utc();
-    let now_text = format_time(now)?;
-    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
-    let publish_operation = operation_id("create-key-package");
-    let key_package_id = format!(
-        "kp-{}",
-        crate::internal::wire::common::generate_operation_id()
-    );
+    let CreateIntent {
+        now_text,
+        expires_at,
+        publish_operation,
+        key_package_id,
+        create_operation,
+        group_state_ref,
+    } = intent;
     let prepared_package = context
         .product
         .prepare_current_key_package_async(
@@ -443,7 +507,6 @@ pub(crate) async fn initialize_created_group_async(
         .publish_current_key_package_async(&mut transport, &prepared_package)
         .await?;
 
-    let create_operation = operation_id("create");
     let submission = context.product.prepare_create(V2CreateGroupInput {
         meta: service_meta(
             client,
@@ -1389,6 +1452,23 @@ pub(crate) fn reconcile_group_device_roster(
     })
 }
 
+pub(crate) async fn reconcile_group_roster_before_send_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<V2RosterReconcileSummary> {
+    // Sending is not an identity device-management request. Only the active
+    // group owner may enumerate and converge the whole P4 roster inline.
+    let authority = current_actor_reconcile_authority_async(client, group.clone()).await?;
+    if !can_reconcile_roster_before_send(authority) {
+        return Ok(V2RosterReconcileSummary::default());
+    }
+    reconcile_group_device_roster_async(client, group).await
+}
+
+fn can_reconcile_roster_before_send(authority: Option<RosterReconcileAuthority>) -> bool {
+    authority == Some(RosterReconcileAuthority::Owner)
+}
+
 pub(crate) async fn reconcile_group_device_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
@@ -2116,6 +2196,261 @@ fn prepared_membership_submission(
     })
 }
 
+fn lease_key(group: &str, member: &str, device: &str) -> String {
+    format!("member-lease:{group}:{member}:{device}")
+}
+
+fn retained_package(
+    client: &crate::core::ImClient,
+    key: &str,
+) -> crate::ImResult<Option<anp::group_e2ee::V2GetKeyPackageResult>> {
+    let Some(value) = crate::internal::group_runtime::journal::load(client, key)? else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let package: anp::group_e2ee::V2GetKeyPackageResult =
+        serde_json::from_value(value).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid retained member KeyPackage".to_owned(),
+        })?;
+    if package
+        .group_key_package
+        .expires_at
+        .as_deref()
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .is_some_and(|at| at.timestamp() <= chrono::Utc::now().timestamp())
+    {
+        crate::internal::group_runtime::journal::save(client, key, Value::Null)?;
+        crate::internal::group_runtime::journal::save(
+            client,
+            &format!("{key}:request"),
+            Value::Null,
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(package))
+}
+
+fn member_not_ready() -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some("group.member_encryption_not_ready".to_owned()),
+        message: "尚未加入：对方尚未完成加密准备，请对方打开客户端后重试".to_owned(),
+        data: None,
+    }
+}
+
+/// Lease all missing exact-device packages before changing business membership.
+pub(crate) async fn preflight_member_async(
+    client: &crate::core::ImClient,
+    group: &str,
+    member: &str,
+) -> crate::ImResult<()> {
+    let document = resolve_member_document_fresh_async(client, member).await?;
+    let manifest = validated_p6_manifest(member, &document)?;
+    let desired = eligible_device_ids(&manifest);
+    if desired.is_empty() {
+        return Err(member_not_ready());
+    }
+    let mut context = production_context_async(client).await?;
+    let endpoints = context
+        .product
+        .list_local_group_member_endpoints(endpoint_inventory_input(
+            client,
+            &context.device,
+            group,
+            "invite-preflight",
+        ))?;
+    for device in desired {
+        if endpoints
+            .member_endpoints
+            .iter()
+            .any(|e| e.member_did == member && e.member_device_id == device)
+        {
+            continue;
+        }
+        lease_member_package_async(client, &mut context, group, member, &device, &document).await?;
+    }
+    Ok(())
+}
+
+async fn lease_member_package_async(
+    client: &crate::core::ImClient,
+    context: &mut ProductionV2Context<'_>,
+    group: &str,
+    member: &str,
+    device: &str,
+    document: &Value,
+) -> crate::ImResult<anp::group_e2ee::V2GetKeyPackageResult> {
+    let key = lease_key(group, member, device);
+    if let Some(package) = retained_package(client, &key)? {
+        return Ok(package);
+    }
+    let service = anp::direct_e2ee::message_service_did_from_document(document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let request_key = format!("{key}:request");
+    let retained = crate::internal::group_runtime::journal::load(client, &request_key)?;
+    let meta = match retained.filter(|v| !v.is_null()) {
+        Some(value) => {
+            serde_json::from_value(value).map_err(|_| crate::ImError::PermissionDenied)?
+        }
+        None => {
+            let meta = service_meta(
+                client,
+                &context.device,
+                &service,
+                &operation_id("get-key-package"),
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &format_time(OffsetDateTime::now_utc())?,
+            );
+            crate::internal::group_runtime::journal::save(
+                client,
+                &request_key,
+                serde_json::to_value(&meta).map_err(|_| crate::ImError::PermissionDenied)?,
+            )?;
+            meta
+        }
+    };
+    let package = context
+        .product
+        .get_target_key_package_async(
+            meta,
+            V2GetKeyPackageBody {
+                target_did: member.to_owned(),
+                target_device_id: device.to_owned(),
+                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
+                require_fresh: Some(true),
+            },
+        )
+        .await
+        .map_err(|error| {
+            if matches!(&error, crate::ImError::Service { code: Some(code), .. }
+                if code == "anp.target_not_found" || code == "group.key_package_not_found")
+            {
+                member_not_ready()
+            } else {
+                error
+            }
+        })?;
+    crate::internal::group_runtime::journal::save(
+        client,
+        &key,
+        serde_json::to_value(&package).map_err(|_| crate::ImError::Internal {
+            message: "serialize member package".to_owned(),
+        })?,
+    )?;
+    Ok(package)
+}
+
+/// Read-only readiness uses a complete, version-bound P4 roster. P2 device
+/// authorization and exact-device reconciliation remain in the mutation path.
+fn roster_inputs(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<(String, usize)> {
+    let snapshot = authoritative
+        .group
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if snapshot.did.as_str() != group.as_str()
+        || snapshot.membership_status.as_deref() != Some("active")
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let raw = authoritative
+        .raw_response()
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    let state = super::state_ref::group_state_ref_from_group_response(group.as_str(), raw)
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    let _ = current_v2_device(client)?;
+    Ok((
+        state.group_state_version,
+        super::member_collector::product_max_members(raw)?,
+    ))
+}
+
+fn roster_matches(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+    members: super::member_collector::CompleteGroupMembers,
+) -> crate::ImResult<bool> {
+    let runtime = super::v2_runtime::runtime_for_client(client)?;
+    let device = current_v2_device(client)?;
+    let endpoints = runtime.list_local_group_member_endpoints(endpoint_inventory_input(
+        client,
+        &device,
+        group.as_str(),
+        "readiness",
+    ))?;
+    let expected = members
+        .members
+        .into_iter()
+        .map(|m| {
+            m.did
+                .map(|did| did.as_str().to_owned())
+                .ok_or(crate::ImError::InventoryIncomplete)
+        })
+        .collect::<crate::ImResult<BTreeSet<_>>>()?;
+    let actual = endpoints
+        .member_endpoints
+        .into_iter()
+        .map(|e| e.member_did)
+        .collect::<BTreeSet<_>>();
+    Ok(expected == actual)
+}
+
+pub(crate) fn roster_consistent(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<bool> {
+    let (version, max) = roster_inputs(client, &group, authoritative)?;
+    let members = super::member_collector::collect_complete_group_members(
+        client,
+        group.clone(),
+        Some(&version),
+        max,
+    )?;
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy(group.clone())?;
+    Ok(
+        group_state_version_matches(refreshed.raw_response(), &version)
+            && roster_matches(client, &group, members)?,
+    )
+}
+
+pub(crate) async fn roster_consistent_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<bool> {
+    let (version, max) = roster_inputs(client, &group, authoritative)?;
+    let members = super::member_collector::collect_complete_group_members_async(
+        client,
+        group.clone(),
+        Some(&version),
+        max,
+    )
+    .await?;
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group.clone())
+    .await?;
+    Ok(
+        group_state_version_matches(refreshed.raw_response(), &version)
+            && roster_matches(client, &group, members)?,
+    )
+}
+
 fn submit_exact_add(
     client: &crate::core::ImClient,
     context: &mut ProductionV2Context<'_>,
@@ -2172,29 +2507,16 @@ async fn submit_exact_add_async(
     member_device_id: &str,
     member_document: Value,
 ) -> crate::ImResult<()> {
-    let target_service_did = anp::direct_e2ee::message_service_did_from_document(&member_document)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    let lookup_now = format_time(OffsetDateTime::now_utc())?;
-    let lookup_operation = operation_id("get-key-package");
-    let package = context
-        .product
-        .get_target_key_package_async(
-            service_meta(
-                client,
-                &context.device,
-                &target_service_did,
-                &lookup_operation,
-                GROUP_E2EE_TRANSPORT_PROFILE_V2,
-                &lookup_now,
-            ),
-            V2GetKeyPackageBody {
-                target_did: member_did.to_owned(),
-                target_device_id: member_device_id.to_owned(),
-                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
-                require_fresh: Some(true),
-            },
-        )
-        .await?;
+    let package = lease_member_package_async(
+        client,
+        context,
+        &group_state_ref.group_did,
+        member_did,
+        member_device_id,
+        &member_document,
+    )
+    .await?;
+    let lease = lease_key(&group_state_ref.group_did, member_did, member_device_id);
     let now_text = format_time(OffsetDateTime::now_utc())?;
     let add_operation = operation_id("add");
     let submission = context.product.prepare_add(V2AddMemberInput {
@@ -2212,7 +2534,13 @@ async fn submit_exact_add_async(
         pending_commit_id: format!("pending-{add_operation}"),
         request_id: format!("{add_operation}-prepare"),
     })?;
-    submit_prepared_add_async(context, &submission, format!("{add_operation}-finalize")).await
+    submit_prepared_add_async(context, &submission, format!("{add_operation}-finalize")).await?;
+    crate::internal::group_runtime::journal::save(
+        client,
+        &format!("{lease}:request"),
+        Value::Null,
+    )?;
+    crate::internal::group_runtime::journal::save(client, &lease, Value::Null)
 }
 
 fn submit_exact_remove(
@@ -2485,10 +2813,22 @@ fn eligible_device_ids(manifest: &DeviceManifest) -> Vec<String> {
         .devices
         .iter()
         .filter(|device| {
-            device
-                .profiles
-                .iter()
-                .any(|profile| profile == PROFILE_GROUP_E2EE_V2)
+            // Historical Manifests remain readable, but only the current
+            // complete P4/P6 bundle participates in desired MLS membership.
+            // Exact device/key eligibility is checked by the SDK before use.
+            [
+                anp::authentication::PROFILE_CORE_BINDING_V1,
+                anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+                anp::authentication::PROFILE_GROUP_BASE_V2,
+                PROFILE_GROUP_E2EE_V2,
+            ]
+            .iter()
+            .all(|required| {
+                device
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.as_str() == *required)
+            })
         })
         .map(|device| device.device_id.clone())
         .collect::<BTreeSet<_>>()
@@ -2661,31 +3001,8 @@ fn require_exact_group(reference: &V2GroupStateRef) -> crate::ImResult<()> {
 pub(crate) fn current_v2_device(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<CurrentV2Device> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index = crate::internal::identity_store::IdentityStore::new(
-        &client.core_inner().sdk_paths().identities,
-    )
-    .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .filter(|state| {
-            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let authorization = state
-        .authorization
-        .as_ref()
-        .filter(|authorization| {
-            authorization.status
-                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(client)?;
     Ok(CurrentV2Device {
         device_id: authorization.protocol_device_id.as_str().to_owned(),
         signing_key_id: authorization.signing_key_id.clone(),

@@ -66,12 +66,28 @@ pub async fn get_group(
 ) -> Result<DartGroupReadResult, DartImError> {
     let inner = client.clone_inner()?;
     let group = im_core::ids::GroupRef::parse(group_did).map_err(DartImError::from)?;
-    inner
+    let result = inner
         .groups()
-        .get_async(group)
+        .get_authoritative_group_async(group.clone())
         .await
-        .map(Into::into)
-        .map_err(DartImError::from)
+        .map_err(DartImError::from)?;
+    let encrypted = result
+        .requires_end_to_end_encryption()
+        .map_err(DartImError::from)?;
+    let mut result: DartGroupReadResult = result.into();
+    result.encrypted = Some(encrypted);
+    if encrypted {
+        result.secure_status = Some(
+            inner
+                .secure()
+                .group(group)
+                .status_async()
+                .await
+                .map_err(DartImError::from)?
+                .into(),
+        );
+    }
+    Ok(result)
 }
 
 pub async fn list_groups(

@@ -1,4 +1,5 @@
 import 'message.dart';
+import 'secure.dart';
 
 enum GroupIdentityMode { handle, didOnly }
 
@@ -205,6 +206,9 @@ class JoinGroupRequest {
 
 class GroupReadResult {
   const GroupReadResult({
+    this.operationJson,
+    this.encrypted,
+    this.secureStatus,
     this.group,
     this.groups = const [],
     this.members = const [],
@@ -218,6 +222,9 @@ class GroupReadResult {
     this.warnings = const [],
   });
 
+  final String? operationJson;
+  final bool? encrypted;
+  final GroupSecureStatus? secureStatus;
   final GroupSnapshot? group;
   final List<GroupSummary> groups;
   final List<GroupMember> members;

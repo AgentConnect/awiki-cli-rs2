@@ -269,6 +269,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
   @protected
+  DartGroupSecureStatus dco_decode_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  );
+
+  @protected
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
   @protected
@@ -1358,6 +1363,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
 
   @protected
+  DartGroupSecureStatus? dco_decode_opt_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  );
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   );
@@ -1705,6 +1715,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDownloadAttachmentRequest
   sse_decode_box_autoadd_dart_download_attachment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartGroupSecureStatus sse_decode_box_autoadd_dart_group_secure_status(
     SseDeserializer deserializer,
   );
 
@@ -3084,6 +3099,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupSecureStatus? sse_decode_opt_box_autoadd_dart_group_secure_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   );
@@ -3476,6 +3496,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus self,
     SseSerializer serializer,
   );
 
@@ -5127,6 +5153,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_device_revoke_outcome_category(
     DartDeviceRevokeOutcomeCategory? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus? self,
     SseSerializer serializer,
   );
 

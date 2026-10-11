@@ -14,6 +14,7 @@ fn work(id: &str, group: bool) -> Work {
     Work {
         run_id: format!("run_{id}"),
         task: RuntimeTask {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             task_id: format!("task_{id}"),
             agent_did: "did:agent:coder".into(),
             agent_handle: "coder".into(),

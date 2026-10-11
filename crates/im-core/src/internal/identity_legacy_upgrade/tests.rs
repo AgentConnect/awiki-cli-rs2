@@ -102,7 +102,7 @@ fn published_e1_upgrade_builds_exact_canonical_vnext_document() {
             "anp.identity.discovery.v1",
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
         ]
     );
@@ -326,7 +326,7 @@ fn vnext_profile_convergence_preserves_authority_and_device_identity_and_is_idem
                 "anp.identity.discovery.v1",
                 "anp.direct.base.v1",
                 "anp.direct.e2ee.v2",
-                "anp.group.base.v1",
+                "anp.group.base.v2",
                 "anp.group.e2ee.v2"
             ])
         );
@@ -344,7 +344,7 @@ fn vnext_profile_convergence_preserves_authority_and_device_identity_and_is_idem
             "anp.identity.discovery.v1",
             "anp.direct.base.v1",
             "anp.direct.e2ee.v2",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.group.e2ee.v2",
             "anp.attachment.v1",
             "anp.federation.relay.v1"

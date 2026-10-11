@@ -626,8 +626,10 @@ impl IdentitySession for DirectAnpIdentitySession {
     async fn sign(&self, request: ProviderSignRequest) -> ProviderResult<ProviderSignature> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            with_identity(&identity, |identity| identity.sign(request.clone().into()))
-                .map(Into::into)
+            with_identity(&identity, |identity| {
+                retry_crypto_operation(identity, || identity.sign(request.clone().into()))
+            })
+            .map(Into::into)
         })
         .await
     }
@@ -639,7 +641,9 @@ impl IdentitySession for DirectAnpIdentitySession {
         let identity = self.identity.clone();
         run_blocking(move || {
             with_identity(&identity, |identity| {
-                identity.sign_origin_proof(request.clone().into())
+                retry_crypto_operation(identity, || {
+                    identity.sign_origin_proof(request.clone().into())
+                })
             })
             .map(Into::into)
         })
@@ -653,7 +657,9 @@ impl IdentitySession for DirectAnpIdentitySession {
         let identity = self.identity.clone();
         run_blocking(move || {
             with_identity(&identity, |identity| {
-                identity.prepare_http_signature(request.clone().into())
+                retry_crypto_operation(identity, || {
+                    identity.prepare_http_signature(request.clone().into())
+                })
             })
             .map(Into::into)
         })
@@ -734,9 +740,11 @@ impl IdentitySession for DirectAnpIdentitySession {
         let identity = self.identity.clone();
         run_blocking(move || {
             with_identity(&identity, |identity| {
-                identity.derive_shared_secret(KeyAgreementRequest {
-                    key: request.key.into(),
-                    peer_public: request.peer_public,
+                retry_crypto_operation(identity, || {
+                    identity.derive_shared_secret(KeyAgreementRequest {
+                        key: request.key.clone().into(),
+                        peer_public: request.peer_public,
+                    })
                 })
             })
             .map(|secret| ProviderSharedSecret::new(*secret.as_bytes()))
@@ -912,6 +920,22 @@ fn provider_transition_outcome(
         anp_identity::IdentityTransitionOutcome::Aborted => {
             ProviderIdentityTransitionOutcome::Aborted
         }
+    }
+}
+
+// Retry only local cryptography, never publication, mutation, or HTTP delivery.
+// ANP reload pins the same store/identity ID/DID; the second operation still
+// validates generation, lifecycle and key authority. Another conflict is final.
+fn retry_crypto_operation<T>(
+    identity: &anp_identity::ManagedIdentity,
+    mut operation: impl FnMut() -> anp_identity::IdentityResult<T>,
+) -> anp_identity::IdentityResult<T> {
+    match operation() {
+        Err(anp_identity::IdentityError::Conflict) => {
+            identity.recover_identity()?;
+            operation()
+        }
+        result => result,
     }
 }
 
