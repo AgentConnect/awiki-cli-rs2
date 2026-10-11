@@ -23,4 +23,3 @@ for (const field of ['multiDeviceDirectE2eeEnabled', 'multiDeviceGroupE2eeEnable
     await client.close()
   })
 }
-
