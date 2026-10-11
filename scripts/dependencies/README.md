@@ -159,3 +159,18 @@ APP 的 wrapper 来源应再固定到包含此清单与锁的 Core PR 提交。
 解析锁及每架构构建证据保存在 `.artifacts/dependencies/local/`，不修改正式 manifest/lock。
 此入口只允许 Debug 候选的优化原生库，Flutter APP 保持 Debug；与 `AWIKI_RELEASE_REGISTRY=1`
 及 `AWIKI_APPLE_SOURCE_INTEGRATION=1` 互斥，不授予正式发布资格。
+
+### 2026-10-11 加密、头像与系统验证汇总
+
+当前 source 清单固定 Core 实现 `867c15707c0977b9d9b667af15a0ce2703c53626`
+（[Core PR #57](https://github.com/AgentConnect/awiki-cli-rs2/pull/57)）及 ANP
+`fb99a08072ae68e5f6cc49cfef379d3cc2ded807`
+（[ANP PR #67](https://github.com/agent-network-protocol/anp/pull/67)）。
+实现冻结后再提交依赖元数据，Core pin 不引用元数据提交本身，避免自引用循环。
+Identity 仍为 `794f914fd651a66f9f517411e00f0bdb99962201`；其原 Core #56
+组合审查链接保持不变，不表示新建了 Identity PR。
+
+本轮通过 owning `--refresh-lock` 重新解析，配套 source locks 内容没有变化；
+源码模式仍须以 frozen/locked 入口验证。此组合包含加密、头像和群生命周期修复，
+不改变 registry 版本、最低版本或发布状态。正式消费仍须先发布兼容 SDK，更新
+registry pin/lock 并撤销临时 source 清单；本轮不发布或部署。
