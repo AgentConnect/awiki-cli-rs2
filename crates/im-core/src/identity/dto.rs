@@ -93,6 +93,22 @@ pub struct IdentityDeviceSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum DeviceCapabilityUpgradeState {
+    Ready,
+    UpgradeAvailable,
+    ApprovalRequired,
+    Unsupported,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceCapabilityUpgradeStatus {
+    pub device_id: String,
+    pub state: DeviceCapabilityUpgradeState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IdentityCustodyBackend {
     AnpIdentity,
     LegacyFileCompat,

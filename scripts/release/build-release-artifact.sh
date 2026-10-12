@@ -292,6 +292,7 @@ AWIKI_CLI_TENANT_CONFIG_PATH="${TENANT_CONFIG}" \
   "${cargo_cmd[@]}" build -p awiki-cli --bin awiki-cli --release --locked --target "${TARGET_TRIPLE}"
 
 [[ -f "${build_bin}" ]] || die "built binary not found: ${build_bin}"
+"${build_bin}" __self-check >/dev/null
 
 # The npm installer must work on Linux hosts older than the current GitHub
 # runner. A musl build keeps the CLI independent of the runner's glibc ABI.

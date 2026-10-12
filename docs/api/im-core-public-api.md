@@ -2309,3 +2309,9 @@ Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表�
 P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。
 
 会话快照与消息 DTO 一样保留本地认证后的 `decryption_state`，重启后的客户端据此区分已解密内容和不可用密文；不重新消耗 MLS 密文，也不由 UI 猜测解密结果。
+
+### 设备群能力兼容升级
+
+`device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
+
+Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。

@@ -15,6 +15,8 @@
 - `crates/awiki-cli/Cargo.toml` 的 `[package].version` 必须与 `package.json.version` 一致。
 - `Cargo.lock` 中的 `awiki-cli` package 版本必须同步。
 - Daemon 版本来自 `crates/awiki-deamon/Cargo.toml`。
+- 包版本保留完整 SemVer（包括测试渠道后缀），`X-AWiki-Client-Version` 的数字版本只取严格解析后的 `major.minor.patch`；非法包版本不得回退为无版本请求。CLI 无发布版本的开发构建保持不发送该字段。
+- CLI、Daemon 发布二进制必须通过 `__self-check` 的通信版本校验；Daemon 安装器在修改已安装版本和 `current` 入口前执行该校验。版本打印或校验和通过不能代替初始化、注册及服务启动验证。
 
 修改版本后运行：
 

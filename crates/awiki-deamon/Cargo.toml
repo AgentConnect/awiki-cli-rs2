@@ -1,6 +1,6 @@
 [package]
 name = "awiki-deamon"
-version = "0.1.107-singapore.20261012"
+version = "0.1.108-singapore.20261012"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

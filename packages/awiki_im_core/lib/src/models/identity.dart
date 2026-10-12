@@ -1022,3 +1022,20 @@ class PendingIdentityRegistration {
   final String verificationKind;
   final String phase;
 }
+
+enum DeviceCapabilityUpgradeState {
+  ready,
+  upgradeAvailable,
+  approvalRequired,
+  unsupported,
+  blocked,
+}
+
+class DeviceCapabilityUpgradeStatus {
+  const DeviceCapabilityUpgradeStatus({
+    required this.deviceId,
+    required this.state,
+  });
+  final String deviceId;
+  final DeviceCapabilityUpgradeState state;
+}

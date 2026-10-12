@@ -755,6 +755,8 @@ INSTALL_DIR="$EXTRACT_DIR"
 validate_extracted_package
 chmod 0755 "$INSTALL_DIR/awiki-deamon" 2>/dev/null || true
 chmod 0755 "$INSTALL_DIR/awiki-deamon-runtime" 2>/dev/null || true
+# Check the candidate before replacing any installed version or current link.
+"$INSTALL_DIR/awiki-deamon" __self-check --expected-version "$PKG_VERSION" >/dev/null || die "daemon package failed startup validation; existing installation was preserved"
 FINAL_INSTALL_DIR="${HOME}/.awiki-daemon/deamon/bin/${PKG_VERSION}"
 rm -rf "$FINAL_INSTALL_DIR"
 mkdir -p "$(dirname "$FINAL_INSTALL_DIR")"

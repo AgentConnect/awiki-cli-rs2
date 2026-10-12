@@ -182,9 +182,13 @@ account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史
 默认身份先写、索引最后原子替换；索引替换失败时恢复原默认文件。两步间崩溃仍保留
 重复索引及原恢复标记，可经原任务续办，不能留下“索引已删除前驱、默认文件仍指向前驱”
 而无法进入恢复的状态。补偿失败同样保留任务和备份并返回错误。
-局部索引修复不等于 Recovery 已 Applied：若其他 Handle 仍重复，普通读取及客户端加载
-继续返回 `identity.local_registry_conflict`，原任务保留 `local_transition_pending`。
-处理其他 Handle 后再 Resume，继续完成 JWT、PreKey 和既有 Applied 收尾，不创建新任务。
+局部索引修复不等于 Recovery 已 Applied。只有被唯一活跃 Recovery 和精确
+`identity_switched` 前后代次证明的冲突记录，才在只读目录中隔离：可用身份列表不包含
+这两个投影，选中该 Handle/身份继续返回 `identity.local_registry_conflict`，恢复入口仍
+通过原任务可达。其他身份可继续注册、加载和完成恢复。普通索引写入只允许原样保留其他
+Handle 的既有冲突（默认身份标记除外），不能扩大或改写冲突；未知冲突继续失败关闭。
+Recovery 的完成门禁为身份接续、JWT、P5 和持久化收尾；P6 准备属于独立的设备能力
+生命周期，不得把已恢复身份永久卡在 `local_transition_pending`。
 
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle

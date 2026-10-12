@@ -29,6 +29,8 @@ struct Pending {
     checkpoint: IdentityInternalCheckpoint,
     authorizer: DeviceJoinRemoteDeviceSummary,
     services: Vec<DidDocumentService>,
+    #[serde(default)]
+    capability_target_device_id: Option<String>,
     candidate: Option<Value>,
     provider_operation_id: Option<String>,
     committed: bool,
@@ -63,6 +65,23 @@ impl Pending {
     }
 
     fn validate_candidate(&self, candidate: &Value) -> crate::ImResult<()> {
+        if let Some(target) = &self.capability_target_device_id {
+            let mut expected = capability_candidate(&self.base_document, target)?;
+            let mut actual = candidate.clone();
+            expected
+                .as_object_mut()
+                .ok_or(crate::ImError::PermissionDenied)?
+                .remove("proof");
+            actual
+                .as_object_mut()
+                .ok_or(crate::ImError::PermissionDenied)?
+                .remove("proof");
+            return if expected == actual && document::validate_control_document_method(candidate) {
+                Ok(())
+            } else {
+                Err(crate::ImError::PermissionDenied)
+            };
+        }
         let unsigned = |value: &Value| -> crate::ImResult<Value> {
             let mut value = value
                 .as_object()
@@ -173,6 +192,16 @@ async fn execute<R: Remote>(
     input: Option<Vec<DidDocumentService>>,
     remote: &mut R,
 ) -> crate::ImResult<Value> {
+    execute_with_target(core, client, input, None, remote).await
+}
+
+async fn execute_with_target<R: Remote>(
+    core: &crate::ImCore,
+    client: &crate::core::ImClient,
+    input: Option<Vec<DidDocumentService>>,
+    capability_target_device_id: Option<String>,
+    remote: &mut R,
+) -> crate::ImResult<Value> {
     let store = Store::new(core)?;
     let identity = client
         .runtime()
@@ -184,6 +213,9 @@ async fn execute<R: Remote>(
         .transpose()?;
     let mut pending = match store.load(client.did())? {
         Some(pending) => {
+            if pending.capability_target_device_id != capability_target_device_id {
+                return Err(crate::ImError::PermissionDenied);
+            }
             if input.as_ref().is_some_and(|s| *s != pending.services) {
                 return Err(crate::ImError::invalid_input(
                     Some("services".into()),
@@ -193,12 +225,12 @@ async fn execute<R: Remote>(
             pending
         }
         None => {
-            let Some(services) = input else {
+            if input.is_none() && capability_target_device_id.is_none() {
                 return core
                     .identities()
                     .identity_document_async(IdentitySelector::Did(client.did().clone()))
                     .await;
-            };
+            }
             if identity
                 .resume_document_change()
                 .await
@@ -214,7 +246,22 @@ async fn execute<R: Remote>(
                 .map_err(map_provider_error)?;
             let authorizer =
                 validate_current(client, &registry, &base_document, &public.document, None)?;
+            let services = input.unwrap_or(services(&base_document, client.did())?);
             validate_services(client.did(), &base_document, &services)?;
+            if let Some(target) = &capability_target_device_id {
+                if !registry.devices.iter().any(|device| {
+                    device.device_id == *target
+                        && device.status == DeviceAuthorizationStatus::Active
+                }) {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                let candidate = capability_candidate(&base_document, target)?;
+                if candidate == base_document {
+                    adopt(identity.as_ref(), &registry, &base_document).await?;
+                    persist_current(core, client, &registry, &base_document, authorizer)?;
+                    return Ok(base_document);
+                }
+            }
             adopt(identity.as_ref(), &registry, &base_document).await?;
             let pending = Pending {
                 schema_version: 1,
@@ -224,6 +271,7 @@ async fn execute<R: Remote>(
                 checkpoint: registry.checkpoint,
                 authorizer,
                 services,
+                capability_target_device_id,
                 candidate: None,
                 provider_operation_id: None,
                 committed: false,
@@ -272,12 +320,24 @@ async fn execute<R: Remote>(
                         security_profiles: s.security_profiles.clone(),
                     })
                     .collect::<Vec<_>>();
-                match identity.prepare_document_change(json!({"changes":[{"change":"replace_services", "services": replacements}]})).await {
+                let request = if let Some(target) = &pending.capability_target_device_id {
+                    json!({"changes":[{"change":"add_device_profiles", "device_id":target, "profiles":["anp.group.base.v2"]}]})
+                } else {
+                    json!({"changes":[{"change":"replace_services", "services": replacements}]})
+                };
+                match identity.prepare_document_change(request).await {
                     Ok(change) => change,
                     Err(error) => {
                         // No HTTP submission has occurred. Clear only when
                         // custody confirms it did not persist a candidate.
-                        if identity.resume_document_change().await.map_err(map_provider_error)?.is_none() { store.delete(client.did())?; }
+                        if identity
+                            .resume_document_change()
+                            .await
+                            .map_err(map_provider_error)?
+                            .is_none()
+                        {
+                            store.delete(client.did())?;
+                        }
                         return Err(map_provider_error(error));
                     }
                 }
@@ -300,7 +360,8 @@ async fn execute<R: Remote>(
         pending.candidate = Some(candidate.candidate_document);
         pending.provider_operation_id = Some(candidate.operation_id);
         store.save(&pending)?;
-        let unsigned = wire::prepare_update_unsigned(
+        let unsigned = wire::prepare_update_unsigned_for_target(
+            pending.capability_target_device_id.clone(),
             pending.operation_id.clone(),
             pending.checkpoint.clone(),
             pending
@@ -345,7 +406,10 @@ async fn execute<R: Remote>(
                     .map_err(map_provider_error)?;
             }
             let error = response.err().unwrap_or(crate::ImError::PermissionDenied);
-            if client.did().as_str().starts_with("did:web:") && checkpoint_conflict(&error) {
+            if (client.did().as_str().starts_with("did:web:")
+                || pending.capability_target_device_id.is_some())
+                && checkpoint_conflict(&error)
+            {
                 pending.rejected = true;
                 store.save(&pending)?;
                 finish_rejected(core, client, &pending, remote).await?;
@@ -620,3 +684,138 @@ fn validate_services(
 
 #[cfg(all(test, feature = "identity-native-anp"))]
 mod tests;
+
+/// Root/admin-authorized update of one explicitly selected device. Siblings
+/// are never upgraded by inference from the local application version.
+pub(crate) async fn upgrade_device_capabilities(
+    core: &crate::ImCore,
+    selector: IdentitySelector,
+    target: String,
+) -> crate::ImResult<Value> {
+    let (client, _, _) =
+        crate::internal::identity_device_join::ready_admin_context_async(core, &selector, None)
+            .await?;
+    let _guard = core.inner().device_revoke_lock.lock().await;
+    let mut remote = HttpRemote {
+        transport: CoreHttpTransport::new(&client),
+    };
+    execute_with_target(core, &client, None, Some(target), &mut remote).await
+}
+
+pub(crate) fn capability_candidate(base: &Value, target: &str) -> crate::ImResult<Value> {
+    let mut candidate = base.clone();
+    let devices = candidate
+        .pointer_mut("/deviceManifest/devices")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let matches = devices
+        .iter_mut()
+        .filter(|device| device.get("device_id").and_then(Value::as_str) == Some(target))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let device = matches.into_iter().next().unwrap();
+    let profiles = device
+        .get_mut("profiles")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if ![
+        "anp.core.binding.v1",
+        "anp.identity.discovery.v1",
+        "anp.group.e2ee.v2",
+    ]
+    .iter()
+    .all(|required| {
+        profiles
+            .iter()
+            .any(|value| value.as_str() == Some(required))
+    }) {
+        return Err(crate::ImError::unsupported(
+            "device-capability-profile-upgrade",
+        ));
+    }
+    if !profiles
+        .iter()
+        .any(|value| value.as_str() == Some("anp.group.base.v2"))
+    {
+        profiles.push(json!("anp.group.base.v2"));
+    }
+    Ok(candidate)
+}
+
+pub(crate) async fn capability_status(
+    core: &crate::ImCore,
+    selector: IdentitySelector,
+    target: Option<String>,
+) -> crate::ImResult<crate::identity::DeviceCapabilityUpgradeStatus> {
+    use crate::identity::{
+        DeviceCapabilityUpgradeState as State, DeviceCapabilityUpgradeStatus as Status,
+    };
+    let local = core
+        .identities()
+        .device_summary_async(selector.clone())
+        .await?;
+    let local_id = local
+        .protocol_device_id
+        .ok_or(crate::ImError::PermissionDenied)?
+        .as_str()
+        .to_owned();
+    let target = target.unwrap_or_else(|| local_id.clone());
+    let client = core.client_async(selector).await?;
+    let mut remote = HttpRemote {
+        transport: CoreHttpTransport::new(&client),
+    };
+    let (registry, current) = remote.current(client.did()).await?;
+    if registry.did != *client.did()
+        || current.get("id").and_then(Value::as_str) != Some(client.did().as_str())
+        || !document::validate_control_document_method(&current)
+        || registry.checkpoint.document_hash != document::document_hash(&current)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let caller = registry
+        .devices
+        .iter()
+        .find(|device| device.device_id == local_id)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if caller.status != DeviceAuthorizationStatus::Active
+        || caller.signing_key_id != client.runtime().key_provider.request_signing_key_id()?
+        || caller.e2ee_key_id != client.runtime().key_provider.agreement_key_id()?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let device = registry
+        .devices
+        .iter()
+        .find(|device| device.device_id == target)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    crate::internal::identity_device_revoke::validate_manifest_device(&current, device)?;
+    let pending = Store::new(core)?.load(client.did())?;
+    let state = if device.status != DeviceAuthorizationStatus::Active {
+        State::Blocked
+    } else if let Some(pending) = pending {
+        if pending.capability_target_device_id.as_deref() == Some(target.as_str())
+            && caller.role == DeviceAuthorizationRole::Admin
+            && caller.management_ready
+        {
+            State::UpgradeAvailable
+        } else {
+            State::Blocked
+        }
+    } else if let Ok(candidate) = capability_candidate(&current, &target) {
+        if candidate == current {
+            State::Ready
+        } else if caller.role == DeviceAuthorizationRole::Admin && caller.management_ready {
+            State::UpgradeAvailable
+        } else {
+            State::ApprovalRequired
+        }
+    } else {
+        State::Unsupported
+    };
+    Ok(Status {
+        device_id: target,
+        state,
+    })
+}

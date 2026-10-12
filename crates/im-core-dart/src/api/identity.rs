@@ -6,9 +6,10 @@ use crate::dto::{
         DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPublicPackage,
         DartDaemonSubkeyPublicProposal, DartDeleteLocalIdentityResult,
-        DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
-        DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
-        DartDeviceRevokeResult, DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryContext,
+        DartDeviceCapabilityUpgradeStatus, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice,
+        DartDeviceJoinSessionSummary, DartDeviceRevokeResult,
+        DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryContext,
         DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult,
         DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityCustodyStatus,
         DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
@@ -649,6 +650,37 @@ pub async fn identity_device_summary(
     inner
         .identities()
         .device_summary_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_device_capability_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    target_device_id: Option<String>,
+) -> Result<DartDeviceCapabilityUpgradeStatus, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .device_capability_status_async(selector.try_into()?, target_device_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn upgrade_device_capabilities(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    target_device_id: Option<String>,
+    user_presence_confirmed: bool,
+) -> Result<DartDeviceCapabilityUpgradeStatus, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .upgrade_device_capabilities_async(
+            selector.try_into()?,
+            target_device_id,
+            user_presence_confirmed,
+        )
         .await
         .map(Into::into)
         .map_err(DartImError::from)

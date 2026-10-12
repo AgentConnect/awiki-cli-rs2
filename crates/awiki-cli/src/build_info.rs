@@ -29,10 +29,25 @@ pub const CGO_ENABLED: &str = match option_env!("AWIKI_CLI_CGO_ENABLED") {
 
 pub fn client_version_info() -> im_core::ImResult<Option<im_core::ClientVersionInfo>> {
     match option_env!("AWIKI_CLI_VERSION") {
-        Some(_) => im_core::ClientVersionInfo::new(PRODUCT, RELEASE, VERSION, None).map(Some),
+        Some(version) => client_version_from_package(version).map(Some),
         None => Ok(None),
     }
 }
+
+fn client_version_from_package(package: &str) -> im_core::ImResult<im_core::ClientVersionInfo> {
+    let version = semver::Version::parse(package).map_err(|_| {
+        im_core::ImError::invalid_input(
+            Some("package_version".to_owned()),
+            "package version must be valid SemVer",
+        )
+    })?;
+    let numeric = format!("{}.{}.{}", version.major, version.minor, version.patch);
+    im_core::ClientVersionInfo::new(PRODUCT, RELEASE, numeric, None)
+}
+
+#[cfg(test)]
+#[path = "build_info_version_tests.rs"]
+mod version_tests;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildInfo {
@@ -168,7 +183,7 @@ mod tests {
         match option_env!("AWIKI_CLI_VERSION") {
             Some(version) => assert_eq!(
                 actual.unwrap().header_value(),
-                format!("awiki-cli/{RELEASE}/{version}")
+                client_version_from_package(version).unwrap().header_value()
             ),
             None => assert!(actual.is_none()),
         }

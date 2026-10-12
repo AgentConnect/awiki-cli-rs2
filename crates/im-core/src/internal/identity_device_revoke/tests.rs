@@ -878,10 +878,42 @@ pub(crate) async fn web_scenario() -> Scenario {
 }
 
 pub(crate) async fn provider_scenario(did_method: crate::identity::DidMethod) -> Scenario {
+    provider_scenario_with_old_profiles(did_method, false).await
+}
+
+pub(crate) async fn provider_scenario_with_old_profiles(
+    did_method: crate::identity::DidMethod,
+    old_profiles: bool,
+) -> Scenario {
     use crate::internal::identity_provider::*;
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
     let core = open_core(root.path(), false);
+    if old_profiles {
+        let mut create = crate::internal::identity_generation::handle_anp_identity_create_spec(
+            "awiki.test",
+            LOCAL_ALIAS,
+            None,
+            None,
+            did_method,
+        )
+        .unwrap();
+        for extension in &mut create.spec.extensions {
+            let ProviderIdentityExtension::DeviceManifest { devices } = extension;
+            {
+                for device in devices {
+                    device.profiles.retain(|p| p != "anp.group.base.v2");
+                    device.profiles.push("anp.group.base.v1".into());
+                }
+            }
+        }
+        crate::internal::identity_custody::open_controller_manager(&core)
+            .unwrap()
+            .create(crate::internal::identity_custody::native_create_spec(
+                create.spec,
+            ))
+            .unwrap();
+    }
     let generated = crate::internal::identity_custody::provision_registration_identity_for_method(
         &core,
         "awiki.test",

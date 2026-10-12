@@ -222,6 +222,35 @@ class DartDeleteLocalIdentityResult {
           warnings == other.warnings;
 }
 
+enum DartDeviceCapabilityUpgradeState {
+  ready,
+  upgradeAvailable,
+  approvalRequired,
+  unsupported,
+  blocked,
+}
+
+class DartDeviceCapabilityUpgradeStatus {
+  final String deviceId;
+  final DartDeviceCapabilityUpgradeState state;
+
+  const DartDeviceCapabilityUpgradeStatus({
+    required this.deviceId,
+    required this.state,
+  });
+
+  @override
+  int get hashCode => deviceId.hashCode ^ state.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceCapabilityUpgradeStatus &&
+          runtimeType == other.runtimeType &&
+          deviceId == other.deviceId &&
+          state == other.state;
+}
+
 class DartDeviceJoinApprovalPrompt {
   final String approvalHandle;
   final String joinSessionId;

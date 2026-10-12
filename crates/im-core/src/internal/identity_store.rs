@@ -2045,15 +2045,45 @@ impl<'a> IdentityStore<'a> {
             set_private_dir_mode(parent)?;
         }
         let index = normalize_index_payload(index)?;
-        let mut handles = std::collections::BTreeSet::new();
-        if index
-            .credentials
-            .values()
-            .any(|entry| !entry.full_handle.is_empty() && !handles.insert(&entry.full_handle))
-        {
-            return Err(crate::ImError::IdentityBindingConflict {
-                detail: "identity index contains duplicate full Handle".to_owned(),
-            });
+        let mut handles = std::collections::BTreeMap::<&str, usize>::new();
+        for entry in index.credentials.values() {
+            if !entry.full_handle.is_empty() {
+                *handles.entry(&entry.full_handle).or_default() += 1;
+            }
+        }
+        if handles.values().any(|count| *count > 1) {
+            let before = self.load_index()?;
+            for (handle, count) in handles {
+                if count < 2 {
+                    continue;
+                }
+                let related = |payload: &IndexPayload| -> crate::ImResult<serde_json::Value> {
+                    serde_json::to_value(
+                        payload
+                            .credentials
+                            .iter()
+                            .filter(|(_, entry)| entry.full_handle == handle)
+                            .map(|(alias, entry)| {
+                                let mut entry = entry.clone();
+                                // Selecting an unrelated default changes no identity authority.
+                                entry.is_default = false;
+                                (alias, entry)
+                            })
+                            .collect::<std::collections::BTreeMap<_, _>>(),
+                    )
+                    .map_err(|error| crate::ImError::Serialization {
+                        detail: error.to_string(),
+                    })
+                };
+                // Unrelated writes may preserve existing conflicts verbatim.
+                // Only the recovery authority may alter a conflicting pair.
+                if related(&before)? != related(&index)? {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "identity index would introduce or change a duplicate full Handle"
+                            .to_owned(),
+                    });
+                }
+            }
         }
         let raw =
             serde_json::to_vec_pretty(&index).map_err(|err| crate::ImError::Serialization {
@@ -2735,7 +2765,7 @@ struct SdkIdentityRecord {
     is_default: bool,
 }
 
-fn parse_index_payload(raw: &[u8]) -> crate::ImResult<IndexPayload> {
+pub(crate) fn parse_index_payload(raw: &[u8]) -> crate::ImResult<IndexPayload> {
     if let Ok(payload) = serde_json::from_slice::<IndexPayload>(raw) {
         return Ok(payload);
     }
