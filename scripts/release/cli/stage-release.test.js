@@ -10,6 +10,7 @@ const test = require('node:test');
 const scriptDir = __dirname;
 const rootDir = path.resolve(scriptDir, '../../..');
 const releaseConfig = path.join(scriptDir, 'release-config.json');
+const betaVersion = JSON.parse(fs.readFileSync(releaseConfig, 'utf8')).channels.beta.version;
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
@@ -68,7 +69,7 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     const serverConfig = path.join(temp, 'server.toml');
     fs.mkdirSync(artifacts);
     writeServerConfig(serverConfig, temp);
-    writeArtifacts(artifacts, '1.0.20-beta.1');
+    writeArtifacts(artifacts, betaVersion);
 
     const result = run(process.execPath, [
       path.join(scriptDir, 'stage-release.js'),
@@ -77,13 +78,13 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
       '--server-config', serverConfig,
       '--artifacts', artifacts,
       '--output', output,
-      '--source-tag', 'cli-v1.0.20-beta.1',
+      '--source-tag', `cli-v${betaVersion}`,
       '--source-commit', 'a'.repeat(40),
     ], { cwd: rootDir });
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
-    assert.equal(manifest.latest, '1.0.20-beta.1');
+    assert.equal(manifest.latest, betaVersion);
     assert.equal(manifest.installer.url, 'https://awiki.info/cli/beta/awiki-cli.tgz');
     assert.deepEqual(Object.keys(manifest.packages).sort(), [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
@@ -104,13 +105,13 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     assert.equal(releaseMetadata.status, 0, releaseMetadata.stderr);
     const metadata = JSON.parse(releaseMetadata.stdout);
     assert.equal(metadata.builtin_tenants.default_slot, 'primary');
-    assert.equal(metadata.builtin_tenants.tenants.primary.backend_origin, 'https://awiki.me');
+    assert.equal(metadata.builtin_tenants.tenants.primary.backend_origin, 'https://anpclaw.com');
     assert.match(metadata.builtin_tenants_sha256, /^[a-f0-9]{64}$/);
     assert.equal(manifest.builtin_tenants_sha256, metadata.builtin_tenants_sha256);
 
     const sourceDocument = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/SOURCE.md']);
     assert.equal(sourceDocument.status, 0, sourceDocument.stderr);
-    assert.match(sourceDocument.stdout, /Version: 1\.0\.20-beta\.1/);
+    assert.ok(sourceDocument.stdout.includes(`Version: ${betaVersion}`));
     assert.match(sourceDocument.stdout, new RegExp(`Commit: ${'a'.repeat(40)}`));
     assert.match(sourceDocument.stdout, new RegExp(`tree/${'a'.repeat(40)}`));
     assert.match(
@@ -159,14 +160,14 @@ test('rejects missing and unexpected workflow artifacts', () => {
     const serverConfig = path.join(temp, 'server.toml');
     fs.mkdirSync(artifacts);
     writeServerConfig(serverConfig, temp);
-    writeArtifacts(artifacts, '1.0.20-beta.1');
-    fs.rmSync(path.join(artifacts, 'awiki-cli-1.0.20-beta.1-linux-amd64.tar.gz'));
+    writeArtifacts(artifacts, betaVersion);
+    fs.rmSync(path.join(artifacts, `awiki-cli-${betaVersion}-linux-amd64.tar.gz`));
 
     const baseArgs = [
       path.join(scriptDir, 'stage-release.js'), '--channel', 'beta',
       '--release-config', releaseConfig, '--server-config', serverConfig,
       '--artifacts', artifacts, '--output', output,
-      '--source-tag', 'cli-v1.0.20-beta.1', '--source-commit', 'a'.repeat(40),
+      '--source-tag', `cli-v${betaVersion}`, '--source-commit', 'a'.repeat(40),
     ];
     let result = run(process.execPath, baseArgs, { cwd: rootDir });
     assert.notEqual(result.status, 0);
@@ -189,7 +190,7 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
     const serverConfig = path.join(temp, 'server.toml');
     fs.mkdirSync(artifacts);
     writeServerConfig(serverConfig, temp);
-    writeArtifacts(artifacts, '1.0.20-beta.1');
+    writeArtifacts(artifacts, betaVersion);
 
     const changed = JSON.parse(fs.readFileSync(
       path.join(rootDir, 'config', 'builtin-tenants.default.json'),
@@ -199,7 +200,7 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
     changed.tenants.secondary.did_host = 'other.example';
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-artifact-mismatch-'));
     fs.writeFileSync(path.join(stage, 'BUILTIN-TENANTS.json'), `${JSON.stringify(changed)}\n`);
-    const archive = path.join(artifacts, 'awiki-cli-1.0.20-beta.1-linux-amd64.tar.gz');
+    const archive = path.join(artifacts, `awiki-cli-${betaVersion}-linux-amd64.tar.gz`);
     const packed = run('tar', ['-C', stage, '-czf', archive, 'BUILTIN-TENANTS.json']);
     fs.rmSync(stage, { recursive: true, force: true });
     assert.equal(packed.status, 0, packed.stderr);
@@ -208,7 +209,7 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
       path.join(scriptDir, 'stage-release.js'), '--channel', 'beta',
       '--release-config', releaseConfig, '--server-config', serverConfig,
       '--artifacts', artifacts, '--output', output,
-      '--source-tag', 'cli-v1.0.20-beta.1', '--source-commit', 'a'.repeat(40),
+      '--source-tag', `cli-v${betaVersion}`, '--source-commit', 'a'.repeat(40),
     ], { cwd: rootDir });
 
     assert.notEqual(result.status, 0);
@@ -216,4 +217,33 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+
+test('explicit test staging rejects default routes and accepts frozen batch provenance', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-test-stage-'));
+  try {
+    const artifacts = path.join(temp, 'artifacts');
+    const output = path.join(temp, 'output');
+    const config = path.join(temp, 'server.toml');
+    fs.mkdirSync(artifacts);
+    writeServerConfig(config, temp);
+    writeArtifacts(artifacts, betaVersion);
+    const sha = run('git', ['rev-parse', 'HEAD'], { cwd: rootDir }).stdout.trim();
+    const args = [path.join(scriptDir, 'stage-release.js'), '--test-source',
+      '--channel', 'beta', '--release-config', releaseConfig, '--server-config', config,
+      '--artifacts', artifacts, '--output', output,
+      '--source-tag', `test/singapore-release-20261012@${sha}`, '--source-commit', sha];
+    const rejected = run(process.execPath, args, { cwd: rootDir });
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /test source staging requires/);
+    assert.equal(fs.existsSync(output), false);
+    fs.writeFileSync(config, fs.readFileSync(config, 'utf8')
+      .replaceAll('https://awiki.info', 'https://anpclaw.com')
+      .replace('public_base_path = "/cli"', 'public_base_path = "/downloads/singapore-release-20261012/cli"'));
+    const accepted = run(process.execPath, args, { cwd: rootDir });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
+    assert.ok(manifest.installer.url.startsWith('https://anpclaw.com/downloads/singapore-release-20261012/'));
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
