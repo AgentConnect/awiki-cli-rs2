@@ -160,7 +160,12 @@ provenance_path="${archive_path}.source.json"
 target_dir="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 case "${target_dir}" in /*) ;; *) target_dir="${ROOT_DIR}/${target_dir}" ;; esac
 build_bin="${target_dir}/${TARGET_TRIPLE}/release/awiki-deamon"
-if [[ "${LOCAL_CORE}" == "1" ]]; then
+if [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
+  [[ "${LOCAL_CORE}" == "0" ]] || die "source test mode and local-core are mutually exclusive"
+  [[ "$(git branch --show-current)" == "test/singapore-release-20261012" || "${GITHUB_REF:-}" == "refs/heads/test/singapore-release-20261012" ]] || die "test source build requires the dedicated branch"
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source --source-manifest "${ROOT_DIR}/dependencies.source.json" --cargo-command)
+  build_bin="${ROOT_DIR}/.artifacts/dependencies/source/target/${TARGET_TRIPLE}/release/awiki-deamon"
+elif [[ "${LOCAL_CORE}" == "1" ]]; then
   [[ "${commit}" == "$(git rev-parse HEAD)" ]] || die "local Core source commit must match HEAD"
   cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/daemon/local-core-build.py" --provenance "${provenance_path}" -- "${cargo_cmd[@]}")
 else

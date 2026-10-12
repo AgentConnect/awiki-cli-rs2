@@ -33,6 +33,9 @@ class BuildDependencyTests(unittest.TestCase):
         self.assertEqual(command[-3:-1], ['--features', 'windows,sqlite'])
         self.assertEqual(deps.source_cargo_command(['build', '--locked']).count('--locked'), 1)
 
+    def test_source_tree_audit_is_locked(self):
+        self.assertEqual(deps.source_cargo_command(['tree', '-p', 'awiki-cli', '-e', 'features'])[-1], '--locked')
+
     def test_source_cargo_rejects_release_actions_and_workspace_escape(self):
         for command in [['publish'], ['install'], ['+stable', 'build'], ['build', '--manifest-path=/tmp/other.toml'], ['test', '--target-dir', '/tmp/cache'], ['build', '--config=x'], ['build', '--profile=release'], ['test', '--', '--ignored']]:
             with self.subTest(command=command), self.assertRaises(ValueError):

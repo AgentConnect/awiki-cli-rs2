@@ -227,7 +227,12 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
-cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+if [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
+  [[ "$(git branch --show-current)" == "test/singapore-release-20261012" || "${GITHUB_REF:-}" == "refs/heads/test/singapore-release-20261012" ]] || die "test source build requires the dedicated branch"
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source --source-manifest "${ROOT_DIR}/dependencies.source.json" --cargo-command "+${toolchain}")
+else
+  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
+fi
 
 anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
 const fs = require('fs');
@@ -254,7 +259,11 @@ if [[ "${OS_NAME}" == "windows" ]]; then
   bin_name="awiki-cli.exe"
 fi
 
-build_bin="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/${bin_name}"
+build_root="${ROOT_DIR}/target"
+if [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
+  build_root="${ROOT_DIR}/.artifacts/dependencies/source/target"
+fi
+build_bin="${build_root}/${TARGET_TRIPLE}/release/${bin_name}"
 archive_base="awiki-cli-${VERSION}-${OS_NAME}-${ARCH_NAME}"
 if [[ "${OS_NAME}" == "windows" ]]; then
   archive_path="${DIST_DIR}/${archive_base}.zip"

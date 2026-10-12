@@ -7,7 +7,10 @@ use im_core::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_BASE_URL: &str = "https://awiki.me";
+const DEFAULT_BASE_URL: &str = match option_env!("AWIKI_TEST_SOURCE_BUILD") {
+    Some(_) => "https://anpclaw.com",
+    None => "https://awiki.me",
+};
 const PERSISTENT_CONFIG_FILE_NAME: &str = "config.json";
 const LOCAL_RPC_DIR_NAME: &str = "run";
 const LOCAL_RPC_SOCKET_FILE_NAME: &str = "d.sock";

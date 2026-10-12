@@ -175,10 +175,12 @@ pub fn load_daemon_update_policy(config: &DaemonConfig) -> Result<DaemonUpdatePo
 
 pub fn daemon_update_policy_url(config: &DaemonConfig) -> Result<String> {
     let origin = tenant_origin(&config.user_service_base_url)?;
-    Ok(format!(
-        "{}/user-service/v1/server-info?client_platform=daemon",
-        origin.trim_end_matches('/')
-    ))
+    let path = if option_env!("AWIKI_TEST_SOURCE_BUILD").is_some() {
+        "/downloads/singapore-release-20261012/daemon-policy.json"
+    } else {
+        "/user-service/v1/server-info?client_platform=daemon"
+    };
+    Ok(format!("{}{path}", origin.trim_end_matches('/')))
 }
 
 fn cache_after_refresh_failure(
