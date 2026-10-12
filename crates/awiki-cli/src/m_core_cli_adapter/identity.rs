@@ -232,12 +232,14 @@ pub fn register_handle_via_im_core(
         return registration_join::begin_blocking(&core, &result);
     }
     if let Some(selector) = registration_receive_selector(&result)? {
-        let outcome = core
+        let client = core
             .client(selector)
-            .and_then(|client| client.messages().sync_now(registration_receive_request()))
-            .map_err(|_| registration_receive_pending())?;
-        super::messages::require_foreground_message_sync(&outcome)
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("client_open", &error))?;
+        let outcome = client
+            .messages()
+            .sync_now(registration_receive_request())
+            .map_err(|error| registration_receive::core_failure("initial_sync", &error))?;
+        registration_receive::require_ready(&outcome)?;
     }
     register_handle_command_result(result, &request)
 }
@@ -270,14 +272,13 @@ pub async fn register_handle_via_im_core_async(
         let client = core
             .client_async(selector)
             .await
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("client_open", &error))?;
         let outcome = client
             .messages()
             .sync_now_async(registration_receive_request())
             .await
-            .map_err(|_| registration_receive_pending())?;
-        super::messages::require_foreground_message_sync(&outcome)
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("initial_sync", &error))?;
+        registration_receive::require_ready(&outcome)?;
     }
     register_handle_command_result(result, &request)
 }
@@ -292,7 +293,7 @@ fn registration_receive_selector(
         .identity
         .as_ref()
         .map(|identity| Some(IdentitySelector::Id(identity.id.clone())))
-        .ok_or_else(registration_receive_pending)
+        .ok_or_else(registration_receive::missing_identity)
 }
 
 fn registration_receive_request() -> im_core::messages::MessageSyncRequest {
@@ -309,6 +310,9 @@ fn registration_receive_pending() -> ExitError {
         "Keep this workspace and identity. Run --identity <registered-identity> msg inbox to resume synchronization before using it to receive messages; do not register again or clear local state.",
     )
 }
+
+#[path = "identity_receive.rs"]
+mod registration_receive;
 
 fn register_handle_command_result(
     result: HandleRegistrationResult,

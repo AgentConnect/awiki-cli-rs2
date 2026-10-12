@@ -106,6 +106,10 @@ CLI 在注册完成后，会先为本次注册的身份建立消息同步基线�
 如果返回 `registration_receive_pending`，身份注册已经提交，接收初始化尚未完成。
 保留工作区，运行 `--identity <registered-identity> msg inbox` 重试，成功后再开始收消息；
 不要重新注册或删除本地状态。该重试不承诺补回首次基线建立之前的消息。
+JSON 错误的 `details` 区分 `identity_selection`、`client_open`、`initial_sync` 和
+`sync_readiness` 阶段，提供安全的原因分类、HTTP 状态或同步状态／已知 warnings。
+未知同步错误码与 warnings 仅记录被隐藏的数量，不输出身份、凭据或服务端正文。
+顶层错误不宣称注册命令可重试；恢复仍只针对同一身份的消息同步。
 收件箱或历史查询若因时间/分页预算耗尽而未同步完成，会返回包含
 `sync.budget_exhausted` 的错误；再次查询会从已提交的同步进度继续。
 
