@@ -1,125 +1,45 @@
-name: Build Daemon Release
-run-name: "daemon ${{ inputs.expected_version }} from ${{ inputs.source_ref }}"
-
+name: Singapore static previews
 on:
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: "Git ref to build: branch, tag, or commit SHA."
-        required: true
-        type: string
-      expected_version:
-        description: "Expected awiki-deamon version."
-        required: true
-        type: string
-
 permissions:
   contents: read
-
 jobs:
-  build:
-    name: ${{ matrix.os_name }}/${{ matrix.arch_name }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os_name: linux
-            arch_name: amd64
-            target_triple: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
-          - os_name: darwin
-            arch_name: arm64
-            target_triple: aarch64-apple-darwin
-            runner: macos-15
-          - os_name: darwin
-            arch_name: amd64
-            target_triple: x86_64-apple-darwin
-            runner: macos-15-intel
-
+  previews:
+    if: github.ref == 'refs/heads/test/singapore-release-20261012'
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout awiki-cli-rs2
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
-          path: awiki-cli-rs2
-
-      - name: Read pinned ANP SDK revision
-        id: release
-        working-directory: awiki-cli-rs2
-        shell: bash
+          repository: AgentConnect/awiki-web
+          ref: 311ca5645a96016cc4fc0fb936268a0a89ef853e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build AWiki Me preview
+        working-directory: awiki-me
         run: |
-          set -euo pipefail
-          node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
-          echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
-          echo "anp_identity_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_identity_commit)" >> "${GITHUB_OUTPUT}"
-
-      - name: Checkout pinned ANP SDK
-        uses: actions/checkout@v6
-        with:
-          repository: agent-network-protocol/anp
-          ref: ${{ steps.release.outputs.anp_commit }}
-          path: anp/anp
-
-      - name: Checkout pinned ANP Identity
-        uses: actions/checkout@v6
-        with:
-          repository: agent-network-protocol/anp-identity
-          ref: ${{ steps.release.outputs.anp_identity_commit }}
-          path: anp/anp-identity
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
-          targets: ${{ matrix.target_triple }}
-
-      - name: Install Linux musl toolchain
-        if: matrix.os_name == 'linux'
-        shell: bash
+          npm ci
+          npm run build -- --base=/downloads/singapore-release-20261012/previews/awiki-me/
+      - name: Stage static previews
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      - name: Verify daemon version
-        working-directory: awiki-cli-rs2
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(
-            awk '
-              /^\[package\]$/ { in_package = 1; next }
-              /^\[/ { if (in_package) exit }
-              in_package && $1 == "version" && $2 == "=" {
-                gsub(/"/, "", $3);
-                print $3;
-                exit;
-              }
-            ' crates/awiki-deamon/Cargo.toml
-          )"
-          if [[ "${version#v}" != "${{ inputs.expected_version }}" ]]; then
-            echo "expected awiki-deamon version ${{ inputs.expected_version }}, got ${version}" >&2
-            exit 1
-          fi
-
-      - name: Build daemon archive
-        working-directory: awiki-cli-rs2
-        shell: bash
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: |
-          set -euo pipefail
-          scripts/release/daemon/_build-artifact.sh \
-            --version "${{ inputs.expected_version }}" \
-            --os "${{ matrix.os_name }}" \
-            --arch "${{ matrix.arch_name }}" \
-            --target "${{ matrix.target_triple }}" \
-            --dist dist/daemon-release
-
-      - name: Upload daemon archive
-        uses: actions/upload-artifact@v7
+          mkdir -p preview/awiki-me
+          cp -R awiki-me/dist/. preview/awiki-me/
+          cp -R awiki-ai preview/awiki-ai
+          cp -R dsh-desktop preview/dsh-desktop
+          python3 - <<'PY'
+          import pathlib,json
+          prefix='/downloads/singapore-release-20261012/previews/'
+          for site in ['awiki-ai','dsh-desktop']:
+              for p in (pathlib.Path('preview')/site).rglob('*.html'):
+                  s=p.read_text()
+                  for old,new in [('/desktop/assets/',prefix+'dsh-desktop/assets/'),('/assets/',prefix+site+'/assets/'),('/desktop/zh/',prefix+'dsh-desktop/zh/')]:
+                      s=s.replace('"'+old,'"'+new).replace("'"+old,"'"+new)
+                  p.write_text(s)
+          pathlib.Path('preview/provenance.json').write_text(json.dumps({'source':'311ca5645a96016cc4fc0fb936268a0a89ef853e','defaultDownloadsChanged':False},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
         with:
-          name: awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}
-          path: awiki-cli-rs2/dist/daemon-release/awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz
+          name: singapore-static-previews
+          path: preview
           if-no-files-found: error
+          retention-days: 30
