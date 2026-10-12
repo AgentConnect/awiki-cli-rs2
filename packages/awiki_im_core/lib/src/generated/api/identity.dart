@@ -117,6 +117,13 @@ Future<DartHandleRecoveryProgress> handleRecoveryStatus({
   operationId: operationId,
 );
 
+/// Read scope-owned unfinished operations without resolving the identity registry.
+Future<List<DartHandleRecoveryOperationSummary>>
+listPendingHandleRecoveryOperations({required ArcDartImCore core}) => RustLib
+    .instance
+    .api
+    .crateApiIdentityListPendingHandleRecoveryOperations(core: core);
+
 Future<List<DartHandleRecoveryOperationSummary>> listHandleRecoveryOperations({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

@@ -975,6 +975,7 @@ impl IdentityService<'_> {
 ```
 
 `list_pending_handle_recovery_operations()` 在当前 Core state root 内发现未完成的恢复，
+Node 和 Dart facade 均提供 `listPendingHandleRecoveryOperations()`；Dart 登录页无需先枚举身份或输入 Handle，即可发现旧版重复 Handle 对应的未完成任务。
 也包括仍有关联注册候选待收尾的 Applied 操作。此类操作的 allowed_actions 包含 Resume，
 宿主可重试本地收尾；结果仍为 Applied，完成收尾后移出 pending 列表。
 包括尚未写入公共身份列表的 fresh owner；保留默认关闭的能力门禁。

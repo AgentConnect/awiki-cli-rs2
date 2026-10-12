@@ -189,6 +189,17 @@ pub async fn handle_recovery_status(
         .map_err(DartImError::from)
 }
 
+/// Read scope-owned unfinished operations without resolving the identity registry.
+pub async fn list_pending_handle_recovery_operations(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<DartHandleRecoveryOperationSummary>, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .list_pending_handle_recovery_operations()
+        .map(|operations| operations.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
 pub async fn list_handle_recovery_operations(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

@@ -26,6 +26,8 @@ Flutter app
 
 `crates/im-core` remains pure Rust. Flutter, Dart, FFI, codegen, and platform packaging belong only in the Dart package and `im-core-dart` facade.
 
+`AwikiImCore.listPendingHandleRecoveryOperations()` exposes read-only scope-wide Recovery discovery, including when the identity registry cannot be enumerated. It returns public operation summaries and never requests OTP, resumes, or changes identity state. Hosts show an explicit continuation entry and keep recovery completion separate from session activation.
+
 ## Supported platforms
 
 v0.1 targets native Flutter on Android, iOS, macOS, and Linux:

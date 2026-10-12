@@ -121,6 +121,8 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<HandleRecoveryOperationSummary>> listPendingHandleRecoveryOperations() async => throw UnsupportedError('Handle Recovery requires native Core');
+
   Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
     IdentitySelector selector,
   ) async {

@@ -340,6 +340,15 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  /// Lists unfinished work in this scope even when the identity registry conflicts.
+  Future<List<HandleRecoveryOperationSummary>> listPendingHandleRecoveryOperations() async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.listPendingHandleRecoveryOperations(core: _inner),
+    );
+    return result.map((operation) => operation._toModel()).toList();
+  }
+
   Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
     IdentitySelector selector,
   ) async {
