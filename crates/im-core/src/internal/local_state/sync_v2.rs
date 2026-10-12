@@ -4409,14 +4409,17 @@ pub(crate) fn begin_message_sync_run(
     now: i64,
 ) -> crate::ImResult<MessageSyncRunState> {
     validate_required("owner_identity_id", owner_identity_id)?;
-    if load_identity_account_binding(connection, owner_identity_id)?.is_none() {
+    // Other local writers (including input processing) are outside the receive
+    // lock. Acquire the writer before reading a snapshot so busy_timeout can
+    // wait, and validate the binding and generation against committed state.
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(super::local_state_unavailable)?;
+    if load_identity_account_binding(&transaction, owner_identity_id)?.is_none() {
         return Err(crate::ImError::IdentityBindingConflict {
             detail: "message sync run requires an active account binding".to_owned(),
         });
     }
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(super::local_state_unavailable)?;
     let current_generation = transaction
         .query_row(
             "SELECT run_generation FROM message_sync_run_state WHERE owner_identity_id = ?1",
