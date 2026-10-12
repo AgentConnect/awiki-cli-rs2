@@ -13,6 +13,10 @@ on:
         required: true
         type: choice
         options: [beta, stable]
+      build_daemon:
+        description: Build matching Daemon archives (reuse already built inputs when false)
+        type: boolean
+        default: true
       expected_version:
         description: Version expected from release-config.json
         required: true
@@ -144,7 +148,7 @@ jobs:
           node -e 'const p=require("./version.json"); if(p.data.version!==process.argv[1]) process.exit(1)' "${{ inputs.expected_version }}"
 
       - name: Build matching Daemon archive
-        if: matrix.os_name != 'windows'
+        if: inputs.build_daemon && matrix.os_name != 'windows'
         shell: bash
         working-directory: awiki-cli-rs2
         run: |
@@ -163,7 +167,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Daemon archive
-        if: matrix.os_name != 'windows'
+        if: inputs.build_daemon && matrix.os_name != 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: awiki-daemon-${{ matrix.target_name }}
