@@ -85,6 +85,10 @@ fn receive_response(request: &str, state: &Arc<Mutex<ReceiveState>>) -> String {
         state.websocket_requests += 1;
     }
     match method {
+        "registration_check" => rpc_result_for_request(request, json!({
+            "full_handle": format!("{}.{}", rpc["params"]["handle"].as_str().unwrap(), rpc["params"]["domain"].as_str().unwrap()),
+            "decision": "register", "invite_required": false, "invite_status": "not_required"
+        })),
         "register" => registration_response(request),
         "direct.e2ee.publish_prekey_bundle" => prekey_publication_response(request),
         "anp.get_capabilities" => dynamic_response_body(request, "__DYNAMIC_CAPABILITIES_RESPONSE__"),
@@ -287,9 +291,10 @@ fn foreground_registration_sync_failure_keeps_identity_and_inbox_can_resume() {
         &output.stderr
     })
     .unwrap();
-    assert!(envelope
-        .to_string()
-        .contains("registration_receive_pending"));
+    assert!(
+        envelope.to_string().contains("registration_receive_pending"),
+        "unexpected registration result: {envelope}"
+    );
     assert!(envelope.to_string().contains("committed"));
     server.state.lock().unwrap().fail_bootstrap = false;
     assert_eq!(receive_inbox(workspace.path())["data"]["total"], 0);
