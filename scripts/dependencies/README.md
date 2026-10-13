@@ -181,3 +181,7 @@ registry pin/lock 并撤销临时 source 清单；本轮不发布或部署。
 ### 20261013 Release 整合组合
 
 本次固定源码与关联 PR 以根目录 `dependencies.source.json` 为准；它同时包含新加坡发布修复与隔离系统测试修复。配套锁文件与清单一同提交。该清单仅用于显式源码联调；正式 registry 发布仍须先发布上游 SDK、更新固定版本与锁文件，再移除临时源码清单。旧测试制品、历史 PR 与批次下载地址不能作为此组合的替代来源。
+
+## 2026-10-13 合并依赖收敛
+
+本批 PR 评审后协调发布 ANP `1.0.6`、Identity Rust `0.2.5`、Core Rust `0.1.7` 与 Core Node `0.2.10`。正式消费者以 `registry-dependencies.json` 和 `registry-Cargo.lock` 为准；本批临时 source manifest/lock 已撤销。测试没有因发布而自动运行，发布阶段只保留构建、打包、来源与完整性检查；产品 E2E、安装包和人工验收另行执行。
