@@ -29,7 +29,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         include:
           - target_name: linux-x64-gnu
@@ -328,7 +327,6 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         node: [22.19.0, 24, 26]
         target:

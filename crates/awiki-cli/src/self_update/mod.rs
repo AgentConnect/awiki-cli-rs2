@@ -1,5 +1,4 @@
 mod cache;
-mod test_channel;
 mod version;
 
 use crate::build_info;
@@ -78,7 +77,7 @@ pub fn check_context(context: &UpdatePolicyContext) -> CheckOutcome {
         CheckSettings {
             strict_disabled: context.disable_strict_version,
             metadata_cache_ttl_seconds: context.metadata_cache_ttl_seconds,
-            cache_dir: test_channel::cache_dir(non_empty_path(&context.cache_dir)),
+            cache_dir: non_empty_path(&context.cache_dir),
             tenant_alias: context.tenant_alias.clone(),
             policy_origin,
             manifest_urls,
@@ -107,7 +106,7 @@ fn check_settings_from_resolved(resolved: &Resolved) -> CheckSettings {
     CheckSettings {
         strict_disabled: resolved.update_disable_strict_version,
         metadata_cache_ttl_seconds: resolved.update_metadata_cache_ttl_seconds,
-        cache_dir: test_channel::cache_dir(update_cache_dir(resolved)),
+        cache_dir: update_cache_dir(resolved),
         tenant_alias: resolved
             .sources
             .get("active_tenant")
@@ -263,12 +262,12 @@ fn manifest_urls_for_origin(policy_origin: &str) -> Vec<String> {
             return urls;
         }
     }
-    if option_env!("AWIKI_TEST_SOURCE_BUILD").is_some() {
-        return vec![test_channel::policy_url(policy_origin)];
-    }
     let configured = std::env::var("AWIKI_CLI_UPDATE_BASE_URL").unwrap_or_default();
     if configured.trim().is_empty() {
-        return vec![test_channel::policy_url(policy_origin)];
+        return vec![format!(
+            "{}/user-service/v1/server-info?client_platform=cli",
+            policy_origin.trim_end_matches('/')
+        )];
     }
     let base = { configured.trim().trim_end_matches('/').to_string() };
     if base.ends_with(".json") {

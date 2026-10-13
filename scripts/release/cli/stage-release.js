@@ -98,16 +98,7 @@ function main() {
   const version = entry.version;
   const channelBaseUrl = `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}`;
   const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl };
-  if (process.argv.includes('--test-source')) {
-    const branch = spawnSync('git', ['branch', '--show-current'], { cwd: root, encoding: 'utf8' });
-    const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', sourceCommit, 'HEAD'], { cwd: root });
-    if (branch.stdout.trim() !== 'test/singapore-release-20261012' || ancestor.status !== 0
-        || sourceTag !== `test/singapore-release-20261012@${sourceCommit}`
-        || serverConfig.public_origin !== 'https://anpclaw.com'
-        || !serverConfig.public_base_path.startsWith('/downloads/singapore-release-20261012/')) {
-      die('test source staging requires the isolated branch, a frozen ancestor SHA, and batch-only download path');
-    }
-  } else if (sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
+  if (sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
 

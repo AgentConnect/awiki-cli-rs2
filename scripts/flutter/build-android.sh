@@ -7,9 +7,6 @@ cd "${ROOT_DIR}"
 release_cargo() {
   if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
     python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
-  elif [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
-    python3 scripts/dependencies/verify-test-sources.py
-    cargo "$@" --locked
   else
     cargo "$@"
   fi

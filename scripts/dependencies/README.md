@@ -175,9 +175,5 @@ Identity 仍为 `794f914fd651a66f9f517411e00f0bdb99962201`；其原 Core #56
 不改变 registry 版本、最低版本或发布状态。正式消费仍须先发布兼容 SDK，更新
 registry pin/lock 并撤销临时 source 清单；本轮不发布或部署。
 
-### 新加坡 20261012 测试分支
 
-本分支通过 `AWIKI_TEST_SOURCE_BUILD=singapore-release-20261012` 显式使用冻结源码，
-复用 CLI/Daemon 打包入口和功能图检查。源码命令允许只读 `tree --locked` 审计。
-测试包默认新加坡，Daemon 更新只读取本批次 `daemon-policy.json`。
-本分支不合并、不发布公共 SDK，也不更新正式下载或自动更新入口。
+源码模式同时支持只读 `tree --locked` 审计；使用与构建相同的冻结清单和锁文件，不能通过命令参数改用其他 workspace。

@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Exact Singapore test consumer SHA
+        description: Immutable cli-v* tag to build
         required: true
         type: string
       channel:
@@ -13,10 +13,6 @@ on:
         required: true
         type: choice
         options: [beta, stable]
-      build_daemon:
-        description: Build matching Daemon archives (reuse already built inputs when false)
-        type: boolean
-        default: true
       expected_version:
         description: Version expected from release-config.json
         required: true
@@ -25,15 +21,11 @@ on:
 permissions:
   contents: read
 
-env:
-  AWIKI_TEST_SOURCE_BUILD: singapore-release-20261012
-
 jobs:
   build:
     name: ${{ matrix.target_name }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - target_name: linux-amd64
@@ -61,8 +53,7 @@ jobs:
       - name: Validate immutable source tag
         shell: bash
         run: |
-          test "${{ github.ref }}" = "refs/heads/test/singapore-release-20261012"
-          test "${{ inputs.source_ref }}" = "${{ github.sha }}"
+          test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
 
       - name: Checkout awiki-cli-rs2
         uses: actions/checkout@v6
@@ -75,16 +66,11 @@ jobs:
         shell: bash
         working-directory: awiki-cli-rs2
         run: |
-          node - <<'NODE'
-          const {readReleaseConfig}=require('./scripts/release/cli/config.js');
-          const config=readReleaseConfig('scripts/release/cli/release-config.json');
-          const source=require('./dependencies.source.json').dependencies;
-          if(config.anp_commit!==source.anp.commit || config.anp_identity_commit!==source['anp-identity'].commit) throw new Error('Test source refs disagree');
-          NODE
-          version="$(node -p 'require("./scripts/release/cli/release-config.json").channels["${{ inputs.channel }}"].version')"
+          node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
+          version="$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json 'channels.${{ inputs.channel }}.version')"
           test "${version}" = "${{ inputs.expected_version }}"
-          echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
-          echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
+          echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
+          echo "anp_identity_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_identity_commit)" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
@@ -137,7 +123,7 @@ jobs:
         shell: bash
         working-directory: awiki-cli-rs2
         run: |
-          binary=".artifacts/dependencies/source/target/${{ matrix.target }}/release/awiki-cli"
+          binary="target/${{ matrix.target }}/release/awiki-cli"
           if [ "${{ matrix.os_name }}" = windows ]; then
             binary="${binary}.exe"
             # Match normal PowerShell: USERPROFILE is present, while HOME may be absent.
@@ -146,34 +132,6 @@ jobs:
             "${binary}" version | tee version.json
           fi
           node -e 'const p=require("./version.json"); if(p.data.version!==process.argv[1]) process.exit(1)' "${{ inputs.expected_version }}"
-
-      - name: Build matching Daemon archive
-        if: inputs.build_daemon && matrix.os_name != 'windows'
-        shell: bash
-        working-directory: awiki-cli-rs2
-        run: |
-          scripts/release/daemon/_build-artifact.sh \
-            --os "${{ matrix.os_name }}" --arch "${{ matrix.arch }}" --target "${{ matrix.target }}"
-
-      - name: Upload source evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-provenance-${{ matrix.target_name }}
-          path: |
-            awiki-cli-rs2/.artifacts/dependencies/source/*.json
-            awiki-cli-rs2/dependencies.source.json
-            awiki-cli-rs2/dependencies.source.Cargo.lock
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload Daemon archive
-        if: inputs.build_daemon && matrix.os_name != 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: awiki-daemon-${{ matrix.target_name }}
-          path: awiki-cli-rs2/dist/daemon/*
-          if-no-files-found: error
-          retention-days: 30
 
       - name: Upload release archive
         uses: actions/upload-artifact@v7

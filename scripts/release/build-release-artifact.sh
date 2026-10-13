@@ -227,12 +227,7 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
-if [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
-  [[ "$(git branch --show-current)" == "test/singapore-release-20261012" || "${GITHUB_REF:-}" == "refs/heads/test/singapore-release-20261012" ]] || die "test source build requires the dedicated branch"
-  cargo_cmd=(python3 "${ROOT_DIR}/scripts/dependencies/build.py" --deps source --source-manifest "${ROOT_DIR}/dependencies.source.json" --cargo-command "+${toolchain}")
-else
-  cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
-fi
+cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
 
 anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
 const fs = require('fs');
@@ -259,11 +254,7 @@ if [[ "${OS_NAME}" == "windows" ]]; then
   bin_name="awiki-cli.exe"
 fi
 
-build_root="${ROOT_DIR}/target"
-if [[ "${AWIKI_TEST_SOURCE_BUILD:-}" == "singapore-release-20261012" ]]; then
-  build_root="${ROOT_DIR}/.artifacts/dependencies/source/target"
-fi
-build_bin="${build_root}/${TARGET_TRIPLE}/release/${bin_name}"
+build_bin="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/${bin_name}"
 archive_base="awiki-cli-${VERSION}-${OS_NAME}-${ARCH_NAME}"
 if [[ "${OS_NAME}" == "windows" ]]; then
   archive_path="${DIST_DIR}/${archive_base}.zip"
@@ -292,7 +283,6 @@ AWIKI_CLI_TENANT_CONFIG_PATH="${TENANT_CONFIG}" \
   "${cargo_cmd[@]}" build -p awiki-cli --bin awiki-cli --release --locked --target "${TARGET_TRIPLE}"
 
 [[ -f "${build_bin}" ]] || die "built binary not found: ${build_bin}"
-"${build_bin}" __self-check >/dev/null
 
 # The npm installer must work on Linux hosts older than the current GitHub
 # runner. A musl build keeps the CLI independent of the runner's glibc ABI.
