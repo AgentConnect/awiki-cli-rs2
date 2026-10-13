@@ -471,9 +471,9 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c19e17218e115a861791c7a404b2c478ef570527c0b8558a0cc0014dc1864c9a"
+checksum = "bd9324062c4c36fc28eef8a531ed6ac0e32aeb77bd478e68b8c8eae4ac26d2e3"
 dependencies = [
  "anp",
  "anp-identity",

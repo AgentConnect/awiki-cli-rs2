@@ -82,6 +82,8 @@ try {
       if (cleared?.cleared !== true) throw new Error('expected initialized Rust state to be cleared')
       if (await client.getDefaultIdentity() !== null) throw new Error('expected a usable empty client after clear')
       await client.close()
+      const { verifyClientProducts } = await import(${JSON.stringify(new URL('./verify-client-products.mjs', import.meta.url).href)})
+      await verifyClientProducts(openImCoreNodeClient)
       console.log('packed-smoke-ok')
     `
   const output = run(process.execPath, ['--input-type=module', '-e', `

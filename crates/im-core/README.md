@@ -15,7 +15,7 @@ construct an [`ImCore`](#minimal-rust-example), bind an identity into an
 
 ## Status
 
-- Current crate version: `0.1.6`.
+- Current crate version: `0.1.9`.
 - Rust toolchain: Rust `1.88.0` or newer, matching this workspace's
   `rust-toolchain.toml`.
 - Public API is still evolving while the Awiki client stack is being split into
@@ -23,6 +23,30 @@ construct an [`ImCore`](#minimal-rust-example), bind an identity into an
 - The crate is designed for native Rust hosts. Flutter/Dart apps should usually
   consume [`packages/awiki_im_core`](../../packages/awiki_im_core) instead of
   linking this crate directly.
+
+## 0.1.9 product version namespaces
+
+`ClientVersionInfo` also accepts `awiki-dsh` and `awiki-gateway`. DSH uses its
+plugin package version and Guest uses its Gateway package version with release
+`0815`; neither impersonates a newer Daemon. Existing products and strict
+validation remain compatible. Product HTTP/WebSocket headers retain their
+existing scope and are omitted from public ANP, discovery and external requests.
+The 0.1.8 attachment and registration fixes remain included.
+
+## 0.1.8 attachment ticket fix
+
+This release includes commit `6b7eea16e098ab8d663dceb651aa8b26a6b10a3f`.
+Group E2EE attachment tickets use the complete original protocol message ID.
+If that ID is missing, the existing complete local projection ID remains the
+fallback; the SDK does not parse it to invent a protocol ID. Local message keys,
+attachment cache keys, encryption payloads, and other security profiles keep
+their existing contracts.
+
+The release boundary review compares the packaged Core sources with 0.1.7:
+only attachment ID selection and its dedicated regression coverage change.
+Group/object authorization remains a server decision, and private object keys
+and nonces remain internal to decryption. Publication runs build, packaging,
+source and integrity checks; it does not rerun the earlier implementation tests.
 
 ## Relationship with ANP
 

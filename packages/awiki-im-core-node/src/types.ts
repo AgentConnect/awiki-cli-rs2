@@ -13,9 +13,9 @@ export interface ImCoreNodeOpenOptions {
   readonly mailServiceEndpoint?: string
   readonly anpServiceEndpoint?: string
   readonly anpServiceDid?: string
-  /** Candidate build identity sent by Core on local-product User/Message requests. */
+  /** Host product identity sent only to configured AWiki product endpoints. */
   readonly clientVersionInfo?: {
-    readonly product: 'awiki-me' | 'awiki-cli' | 'awiki-daemon'
+    readonly product: 'awiki-me' | 'awiki-cli' | 'awiki-daemon' | 'awiki-dsh' | 'awiki-gateway'
     readonly release: string
     readonly version: string
     readonly build?: number

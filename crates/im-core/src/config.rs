@@ -54,11 +54,11 @@ impl ClientVersionInfo {
     fn validate(&self) -> crate::ImResult<()> {
         if !matches!(
             self.product.as_str(),
-            "awiki-me" | "awiki-cli" | "awiki-daemon"
+            "awiki-me" | "awiki-cli" | "awiki-daemon" | "awiki-dsh" | "awiki-gateway"
         ) {
             return Err(crate::ImError::invalid_input(
                 Some("client_version_info.product".to_owned()),
-                "client product must be awiki-me, awiki-cli, or awiki-daemon",
+                "client product must be awiki-me, awiki-cli, awiki-daemon, awiki-dsh, or awiki-gateway",
             ));
         }
         if self.release.len() != 4 || !self.release.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -177,40 +177,8 @@ impl ImCoreConfig {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ClientVersionInfo;
-
-    #[test]
-    fn client_version_info_encodes_the_only_wire_format() {
-        assert_eq!(
-            ClientVersionInfo::new("awiki-me", "0714", "1.0.31", Some(214))
-                .unwrap()
-                .header_value(),
-            "awiki-me/0714/1.0.31+214"
-        );
-        assert_eq!(
-            ClientVersionInfo::new("awiki-cli", "0714", "1.0.29", None)
-                .unwrap()
-                .header_value(),
-            "awiki-cli/0714/1.0.29"
-        );
-    }
-
-    #[test]
-    fn client_version_info_rejects_unknown_products_and_ambiguous_segments() {
-        for result in [
-            ClientVersionInfo::new("custom", "0714", "1.0.0", None),
-            ClientVersionInfo::new("awiki-cli", "714", "1.0.0", None),
-            ClientVersionInfo::new("awiki-cli", "0714", "1.0.0+other", None),
-            ClientVersionInfo::new("awiki-cli", "0714", "dev", None),
-            ClientVersionInfo::new("awiki-cli", "0714", "01.0.0", None),
-            ClientVersionInfo::new("awiki-cli", "0714", "1.0.0.0.1", None),
-            ClientVersionInfo::new("awiki-cli", "0714", "1.0.", None),
-        ] {
-            assert!(result.is_err());
-        }
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageTransportPolicy {

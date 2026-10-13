@@ -79,28 +79,56 @@ impl Fixture {
 
 #[test]
 fn local_service_request_adds_the_core_owned_client_version_header() {
-    let fixture = Fixture::with_client_version(
-        false,
-        Some(crate::ClientVersionInfo::new("awiki-daemon", "0815", "0.1.91", None).unwrap()),
-    );
-    let attempt = fixture
-        .client
-        .external_http_auth()
-        .prepare(get("https://example.test/user-service/v1/did/profile/rpc"))
-        .unwrap();
+    for product in ["awiki-daemon", "awiki-dsh", "awiki-gateway"] {
+        let fixture = Fixture::with_client_version(
+            false,
+            Some(crate::ClientVersionInfo::new(product, "0815", "0.1.93", None).unwrap()),
+        );
+        let attempt = fixture
+            .client
+            .external_http_auth()
+            .prepare(get("https://example.test/user-service/v1/did/profile/rpc"))
+            .unwrap();
+        let expected = format!("{product}/0815/0.1.93");
+        assert_eq!(
+            attempt
+                .request
+                .headers
+                .get("x-awiki-client-version")
+                .map(String::as_str),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            header_value(attempt.header_patch(), crate::CLIENT_VERSION_HEADER),
+            Some(expected.as_str())
+        );
+    }
+}
 
-    assert_eq!(
-        attempt
-            .request
-            .headers
-            .get("x-awiki-client-version")
-            .map(String::as_str),
-        Some("awiki-daemon/0815/0.1.91")
-    );
-    assert_eq!(
-        header_value(attempt.header_patch(), crate::CLIENT_VERSION_HEADER),
-        Some("awiki-daemon/0815/0.1.91")
-    );
+#[test]
+fn external_http_auth_does_not_leak_client_version_to_public_anp_or_other_origins() {
+    for product in ["awiki-dsh", "awiki-gateway"] {
+        let fixture = Fixture::with_client_version(
+            false,
+            Some(crate::ClientVersionInfo::new(product, "0815", "0.1.0", None).unwrap()),
+        );
+        for url in [
+            "https://example.test/anp-im/rpc",
+            "https://example.test/objects/file",
+            "https://peer.example/user-service/v1/did/rpc",
+        ] {
+            let attempt = fixture
+                .client
+                .external_http_auth()
+                .prepare(get(url))
+                .unwrap();
+            assert!(header_value(attempt.header_patch(), crate::CLIENT_VERSION_HEADER).is_none());
+            assert!(!attempt
+                .request
+                .headers
+                .contains_key("x-awiki-client-version"));
+        }
+    }
 }
 
 #[test]
