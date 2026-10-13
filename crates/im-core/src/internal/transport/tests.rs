@@ -1256,3 +1256,111 @@ fn host_backed_device_reuses_validated_endpoint_for_direct_and_group_encryption(
         assert_eq!(device.signing_key_id, bootstrap.device_signing_key_id);
     }
 }
+
+#[test]
+fn recovery_exchange_http_errors_preserve_only_closed_contract() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    for (status, suffix, retryable) in [
+        (400, "invalid_request", false),
+        (401, "factor_invalid", false),
+        (403, "capability_disabled", false),
+        (429, "rate_limited", true),
+        (503, "temporarily_unavailable", true),
+    ] {
+        let code = format!("handle_recovery_exchange.{suffix}");
+        let body = serde_json::to_vec(&json!({"code":code,"retryable":retryable})).unwrap();
+        let crate::ImError::Service {
+            status_code,
+            code: actual,
+            message,
+            data,
+        } = plain_rest_post_error(ENDPOINT, status, &body)
+        else {
+            panic!("expected typed service error")
+        };
+        assert_eq!(status_code, Some(status));
+        assert_eq!(actual.as_deref(), Some(code.as_str()));
+        assert_eq!(message, code);
+        assert!(data.is_none());
+    }
+}
+
+#[test]
+fn recovery_exchange_http_errors_reject_ambiguous_or_unrelated_bodies() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    let valid = r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true}"#;
+    for (endpoint, body) in [
+        ("/unrelated", valid),
+        (ENDPOINT, "not JSON"),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.unknown","retryable":true}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","retryable":false}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited"}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true,"extra":"untrusted"}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","code":"handle_recovery_exchange.rate_limited","retryable":true}"#,
+        ),
+    ] {
+        assert!(matches!(
+            plain_rest_post_error(endpoint, 429, body.as_bytes()),
+            crate::ImError::Service {
+                status_code: Some(429),
+                code: None,
+                ..
+            }
+        ));
+    }
+}
+
+#[tokio::test]
+async fn recovery_exchange_http_errors_survive_real_sync_and_async_transport() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for _ in 0..if cfg!(feature = "blocking") { 2 } else { 1 } {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request_headers(&mut stream);
+            assert!(request.starts_with(&format!("POST {ENDPOINT} ")));
+            let received_body = request.len() - request.find("\r\n\r\n").unwrap() - 4;
+            if received_body < 2 {
+                stream.read_exact(&mut vec![0; 2 - received_body]).unwrap();
+            }
+            let body = r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true}"#;
+            write!(stream, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), &endpoint);
+    let mut transport = CorePlainTransport::new(&core);
+    let mut results = Vec::new();
+    #[cfg(feature = "blocking")]
+    results.push(RestTransport::rest_post(
+        &mut transport,
+        ENDPOINT,
+        "POST",
+        json!({}),
+    ));
+    let asynchronous =
+        AsyncRestTransport::rest_post(&mut transport, ENDPOINT, "POST", json!({})).await;
+    results.push(asynchronous);
+    for result in results {
+        assert!(
+            matches!(&result, Err(crate::ImError::Service { status_code: Some(429), code: Some(code), .. }) if code == "handle_recovery_exchange.rate_limited"),
+            "unexpected fixture result: {result:?}"
+        );
+    }
+    server.join().unwrap();
+}

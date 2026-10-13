@@ -1023,6 +1023,11 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 其他 Handle 的已有恢复，再续办本任务；没有可证明的恢复任务时提示保留数据并联系支持。
 不增加 V4 wire 阶段或错误枚举，不允许 Host 直接删改索引。
 
+V4 exchange 的非成功 HTTP 响应仅在精确端点、已知错误码和匹配的 `retryable`
+闭合结构下投影为 typed Service 错误；限流继续映射 `factor_retry_required`，临时不可用
+映射 `outcome_unknown`。同步与异步传输保持一致；其他端点、未知码、重复／额外字段
+或畸形响应不得借此获得恢复动作授权，也不从错误正文猜测恢复状态。
+
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
 `local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5
 PreKey，并只为 authoritative `required_security_profile=transport-protected` 的 Handle-backed
