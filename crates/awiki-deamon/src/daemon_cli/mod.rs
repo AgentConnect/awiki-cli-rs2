@@ -133,6 +133,10 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
     config.anp_service_endpoint = format!("{}/anp-im/rpc", config.service_base_url);
     config.anp_service_did = format!("did:wba:{}", config.did_domain);
     config.validate()?;
+    // Reject invalid build/runtime metadata before changing an existing install.
+    config.im_core_config()?;
+    let registration_client =
+        UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     ensure_install_environment_matches_existing_state(&config)?;
     config.ensure_state_layout()?;
     config.write_persistent_config()?;
@@ -149,8 +153,6 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
         .await
         .context("initialize im-core local state")?;
 
-    let registration_client =
-        UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     let token = RegistrationToken::new(options.token)?;
     let agent = install_or_recover_daemon_agent(&config, &state, &registration_client, token)?;
 

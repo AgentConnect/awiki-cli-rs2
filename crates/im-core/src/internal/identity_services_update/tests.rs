@@ -338,3 +338,158 @@ async fn web_service_conflict_survives_reopen_then_releases_both_pending_records
         remote.calls[0].expected_checkpoint.document_version + 1
     );
 }
+
+#[tokio::test]
+async fn capability_upgrade_keeps_old_profiles_keys_and_resumes_after_response_loss() {
+    let scenario =
+        crate::internal::identity_device_revoke::tests::provider_scenario_with_old_profiles(
+            crate::identity::DidMethod::Wba,
+            true,
+        )
+        .await;
+    let core = scenario.open_core(false);
+    let client = core.client_async(IdentitySelector::Default).await.unwrap();
+    let target = scenario.authorizing.device_id.clone();
+    let mut remote = TestRemote {
+        registry: scenario.registry.clone(),
+        document: scenario.document.clone(),
+        calls: vec![],
+        lose_response: true,
+        reject: false,
+        conflict: false,
+        original_result: None,
+    };
+    assert!(
+        execute_with_target(&core, &client, None, Some(target.clone()), &mut remote)
+            .await
+            .is_err()
+    );
+    assert_eq!(scenario.local_document(), scenario.document);
+    let request = remote.calls[0].clone();
+    if let Ok(path) = std::env::var("AWIKI_CAPABILITY_FIXTURE_OUT") {
+        let wire = wire::build_update_call(&request).unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "current_document": scenario.document,
+                "method": wire.method,
+                "params": wire.params,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        wire::build_update_call(&request).unwrap().method,
+        "device_capability_update"
+    );
+    assert_eq!(
+        request.capability_target_device_id.as_deref(),
+        Some(target.as_str())
+    );
+    let expected = capability_candidate(&scenario.document, &target).unwrap();
+    let mut candidate = request.new_document.clone();
+    candidate["proof"] = expected["proof"].clone();
+    assert_eq!(candidate, expected);
+    // A different operation cannot reuse or erase this uncertain publication.
+    assert!(execute(&core, &client, None, &mut remote).await.is_err());
+    assert!(execute_with_target(
+        &core,
+        &client,
+        None,
+        Some("other-device".into()),
+        &mut remote
+    )
+    .await
+    .is_err());
+    drop(client);
+    drop(core);
+    let core = scenario.open_core(false);
+    let client = core.client_async(IdentitySelector::Default).await.unwrap();
+    Store::new(&core)
+        .unwrap()
+        .load(&scenario.did)
+        .expect("pending validates after restart")
+        .unwrap();
+    let result = execute_with_target(&core, &client, None, Some(target), &mut remote).await;
+    assert!(
+        result.is_ok(),
+        "resume result {result:?}, calls {}, committed {}",
+        remote.calls.len(),
+        Store::new(&core)
+            .unwrap()
+            .load(&scenario.did)
+            .unwrap()
+            .map(|p| p.committed)
+            .unwrap_or(false)
+    );
+    let current = result.unwrap();
+    assert_eq!(scenario.local_document(), current);
+    assert!(!has_pending(&core, &scenario.did).unwrap());
+    assert_eq!(remote.calls[0].operation_id, remote.calls[1].operation_id);
+    assert_eq!(
+        current["verificationMethod"],
+        scenario.document["verificationMethod"]
+    );
+    assert_eq!(current["service"], scenario.document["service"]);
+    assert_eq!(
+        remote.registry.checkpoint.registry_version,
+        scenario.registry.checkpoint.registry_version
+    );
+}
+
+#[tokio::test]
+async fn capability_upgrade_rejects_stale_cas_without_local_profile_changes() {
+    let scenario =
+        crate::internal::identity_device_revoke::tests::provider_scenario_with_old_profiles(
+            crate::identity::DidMethod::Wba,
+            true,
+        )
+        .await;
+    let core = scenario.open_core(false);
+    let client = core.client_async(IdentitySelector::Default).await.unwrap();
+    let mut remote = TestRemote {
+        registry: scenario.registry.clone(),
+        document: scenario.document.clone(),
+        calls: vec![],
+        lose_response: false,
+        reject: false,
+        conflict: true,
+        original_result: None,
+    };
+    assert!(execute_with_target(
+        &core,
+        &client,
+        None,
+        Some(scenario.authorizing.device_id.clone()),
+        &mut remote
+    )
+    .await
+    .is_err());
+    assert_eq!(scenario.local_document(), scenario.document);
+    assert!(has_pending(&core, &scenario.did).unwrap());
+    // Only a definitive CAS rejection plus a forward verified checkpoint can
+    // release the old candidate. A network error cannot take this path.
+    remote.registry.checkpoint.registry_version += 1;
+    assert!(execute_with_target(
+        &core,
+        &client,
+        None,
+        Some(scenario.authorizing.device_id.clone()),
+        &mut remote
+    )
+    .await
+    .is_err());
+    assert!(!has_pending(&core, &scenario.did).unwrap());
+    assert_eq!(remote.calls.len(), 1);
+    remote.conflict = false;
+    execute_with_target(
+        &core,
+        &client,
+        None,
+        Some(scenario.authorizing.device_id.clone()),
+        &mut remote,
+    )
+    .await
+    .unwrap();
+}

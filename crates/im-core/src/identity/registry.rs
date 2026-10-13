@@ -6,6 +6,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+#[path = "registry_recovery_isolation.rs"]
+mod recovery_isolation;
+
 #[cfg(feature = "provider-traits")]
 #[path = "local_reset.rs"]
 mod local_reset;
@@ -556,6 +559,45 @@ impl<'a> IdentityRegistry<'a> {
                 .to_owned(),
             }),
         }
+    }
+
+    pub async fn device_capability_status_async(
+        &self,
+        selector: super::IdentitySelector,
+        target_device_id: Option<String>,
+    ) -> crate::ImResult<super::DeviceCapabilityUpgradeStatus> {
+        crate::internal::identity_services_update::capability_status(
+            self.core,
+            selector,
+            target_device_id,
+        )
+        .await
+    }
+
+    pub async fn upgrade_device_capabilities_async(
+        &self,
+        selector: super::IdentitySelector,
+        target_device_id: Option<String>,
+        user_presence_confirmed: bool,
+    ) -> crate::ImResult<super::DeviceCapabilityUpgradeStatus> {
+        let local = self.device_summary_async(selector.clone()).await?;
+        let local_id = local
+            .protocol_device_id
+            .ok_or(crate::ImError::PermissionDenied)?
+            .as_str()
+            .to_owned();
+        let target = target_device_id.unwrap_or_else(|| local_id.clone());
+        if target != local_id && !user_presence_confirmed {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_services_update::upgrade_device_capabilities(
+            self.core,
+            selector.clone(),
+            target.clone(),
+        )
+        .await?;
+        self.device_capability_status_async(selector, Some(target))
+            .await
     }
 
     pub fn legacy_upgrade_status(
@@ -1585,6 +1627,7 @@ impl<'a> IdentityRegistry<'a> {
         registry: &RegistrySnapshot,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::IdentitySummary> {
+        registry.require_available(&selector)?;
         match selector {
             super::IdentitySelector::Default => registry
                 .default_identity()
@@ -2038,10 +2081,11 @@ impl IdentityRegistry<'_> {
     fn load_registry(&self) -> crate::ImResult<RegistrySnapshot> {
         let paths = &self.core.inner().sdk_paths().identities;
         let mut snapshot = match fs::read(&paths.registry_path) {
-            Ok(raw) => parse_registry(&raw)?,
+            Ok(raw) => recovery_isolation::parse(self.core, &raw)?,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => RegistrySnapshot {
                 default_alias: default_alias_from_file(paths.default_identity_path.as_deref())?,
                 entries: Vec::new(),
+                blocked_entries: Vec::new(),
             },
             Err(err) => {
                 return Err(crate::ImError::CredentialFileUnreadable {
@@ -2053,7 +2097,7 @@ impl IdentityRegistry<'_> {
         if let Some(default_alias) =
             default_alias_from_file(paths.default_identity_path.as_deref())?
         {
-            snapshot.default_alias = Some(default_alias);
+            snapshot.set_default_alias(default_alias);
         }
         snapshot.apply_default_flags();
         snapshot.validate()?;
@@ -2063,11 +2107,12 @@ impl IdentityRegistry<'_> {
     async fn load_registry_async(&self) -> crate::ImResult<RegistrySnapshot> {
         let paths = &self.core.inner().sdk_paths().identities;
         let mut snapshot = match tokio::fs::read(&paths.registry_path).await {
-            Ok(raw) => parse_registry(&raw)?,
+            Ok(raw) => recovery_isolation::parse(self.core, &raw)?,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => RegistrySnapshot {
                 default_alias: default_alias_from_file_async(paths.default_identity_path.clone())
                     .await?,
                 entries: Vec::new(),
+                blocked_entries: Vec::new(),
             },
             Err(err) => {
                 return Err(crate::ImError::CredentialFileUnreadable {
@@ -2079,7 +2124,7 @@ impl IdentityRegistry<'_> {
         if let Some(default_alias) =
             default_alias_from_file_async(paths.default_identity_path.clone()).await?
         {
-            snapshot.default_alias = Some(default_alias);
+            snapshot.set_default_alias(default_alias);
         }
         snapshot.apply_default_flags();
         snapshot.validate()?;
@@ -3049,9 +3094,36 @@ async fn first_existing_path_async(identity_dir: &Path, names: &[&str]) -> std::
 struct RegistrySnapshot {
     default_alias: Option<String>,
     entries: Vec<RegistryEntry>,
+    // Exact, durable Recovery conflicts remain addressable but never selectable.
+    blocked_entries: Vec<RegistryEntry>,
 }
 
 impl RegistrySnapshot {
+    fn set_default_alias(&mut self, alias: String) {
+        self.default_alias = (!self
+            .blocked_entries
+            .iter()
+            .any(|entry| entry.local_alias.as_deref() == Some(alias.as_str())))
+        .then_some(alias);
+    }
+
+    fn require_available(&self, selector: &super::IdentitySelector) -> crate::ImResult<()> {
+        if self.blocked_entries.iter().any(|entry| match selector {
+            super::IdentitySelector::Default => false,
+            super::IdentitySelector::LocalAlias(alias) => {
+                entry.local_alias.as_deref() == Some(alias.trim())
+            }
+            super::IdentitySelector::Did(did) => entry.summary.did == *did,
+            super::IdentitySelector::Id(id) => entry.summary.id == *id,
+            super::IdentitySelector::Handle(handle) => {
+                entry.summary.handle.as_ref() == Some(handle)
+            }
+        }) {
+            return Err(recovery_isolation::conflict());
+        }
+        Ok(())
+    }
+
     fn default_identity(&self) -> Option<super::IdentitySummary> {
         self.find(|entry| entry.summary.is_default)
             .map(|entry| entry.summary.clone())
@@ -3068,6 +3140,7 @@ impl RegistrySnapshot {
     }
 
     fn find_index(&self, selector: super::IdentitySelector) -> crate::ImResult<usize> {
+        self.require_available(&selector)?;
         match selector {
             super::IdentitySelector::Default => {
                 let default = self
@@ -3194,6 +3267,7 @@ fn resolve_from_registry(
     registry: &RegistrySnapshot,
     selector: super::IdentitySelector,
 ) -> crate::ImResult<super::IdentitySummary> {
+    registry.require_available(&selector)?;
     match selector {
         super::IdentitySelector::Default => registry
             .default_identity()
@@ -3519,6 +3593,7 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
     let mut snapshot = RegistrySnapshot {
         default_alias: optional_trimmed_string(file.default_identity),
         entries,
+        blocked_entries: Vec::new(),
     };
     snapshot.apply_default_flags();
     snapshot.validate()?;
@@ -3638,6 +3713,7 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
     let mut snapshot = RegistrySnapshot {
         default_alias: optional_trimmed_string(Some(file.default_credential_name)),
         entries,
+        blocked_entries: Vec::new(),
     };
     snapshot.apply_default_flags();
     snapshot.validate()?;

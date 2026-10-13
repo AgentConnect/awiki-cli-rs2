@@ -129,6 +129,23 @@ async fn switched_duplicate_exposes_exact_resume_without_changing_the_index() {
         marker.owner_identity_id
     );
     assert_eq!(std::fs::read(registry_path).unwrap(), before);
+    // Known conflicts are excluded from usable identities, without mutating
+    // either projection or preventing unrelated identities from being loaded.
+    assert!(core.identities().list_async().await.unwrap().is_empty());
+    assert!(core
+        .identities()
+        .default_identity_async()
+        .await
+        .unwrap()
+        .is_none());
+    assert!(core
+        .identities()
+        .resolve_async(crate::identity::IdentitySelector::Id(
+            crate::ids::IdentityId::parse("prior-owner").unwrap(),
+        ))
+        .await
+        .is_err());
+    assert_eq!(std::fs::read(registry_path).unwrap(), before);
 }
 
 #[tokio::test]

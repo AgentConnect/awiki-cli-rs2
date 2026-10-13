@@ -15,6 +15,8 @@
 - `crates/awiki-cli/Cargo.toml` 的 `[package].version` 必须与 `package.json.version` 一致。
 - `Cargo.lock` 中的 `awiki-cli` package 版本必须同步。
 - Daemon 版本来自 `crates/awiki-deamon/Cargo.toml`。
+- 包版本保留完整 SemVer（包括测试渠道后缀），`X-AWiki-Client-Version` 的数字版本只取严格解析后的 `major.minor.patch`；非法包版本不得回退为无版本请求。CLI 无发布版本的开发构建保持不发送该字段。
+- CLI、Daemon 发布二进制必须通过 `__self-check` 的通信版本校验；Daemon 安装器在修改已安装版本和 `current` 入口前执行该校验。版本打印或校验和通过不能代替初始化、注册及服务启动验证。
 
 修改版本后运行：
 
@@ -158,6 +160,14 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 注意：daemon 发布和 CLI 发布是两条发布线。新版 daemon 的推荐版本和最低支持版本由各租户
 Server Info 独立控制；静态 daemon manifest 的同名字段只兼容旧版客户端和发布工具。两者都
 不会改变 `@awiki/cli` 的 npm 版本，也不会影响 `awiki-cli upgrade` 的行为。
+
+Daemon 的完整 Cargo SemVer 用于包名、下载清单、自检版本匹配和升级比较，可以包含
+显式测试包的预发布／构建标识。产品协议 `X-AWiki-Client-Version` 中的 `version` 则使用
+该 SemVer 的数字 `major.minor.patch`；例如测试包 `0.1.107-singapore.20261012`
+仍声明产品版本 `0.1.107`。测试批次不冒充协议的数字 `build`，也不提高最低支持版本。
+Daemon 宿主负责这一转换，Core 的严格数字版本校验保持不变。包版本必须先通过完整
+SemVer 校验，不能通过截断任意错误文本得到可用版本。`__self-check` 同时验证该协议
+元数据，打包不能只核对文件名／包版本后就宣告自检通过。
 
 ## 5. 手工准备 daemon 下载目录
 

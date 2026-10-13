@@ -18,6 +18,7 @@ const DEVICE_PROOF_TTL_SECONDS: i64 = 300;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct PreparedDeviceDocumentUpdate {
+    pub(crate) capability_target_device_id: Option<String>,
     pub(crate) operation_id: String,
     pub(crate) expected_checkpoint: IdentityInternalCheckpoint,
     pub(crate) new_document: Value,
@@ -93,6 +94,29 @@ pub(crate) fn prepare_update_unsigned(
     audience: Option<&str>,
     now: OffsetDateTime,
 ) -> crate::ImResult<UnsignedDeviceDocumentUpdate> {
+    prepare_update_unsigned_for_target(
+        None,
+        operation_id,
+        expected_checkpoint,
+        new_document,
+        authorizing_device_id,
+        authorizing_signing_key_id,
+        audience,
+        now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_update_unsigned_for_target(
+    capability_target_device_id: Option<String>,
+    operation_id: String,
+    expected_checkpoint: IdentityInternalCheckpoint,
+    new_document: Value,
+    authorizing_device_id: String,
+    authorizing_signing_key_id: &str,
+    audience: Option<&str>,
+    now: OffsetDateTime,
+) -> crate::ImResult<UnsignedDeviceDocumentUpdate> {
     required("operation_id", &operation_id)?;
     crate::ids::ProtocolDeviceId::parse(&authorizing_device_id)?;
     if expected_checkpoint.document_version == 0
@@ -103,12 +127,17 @@ pub(crate) fn prepare_update_unsigned(
     }
     let created_at = format_time(now)?;
     let expires_at = format_time(now + Duration::seconds(DEVICE_PROOF_TTL_SECONDS))?;
-    let params = update_params(
+    let mut params = update_params(
         &operation_id,
         &expected_checkpoint,
         &new_document,
         &authorizing_device_id,
     );
+    if let Some(target) = &capability_target_device_id {
+        crate::ids::ProtocolDeviceId::parse(target)?;
+        params["target_device_id"] = json!(target);
+    }
+    let (method, purpose) = update_kind(capability_target_device_id.is_some());
     let mut nonce = [0_u8; 24];
     rand::rngs::OsRng
         .try_fill_bytes(&mut nonce)
@@ -125,8 +154,8 @@ pub(crate) fn prepare_update_unsigned(
     };
     let mut signing_object = json!({
         "type": proof.proof_type,
-        "purpose": DEVICE_DOCUMENT_UPDATE_PURPOSE,
-        "method": DEVICE_DOCUMENT_UPDATE_METHOD,
+        "purpose": purpose,
+        "method": method,
         "key_id": proof.key_id,
         "created_at": proof.created_at,
         "expires_at": proof.expires_at,
@@ -143,6 +172,7 @@ pub(crate) fn prepare_update_unsigned(
         signing_key_id: proof.key_id.clone(),
         signing_input,
         prepared: PreparedDeviceDocumentUpdate {
+            capability_target_device_id,
             operation_id,
             expected_checkpoint,
             new_document,
@@ -178,6 +208,9 @@ pub(crate) fn build_update_call(
         .ok_or_else(|| crate::ImError::Serialization {
             detail: "device document update params must be an object".to_owned(),
         })?;
+    if let Some(target) = &prepared.capability_target_device_id {
+        params.insert("target_device_id".to_owned(), json!(target));
+    }
     params.insert(
         "authorizing_device_proof".to_owned(),
         serde_json::to_value(&prepared.authorizing_device_proof).map_err(|error| {
@@ -188,7 +221,7 @@ pub(crate) fn build_update_call(
     );
     Ok(DeviceDocumentUpdateWireCall {
         endpoint: super::DID_AUTH_RPC_ENDPOINT,
-        method: DEVICE_DOCUMENT_UPDATE_METHOD,
+        method: update_kind(prepared.capability_target_device_id.is_some()).0,
         params: Value::Object(params),
     })
 }
@@ -361,5 +394,19 @@ mod tests {
         let mut extra = value;
         extra["root_private_key"] = json!("forbidden");
         assert!(parse_update_result(extra, &did, &checkpoint).is_err());
+    }
+}
+
+fn update_kind(capability: bool) -> (&'static str, &'static str) {
+    if capability {
+        (
+            "device_capability_update",
+            "awiki.device.capability.update.v1",
+        )
+    } else {
+        (
+            DEVICE_DOCUMENT_UPDATE_METHOD,
+            DEVICE_DOCUMENT_UPDATE_PURPOSE,
+        )
     }
 }

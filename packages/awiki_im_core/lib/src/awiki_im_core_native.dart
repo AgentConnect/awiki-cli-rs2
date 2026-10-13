@@ -229,6 +229,44 @@ class AwikiImCore {
     return summary._toModel();
   }
 
+  Future<DeviceCapabilityUpgradeStatus> identityDeviceCapabilityStatus(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+  }) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.identityDeviceCapabilityStatus(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+      ),
+    );
+    return DeviceCapabilityUpgradeStatus(
+      deviceId: status.deviceId,
+      state: DeviceCapabilityUpgradeState.values.byName(status.state.name),
+    );
+  }
+
+  Future<DeviceCapabilityUpgradeStatus> upgradeDeviceCapabilities(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+    bool userPresenceConfirmed = false,
+  }) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.upgradeDeviceCapabilities(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return DeviceCapabilityUpgradeStatus(
+      deviceId: status.deviceId,
+      state: DeviceCapabilityUpgradeState.values.byName(status.state.name),
+    );
+  }
+
   Future<LegacyRegistryEpochAdoptionAuthority?>
   legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
     _ensureNotDisposed();
@@ -338,6 +376,16 @@ class AwikiImCore {
       ),
     );
     return result._toModel();
+  }
+
+  /// Lists unfinished work in this scope even when the identity registry conflicts.
+  Future<List<HandleRecoveryOperationSummary>>
+  listPendingHandleRecoveryOperations() async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.listPendingHandleRecoveryOperations(core: _inner),
+    );
+    return result.map((operation) => operation._toModel()).toList();
   }
 
   Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(

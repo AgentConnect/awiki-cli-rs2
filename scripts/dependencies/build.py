@@ -146,8 +146,8 @@ def source_cargo_command(arguments):
         if not re.fullmatch(r'\+[0-9]+\.[0-9]+(?:\.[0-9]+)?', args[0]):
             raise ValueError('Source Cargo toolchain must be an exact numeric version')
         prefix.append(args.pop(0))
-    if not args or args[0] not in ('build', 'check', 'test'):
-        raise ValueError('Source Cargo accepts only build, check or test')
+    if not args or args[0] not in ('build', 'check', 'test', 'tree'):
+        raise ValueError('Source Cargo accepts only build, check, test or tree')
     # These would escape the audited workspace, dependency graph or output root.
     forbidden = ('--manifest-path', '--lockfile-path', '--target-dir', '--config', '--profile')
     if any(arg == '--' or arg.split('=')[0] in forbidden or arg.startswith('-Z') for arg in args):

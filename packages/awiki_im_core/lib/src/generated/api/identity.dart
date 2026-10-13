@@ -117,6 +117,13 @@ Future<DartHandleRecoveryProgress> handleRecoveryStatus({
   operationId: operationId,
 );
 
+/// Read scope-owned unfinished operations without resolving the identity registry.
+Future<List<DartHandleRecoveryOperationSummary>>
+listPendingHandleRecoveryOperations({required ArcDartImCore core}) => RustLib
+    .instance
+    .api
+    .crateApiIdentityListPendingHandleRecoveryOperations(core: core);
+
 Future<List<DartHandleRecoveryOperationSummary>> listHandleRecoveryOperations({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
@@ -383,6 +390,28 @@ Future<DartIdentityDeviceSummary> identityDeviceSummary({
 }) => RustLib.instance.api.crateApiIdentityIdentityDeviceSummary(
   core: core,
   selector: selector,
+);
+
+Future<DartDeviceCapabilityUpgradeStatus> identityDeviceCapabilityStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  String? targetDeviceId,
+}) => RustLib.instance.api.crateApiIdentityIdentityDeviceCapabilityStatus(
+  core: core,
+  selector: selector,
+  targetDeviceId: targetDeviceId,
+);
+
+Future<DartDeviceCapabilityUpgradeStatus> upgradeDeviceCapabilities({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  String? targetDeviceId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityUpgradeDeviceCapabilities(
+  core: core,
+  selector: selector,
+  targetDeviceId: targetDeviceId,
+  userPresenceConfirmed: userPresenceConfirmed,
 );
 
 Future<DartIdentityCustodyStatus> identityCustodyStatus({

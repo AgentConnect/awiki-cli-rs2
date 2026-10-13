@@ -2315,13 +2315,10 @@ async fn apply_local_transition_v4(
             &recovered_did,
         )
         .await?;
-        if core.inner().group_e2ee_v2_enabled() {
-            crate::internal::identity_registration_runtime::publish_v2_group_key_package_after_registration_async(
-                core,
-                &recovered_did,
-            )
-            .await?;
-        }
+        // Recovery commits identity/auth/P5 state. Optional P6 preparation belongs
+        // to the separately resumable device capability lifecycle; an older
+        // signed profile must not turn an already recovered identity into a
+        // permanently pending recovery.
         crate::internal::identity_transition_pending::mark_applied(
             sqlite_path,
             &pending.operation_id,
@@ -3402,6 +3399,7 @@ mod tests {
             paths,
             crate::ImCoreOpenOptions::default()
                 .with_multi_device_handle_recovery_enabled(true)
+                .with_multi_device_group_e2ee_enabled(true)
                 .with_multi_device_audience("awiki-user-service")
                 .with_identity_secret_vault(
                     crate::IdentitySecretStoragePolicy::VaultRequired,

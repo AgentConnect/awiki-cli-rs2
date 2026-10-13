@@ -75,9 +75,16 @@ fn run_self_check(args: impl IntoIterator<Item = String>) -> Result<()> {
             bail!("daemon self-check version mismatch: expected {expected}, got {actual}");
         }
     }
+    let client = awiki_deamon::build_info::client_version_info()
+        .context("daemon client version metadata is invalid")?;
     println!(
-        "{{\"ok\":true,\"name\":\"awiki-deamon\",\"version\":\"{}\"}}",
-        env!("CARGO_PKG_VERSION")
+        "{}",
+        serde_json::json!({
+            "ok": true,
+            "name": "awiki-deamon",
+            "version": env!("CARGO_PKG_VERSION"),
+            "client_version": client.header_value(),
+        })
     );
     Ok(())
 }

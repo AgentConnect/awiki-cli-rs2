@@ -121,6 +121,10 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<HandleRecoveryOperationSummary>>
+  listPendingHandleRecoveryOperations() async =>
+      throw UnsupportedError('Handle Recovery requires native Core');
+
   Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
     IdentitySelector selector,
   ) async {
@@ -307,6 +311,17 @@ class AwikiImCore {
   ) async {
     throw _unsupported();
   }
+
+  Future<DeviceCapabilityUpgradeStatus> identityDeviceCapabilityStatus(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+  }) async => throw _unsupported();
+
+  Future<DeviceCapabilityUpgradeStatus> upgradeDeviceCapabilities(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+    bool userPresenceConfirmed = false,
+  }) async => throw _unsupported();
 
   Future<LegacyUpgradeStatus> upgradeLegacyIdentity(
     IdentitySelector selector,

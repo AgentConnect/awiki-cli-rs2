@@ -162,9 +162,9 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.5"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "989233db8d978d5ce7e5e0cfe919eb68c50ac8bbbfbb55be4e41f8d9afa5cfae"
+checksum = "e25d0c844ca1813afc710bb8e973942ced1f5e8d36a0b743947b01c845138050"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -204,9 +204,9 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d1cd10447cabaaf200ed19165e5b9f57ddf68ad1a690c8ed2280ea9abc1b9c"
+checksum = "09f94e1e8a7b6827838335904c79f5b46ca6df61d1a24bf83c73d1cfa133bb23"
 dependencies = [
  "anp",
  "base64 0.22.1",
@@ -424,6 +424,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite",
+ "uuid",
  "webpki-roots 0.26.11",
  "windows-service",
  "windows-sys 0.52.0",
@@ -470,9 +471,9 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ec04c9b5f1fafa33919eb683b211bcf48c37bfc1b3e863e16cb36ba2f15b45b"
+checksum = "60133e830b782677680918d60bbb6adacb50c2b989b94b3b9e35b1b43c29593a"
 dependencies = [
  "anp",
  "anp-identity",

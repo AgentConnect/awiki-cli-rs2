@@ -587,6 +587,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceCapabilityUpgradeState
+  dco_decode_dart_device_capability_upgrade_state(dynamic raw);
+
+  @protected
+  DartDeviceCapabilityUpgradeStatus
+  dco_decode_dart_device_capability_upgrade_status(dynamic raw);
+
+  @protected
   DartDeviceJoinApprovalPrompt dco_decode_dart_device_join_approval_prompt(
     dynamic raw,
   );
@@ -2105,6 +2113,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDeleteLocalIdentityResult sse_decode_dart_delete_local_identity_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceCapabilityUpgradeState
+  sse_decode_dart_device_capability_upgrade_state(SseDeserializer deserializer);
+
+  @protected
+  DartDeviceCapabilityUpgradeStatus
+  sse_decode_dart_device_capability_upgrade_status(
     SseDeserializer deserializer,
   );
 
@@ -3953,6 +3971,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_delete_local_identity_result(
     DartDeleteLocalIdentityResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_capability_upgrade_state(
+    DartDeviceCapabilityUpgradeState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_capability_upgrade_status(
+    DartDeviceCapabilityUpgradeStatus self,
     SseSerializer serializer,
   );
 

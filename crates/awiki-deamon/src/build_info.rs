@@ -6,23 +6,21 @@ pub const RELEASE: &str = match option_env!("AWIKI_DAEMON_RELEASE") {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn client_version_info() -> im_core::ImResult<im_core::ClientVersionInfo> {
-    im_core::ClientVersionInfo::new(PRODUCT, RELEASE, VERSION, None)
+    client_version_from_package(VERSION)
+}
+
+fn client_version_from_package(package: &str) -> im_core::ImResult<im_core::ClientVersionInfo> {
+    let version = semver::Version::parse(package).map_err(|_| {
+        im_core::ImError::invalid_input(
+            Some("daemon.package_version".to_owned()),
+            "daemon package version must be valid SemVer",
+        )
+    })?;
+    // Package channels are not part of the numeric product-admission version.
+    let numeric = format!("{}.{}.{}", version.major, version.minor, version.patch);
+    im_core::ClientVersionInfo::new(PRODUCT, RELEASE, numeric, None)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn daemon_build_info_has_its_own_product_identity() {
-        assert_eq!(PRODUCT, "awiki-daemon");
-        assert_eq!(
-            RELEASE,
-            option_env!("AWIKI_DAEMON_RELEASE").unwrap_or("0815")
-        );
-        assert_eq!(
-            client_version_info().unwrap().header_value(),
-            format!("awiki-daemon/{RELEASE}/{VERSION}")
-        );
-    }
-}
+#[path = "build_info_tests.rs"]
+mod tests;

@@ -241,6 +241,37 @@ pub struct DartIdentityDeviceSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceCapabilityUpgradeState {
+    Ready,
+    UpgradeAvailable,
+    ApprovalRequired,
+    Unsupported,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceCapabilityUpgradeStatus {
+    pub device_id: String,
+    pub state: DartDeviceCapabilityUpgradeState,
+}
+
+impl From<im_core::identity::DeviceCapabilityUpgradeStatus> for DartDeviceCapabilityUpgradeStatus {
+    fn from(value: im_core::identity::DeviceCapabilityUpgradeStatus) -> Self {
+        use im_core::identity::DeviceCapabilityUpgradeState as CoreState;
+        Self {
+            device_id: value.device_id,
+            state: match value.state {
+                CoreState::Ready => DartDeviceCapabilityUpgradeState::Ready,
+                CoreState::UpgradeAvailable => DartDeviceCapabilityUpgradeState::UpgradeAvailable,
+                CoreState::ApprovalRequired => DartDeviceCapabilityUpgradeState::ApprovalRequired,
+                CoreState::Unsupported => DartDeviceCapabilityUpgradeState::Unsupported,
+                CoreState::Blocked => DartDeviceCapabilityUpgradeState::Blocked,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartDeviceJoinSide {
     NewDevice,
     Admin,

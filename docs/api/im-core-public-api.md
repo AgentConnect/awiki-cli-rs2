@@ -975,6 +975,7 @@ impl IdentityService<'_> {
 ```
 
 `list_pending_handle_recovery_operations()` 在当前 Core state root 内发现未完成的恢复，
+Node 和 Dart facade 均提供 `listPendingHandleRecoveryOperations()`；Dart 登录页无需先枚举身份或输入 Handle，即可发现旧版重复 Handle 对应的未完成任务。
 也包括仍有关联注册候选待收尾的 Applied 操作。此类操作的 allowed_actions 包含 Resume，
 宿主可重试本地收尾；结果仍为 Applied，完成收尾后移出 pending 列表。
 包括尚未写入公共身份列表的 fresh owner；保留默认关闭的能力门禁。
@@ -1021,6 +1022,11 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 保留原 operation 的 `local_transition_pending`，不宣告 Applied。Host 应允许用户返回处理
 其他 Handle 的已有恢复，再续办本任务；没有可证明的恢复任务时提示保留数据并联系支持。
 不增加 V4 wire 阶段或错误枚举，不允许 Host 直接删改索引。
+
+V4 exchange 的非成功 HTTP 响应仅在精确端点、已知错误码和匹配的 `retryable`
+闭合结构下投影为 typed Service 错误；限流继续映射 `factor_retry_required`，临时不可用
+映射 `outcome_unknown`。同步与异步传输保持一致；其他端点、未知码、重复／额外字段
+或畸形响应不得借此获得恢复动作授权，也不从错误正文猜测恢复状态。
 
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
 `local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5
@@ -2308,3 +2314,9 @@ Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表�
 P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。
 
 会话快照与消息 DTO 一样保留本地认证后的 `decryption_state`，重启后的客户端据此区分已解密内容和不可用密文；不重新消耗 MLS 密文，也不由 UI 猜测解密结果。
+
+### 设备群能力兼容升级
+
+`device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
+
+Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。

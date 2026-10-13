@@ -182,9 +182,13 @@ account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史
 默认身份先写、索引最后原子替换；索引替换失败时恢复原默认文件。两步间崩溃仍保留
 重复索引及原恢复标记，可经原任务续办，不能留下“索引已删除前驱、默认文件仍指向前驱”
 而无法进入恢复的状态。补偿失败同样保留任务和备份并返回错误。
-局部索引修复不等于 Recovery 已 Applied：若其他 Handle 仍重复，普通读取及客户端加载
-继续返回 `identity.local_registry_conflict`，原任务保留 `local_transition_pending`。
-处理其他 Handle 后再 Resume，继续完成 JWT、PreKey 和既有 Applied 收尾，不创建新任务。
+局部索引修复不等于 Recovery 已 Applied。只有被唯一活跃 Recovery 和精确
+`identity_switched` 前后代次证明的冲突记录，才在只读目录中隔离：可用身份列表不包含
+这两个投影，选中该 Handle/身份继续返回 `identity.local_registry_conflict`，恢复入口仍
+通过原任务可达。其他身份可继续注册、加载和完成恢复。普通索引写入只允许原样保留其他
+Handle 的既有冲突（默认身份标记除外），不能扩大或改写冲突；未知冲突继续失败关闭。
+Recovery 的完成门禁为身份接续、JWT、P5 和持久化收尾；P6 准备属于独立的设备能力
+生命周期，不得把已恢复身份永久卡在 `local_transition_pending`。
 
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
@@ -1422,6 +1426,8 @@ Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承
 同一 SQLite 数据库、同一 owner 的 HTTP 接收轮次使用跨进程文件锁协调，锁等待计入原有接收时间预算；进程退出或任务取消时由操作系统释放。进程内请求仍由现有 coordinator 合并。后到的 CLI/Core 等待当前接收提交，再从持久游标继续；`run_generation` 和当前身份检查仍作为旧结果写入的最后一道校验。该锁只覆盖接收，不覆盖独立的逐条处理、Root completion 或 App 本地读取。
 
 同步通道能力状态的本地协调使用 `BEGIN IMMEDIATE`，在读取账号绑定前取得 SQLite 写锁，再原子提交通道游标与协商结果。这样并发连接遵循已有忙等待配置，不会因延迟事务的读快照升级而直接返回 `database is locked`；该事务只包含本地数据库操作，不持锁执行网络请求。
+
+接收轮次的 `begin_message_sync_run` 同样先取得写锁，再于同一短事务中校验账号绑定并递增 `run_generation`。接收文件锁不阻止独立处理器等本地写入，因此不能先读取轮次再升级为写事务；等待后必须重读已提交代次，账号绑定已删除时拒绝创建轮次。此调整不重试注册、不放宽同步就绪条件，也不改变原有数据库忙等待时限。
 
 设备授权代次变化仍要求使用新认证重新 bootstrap 并验证 exact account/device 与 lane 协商结果。同一 owner/account/device 的普通 stream epoch 未变时，重新协商保留已经接收的游标，再拉取其后的事件，不能把期间已经投递的 Join 通知当成尾部初始化前的历史而越过；lane 的同 epoch 本地接收位置也不能退回较早的服务端 ACK。新身份/设备的首次初始化、DID transition 清除旧接收状态和 stream epoch 变化继续走各自既有初始化或恢复路径。
 

@@ -2185,7 +2185,8 @@ impl RestTransport for CorePlainTransport<'_> {
             self.unsigned_headers(endpoint, None),
         )?;
         if response.status_code >= 400 {
-            return Err(service_error_from_http(
+            return Err(plain_rest_post_error(
+                endpoint,
                 response.status_code,
                 &response.body,
             ));
@@ -2236,7 +2237,8 @@ impl AsyncRestTransport for CorePlainTransport<'_> {
             )
             .await?;
         if response.status_code >= 400 {
-            return Err(service_error_from_http(
+            return Err(plain_rest_post_error(
+                endpoint,
                 response.status_code,
                 &response.body,
             ));
@@ -2469,6 +2471,35 @@ fn percent_encode(value: &str) -> String {
         }
     }
     encoded
+}
+
+// Recovery exchange errors are a closed REST contract, not JSON-RPC errors.
+// Preserve only that endpoint's typed error; never infer it from arbitrary text.
+fn plain_rest_post_error(endpoint: &str, status_code: u16, body: &[u8]) -> crate::ImError {
+    use crate::internal::identity_wire::handle_recovery::{
+        RecoveryExchangeErrorCodeV4, HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT,
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ExchangeError {
+        code: String,
+        retryable: bool,
+    }
+    if endpoint == HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT {
+        if let Ok(payload) = serde_json::from_slice::<ExchangeError>(body) {
+            if let Some(code) = RecoveryExchangeErrorCodeV4::parse(&payload.code) {
+                if payload.retryable == code.retryable() {
+                    return crate::ImError::Service {
+                        status_code: Some(status_code),
+                        code: Some(code.as_str().to_owned()),
+                        message: code.as_str().to_owned(),
+                        data: None,
+                    };
+                }
+            }
+        }
+    }
+    service_error_from_http(status_code, body)
 }
 
 fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {

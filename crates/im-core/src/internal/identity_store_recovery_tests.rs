@@ -63,7 +63,7 @@ fn independent_recoveries_reduce_duplicates_in_either_order_after_restart() {
             .unwrap());
         let partial = store.load_index().unwrap();
         assert_eq!(partial.credentials.len(), 3);
-        // The unselected Handle is untouched; ordinary writes still reject it.
+        // The unselected Handle is untouched; unrelated writes preserve it.
         for (alias, entry) in &index.credentials {
             if entry.full_handle == markers[1].handle {
                 assert_eq!(
@@ -79,10 +79,7 @@ fn independent_recoveries_reduce_duplicates_in_either_order_after_restart() {
         assert_eq!(fs::read(&paths.registry_path).unwrap(), partial_raw);
         {
             let lock = store.lock_index_mutation().unwrap();
-            assert!(matches!(
-                store.save_index_locked(&lock, partial),
-                Err(crate::ImError::IdentityBindingConflict { .. })
-            ));
+            store.save_index_locked(&lock, partial).unwrap();
         }
         assert_eq!(fs::read(&paths.registry_path).unwrap(), partial_raw);
         let reopened = IdentityStore::new(&paths);
@@ -408,4 +405,44 @@ fn recovery_duplicate_retirement_rejects_redirected_backup_directory() {
     ));
     assert_eq!(fs::read(&paths.registry_path).unwrap(), before);
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+#[test]
+fn unrelated_registration_preserves_pending_pair_but_cannot_rewrite_it() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    fs::create_dir_all(&paths.identity_root_dir).unwrap();
+    let before = duplicate_recovery_index();
+    fs::write(
+        &paths.registry_path,
+        serde_json::to_vec_pretty(&before).unwrap(),
+    )
+    .unwrap();
+    let store = IdentityStore::new(&paths);
+    let mut next = before.clone();
+    let mut other = next.credentials["new"].clone();
+    other.credential_name = "other".into();
+    other.unique_id = "other-owner".into();
+    other.dir_name = "other-owner".into();
+    other.did = "did:example:other".into();
+    other.handle = "other".into();
+    other.full_handle = "other.example.com".into();
+    other.user_id = "other-account".into();
+    next.credentials.insert("other".into(), other);
+    next.default_credential_name = "other".into();
+    for (alias, entry) in &mut next.credentials {
+        entry.is_default = alias == "other";
+    }
+    let lock = store.lock_index_mutation().unwrap();
+    store.save_index_locked(&lock, next).unwrap();
+    let saved = fs::read(&paths.registry_path).unwrap();
+    let mut bad = store.load_index().unwrap();
+    bad.credentials.get_mut("old").unwrap().user_id = "wrong-account".into();
+    assert!(store.save_index_locked(&lock, bad).is_err());
+    assert_eq!(fs::read(&paths.registry_path).unwrap(), saved);
+    let mut bad = store.load_index().unwrap();
+    bad.credentials.get_mut("other").unwrap().full_handle =
+        before.credentials["new"].full_handle.clone();
+    assert!(store.save_index_locked(&lock, bad).is_err());
+    assert_eq!(fs::read(&paths.registry_path).unwrap(), saved);
 }
