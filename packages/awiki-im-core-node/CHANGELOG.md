@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.12
+
+- Accept `awiki-dsh` and `awiki-gateway` client product identities through the
+  actual native Core 0.1.9 configuration, retaining APP, CLI and Daemon support.
+- Keep product version headers limited to configured AWiki product HTTP and
+  Message WebSocket requests; public ANP and discovery requests remain unlabelled.
+- Preserve native API v20 and rebuild all five exact-version platform packages.
+- Verify real native product acceptance/rejection and HTTP header scope in each
+  packed-install lane and in a separate exact-version registry installation.
+
 ## 0.2.11
 
 - Pin the actual native build to published IM Core 0.1.8, which includes the
