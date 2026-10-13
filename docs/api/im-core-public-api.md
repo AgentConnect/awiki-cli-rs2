@@ -2313,6 +2313,8 @@ Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表�
 
 P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。
 
+群 E2EE 附件的 P7 下载票据请求优先使用原始协议消息 ID（`raw_message_id`），不使用本地投影 ID 代替已知的原始 ID。缺少原始 ID 时，按完整字符串回退到本地投影 ID，不拆解或推导；服务端仍执行精确授权校验。该选择不改变本地消息主键、P6 wire `message_id`、普通消息或 P5 的现有路径。
+
 会话快照与消息 DTO 一样保留本地认证后的 `decryption_state`，重启后的客户端据此区分已解密内容和不可用密文；不重新消耗 MLS 密文，也不由 UI 猜测解密结果。
 
 ### 设备群能力兼容升级
