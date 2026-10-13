@@ -26,6 +26,7 @@ jobs:
     name: ${{ matrix.target_name }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - target_name: linux-amd64
