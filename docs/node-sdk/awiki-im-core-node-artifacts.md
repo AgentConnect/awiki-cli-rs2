@@ -192,3 +192,32 @@ HTTP 请求以及同步／异步 WebSocket 握手；真实 Node 原生契约验�
 本批重型任务上限为 6。构建和安装矩阵分别设置 `max-parallel: 5`，为发布侧或本地任务
 保留一个槽位；阶段由 `needs` 串行衔接，矩阵运行时不叠加额外本地重型构建。
 本次显式运行安装测试，Actions 选择 `dependency_source=registry`、`build_only=false`。
+
+## 2026-10-13 独立产品标识正式发布
+
+Core Rust `0.1.9` 与 Core Node 主包及五个平台包 `0.2.12` 已正式发布并完成 registry 校验。
+Core 新增 `awiki-dsh`、`awiki-gateway`，保留原有三个产品；DSH 使用插件包版本，
+Guest 使用 Gateway 包版本。Node 类型声明同步扩展，桥接继续复用 Core 的严格校验。
+
+- Core 源码：`375acee14bb47e4fb7f773c3a4c437ac084ff58e`，新标签 `im-core-v0.1.9`。
+  crate SHA-256：`bd9324062c4c36fc28eef8a531ed6ac0e32aeb77bd478e68b8c8eae4ac26d2e3`。
+  从 registry 下载后核对来源与 checksum；114 个群附件及身份运行时相关文件与上一版
+  `0.1.8` 制品逐字节一致，保留已有修复。
+- Node 构建源码：`83091560165a291d443d6a8b14156747103c944f`；
+  [Actions 38410019338](https://github.com/AgentConnect/awiki-cli-rs2/actions/runs/38410019338)
+  使用 registry 模式成功完成五个平台构建和 15/15 packed-install。
+  五个平台日志均确认解析及编译 `awiki-im-core v0.1.9`；native API 保持 `20`。
+- 本地 Core 定向测试 11/11、真实 Node native 契约测试 1/1、TypeScript 正反类型断言通过。
+  覆盖五个合法产品、七种非法输入、产品 HTTP、同步／异步 WebSocket，以及公共 ANP、
+  公开发现和外部请求不附带产品头。所有请求使用临时状态和测试服务，无真实账号操作。
+- npm 先上传平台包，等待异步处理完成并逐一下载核验后再发布主包。六包的 tarball 摘要、
+  包内 checksum、provenance、精确依赖和五个原生二进制摘要一致。
+  仅新增 `release-0.2.12`；`latest=0.2.10`、`release-0.2.11=0.2.11` 及其他旧标签保持原值。
+- 发布后在工作区之外的 Linux x64 临时目录从 npm 安装精确版本，禁用安装脚本，令 Rust
+  构建工具不可用。实际加载平台包 `.node`，核对其 SHA-256、native API 和 lock integrity，
+  再验证五种产品、七种非法值、五次产品 HTTP 和五次无产品头的公开发现，全部通过。
+
+完整源码、crate checksum、六个 npm integrity、五个 native SHA-256、构建与安装测试证据见
+[发布回执](releases/core-0.1.9-node-0.2.12.json)。跨平台证据来自 Actions 安装矩阵；
+正式 registry 的实际 native 安装验证平台为 Linux x64。本次未执行全量系统测试或产品 E2E，
+未发布消费者产品、修改下载／最低版本政策或部署服务，也未重发 Identity SDK。
