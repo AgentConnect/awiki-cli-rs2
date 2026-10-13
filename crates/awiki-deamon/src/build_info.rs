@@ -12,8 +12,8 @@ pub fn client_version_info() -> im_core::ImResult<im_core::ClientVersionInfo> {
 fn client_version_from_package(package: &str) -> im_core::ImResult<im_core::ClientVersionInfo> {
     let version = semver::Version::parse(package).map_err(|_| {
         im_core::ImError::invalid_input(
-            Some("package_version".to_owned()),
-            "package version must be valid SemVer",
+            Some("daemon.package_version".to_owned()),
+            "daemon package version must be valid SemVer",
         )
     })?;
     // Package channels are not part of the numeric product-admission version.

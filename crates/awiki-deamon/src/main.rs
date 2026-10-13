@@ -75,7 +75,8 @@ fn run_self_check(args: impl IntoIterator<Item = String>) -> Result<()> {
             bail!("daemon self-check version mismatch: expected {expected}, got {actual}");
         }
     }
-    let client = awiki_deamon::build_info::client_version_info()?;
+    let client = awiki_deamon::build_info::client_version_info()
+        .context("daemon client version metadata is invalid")?;
     println!(
         "{}",
         serde_json::json!({

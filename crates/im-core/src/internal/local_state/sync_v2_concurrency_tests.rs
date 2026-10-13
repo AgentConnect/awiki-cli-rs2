@@ -20,6 +20,88 @@ fn notify_writer_wait(attempt: i32) -> bool {
 }
 
 #[test]
+fn begin_sync_run_waits_for_writer_and_reads_committed_generation() {
+    assert_begin_sync_run_after_writer(false);
+}
+
+#[test]
+fn begin_sync_run_rechecks_binding_after_concurrent_deletion() {
+    assert_begin_sync_run_after_writer(true);
+}
+
+fn assert_begin_sync_run_after_writer(delete_binding: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("local-state.sqlite");
+    let mut writer = super::super::open_writable(&path).unwrap();
+    writer
+        .execute(
+            "INSERT INTO identity_account_bindings(
+            owner_identity_id, account_id, current_did, device_id,
+            identity_generation, device_auth_generation, created_at, updated_at
+         ) VALUES ('owner', 'account', 'did:example:owner', 'device', '1', '2', 1, 1)",
+            [],
+        )
+        .unwrap();
+    let receiver = super::super::open_writable(&path).unwrap();
+    let transaction = writer
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    if delete_binding {
+        transaction
+            .execute(
+                "DELETE FROM identity_account_bindings WHERE owner_identity_id='owner'",
+                [],
+            )
+            .unwrap();
+    } else {
+        transaction.execute(
+            "INSERT INTO message_sync_run_state(owner_identity_id, sync_pending, run_generation, updated_at)
+             VALUES ('owner', 1, 7, 2)", [],
+        ).unwrap();
+    }
+    let (signal, observed) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        WRITER_WAIT.with(|sender| *sender.borrow_mut() = Some(signal.clone()));
+        receiver.busy_handler(Some(notify_writer_wait)).unwrap();
+        let result = super::begin_message_sync_run(&receiver, "owner", 3);
+        let _ = signal.send(false);
+        result
+    });
+    let waited_for_writer = observed.recv_timeout(Duration::from_secs(10)).unwrap();
+    transaction.commit().unwrap();
+    let result = worker.join().unwrap();
+    assert!(
+        waited_for_writer,
+        "sync run must acquire its writer before reading: {result:?}"
+    );
+    if delete_binding {
+        assert!(matches!(
+            result,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        let count: i64 = writer
+            .query_row("SELECT count(*) FROM message_sync_run_state", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "deleted binding must not acquire a new sync run");
+    } else {
+        let run = result.unwrap();
+        assert_eq!(run.run_generation, 8);
+        assert!(run.sync_pending);
+        assert_eq!(run.updated_at, 3);
+        let stored: i64 = writer
+            .query_row(
+                "SELECT run_generation FROM message_sync_run_state WHERE owner_identity_id='owner'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 8);
+    }
+}
+
+#[test]
 fn lane_capability_reconcile_waits_for_concurrent_writer() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("local-state.sqlite");

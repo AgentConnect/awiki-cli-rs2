@@ -161,6 +161,14 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 Server Info 独立控制；静态 daemon manifest 的同名字段只兼容旧版客户端和发布工具。两者都
 不会改变 `@awiki/cli` 的 npm 版本，也不会影响 `awiki-cli upgrade` 的行为。
 
+Daemon 的完整 Cargo SemVer 用于包名、下载清单、自检版本匹配和升级比较，可以包含
+显式测试包的预发布／构建标识。产品协议 `X-AWiki-Client-Version` 中的 `version` 则使用
+该 SemVer 的数字 `major.minor.patch`；例如测试包 `0.1.107-singapore.20261012`
+仍声明产品版本 `0.1.107`。测试批次不冒充协议的数字 `build`，也不提高最低支持版本。
+Daemon 宿主负责这一转换，Core 的严格数字版本校验保持不变。包版本必须先通过完整
+SemVer 校验，不能通过截断任意错误文本得到可用版本。`__self-check` 同时验证该协议
+元数据，打包不能只核对文件名／包版本后就宣告自检通过。
+
 ## 5. 手工准备 daemon 下载目录
 
 ### 临时集成当前 Core 源码
