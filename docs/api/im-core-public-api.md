@@ -109,12 +109,16 @@ pub struct ImCoreSecretVaultOptions {
 pub struct ClientVersionInfo { /* validated product/release/version/build */ }
 ```
 
-`ClientVersionInfo` 只接受 `awiki-me|awiki-cli|awiki-daemon`、四位 release、
+`ClientVersionInfo` 只接受 `awiki-me|awiki-cli|awiki-daemon|awiki-dsh|awiki-gateway`、四位 release、
 header-safe version 和可选十进制 build。Core 对配置中同源的 AWiki User/Message/Mail
 产品 HTTP 请求及 Message WebSocket 注入唯一
 `X-AWiki-Client-Version: <product>/<release>/<version>[+<build>]`；公共 ANP、任意 DID
 解析和对象存储请求不携带该头。User Service 产品端点统一使用 canonical
 `/user-service/v1/...`，客户端不回退无版本 alias。
+
+DSH 必须使用 `awiki-dsh/0815/<插件包版本>`，Guest 必须使用
+`awiki-gateway/0815/<Gateway包版本>`；版本取各自产品的真实包版本，不借用或提高
+Daemon 版本绕过最低版本门槛。新增标识不改变既有三个产品的格式、鉴权或请求头作用域。
 
 `ImCoreSecretVaultOptions.device_id` is the existing compatibility spelling for
 the **local vault context device id**. Internally it is parsed as

@@ -273,3 +273,18 @@ pnpm --filter @awiki/im-core-node run test
 平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。
+
+
+## 产品版本标识
+
+`clientVersionInfo.product` 接受 `awiki-me`、`awiki-cli`、`awiki-daemon`、`awiki-dsh`、
+`awiki-gateway`。Node 桥接将这组值交给同一 Core 构造器校验，未知产品、别名和含分隔符
+或换行的标识仍被拒绝。原生 API 形状不变，wrapper 与平台包必须使用同一版本。
+
+DSH 配置 `awiki-dsh/0815/<插件包版本>`，Guest 配置
+`awiki-gateway/0815/<Gateway包版本>`。`version` 使用宿主真实包版本，不能伪装成较高的
+Daemon 版本。本次 SDK 不修改服务端最低版本规则或任何产品的下载政策。
+
+Core 只在已配置的 AWiki User/Message/Mail 产品 HTTP 请求和 Message WebSocket 握手
+携带唯一的 `X-AWiki-Client-Version`。公共 ANP、公开 Handle/DID 发现、对象存储及
+其他 origin 的请求保持不带产品头；调用方不能通过预置同名 header 覆盖 Core 配置。

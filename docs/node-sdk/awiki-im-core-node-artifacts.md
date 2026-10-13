@@ -176,3 +176,19 @@ ANP `1.0.6` 和 Identity `0.2.5`。绑定源码提交不能替代这些 registry
 未移动旧 Git 标签。本次只执行构建、打包、来源与完整性校验，`build_only=true`，
 未运行 SDK 测试、packed-install 或产品 E2E。CLI、Daemon、App、DSH 产品插件发布和
 生产推荐政策切换由后续产品发布任务负责。
+
+
+## 独立产品标识的验证与并行约束
+
+Core 0.1.9 / Core Node 0.2.12 的标识适配仅扩展允许的产品字符串，不改变鉴权、身份角色、
+版本格式或请求头的同源／产品路径判断。非法标识与调用方覆盖受管 header 的拒绝边界保留；
+公共 ANP、公开发现和对象存储等外部请求不附带产品版本信息。
+
+定向验证使用临时状态和 loopback 假服务，不访问生产数据库或真实账号：Core 测试捕获产品
+HTTP 请求以及同步／异步 WebSocket 握手；真实 Node 原生契约验证五个产品、七种非法值、
+五次产品 HTTP 请求和五次无产品头的公开发现。`verify-packed-install.mjs` 在安装候选包后
+执行同一原生契约，registry 发布后还须独立安装并核对实际加载的原生二进制来源和摘要。
+
+本批重型任务上限为 6。构建和安装矩阵分别设置 `max-parallel: 5`，为发布侧或本地任务
+保留一个槽位；阶段由 `needs` 串行衔接，矩阵运行时不叠加额外本地重型构建。
+本次显式运行安装测试，Actions 选择 `dependency_source=registry`、`build_only=false`。
