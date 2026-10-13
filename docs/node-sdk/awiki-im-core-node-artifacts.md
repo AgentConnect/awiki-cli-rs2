@@ -1,6 +1,6 @@
 # `@awiki/im-core-node` 原生制品
 
-本次协调发布版本为 `0.2.10`，固定使用 IM Core `0.1.7`，native API 为 `18`。wrapper 与五个平台包须共同发布为 `0.2.10`；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+本次协调发布版本为 `0.2.10`，固定使用 IM Core `0.1.7`，native API 为 `20`。wrapper 与五个平台包须共同发布为 `0.2.10`；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
 源码消费者通过显式 `--local-candidate`
 打包 private tarball；provenance 与 SOURCE 采用实际解析的 ANP/Identity 提交和 dirty 状态，
 并记录 Cargo lock 摘要。native API 从当前 Rust facade 读取。该候选验证不替代正式 registry
@@ -124,3 +124,28 @@ wrapper 使用同一脚本的 `--kind wrapper`。`pack-audit.mjs` 会拒绝源�
 仓库不包含自动 npm publish job。若后续需要正式 npm registry，必须把同一组已验证 tarball
 按“全部平台包 → root wrapper”的顺序发布，再从该 registry 做一次 clean install；不能重建
 另一组无对应 provenance 的二进制。
+
+
+## 2026-10-13 补齐 npm 发布
+
+`@awiki/im-core-node@0.2.10` 与五个同版本平台包使用
+[owner workflow 38376037118](https://github.com/AgentConnect/awiki-cli-rs2/actions/runs/38376037118)
+的完整候选发布。绑定源码为 `6b7eea16e098ab8d663dceb651aa8b26a6b10a3f`，
+构建选择 `dependency_source=registry`、`build_only=true`，native API 为 `20`。
+实际 Rust 运行时依赖仍为已发布的 Core `0.1.7`（源码 `de7d138ca0c8d9b9fa26fe0345da71b5523ec055`）、
+ANP `1.0.6` 和 Identity `0.2.5`。绑定源码提交不能替代这些 registry SDK 的源码定位；
+本次没有重新发布 Rust SDK，也不将后续 Core 源码改动宣称为已进入旧版 crate。
+
+发布复用 `awiki-harness/scripts/publish-packages.py` 的 `im-core-npm` 目标。
+首次 `--npm-stage all` 已上传五个平台包，但 npm 异步处理尚未完成，平台可见性门禁
+阻止了主包上传。核对五包均可见且 SHA-512 与原候选相同后，使用同一 run 的
+`--npm-stage wrapper` 续跑，未重复上传平台包。
+
+发布边界复核沿用[合并 PR #58](https://github.com/AgentConnect/awiki-cli-rs2/pull/58)
+的授权、根签名、CAS、精确资源范围及不确定结果拒绝边界记录。本次绑定代码与上一轮
+候选相比只更新版本和 Core registry pin；`check-node-identity-boundary.mjs` 通过，
+未扩大密钥导出或身份存储权限。六包来源、外部与内部摘要、完整平台集合、SBOM、许可证
+及无安装 hook 的制品校验均由原脚本执行。
+
+本次未运行 SDK 测试套件、packed-install、产品 E2E 或安装运行测试；五个平台的构建
+和打包成功不表述为跨平台产品验收。未发布 CLI/Daemon/App 下载通道或部署服务。

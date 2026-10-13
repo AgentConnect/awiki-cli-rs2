@@ -71,9 +71,10 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 registry 依赖使用已发布的 ANP `1.0.5`、Identity `0.2.4`、Core `0.1.6`。
-Core `0.1.6` 于 2026-09-28 从 `im-core-v0.1.6` 发布到 crates.io；临时 Core
-源码联调清单已撤销。正式消费者必须使用对应 registry lock 和实际解析来源。
+当前正式 registry 依赖使用已发布的 ANP `1.0.6`、Identity `0.2.5`、Core `0.1.7`。
+三项 SDK 已于 2026-10-13 核对 registry 发布状态；Core Node `0.2.10` 固定消费
+这一组合，native API 为 `20`。临时源码联调清单已撤销，正式消费者必须使用对应
+registry lock 和实际解析来源。包已发布不表示后续源码改动已进入同版本 SDK。
 2026-09-17 用户授权的两平台 Daemon 临时验证包曾使用显式 `--local-core` 入口，
 其独立锁文件不改变 SDK 的公开发布状态。
 具体范围和复现步骤见 [Daemon 发布说明](../../docs/publish.md)。
