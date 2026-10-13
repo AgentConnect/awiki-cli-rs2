@@ -1,0 +1,428 @@
+{
+  "schemaVersion": 1,
+  "rust": {
+    "name": "awiki-im-core",
+    "version": "0.1.8",
+    "source_commit": "325bb6c8e5d01a56040d69b0b71041e3721fed44",
+    "crate_sha256": "c19e17218e115a861791c7a404b2c478ef570527c0b8558a0cc0014dc1864c9a",
+    "registry_url": "https://crates.io/api/v1/crates/awiki-im-core/0.1.8",
+    "crate_url": "https://static.crates.io/crates/awiki-im-core/awiki-im-core-0.1.8.crate",
+    "included_fix_commit": "6b7eea16e098ab8d663dceb651aa8b26a6b10a3f",
+    "attachment_selection_matches_fix": true,
+    "git_tag": "im-core-v0.1.8"
+  },
+  "node": {
+    "version": "0.2.11",
+    "buildCommit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+    "nativeApiVersion": 20,
+    "actualCoreVersion": "0.1.8",
+    "workflow": {
+      "repository": "AgentConnect/awiki-cli-rs2",
+      "path": ".github/workflows/im-core-node-artifacts.yml",
+      "runId": 38389493885,
+      "url": "https://github.com/AgentConnect/awiki-cli-rs2/actions/runs/38389493885",
+      "inputs": {
+        "build_only": true,
+        "dependency_source": "registry"
+      },
+      "conclusion": "success",
+      "nativeBuildEvidence": [
+        {
+          "name": "Build Tier 1 linux-x64-gnu",
+          "jobId": 115269470008,
+          "conclusion": "success",
+          "registryVerification": "Build Tier 1 linux-x64-gnu\tPrepare published SDK dependency workspace\t2026-10-13T11:20:31.8419185Z Registry SDKs verified: anp=1.0.6, anp-identity=0.2.5, awiki-im-core=0.1.8",
+          "coreCompilation": "Build Tier 1 linux-x64-gnu\tBuild Linux addon inside manylinux 2.28\t2026-10-13T11:22:52.3940572Z    Compiling awiki-im-core v0.1.8"
+        },
+        {
+          "name": "Build Tier 1 win32-x64-msvc",
+          "jobId": 115269470268,
+          "conclusion": "success",
+          "registryVerification": "Build Tier 1 win32-x64-msvc\tPrepare published SDK dependency workspace\t2026-10-13T11:21:32.8846844Z Registry SDKs verified: anp=1.0.6, anp-identity=0.2.5, awiki-im-core=0.1.8",
+          "coreCompilation": "Build Tier 1 win32-x64-msvc\tBuild release addon on non-Linux targets\t2026-10-13T11:25:01.8297928Z    Compiling awiki-im-core v0.1.8"
+        },
+        {
+          "name": "Build Tier 1 darwin-arm64",
+          "jobId": 115269470352,
+          "conclusion": "success",
+          "registryVerification": "Build Tier 1 darwin-arm64\tPrepare published SDK dependency workspace\t2026-10-13T11:20:41.5418490Z Registry SDKs verified: anp=1.0.6, anp-identity=0.2.5, awiki-im-core=0.1.8",
+          "coreCompilation": "Build Tier 1 darwin-arm64\tBuild release addon on non-Linux targets\t2026-10-13T11:22:55.5271330Z    Compiling awiki-im-core v0.1.8"
+        },
+        {
+          "name": "Build Tier 1 linux-arm64-gnu",
+          "jobId": 115269470355,
+          "conclusion": "success",
+          "registryVerification": "Build Tier 1 linux-arm64-gnu\tPrepare published SDK dependency workspace\t2026-10-13T11:20:32.5609295Z Registry SDKs verified: anp=1.0.6, anp-identity=0.2.5, awiki-im-core=0.1.8",
+          "coreCompilation": "Build Tier 1 linux-arm64-gnu\tBuild Linux addon inside manylinux 2.28\t2026-10-13T11:22:38.1502236Z    Compiling awiki-im-core v0.1.8"
+        },
+        {
+          "name": "Build Tier 1 darwin-x64",
+          "jobId": 115269470403,
+          "conclusion": "success",
+          "registryVerification": "Build Tier 1 darwin-x64\tPrepare published SDK dependency workspace\t2026-10-13T11:21:26.7157860Z Registry SDKs verified: anp=1.0.6, anp-identity=0.2.5, awiki-im-core=0.1.8",
+          "coreCompilation": "Build Tier 1 darwin-x64\tBuild release addon on non-Linux targets\t2026-10-13T11:27:31.0860650Z    Compiling awiki-im-core v0.1.8"
+        }
+      ],
+      "packedInstall": "skipped",
+      "artifact": {
+        "id": 11808783559,
+        "name": "im-core-node-apache-artifacts-38389493885",
+        "size_in_bytes": 93203384,
+        "digest": "sha256:f1ca3940524cf24176948b46e559e9f8ec1933c2929632e86e214010fdaa2750",
+        "expires_at": "2026-11-12T11:39:00Z",
+        "url": "https://github.com/AgentConnect/awiki-cli-rs2/actions/runs/38389493885/artifacts/11808783559"
+      }
+    },
+    "registryResolution": {
+      "source_commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+      "source": "git-archive",
+      "working_tree_edits_included": false,
+      "registry_lock_sha256": "2de5103a15a30ea15d97c14af2cefbd1eb23631517342f38ac774a7076b7d1fc",
+      "sdk_packages": [
+        {
+          "name": "anp",
+          "version": "1.0.6",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "anp-identity",
+          "version": "0.2.5",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "awiki-im-core",
+          "version": "0.1.8",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "core_crate_checksum": "c19e17218e115a861791c7a404b2c478ef570527c0b8558a0cc0014dc1864c9a"
+    },
+    "packages": [
+      {
+        "name": "@awiki/im-core-node",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-0.2.11.tgz",
+        "sizeBytes": 59827,
+        "tarballSha256": "e7b6d3c98ecc0e22df293636c310a6187c857d49817e5091be3bc3d550883fc4",
+        "npmIntegrity": "sha512-1Op4cgwkhWQ263kHfRv8zpZhYvCLRpvAL5ry6iej+HyoMVKXsbhp2+5RhVAZZ3jfVbrIETRDhOXrVMzIVLurAg==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node",
+            "version": "0.2.11"
+          },
+          "target": "platform-independent-wrapper",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.211396+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node/-/im-core-node-0.2.11.tgz",
+          "integrity": "sha512-1Op4cgwkhWQ263kHfRv8zpZhYvCLRpvAL5ry6iej+HyoMVKXsbhp2+5RhVAZZ3jfVbrIETRDhOXrVMzIVLurAg==",
+          "distTags": {
+            "dev": "0.1.6",
+            "dsh-test": "0.2.1-dsh-test.20260831.1",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      },
+      {
+        "name": "@awiki/im-core-node-darwin-arm64",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-darwin-arm64-0.2.11.tgz",
+        "sizeBytes": 17908432,
+        "tarballSha256": "eb5fd723255f00396b6d351d12d5d2d81a7db070214ecd99d49a34564e000eda",
+        "npmIntegrity": "sha512-+A7x71Z03+SXwEtfVeWvoi0n1vWPTqj7Q1MtAIPZZLTFE3EJB4yDWKplxRcZYdYTODRwEtMldR/PeklOFyqMAw==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node-darwin-arm64",
+            "version": "0.2.11"
+          },
+          "target": "darwin-arm64",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "binarySha256": "b0c0fa4e7279e7adc692fa48d6ffb9da596d64d7d2b41ecf2cf41edee5b08b10",
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.240260+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node-darwin-arm64/-/im-core-node-darwin-arm64-0.2.11.tgz",
+          "integrity": "sha512-+A7x71Z03+SXwEtfVeWvoi0n1vWPTqj7Q1MtAIPZZLTFE3EJB4yDWKplxRcZYdYTODRwEtMldR/PeklOFyqMAw==",
+          "distTags": {
+            "dev": "0.1.6",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      },
+      {
+        "name": "@awiki/im-core-node-darwin-x64",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-darwin-x64-0.2.11.tgz",
+        "sizeBytes": 18484575,
+        "tarballSha256": "f8ee6b82daa857c9b83ed3ac889fb47ebf3d8f97268d1cb44520595203cab860",
+        "npmIntegrity": "sha512-hPsB94nT/dz12CAfmzaROpgmmduHG3yPsfu6LSXzzSTwCLAMbR3rE4UvyuqiGJhKE9l10IFGmiSkjU9GU8exAw==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node-darwin-x64",
+            "version": "0.2.11"
+          },
+          "target": "darwin-x64",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "binarySha256": "4de560fdf1b0d16d5dc70ac183d7ec7ee6f73cf63e8b4e01ad4dd8cf858d71c2",
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.619335+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node-darwin-x64/-/im-core-node-darwin-x64-0.2.11.tgz",
+          "integrity": "sha512-hPsB94nT/dz12CAfmzaROpgmmduHG3yPsfu6LSXzzSTwCLAMbR3rE4UvyuqiGJhKE9l10IFGmiSkjU9GU8exAw==",
+          "distTags": {
+            "dev": "0.1.6",
+            "dsh-test": "0.2.1-dsh-test.20260831.1",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      },
+      {
+        "name": "@awiki/im-core-node-linux-arm64-gnu",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-linux-arm64-gnu-0.2.11.tgz",
+        "sizeBytes": 19142893,
+        "tarballSha256": "ad3af0231fb3b2597fe1a6ce27537de639988db607b405321541c357c2fe852d",
+        "npmIntegrity": "sha512-qDNsekrwctMjvbTPKN4YuR6hZkLEUgRdJS2a37i15GXJpcozGdSpSHFJgPUKlK0Da1Oo/AIqvt1kfRRKuiNo8A==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node-linux-arm64-gnu",
+            "version": "0.2.11"
+          },
+          "target": "linux-arm64-gnu",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "binarySha256": "43c2608df16105cfa75bab57e729be032e0d113bfc0912a04d27c615cba927df",
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.539925+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node-linux-arm64-gnu/-/im-core-node-linux-arm64-gnu-0.2.11.tgz",
+          "integrity": "sha512-qDNsekrwctMjvbTPKN4YuR6hZkLEUgRdJS2a37i15GXJpcozGdSpSHFJgPUKlK0Da1Oo/AIqvt1kfRRKuiNo8A==",
+          "distTags": {
+            "dev": "0.1.6",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      },
+      {
+        "name": "@awiki/im-core-node-linux-x64-gnu",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-linux-x64-gnu-0.2.11.tgz",
+        "sizeBytes": 19591495,
+        "tarballSha256": "7ba6333becf2e80da7c2fba19862b6f60ec2f529abd421e541d4680e1a63017e",
+        "npmIntegrity": "sha512-rEUaE4qPeuh+XpYTQFSPgS5p3yqs3lVnwHBhoTE3wDfPxNEOO4lD07YFVkPDGFaTwG3aVHERpusSS7WrkWLQpg==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node-linux-x64-gnu",
+            "version": "0.2.11"
+          },
+          "target": "linux-x64-gnu",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "binarySha256": "d26ecfa11fcdd7656624e157b25ab951d3b0f891292a8f13e96c74c7ab759185",
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.295702+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node-linux-x64-gnu/-/im-core-node-linux-x64-gnu-0.2.11.tgz",
+          "integrity": "sha512-rEUaE4qPeuh+XpYTQFSPgS5p3yqs3lVnwHBhoTE3wDfPxNEOO4lD07YFVkPDGFaTwG3aVHERpusSS7WrkWLQpg==",
+          "distTags": {
+            "dev": "0.1.6",
+            "dsh-test": "0.2.1-dsh-test.20260831.1",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      },
+      {
+        "name": "@awiki/im-core-node-win32-x64-msvc",
+        "version": "0.2.11",
+        "filename": "awiki-im-core-node-win32-x64-msvc-0.2.11.tgz",
+        "sizeBytes": 18206920,
+        "tarballSha256": "d3d92fd334bc5f4b04d44f9153f8187cf0bf88073e1896a3d90c68c9006c4a31",
+        "npmIntegrity": "sha512-CrzDFNSSDLZEb+dPw/Ejy4gZvflnVvUq7d82y1rKlaWsXFoUG15lgTjomxMlk+IZWrYPzu7fKcWnqGEJ0mirJw==",
+        "provenance": {
+          "schemaVersion": 1,
+          "package": {
+            "name": "@awiki/im-core-node-win32-x64-msvc",
+            "version": "0.2.11"
+          },
+          "target": "win32-x64-msvc",
+          "nativeApiVersion": 20,
+          "source": {
+            "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
+            "commit": "924fa8b4cf825031ee2d1a98ebee8653568b4ad9",
+            "committedAt": "2026-10-13T19:19:51+08:00",
+            "dirty": false
+          },
+          "sdk": {
+            "imCoreVersion": "0.1.8",
+            "nativeBridgeVersion": "0.2.6",
+            "anpRustVersion": "1.0.6",
+            "anpCommit": "870303dc4d54f9d7d3eb5a3fa49189d56eb80b64"
+          },
+          "toolchain": {
+            "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+            "node": "v22.19.0",
+            "pnpm": "10.27.0"
+          },
+          "binarySha256": "a517db9c60f6e474fa58117748b9496cfc483b85b00ee092aa437aec80cc6a0f",
+          "distributionPolicy": "apache-2.0"
+        },
+        "registryVerification": {
+          "verifiedAt": "2026-10-13T11:49:26.442637+00:00",
+          "tarballUrl": "https://registry.npmjs.org/@awiki/im-core-node-win32-x64-msvc/-/im-core-node-win32-x64-msvc-0.2.11.tgz",
+          "integrity": "sha512-CrzDFNSSDLZEb+dPw/Ejy4gZvflnVvUq7d82y1rKlaWsXFoUG15lgTjomxMlk+IZWrYPzu7fKcWnqGEJ0mirJw==",
+          "distTags": {
+            "dev": "0.1.6",
+            "next": "0.2.7-rc.1",
+            "latest": "0.2.10",
+            "release-0.2.11": "0.2.11"
+          }
+        }
+      }
+    ],
+    "npmDistTag": "release-0.2.11",
+    "previousDistTags": {
+      "@awiki/im-core-node": {
+        "dev": "0.1.6",
+        "dsh-test": "0.2.1-dsh-test.20260831.1",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      },
+      "@awiki/im-core-node-darwin-arm64": {
+        "dev": "0.1.6",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      },
+      "@awiki/im-core-node-darwin-x64": {
+        "dev": "0.1.6",
+        "dsh-test": "0.2.1-dsh-test.20260831.1",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      },
+      "@awiki/im-core-node-linux-arm64-gnu": {
+        "dev": "0.1.6",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      },
+      "@awiki/im-core-node-linux-x64-gnu": {
+        "dev": "0.1.6",
+        "dsh-test": "0.2.1-dsh-test.20260831.1",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      },
+      "@awiki/im-core-node-win32-x64-msvc": {
+        "dev": "0.1.6",
+        "next": "0.2.7-rc.1",
+        "latest": "0.2.10"
+      }
+    }
+  },
+  "publicationTool": "awiki-harness/scripts/publish-packages.py",
+  "testsRun": false,
+  "productPublicationOrPolicyChange": false,
+  "status": "published-and-verified",
+  "completedAt": "2026-10-13T11:50:14.052867+00:00"
+}

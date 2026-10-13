@@ -149,3 +149,30 @@ ANP `1.0.6` 和 Identity `0.2.5`。绑定源码提交不能替代这些 registry
 
 本次未运行 SDK 测试套件、packed-install、产品 E2E 或安装运行测试；五个平台的构建
 和打包成功不表述为跨平台产品验收。未发布 CLI/Daemon/App 下载通道或部署服务。
+
+
+## 2026-10-13 群附件修复制品发布
+
+本次发布 Core Rust `0.1.8` 和 Core Node `0.2.11`，将原始协议消息 ID 的群附件票据修复
+纳入正式 registry 运行时，而非只更新 Node 绑定源码。
+
+- Core Rust 源码：`325bb6c8e5d01a56040d69b0b71041e3721fed44`；新建不可变标签
+  `im-core-v0.1.8`，包含修复 `6b7eea16e098ab8d663dceb651aa8b26a6b10a3f`。
+- crates.io crate SHA-256：`c19e17218e115a861791c7a404b2c478ef570527c0b8558a0cc0014dc1864c9a`。
+  实际下载的 crate 与 registry checksum、本地发布包、`.cargo_vcs_info.json` 及修复文件内容一致。
+- Node 构建源码：`924fa8b4cf825031ee2d1a98ebee8653568b4ad9`，
+  [workflow 38389493885](https://github.com/AgentConnect/awiki-cli-rs2/actions/runs/38389493885)。
+  五个平台的日志分别确认 registry 解析和实际编译均为 `awiki-im-core v0.1.8`。
+- 六包 provenance 均为同一构建 SHA、Core `0.1.8`、native API `20`；tarball、包内文件和
+  原生二进制校验通过。平台先发布并确认 registry 完整性后，才发布主包。
+- npm 新增 `release-0.2.11` 标签；既有 `latest` 仍为 `0.2.10`，其他既有标签也保持原值。
+  后续消费者使用精确版本 `@awiki/im-core-node@0.2.11`，本次没有切换产品推荐政策。
+
+完整的 crate 来源、registry lock 摘要、五个平台的构建证据、六包 SHA-256、npm SHA-512、
+原生二进制 SHA-256、registry 下载地址及标签核对信息见
+[发布回执](releases/core-0.1.8-node-0.2.11.json)。
+
+发布复用统一脚本的 `im-core-rust` 和 `im-core-npm` 目标；未重发 ANP、Identity 或既有版本，
+未移动旧 Git 标签。本次只执行构建、打包、来源与完整性校验，`build_only=true`，
+未运行 SDK 测试、packed-install 或产品 E2E。CLI、Daemon、App、DSH 产品插件发布和
+生产推荐政策切换由后续产品发布任务负责。
