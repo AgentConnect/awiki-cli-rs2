@@ -292,7 +292,9 @@ fn foreground_registration_sync_failure_keeps_identity_and_inbox_can_resume() {
     })
     .unwrap();
     assert!(
-        envelope.to_string().contains("registration_receive_pending"),
+        envelope
+            .to_string()
+            .contains("registration_receive_pending"),
         "unexpected registration result: {envelope}"
     );
     assert!(envelope.to_string().contains("committed"));
