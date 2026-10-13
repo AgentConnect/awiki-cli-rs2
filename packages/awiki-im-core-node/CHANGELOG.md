@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.11
+
+- Pin the actual native build to published IM Core 0.1.8, which includes the
+  original protocol message ID fix for group E2EE attachment download tickets.
+- Preserve the complete local message ID fallback when the original ID is
+  absent. Local message/cache keys and the native API v20 contract are unchanged.
+- Rebuild the wrapper and all five platform packages from one frozen registry
+  dependency lock; do not substitute a newer wrapper source for an older Core runtime.
+
+## 0.2.10
+
+- Build the wrapper and all five platform packages with native API v20 against
+  the published IM Core 0.1.7 crate, ANP 1.0.6 and Identity 0.2.5.
+- This version predates the Core 0.1.8 attachment ticket fix in its actual runtime.
+
 ## 0.2.9
 
 - Rebuild the wrapper and all five native packages against the published IM Core
