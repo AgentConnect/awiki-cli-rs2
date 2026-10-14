@@ -117,7 +117,7 @@ sudo bash "$CLI" --documents restore /var/www/awiki-web/cli/docs
 ```
 
 激活必须校验 User Service 有效政策、公开 manifest、实际 installer 摘要和全部租户文档的
-Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。
+Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。正文安装命令使用 manifest 的精确 installer.url；Skill 地址保持原有通道合同。
 若正常新版本发布时政策尚未指向对应 CLI，发布会失败并恢复通道/文档指针；按既有政策发布流程协调后重试。
 同一环境的发布/迁移必须串行，不在切换期间运行网站发布或第二个 CLI 发布。
 回滚记录为 `web_root/docs.transaction.json`。保留当前和恢复指针引用的旧制品，不自动清理。

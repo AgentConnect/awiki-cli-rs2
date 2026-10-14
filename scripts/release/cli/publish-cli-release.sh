@@ -95,6 +95,7 @@ sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
 sudo mv "${release_dir}.staging" "${release_dir}"
 # Keep the previous channel and document pointers until all public checks pass.
 old_channel="$(sudo readlink "${WEB_ROOT}/${CHANNEL}" || true)"
+old_docs="$(sudo readlink "${WEB_ROOT}/docs" || true)"
 rollback_channel() {
   if [[ -n "${old_channel}" ]]; then
     sudo ln -s "${old_channel}" "${WEB_ROOT}/.rollback-$$"
@@ -102,8 +103,16 @@ rollback_channel() {
   else
     sudo rm -f "${WEB_ROOT}/${CHANNEL}"
   fi
+  if [[ "${CHANNEL}" == "stable" ]]; then
+    if [[ -n "${old_docs}" ]]; then
+      sudo ln -s "${old_docs}" "${WEB_ROOT}/.docs-rollback-$$"
+      sudo mv -Tf "${WEB_ROOT}/.docs-rollback-$$" "${WEB_ROOT}/docs"
+    else
+      sudo rm -f "${WEB_ROOT}/docs"
+    fi
+  fi
 }
-trap 'rollback_channel; rm -rf "${tmp}"' ERR INT TERM
+trap 'rollback_channel; exit 1' ERR INT TERM
 link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
 sudo ln -s "${release_dir}" "${link_tmp}"
 sudo mv -Tf "${link_tmp}" "${WEB_ROOT}/${CHANNEL}"
