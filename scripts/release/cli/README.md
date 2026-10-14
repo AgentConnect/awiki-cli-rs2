@@ -95,7 +95,8 @@ scripts/release/cli/deploy-nginx-config.sh \
 
 Onboarding 只跟随 stable。文档位于 `archive_root/document-releases/<release.json SHA-256>/`，
 活动指针为 `web_root/docs`；目录内按显式租户域名隔离。模板和渲染由本仓拥有，网站不复制正文。
-`release.json` 记录 CLI 版本/来源、installer 摘要、模板摘要、文档来源提交、完整租户配置及摘要和每个文件 SHA-256。
+`release.json` 记录 `public_base_path`、CLI 版本/来源、installer URL 与摘要、模板摘要、文档来源提交、完整租户配置及摘要和每个文件 SHA-256。
+正常备包自动沿用 `publish-server.toml` 的 `public_base_path`，文档、Skill 地址和验证请求使用同一路径；未含此字段的旧文档记录按 `/cli` 读取。
 Nginx 返回 `text/markdown; charset=utf-8`、`Cache-Control: no-store`，未知租户不自动推断。
 
 ## 配套现有 CLI 迁移文档
@@ -107,7 +108,7 @@ Nginx 返回 `text/markdown; charset=utf-8`、`Cache-Control: no-store`，未知
 
 ```bash
 CLI=scripts/release/cli/publish-cli-release.sh
-bash "$CLI" --documents prepare onboarding.md document-tenants.json existing-manifest.json /tmp/docs-stage FULL_DOCUMENT_SOURCE_SHA
+bash "$CLI" --documents prepare onboarding.md document-tenants.json existing-manifest.json /tmp/docs-stage FULL_DOCUMENT_SOURCE_SHA /cli
 sudo bash "$CLI" --documents install /tmp/docs-stage /var/lib/awiki-cli
 # install 输出不可变路径 DOC_RELEASE；准备/安装均不改变 Stable。
 bash "$CLI" --documents verify "$DOC_RELEASE" --before-activation
@@ -116,8 +117,9 @@ sudo bash "$CLI" --documents activate "$DOC_RELEASE" /var/www/awiki-web/cli/docs
 sudo bash "$CLI" --documents restore /var/www/awiki-web/cli/docs
 ```
 
-激活必须校验 User Service 有效政策、公开 manifest、实际 installer 摘要和全部租户文档的
-Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。正文安装命令使用 manifest 的精确 installer.url；Skill 地址保持原有通道合同。
+迁移命令最后一个参数为可选 `PUBLIC_BASE_PATH`（默认 `/cli`）；自定义路径必须与目标服务器配置一致。
+激活必须校验 User Service 有效政策、公开 manifest、文档实际 installer URL 与摘要和全部租户文档的
+Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。正文安装命令使用 manifest 的精确 installer.url，必须与有效政策 URL 一致，并实际下载该 URL 核对摘要；旧 URL 失效或仅摘要一致也会拒绝激活。Skill 地址保持原有通道合同。
 若正常新版本发布时政策尚未指向对应 CLI，发布会失败并恢复通道/文档指针；按既有政策发布流程协调后重试。
 同一环境的发布/迁移必须串行，不在切换期间运行网站发布或第二个 CLI 发布。
 回滚记录为 `web_root/docs.transaction.json`。保留当前和恢复指针引用的旧制品，不自动清理。

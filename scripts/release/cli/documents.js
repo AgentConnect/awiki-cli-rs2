@@ -27,33 +27,45 @@ function tenants(config) {
   }
   return config.tenants;
 }
-function render(template, tenant, channel, installerUrl) {
+function publicPath(value = '/cli') {
+  check(typeof value === 'string' && /^\/(?:[a-z0-9._-]+(?:\/[a-z0-9._-]+)*)$/i.test(value)
+    && !value.split('/').some(part => part === '.' || part === '..'), 'invalid public base path');
+  return value;
+}
+function checkInstallerUrl(value) {
+  check(typeof value === 'string' && value.length, 'installer URL required');
+  const url = new URL(value);
+  check(url.protocol === 'https:' && !url.username && !url.password, 'invalid installer URL');
+}
+function render(template, tenant, channel, installerUrl, publicBasePath = '/cli') {
+  const base = publicPath(publicBasePath);
   check(template.split(marker).length === 2, 'template must contain exactly one tenant marker');
   const block = tenant.mode === 'default' ? '' : `## Select This Tenant\n\nConfigure and activate this tenant before initializing its isolated workspace.\n\n\`\`\`bash\nawiki-cli tenant setup ${tenant.name} \\\n  --backend-base-url ${tenant.backend_origin} \\\n  --did-host ${tenant.did_host}\n\`\`\`\n`;
-  const installer = installerUrl || `${tenant.download_origin}/cli/${channel}/awiki-cli.tgz`;
-  const url = new URL(installer);
-  check(url.protocol === 'https:' && !url.username && !url.password, 'invalid installer URL');
-  const result = template.replace(marker, block).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz', installer).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}', `${tenant.download_origin}/cli/${channel}`);
+  const installer = installerUrl || `${tenant.download_origin}${base}/${channel}/awiki-cli.tgz`;
+  checkInstallerUrl(installer);
+  const result = template.replace(marker, block).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz', installer).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}', `${tenant.download_origin}${base}/${channel}`);
   check(!/\{\{[A-Z0-9_]+\}\}/.test(result), 'unresolved document template');
   return result;
 }
-function prepare({ template, config, manifest, output, documentSource }) {
+function prepare({ template, config, manifest, output, documentSource, publicBasePath = '/cli' }) {
   const rows = tenants(config);
+  const base = publicPath(publicBasePath);
   check(['stable', 'beta'].includes(manifest.channel) && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(manifest.latest), 'invalid manifest version/channel');
   check(/^[a-f0-9]{40}$/.test(documentSource) && /^[a-f0-9]{40}$/.test(manifest.source?.commit), 'full document and CLI source commits required');
   check(/^[a-f0-9]{64}$/.test(manifest.installer?.sha256), 'installer digest required');
+  checkInstallerUrl(manifest.installer.url);
   check(!fs.existsSync(output), 'document stage already exists');
   fs.mkdirSync(output, { recursive: true });
   const files = {};
   for (const t of rows) {
-    const host = origin(t.origin), content = render(template, t, manifest.channel, manifest.installer.url);
+    const host = origin(t.origin), content = render(template, t, manifest.channel, manifest.installer.url, base);
     fs.mkdirSync(path.join(output, host));
     for (const name of ['onboarding.md', 'skill.md']) {
       const relative = `${host}/${name}`;
       fs.writeFileSync(path.join(output, relative), content); files[relative] = digest(content);
     }
   }
-  const record = { schema_version: 1, channel: manifest.channel, cli_version: manifest.latest,
+  const record = { schema_version: 1, public_base_path: base, channel: manifest.channel, cli_version: manifest.latest,
     cli_source: manifest.source, installer: manifest.installer, document_source: documentSource,
     template_sha256: digest(template), tenant_config_sha256: digest(JSON.stringify(config)), tenants: config, files };
   fs.writeFileSync(path.join(output, 'release.json'), JSON.stringify(record, null, 2) + '\n');
@@ -61,6 +73,8 @@ function prepare({ template, config, manifest, output, documentSource }) {
 }
 function validate(directory) {
   const record = read(path.join(directory, 'release.json'));
+  publicPath(record.public_base_path); // Existing schema v1 releases use /cli.
+  checkInstallerUrl(record.installer?.url);
   const rows = tenants(record.tenants);
   check(record.tenant_config_sha256 === digest(JSON.stringify(record.tenants)), 'tenant config digest mismatch');
   check(['stable', 'beta'].includes(record.channel), 'invalid document channel');
@@ -77,17 +91,18 @@ async function get(url) {
 }
 async function verify(directory, publicDocuments = true) {
   const r = validate(directory);
+  const base = publicPath(r.public_base_path);
   for (const t of tenants(r.tenants)) {
     const info = await (await get(`${t.download_origin}/user-service/v1/server-info?client_platform=cli`)).json();
-    const m = await (await get(`${t.download_origin}/cli/${r.channel}/manifest.json`)).json();
-    check(m.latest === r.cli_version && m.installer.sha256 === r.installer.sha256, 'manifest/document binding mismatch');
+    const m = await (await get(`${t.download_origin}${base}/${r.channel}/manifest.json`)).json();
+    check(m.latest === r.cli_version && m.installer.sha256 === r.installer.sha256 && m.installer.url === r.installer.url, 'manifest/document binding mismatch');
     if (r.channel === 'stable') {
       const policy = info.client_versions;
-      check(policy.policy_origin === t.download_origin && policy.products.cli.enabled && policy.products.cli.recommended_version === r.cli_version && policy.products.cli.installer.sha256 === r.installer.sha256, 'effective policy/document binding mismatch');
+      check(policy.policy_origin === t.download_origin && policy.products.cli.enabled && policy.products.cli.recommended_version === r.cli_version && policy.products.cli.installer.sha256 === r.installer.sha256 && policy.products.cli.installer.url === r.installer.url, 'effective policy/document binding mismatch');
     }
-    check(digest(Buffer.from(await (await get(m.installer.url)).arrayBuffer())) === r.installer.sha256, 'public installer checksum mismatch');
+    check(digest(Buffer.from(await (await get(r.installer.url)).arrayBuffer())) === r.installer.sha256, 'public installer checksum mismatch');
     if (publicDocuments) for (const name of ['onboarding.md', 'skill.md']) {
-      const response = await get(`${t.origin}/cli/${name}`);
+      const response = await get(`${t.origin}${base}/${name}`);
       check(/^text\/markdown(?:;|$)/.test(response.headers.get('content-type') || ''), 'Markdown Content-Type mismatch');
       check(/no-store/.test(response.headers.get('cache-control') || ''), 'document cache policy mismatch');
       check(digest(Buffer.from(await response.arrayBuffer())) === r.files[`${origin(t.origin)}/${name}`], 'public document checksum mismatch');
@@ -134,13 +149,13 @@ async function activate(directory, pointer, verifyFn = verify) {
 async function main() {
   const [action, ...args] = process.argv.slice(2);
   if(action === 'prepare') {
-    const [template, config, manifest, output, documentSource] = args;
-    prepare({ template:fs.readFileSync(template,'utf8'),config:read(config),manifest:read(manifest),output,documentSource });
+    const [template, config, manifest, output, documentSource, publicBasePath] = args;
+    prepare({ template:fs.readFileSync(template,'utf8'),config:read(config),manifest:read(manifest),output,documentSource,publicBasePath });
   } else if(action === 'install') console.log(install(...args));
   else if(action === 'activate') await activate(...args);
   else if(action === 'verify') await verify(args[0], args[1] !== '--before-activation');
   else if(action === 'restore') { const j = read(`${args[0]}.transaction.json`); restore(j.pointer,j.old); j.status='restored'; fs.writeFileSync(`${args[0]}.transaction.json`,JSON.stringify(j)); }
-  else throw new Error('usage: documents.js prepare TEMPLATE TENANTS MANIFEST OUTPUT SOURCE_SHA | install STAGE ARCHIVE | activate RELEASE POINTER | verify RELEASE [--before-activation] | restore POINTER');
+  else throw new Error('usage: documents.js prepare TEMPLATE TENANTS MANIFEST OUTPUT SOURCE_SHA [PUBLIC_BASE_PATH] | install STAGE ARCHIVE | activate RELEASE POINTER | verify RELEASE [--before-activation] | restore POINTER');
 }
 if(require.main === module) main().catch(e => { console.error(e.message); process.exitCode=1; });
 module.exports = { prepare, validate, render, tenants, verify, install, activate, snapshot, restore, link };

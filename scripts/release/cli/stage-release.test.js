@@ -15,11 +15,11 @@ function run(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
-function writeServerConfig(filePath, root) {
+function writeServerConfig(filePath, root, publicBasePath = '/cli') {
   fs.writeFileSync(path.join(root, 'tenants.json'), JSON.stringify({schema_version:1,tenants:[{origin:'https://awiki.info',backend_origin:'https://awiki.info',did_host:'awiki.info',download_origin:'https://awiki.info',name:'test-tenant',mode:'setup'}]}));
   const values = {
     public_origin: 'https://awiki.info',
-    public_base_path: '/cli',
+    public_base_path: publicBasePath,
     default_backend_base_url: 'https://awiki.info',
     default_did_host: 'awiki.info',
     web_root: `${root}/web`,
@@ -216,3 +216,34 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
+
+for (const channel of ['stable', 'beta']) {
+  test(`stages ${channel} documents and Nginx routes under the configured public path`, t => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-stage-custom-path-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    const publicBasePath = '/downloads/awiki-cli';
+    const artifacts = path.join(temp, 'artifacts'), output = path.join(temp, 'output');
+    const serverConfig = path.join(temp, 'server.toml');
+    const version = JSON.parse(fs.readFileSync(releaseConfig)).channels[channel].version;
+    fs.mkdirSync(artifacts);
+    writeServerConfig(serverConfig, temp, publicBasePath);
+    writeArtifacts(artifacts, version);
+    const result = run(process.execPath, [path.join(scriptDir, 'stage-release.js'),
+      '--channel', channel, '--release-config', releaseConfig, '--server-config', serverConfig,
+      '--artifacts', artifacts, '--output', output, '--source-tag', `cli-v${version}`,
+      '--source-commit', 'a'.repeat(40)], { cwd: rootDir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = require('./documents.js').validate(path.join(output, 'documents'));
+    assert.equal(record.public_base_path, publicBasePath);
+    const document = fs.readFileSync(path.join(output, 'documents/awiki.info/skill.md'), 'utf8');
+    const baseUrl = `https://awiki.info${publicBasePath}/${channel}`;
+    assert(document.includes(`${baseUrl}/awiki-cli.tgz`));
+    assert(document.includes(`npx skills add ${baseUrl} --agent`));
+    const index = JSON.parse(fs.readFileSync(path.join(output, '.well-known/agent-skills/index.json')));
+    assert.equal(index.skills[0].url, `${baseUrl}/awiki-cli-skill.tar.gz`);
+    assert(!document.includes('https://awiki.info/cli/'));
+    const nginx = run(process.execPath, [path.join(scriptDir, 'render-nginx-snippet.js'), serverConfig]);
+    assert.equal(nginx.status, 0, nginx.stderr);
+    for (const name of ['onboarding.md', 'skill.md']) assert(nginx.stdout.includes(`location = ${publicBasePath}/${name}`));
+  });
+}

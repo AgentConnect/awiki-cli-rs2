@@ -234,6 +234,7 @@ the accompanying LICENSE file.
   };
   fs.writeFileSync(path.join(outputDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   documents.prepare({
+    publicBasePath: serverConfig.public_base_path,
     template: fs.readFileSync(path.join(root, 'onboarding.md'), 'utf8'),
     config: JSON.parse(fs.readFileSync(serverConfig.document_tenants, 'utf8')),
     manifest, output: path.join(outputDir, 'documents'),
