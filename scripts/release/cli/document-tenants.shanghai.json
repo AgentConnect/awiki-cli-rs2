@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "tenants": [
+    {
+      "origin": "https://awiki.me",
+      "backend_origin": "https://awiki.me",
+      "did_host": "awiki.me",
+      "name": "awiki-me",
+      "mode": "default",
+      "download_origin": "https://awiki.me"
+    }
+  ]
+}

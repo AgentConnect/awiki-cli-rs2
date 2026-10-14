@@ -26,6 +26,7 @@ function prepare(root) {
   fs.writeFileSync(nginxConfig, `server {\n    include ${serverSnippet};\n}\n`);
   fs.writeFileSync(systemctlLog, '');
 
+  fs.writeFileSync(path.join(root, 'tenants.json'), JSON.stringify({schema_version:1,tenants:[{origin:'https://downloads.example.com',backend_origin:'https://downloads.example.com',did_host:'downloads.example.com',download_origin:'https://downloads.example.com',name:'test-tenant',mode:'setup'}]}));
   const values = {
     public_origin: 'https://downloads.example.com',
     public_base_path: '/cli',
@@ -37,9 +38,7 @@ function prepare(root) {
     nginx_http_snippet: httpSnippet,
     nginx_snippet: serverSnippet,
     nginx_backup_root: backupRoot,
-    protocol_gateway_checkout: path.join(root, 'gateway'),
-    protocol_gateway_origin: 'http://127.0.0.1:9896',
-    protocol_gateway_service: 'protocol-gateway',
+    document_tenants: path.join(root, 'tenants.json'),
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
     github_token: 'test-token',

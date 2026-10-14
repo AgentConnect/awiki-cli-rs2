@@ -8,7 +8,7 @@
 - `publish-server.example.toml`：服务器配置模板。
 - `publish-server.toml`：服务器真实配置，必须位于同目录、权限为 `0600`，且被 Git 忽略。
 
-编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、Nginx 备份路径、下载并发/限速参数、gateway checkout、gateway 内网 origin 和 GitHub token 只能来自 `publish-server.toml`。
+编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、Nginx 备份路径、下载并发/限速参数、显式 document_tenants 配置路径 和 GitHub token 只能来自 `publish-server.toml`。
 
 CLI 产品包中的两个内置租户则由构建参数决定：
 
@@ -41,7 +41,7 @@ tag commit 与通道名称，随后执行原有下载、产物校验和发布流
 Daemon 的独立入口也支持 `--run-id <ID>`，要求配置中的 `source_ref` 为精确 SHA，
 且 workflow controller 与产品源码属于该次相同提交；平台包和版本检查保持原样。
 
-只有 Stable 发布会更新 `/cli/onboarding.md` 和 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
+Stable 发布必须生成、安装并校验文档后才完成；Beta 不改变 Stable 文档指针。
 
 服务器脚本不会创建 commit 或 tag。任何失败都必须先修复并发布更高版本，不能移动 tag 或把旧归档重新提升为 latest。
 
@@ -91,9 +91,38 @@ scripts/release/cli/deploy-nginx-config.sh \
 
 ## 公开接口
 
-`/cli/onboarding.md` 和 `/cli/skill.md` 由生成的 Nginx snippet 代理到 protocol-gateway。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`；channel 根路径直接返回同一份 `manifest.json`，未发布的 channel 返回 `404`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
+`/cli/onboarding.md` 和 `/cli/skill.md` 由 Nginx 提供同一份完成租户渲染的静态 Markdown。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`；channel 根路径直接返回同一份 `manifest.json`，未发布的 channel 返回 `404`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
 
-Onboarding 只跟随 stable。protocol-gateway 应读取 `archive_root/channels/stable-onboarding.md`，而不是读取服务器上的活动 Git checkout。
+Onboarding 只跟随 stable。文档位于 `archive_root/document-releases/<release.json SHA-256>/`，
+活动指针为 `web_root/docs`；目录内按显式租户域名隔离。模板和渲染由本仓拥有，网站不复制正文。
+`release.json` 记录 CLI 版本/来源、installer 摘要、模板摘要、文档来源提交、完整租户配置及摘要和每个文件 SHA-256。
+Nginx 返回 `text/markdown; charset=utf-8`、`Cache-Control: no-store`，未知租户不自动推断。
+
+## 配套现有 CLI 迁移文档
+
+`document-tenants.shanghai.json` 默认中国租户；`silicon-valley` 显式选择硅谷；
+`singapore` 为主站及三个隔离域名分别生成目标租户。隔离域名下载政策明确绑定新加坡主站。
+先核对现有 CLI 的 `tenant setup --help` 及正文命令兼容性，准备包含来源和 installer 摘要的原 manifest；
+不要使用无 source 字段的政策投影伪造构建来源。
+
+```bash
+CLI=scripts/release/cli/publish-cli-release.sh
+bash "$CLI" --documents prepare onboarding.md document-tenants.json existing-manifest.json /tmp/docs-stage FULL_DOCUMENT_SOURCE_SHA
+sudo bash "$CLI" --documents install /tmp/docs-stage /var/lib/awiki-cli
+# install 输出不可变路径 DOC_RELEASE；准备/安装均不改变 Stable。
+bash "$CLI" --documents verify "$DOC_RELEASE" --before-activation
+sudo bash "$CLI" --documents activate "$DOC_RELEASE" /var/www/awiki-web/cli/docs
+# 失败自动恢复；进程中断可按持久 journal 显式恢复：
+sudo bash "$CLI" --documents restore /var/www/awiki-web/cli/docs
+```
+
+激活必须校验 User Service 有效政策、公开 manifest、实际 installer 摘要和全部租户文档的
+Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。
+若正常新版本发布时政策尚未指向对应 CLI，发布会失败并恢复通道/文档指针；按既有政策发布流程协调后重试。
+同一环境的发布/迁移必须串行，不在切换期间运行网站发布或第二个 CLI 发布。
+回滚记录为 `web_root/docs.transaction.json`。保留当前和恢复指针引用的旧制品，不自动清理。
+首次静态切换使用 System Test 的专用退役入口协调 Nginx、文档指针和旧服务恢复；
+后续只使用本发布流程，不另设手工同步目录。
 
 ## 发布构建使用线上 SDK
 

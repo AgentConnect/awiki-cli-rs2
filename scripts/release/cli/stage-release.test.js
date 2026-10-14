@@ -16,6 +16,7 @@ function run(command, args, options = {}) {
 }
 
 function writeServerConfig(filePath, root) {
+  fs.writeFileSync(path.join(root, 'tenants.json'), JSON.stringify({schema_version:1,tenants:[{origin:'https://awiki.info',backend_origin:'https://awiki.info',did_host:'awiki.info',download_origin:'https://awiki.info',name:'test-tenant',mode:'setup'}]}));
   const values = {
     public_origin: 'https://awiki.info',
     public_base_path: '/cli',
@@ -27,9 +28,7 @@ function writeServerConfig(filePath, root) {
     nginx_http_snippet: `${root}/nginx-http-snippet.conf`,
     nginx_snippet: `${root}/nginx-snippet.conf`,
     nginx_backup_root: `${root}/backups`,
-    protocol_gateway_checkout: `${root}/gateway`,
-    protocol_gateway_origin: 'http://127.0.0.1:9896',
-    protocol_gateway_service: 'protocol-gateway',
+    document_tenants: path.join(root, 'tenants.json'),
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
     github_token: 'test-token',

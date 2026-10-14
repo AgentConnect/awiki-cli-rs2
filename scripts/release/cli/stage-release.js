@@ -6,6 +6,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const documents = require('./documents.js');
+const { execFileSync } = require('child_process');
 const { readReleaseConfig, readServerConfig } = require('./config.js');
 
 function die(message) { throw new Error(message); }
@@ -231,6 +233,12 @@ the accompanying LICENSE file.
     },
   };
   fs.writeFileSync(path.join(outputDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  documents.prepare({
+    template: fs.readFileSync(path.join(root, 'onboarding.md'), 'utf8'),
+    config: JSON.parse(fs.readFileSync(serverConfig.document_tenants, 'utf8')),
+    manifest, output: path.join(outputDir, 'documents'),
+    documentSource: execFileSync('git', ['rev-parse', 'HEAD'], {cwd:root,encoding:'utf8'}).trim(),
+  });
   console.log(JSON.stringify({ version, channel, output: outputDir, manifest }, null, 2));
 }
 

@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# Document-only migration pairs existing CLI artifacts without building/publishing a client.
+if [[ "${1:-}" == "--documents" ]]; then
+  shift
+  exec node "${SCRIPT_DIR}/documents.js" "$@"
+fi
 RELEASE_CONFIG="${SCRIPT_DIR}/release-config.json"
 SERVER_CONFIG="${SCRIPT_DIR}/publish-server.toml"
 CHANNEL=""
@@ -88,29 +93,28 @@ sudo rm -rf "${release_dir}.staging"
 sudo cp -R "${tmp}/stage" "${release_dir}.staging"
 sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
 sudo mv "${release_dir}.staging" "${release_dir}"
+# Keep the previous channel and document pointers until all public checks pass.
+old_channel="$(sudo readlink "${WEB_ROOT}/${CHANNEL}" || true)"
+rollback_channel() {
+  if [[ -n "${old_channel}" ]]; then
+    sudo ln -s "${old_channel}" "${WEB_ROOT}/.rollback-$$"
+    sudo mv -Tf "${WEB_ROOT}/.rollback-$$" "${WEB_ROOT}/${CHANNEL}"
+  else
+    sudo rm -f "${WEB_ROOT}/${CHANNEL}"
+  fi
+}
+trap 'rollback_channel; rm -rf "${tmp}"' ERR INT TERM
 link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
 sudo ln -s "${release_dir}" "${link_tmp}"
 sudo mv -Tf "${link_tmp}" "${WEB_ROOT}/${CHANNEL}"
-
+doc_release="$(sudo node "${SCRIPT_DIR}/documents.js" install "${release_dir}/documents" "${ARCHIVE_ROOT}")"
 if [[ "${CHANNEL}" == "stable" ]]; then
-  onboarding_tmp="${ARCHIVE_ROOT}/channels/.stable-onboarding.$$"
-  sudo ln -s "${release_dir}/onboarding.md" "${onboarding_tmp}"
-  sudo mv -Tf "${onboarding_tmp}" "${ARCHIVE_ROOT}/channels/stable-onboarding.md"
-  public_onboarding_tmp="${WEB_ROOT}/.onboarding.${VERSION}.$$"
-  sudo ln -s "${release_dir}/onboarding.md" "${public_onboarding_tmp}"
-  sudo mv -Tf "${public_onboarding_tmp}" "${WEB_ROOT}/onboarding.md"
+  sudo node "${SCRIPT_DIR}/documents.js" activate "${doc_release}" "${WEB_ROOT}/docs"
+else
+  node "${SCRIPT_DIR}/documents.js" verify "${doc_release}" --before-activation
 fi
-
-mapfile -t versions < <(sudo find "${ARCHIVE_ROOT}/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
-if (( ${#versions[@]} > KEEP_VERSIONS )); then
-  for old in "${versions[@]:KEEP_VERSIONS}"; do
-    [[ "${old}" == "${ARCHIVE_ROOT}/releases/${VERSION}" ]] || sudo rm -rf "${old}"
-  done
-fi
-
-curl -fsS "${PUBLIC_ORIGIN}${PUBLIC_BASE_PATH}/${CHANNEL}/manifest.json" | node -e \
-  'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s);if(m.latest!==process.argv[1])process.exit(1)})' "${VERSION}"
-curl -fsSI "${PUBLIC_ORIGIN}${PUBLIC_BASE_PATH}/${CHANNEL}/awiki-cli.tgz" >/dev/null
+# Retain recovery artifacts. Pruning must never remove a live/previous pointer target.
+trap - ERR INT TERM
 echo "channel=${CHANNEL}"
 echo "version=${VERSION}"
 echo "tag=${TAG}"
