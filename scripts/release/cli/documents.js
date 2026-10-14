@@ -27,10 +27,13 @@ function tenants(config) {
   }
   return config.tenants;
 }
-function render(template, tenant, channel) {
+function render(template, tenant, channel, installerUrl) {
   check(template.split(marker).length === 2, 'template must contain exactly one tenant marker');
   const block = tenant.mode === 'default' ? '' : `## Select This Tenant\n\nConfigure and activate this tenant before initializing its isolated workspace.\n\n\`\`\`bash\nawiki-cli tenant setup ${tenant.name} \\\n  --backend-base-url ${tenant.backend_origin} \\\n  --did-host ${tenant.did_host}\n\`\`\`\n`;
-  const result = template.replace(marker, block).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}', `${tenant.download_origin}/cli/${channel}`);
+  const installer = installerUrl || `${tenant.download_origin}/cli/${channel}/awiki-cli.tgz`;
+  const url = new URL(installer);
+  check(url.protocol === 'https:' && !url.username && !url.password, 'invalid installer URL');
+  const result = template.replace(marker, block).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz', installer).replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}', `${tenant.download_origin}/cli/${channel}`);
   check(!/\{\{[A-Z0-9_]+\}\}/.test(result), 'unresolved document template');
   return result;
 }
@@ -43,7 +46,7 @@ function prepare({ template, config, manifest, output, documentSource }) {
   fs.mkdirSync(output, { recursive: true });
   const files = {};
   for (const t of rows) {
-    const host = origin(t.origin), content = render(template, t, manifest.channel);
+    const host = origin(t.origin), content = render(template, t, manifest.channel, manifest.installer.url);
     fs.mkdirSync(path.join(output, host));
     for (const name of ['onboarding.md', 'skill.md']) {
       const relative = `${host}/${name}`;

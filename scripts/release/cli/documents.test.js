@@ -43,3 +43,9 @@ test('effective policy version or installer mismatch prevents completion',async 
  global.fetch=async()=>({ok:true,json:async()=>({latest:'9.9.9',installer:manifest.installer})});
  await assert.rejects(d.verify(stage,false),/binding/);
 });
+
+test('document installs the policy-bound versioned artifact while Skill archive URL stays stable',()=>{
+ const url='https://anpclaw.com/cli/stable/releases/1.0.58/awiki-cli.tgz';
+ const text=d.render(template+'\nSkill {{AWIKI_CLI_CHANNEL_BASE_URL}}',config.tenants[0],'stable',url);
+ assert(text.includes(`Install ${url}`));assert(text.includes('Skill https://anpclaw.com/cli/stable'));
+});
