@@ -478,3 +478,51 @@ fn administrator_managed_membership_does_not_require_invitation_links() {
     )
     .is_err());
 }
+
+#[tokio::test]
+async fn disabled_content_and_sites_reject_before_authentication_or_remote_writes() {
+    let fixture = Fixture::new();
+    let client = fixture.client_with_group_v2(false);
+    client
+        .core_handle()
+        .inner()
+        .backend_capabilities
+        .discover(false, || async {
+            crate::backend_capabilities::CapabilitySnapshot::from_server_info(&serde_json::json!({
+                "schema_version": 1, "capabilities_version": 1,
+                "content": {
+                    "pages": {"enabled": false, "protocol_version": 1},
+                    "sites": {"enabled": false, "protocol_version": 1},
+                    "hosting": {"enabled": true, "protocol_version": 1}
+                }
+            }))
+        })
+        .await
+        .unwrap();
+    let page = crate::content::PageDraft {
+        slug: crate::content::PageSlug::parse("capability-test").unwrap(),
+        title: "Preserved draft".into(),
+        body: "local draft".into(),
+        visibility: crate::content::Visibility::Draft,
+    };
+    assert!(matches!(
+        client.content().create_page_async(page.clone()).await,
+        Err(crate::ImError::UnsupportedCapability { .. })
+    ));
+    assert!(matches!(
+        client.content().create_page(page),
+        Err(crate::ImError::UnsupportedCapability { .. })
+    ));
+    let site = crate::site::SiteRootDraft {
+        domain: crate::site::SiteDomain::parse("example.com").unwrap(),
+        body: "local site".into(),
+    };
+    assert!(matches!(
+        client.site().set_root_async(site.clone()).await,
+        Err(crate::ImError::UnsupportedCapability { .. })
+    ));
+    assert!(matches!(
+        client.site().set_root(site),
+        Err(crate::ImError::UnsupportedCapability { .. })
+    ));
+}

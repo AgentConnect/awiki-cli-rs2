@@ -2371,3 +2371,12 @@ CLI 将明确关闭能力映射为 `not_supported`，未确认能力映射为
 `group_open_join`。创建或修改审批入群策略检查 `group_approval`，组合资料/策略
 修改在任何资料写入前完成该检查。`invite-only` 表示管理员控制成员，不等价于
 邀请码/链接能力 `group_invite`。服务端仍负责群策略、成员权限及实际成员数的最终校验。
+
+Skill onboarding 的 claim、resume 和 legacy-claim recovery 先检查
+`agents.skill_onboarding`，明确关闭或未知时保留所有未完成 journal 与身份材料。
+CLI 在 workspace upgrade、Vault 打开及读取一次性 Token 之前执行同一公开发现预检。
+本地 legacy migration 不被误当作新 Skill 注册。
+
+`ContentService` 与 `SiteService` 的同步/异步公开入口分别检查 `content.pages`
+和 `content.sites`，在认证或远端读写前拒绝关闭/未知能力；不使用 `content.hosting`
+控制已有基础页面和站点操作。

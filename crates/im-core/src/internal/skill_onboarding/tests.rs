@@ -1099,3 +1099,42 @@ fn collect_text(root: &Path) -> String {
     }
     output
 }
+
+#[tokio::test]
+async fn disabled_skill_public_entrypoints_preserve_unfinished_material() {
+    let fixture = Fixture::file_compat();
+    let journal = journal_path(&fixture.core);
+    fs::write(&journal, "existing unfinished onboarding material").unwrap();
+    fixture
+        .core
+        .inner()
+        .backend_capabilities
+        .discover(false, || async {
+            crate::backend_capabilities::CapabilitySnapshot::from_server_info(&json!({
+                "schema_version": 1, "capabilities_version": 1,
+                "agents": {"skill_onboarding": {"enabled": false, "protocol_version": 1}}
+            }))
+        })
+        .await
+        .unwrap();
+    let service = fixture.core.onboarding();
+    for result in [
+        service.claim_async(valid_request()).await,
+        service.resume_async(valid_resume_request()).await,
+        service.recover_legacy_claim_async(valid_request()).await,
+    ] {
+        assert!(matches!(
+            result,
+            Err(crate::ImError::UnsupportedCapability { .. })
+        ));
+    }
+    assert_eq!(
+        fs::read_to_string(journal).unwrap(),
+        "existing unfinished onboarding material"
+    );
+    assert!(!fixture
+        .root
+        .path()
+        .join("workspace/identities/registry.json")
+        .exists());
+}

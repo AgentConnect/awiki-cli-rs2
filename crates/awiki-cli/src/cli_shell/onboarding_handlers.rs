@@ -11,7 +11,21 @@ const RESUME_USAGE: &str = "awiki-cli onboarding resume --service-base-url <http
 const RECOVER_LEGACY_CLAIM_USAGE: &str = "awiki-cli onboarding recover-legacy-claim --service-base-url <https-url> --expected-controller-handle <full-handle> --expected-agent-handle <full-handle> --token-stdin";
 
 impl App {
+    // Discovery must precede workspace upgrades, vault creation and token input.
+    fn onboarding_discovery_core(&self) -> Result<im_core::ImCore, ExitError> {
+        let resolved = self.resolve_config()?;
+        im_core::ImCore::new(
+            crate::m_core_cli_adapter::build_im_core_config(&resolved)?,
+            crate::m_core_cli_adapter::paths::build_im_core_paths(&resolved)?,
+        )
+        .map_err(map_claim_error)
+    }
+
     pub fn run_onboarding_claim(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.onboarding_discovery_core()?
+            .backend_capabilities(false)
+            .and_then(|snapshot| snapshot.require("agents.skill_onboarding"))
+            .map_err(map_claim_error)?;
         let request = claim_request_from_stdin(command)?;
         let resolved = self.resolve_config_for_workspace()?;
         let core = crate::m_core_cli_adapter::build_im_core(&resolved)?;
@@ -29,6 +43,11 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
+        self.onboarding_discovery_core()?
+            .backend_capabilities_async(false)
+            .await
+            .and_then(|snapshot| snapshot.require("agents.skill_onboarding"))
+            .map_err(map_claim_error)?;
         let request = claim_request_from_stdin(command)?;
         let resolved = self.resolve_config_for_workspace()?;
         let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
@@ -47,6 +66,10 @@ impl App {
     }
 
     pub fn run_onboarding_resume(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.onboarding_discovery_core()?
+            .backend_capabilities(false)
+            .and_then(|snapshot| snapshot.require("agents.skill_onboarding"))
+            .map_err(map_claim_error)?;
         let request = resume_request(command)?;
         let resolved = self.resolve_config_for_workspace()?;
         let core = crate::m_core_cli_adapter::build_im_core(&resolved)?;
@@ -67,6 +90,11 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
+        self.onboarding_discovery_core()?
+            .backend_capabilities_async(false)
+            .await
+            .and_then(|snapshot| snapshot.require("agents.skill_onboarding"))
+            .map_err(map_claim_error)?;
         let request = resume_request(command)?;
         let resolved = self.resolve_config_for_workspace()?;
         let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
@@ -88,6 +116,11 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
+        self.onboarding_discovery_core()?
+            .backend_capabilities_async(false)
+            .await
+            .and_then(|snapshot| snapshot.require("agents.skill_onboarding"))
+            .map_err(map_claim_error)?;
         let request = onboarding_request_from_stdin(
             command,
             "onboarding recover-legacy-claim",
