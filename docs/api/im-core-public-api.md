@@ -2326,3 +2326,37 @@ P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{gr
 `device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
 
 Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。
+
+## 后端能力合同 v1（2026-10-15 开发候选）
+
+客户端对 `/user-service/v1/server-info?capabilities_version=1` 请求完整合同。
+外层 `schema_version` 保持 1；响应必须回显 `capabilities_version: 1`。不带参数
+保持原有响应语义；未知版本返回 422。`client_platform` 不改变事实。
+注册复用 `identity.handle_registration`；免验证流程声明 `handle_only`。
+新增能力复用 `identity`、`agents`、`services` 分组，并增加 `account`、`content`、
+`client_updates` 分组。每个新能力包含 `enabled: bool`、`protocol_version: 1`；
+关闭使用 `reason_code: not_supported`，限制在 `limits` 对象中。
+
+已知能力：identity 下 multi_device/device_revoke/capability_upgrade/root_transfer；
+account 下 state_sync；agents 下 managed_agents/daemon 和既有 skill_onboarding/
+skill_group_membership；services 下 mail/model_proxy/guest_gateway；content 下
+pages/sites/hosting；client_updates 下 policy。注册与找回复用既有方法列表。
+
+消息真相只来自已认证本域 `/im/rpc` 的 `anp.get_capabilities.awiki_local`：
+`{"capabilities_version":1,"capabilities":{...}}`。已知键为 direct、groups、
+attachments、history、read_state、sync、snapshot、p5_device、p6_group、direct_e2ee、
+group_e2ee、encrypted_attachments、group_open_join、group_admin_add、group_invite、
+group_approval；各值沿用上述能力形态。公网 `/anp-im/rpc` 不输出本域扩展。
+
+缺失为 unknown，显式 false 为 unsupported，未知合同版本为 incompatible；
+不能根据域名、品牌、edition、DID 方法、接口试调用或公网未广播来推断本域支持。
+新字段可忽略，既有字段语义变化必须升合同版本。能力不是授权：操作仍需满足
+客户端实现、协议协商、身份/设备权限与群策略。
+
+Open Server 示例：注册 handle_only；普通消息、群、附件、历史、已读、普通同步和
+Schema 3 Snapshot 为 true，P5/P6 和加密为 false。Core 请求显式空通道集合，
+不回退 legacy bootstrap；显式加密意图不得改为明文。身份与本地历史保留。
+
+公开 DTO 不包含 Token、密钥、原始异常。缓存上下文必须包含服务端点、存储范围、
+合同版本，登录后绑定身份、设备授权和运行代次；成功新鲜期 300 秒，失败保留同上下文
+成功结果（stale），首次失败 unavailable；迟到响应不能跨上下文应用。

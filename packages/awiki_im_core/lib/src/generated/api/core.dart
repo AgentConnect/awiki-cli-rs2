@@ -42,3 +42,12 @@ Future<void> closeCore({required ArcDartImCore core}) =>
 
 Future<List<String>> validatePaths({required ArcDartImCore core}) =>
     RustLib.instance.api.crateApiCoreValidatePaths(core: core);
+
+/// Safe versioned capability projection; does not expose credentials or exception text.
+Future<String> publicBackendCapabilities({
+  required ArcDartImCore instance,
+  required bool force,
+}) => RustLib.instance.api.crateApiCorePublicBackendCapabilities(
+  instance: instance,
+  force: force,
+);

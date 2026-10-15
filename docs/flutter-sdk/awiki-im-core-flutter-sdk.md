@@ -1420,3 +1420,11 @@ Native App 明确调用 `confirmDeviceJoinWithManagement`，选择 Core `confirm
 ### 设备群能力升级
 
 Dart 暴露 `identityDeviceCapabilityStatus` 与 `identityUpgradeDeviceCapabilities`，参数为身份选择器、可选目标设备与明确的用户确认。返回 typed `DeviceCapabilityUpgradeStatus`。APP 在登录后独立检查，当前 ready admin 自动完成兼容增量，其他设备由管理设备确认，不阻塞会话或 Handle 恢复。网络失败呈现局部重试，不能在初始化时自动弹全局错误。
+
+## 后端能力投影
+
+`AwikiImCore.backendCapabilities(force: ...)` 是登录前公开发现；
+`AwikiImClient.backendCapabilities(force: ...)` 是认证本域发现。返回 Core JSON 安全投影，
+包含 status、fetched_at、expired、capabilities（support、protocol_version、reason_code、limits）。
+Host 使用当前租户和身份运行代次消费结果，切换后忽略迟到结果；临时失败保留旧快照，
+不删除本地身份、历史、草稿或同步游标。公开和本域来源分别权威，不能混用字段。

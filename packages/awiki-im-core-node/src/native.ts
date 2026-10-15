@@ -111,6 +111,7 @@ export interface NativeExternalHttpAuthAttempt {
 }
 
 export interface NativeImCoreNodeClient {
+  backendCapabilities(authenticated: boolean, force: boolean): Promise<string>
   prepareExternalHttpRequest(
     input: Omit<ExternalHttpRequest, 'headers' | 'body'> & {
       readonly headers: ExternalHttpHeader[]

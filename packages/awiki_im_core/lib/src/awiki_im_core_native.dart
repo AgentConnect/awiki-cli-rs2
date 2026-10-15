@@ -106,6 +106,11 @@ extension on gen_error.DartDeviceRevokeOutcomeCategory {
 }
 
 class AwikiImCore {
+  Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async {
+    final raw = await _mapNativeErrors(() => gen_core.publicBackendCapabilities(instance: _inner, force: force));
+    return jsonDecode(raw) as Map<String, dynamic>;
+  }
+
   AwikiImCore._(this._inner);
 
   final gen_client.ArcDartImCore _inner;
@@ -1115,6 +1120,11 @@ class AwikiImCore {
 }
 
 class AwikiImClient {
+  Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async {
+    final raw = await _mapNativeErrors(() => gen_client.localBackendCapabilities(instance: _inner, force: force));
+    return jsonDecode(raw) as Map<String, dynamic>;
+  }
+
   AwikiImClient._(this._inner);
 
   final gen_attachments.ArcDartImClient _inner;

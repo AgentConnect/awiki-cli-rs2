@@ -27,5 +27,14 @@ Future<DartIdentitySummary> currentIdentity({
   required ArcDartImClient client,
 }) => RustLib.instance.api.crateApiClientCurrentIdentity(client: client);
 
+/// Safe versioned capability projection; does not expose credentials or exception text.
+Future<String> localBackendCapabilities({
+  required ArcDartImClient instance,
+  required bool force,
+}) => RustLib.instance.api.crateApiClientLocalBackendCapabilities(
+  instance: instance,
+  force: force,
+);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>
 abstract class ArcDartImCore implements RustOpaqueInterface {}

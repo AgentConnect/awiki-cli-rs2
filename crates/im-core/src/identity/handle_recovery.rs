@@ -329,6 +329,10 @@ impl<'a> HandleRecoveryService<'a> {
         &self,
         request: HandleRecoveryContextRequest,
     ) -> crate::ImResult<HandleRecoveryContext> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.account_recovery")?;
         crate::internal::identity_handle_recovery_context::inspect(self.core, request).await
     }
 
@@ -336,6 +340,10 @@ impl<'a> HandleRecoveryService<'a> {
         &self,
         request: HandleRecoveryOtpRequest,
     ) -> crate::ImResult<HandleRecoveryOtpResult> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.account_recovery")?;
         crate::internal::identity_handle_recovery_runtime::request_otp(self.core, request).await
     }
 
@@ -343,6 +351,10 @@ impl<'a> HandleRecoveryService<'a> {
         &self,
         request: HandleRecoveryPrepareRequest,
     ) -> crate::ImResult<HandleRecoveryProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.account_recovery")?;
         crate::internal::identity_handle_recovery_runtime::prepare(self.core, request).await
     }
 
@@ -350,6 +362,10 @@ impl<'a> HandleRecoveryService<'a> {
         &self,
         request: HandleRecoveryActivateRequest,
     ) -> crate::ImResult<HandleRecoveryProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.account_recovery")?;
         crate::internal::identity_handle_recovery_runtime::activate(self.core, request).await
     }
 
@@ -357,6 +373,10 @@ impl<'a> HandleRecoveryService<'a> {
         &self,
         request: HandleRecoveryResumeRequest,
     ) -> crate::ImResult<HandleRecoveryProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.account_recovery")?;
         crate::internal::identity_handle_recovery_runtime::resume(self.core, request).await
     }
 

@@ -671,6 +671,39 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn backend_capabilities(
+        &self,
+        authenticated: bool,
+        force: bool,
+    ) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let snapshot = if authenticated {
+                    self.inner
+                        .wait_im(
+                            operation.client()?.backend_capabilities_async(force),
+                            self.inner.operation_timeout,
+                        )
+                        .await?
+                } else {
+                    self.inner
+                        .wait_im(
+                            operation
+                                .environment()?
+                                .core
+                                .backend_capabilities_async(force),
+                            self.inner.operation_timeout,
+                        )
+                        .await?
+                };
+                Ok(serde_json::json!(snapshot).to_string())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn identity_creation_methods(&self) -> napi::Result<Vec<String>> {
         napi_result(
             async {
@@ -764,7 +797,10 @@ impl NativeImCoreNodeClient {
         input: NodeRegistrationWithOtp,
     ) -> SafeResult<NodeRegistrationOutcome> {
         let otp = input.otp.trim();
-        if !(4..=12).contains(&otp.len()) || !otp.bytes().all(|byte| byte.is_ascii_digit()) {
+        let handle_only = otp.is_empty() && input.phone.trim().is_empty();
+        if !handle_only
+            && (!(4..=12).contains(&otp.len()) || !otp.bytes().all(|byte| byte.is_ascii_digit()))
+        {
             return Err(SafeError::new(
                 "invalid_otp",
                 "The registration OTP is invalid.",
@@ -775,13 +811,23 @@ impl NativeImCoreNodeClient {
         let mut operation = self.inner.write_operation().await?;
         let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
         ensure_unregistered(&environment.core, &self.inner).await?;
-        let request = registration_request(
+        let mut request = registration_request(
             input.handle,
             input.phone,
             Some(otp.to_owned()),
             input.invite_code,
             input.did_method,
         )?;
+        if handle_only {
+            environment
+                .core
+                .backend_capabilities_async(false)
+                .await
+                .map_err(SafeError::from_im)?
+                .require("registration.handle_only")
+                .map_err(SafeError::from_im)?;
+            request.verification = im_core::identity::VerificationInput::AlreadyVerified;
+        }
         let result = self
             .inner
             .wait_im(

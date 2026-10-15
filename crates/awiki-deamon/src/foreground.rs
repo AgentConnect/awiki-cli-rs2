@@ -361,6 +361,37 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             "--agent-jwt/AWIKI_DAEMON_AGENT_JWT_TOKEN is not supported for multi-agent device sessions"
         );
     }
+    let backend_discovery = im_core::ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+    let mut capability_notice_shown = false;
+    loop {
+        let capabilities = backend_discovery.backend_capabilities_async(false).await?;
+        if capabilities.support("agents.daemon")
+            == im_core::backend_capabilities::Support::Supported
+        {
+            break;
+        }
+        if !capability_notice_shown {
+            eprintln!("This server does not currently provide the required Daemon features. Local state and diagnostics are retained.");
+            capability_notice_shown = true;
+        }
+        if let Some(path) = options.ready_file.as_ref() {
+            write_ready_file(path, &status)?;
+        }
+        if options
+            .max_runtime_ms
+            .is_some_and(|limit| started_at.elapsed() >= Duration::from_millis(limit))
+        {
+            return Ok(ForegroundRunSummary {
+                status,
+                processed_messages: 0,
+                sent_status_messages: 0,
+                status_message_ids: Vec::new(),
+                runtime_ms: started_at.elapsed().as_millis(),
+                exit_reason: "backend_daemon_unavailable".into(),
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
     sync_configured_agent_identities(&config, &state, &im_core)?;
 
     let rpc_outbox =
@@ -434,6 +465,12 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
+        let capabilities = backend_discovery.backend_capabilities_async(false).await?;
+        if capabilities.support("agents.daemon")
+            != im_core::backend_capabilities::Support::Supported
+        {
+            break "backend_daemon_unavailable".to_owned();
+        }
         if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
             let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
                 &config,

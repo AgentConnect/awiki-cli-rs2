@@ -216,25 +216,50 @@ pub(crate) async fn process_p6(
         "p6.delivery.created" => {
             // A device cannot MLS-decrypt its own outgoing echo. Reuse only a
             // previously authenticated projection bound to this owner/group/seq/sender.
-            if claim.payload.pointer("/meta/target/did").and_then(Value::as_str) != Some(client.did().as_str())
-                || claim.payload.pointer("/meta/recipient_device_id").and_then(Value::as_str) != Some(claim.device_id.as_str()) {
+            if claim
+                .payload
+                .pointer("/meta/target/did")
+                .and_then(Value::as_str)
+                != Some(client.did().as_str())
+                || claim
+                    .payload
+                    .pointer("/meta/recipient_device_id")
+                    .and_then(Value::as_str)
+                    != Some(claim.device_id.as_str())
+            {
                 return Err(crate::ImError::PermissionDenied);
             }
             let mut projected = super::sync_v2::p6_projection_for_application(&claim.payload)?;
             let cached = super::read::apply_cached_group_e2ee_messages_async(
-                client, std::slice::from_mut(&mut projected),
-            ).await;
+                client,
+                std::slice::from_mut(&mut projected),
+            )
+            .await;
             if cached.contains(&0) {
                 Prepared::Cached
-            } else if claim.payload.pointer("/meta/sender_did").and_then(Value::as_str) == Some(client.did().as_str())
-                && claim.payload.pointer("/meta/sender_device_id").and_then(Value::as_str) == Some(claim.device_id.as_str()) {
+            } else if claim
+                .payload
+                .pointer("/meta/sender_did")
+                .and_then(Value::as_str)
+                == Some(client.did().as_str())
+                && claim
+                    .payload
+                    .pointer("/meta/sender_device_id")
+                    .and_then(Value::as_str)
+                    == Some(claim.device_id.as_str())
+            {
                 // The notification can beat the send response. Keep the input and
                 // wait for the accepted send projection, without advancing MLS.
-                return Err(sync_inbox::error("sync.group_sent_projection_pending", "own group delivery awaits its accepted send projection"));
+                return Err(sync_inbox::error(
+                    "sync.group_sent_projection_pending",
+                    "own group delivery awaits its accepted send projection",
+                ));
             } else {
-                Prepared::Message(super::read::prepare_p6_v2_incoming_message(client, &claim.payload).await?)
+                Prepared::Message(
+                    super::read::prepare_p6_v2_incoming_message(client, &claim.payload).await?,
+                )
             }
-        },
+        }
         "p6.control.notice" => Prepared::Notice(
             crate::internal::group_e2ee::v2_notice::prepare_for_client_async(
                 client,

@@ -2,6 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 #[derive(Clone)]
 pub struct ImClient {
+    pub(crate) backend_capabilities: Arc<crate::backend_capabilities::CapabilityCache>,
     core: Arc<super::ImCoreInner>,
     identity: crate::identity::IdentitySummary,
     runtime: Arc<crate::internal::identity_runtime::ClientIdentityRuntime>,
@@ -23,6 +24,7 @@ impl ImClient {
     ) -> Self {
         let identity = runtime.summary.clone();
         Self {
+            backend_capabilities: Arc::new(Default::default()),
             core,
             identity,
             runtime: Arc::new(runtime),
@@ -67,6 +69,11 @@ impl ImClient {
             same_owner_authorization_change(&self.runtime, &refreshed.runtime)?;
         Ok((
             Self {
+                backend_capabilities: if authorization_context_changed {
+                    refreshed.backend_capabilities
+                } else {
+                    self.backend_capabilities.clone()
+                },
                 core: refreshed.core,
                 identity: refreshed.identity,
                 runtime: refreshed.runtime,

@@ -16,6 +16,7 @@ pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
+    pub(crate) backend_capabilities: crate::backend_capabilities::CapabilityCache,
     pub(crate) sdk_config: crate::ImCoreConfig,
     pub(crate) sdk_paths: crate::ImCorePaths,
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
@@ -130,6 +131,7 @@ impl ImCore {
         }
         let core = Self {
             inner: Arc::new(ImCoreInner {
+                backend_capabilities: Default::default(),
                 sdk_config,
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,

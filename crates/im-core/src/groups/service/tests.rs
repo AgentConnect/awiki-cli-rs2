@@ -339,3 +339,35 @@ fn unique_temp_root() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[tokio::test]
+async fn declared_disabled_encryption_stops_before_group_or_key_material_writes() {
+    let fixture = Fixture::new();
+    let client = fixture.client_with_group_v2(true);
+    client
+        .backend_capabilities
+        .discover(false, || async {
+            crate::backend_capabilities::CapabilitySnapshot::from_message_discovery(&json!({
+                "awiki_local": {"capabilities_version": 1, "capabilities": {
+                    "group_e2ee": {"enabled": false, "protocol_version": 1}
+                }}
+            }))
+        })
+        .await
+        .unwrap();
+    let mut request = crate::groups::GroupCreateRequest::new("must remain encrypted");
+    request.e2ee = true;
+    let error = client.groups().create_async(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        crate::ImError::UnsupportedCapability { .. }
+    ));
+    assert!(error
+        .to_string()
+        .contains("backend.group_e2ee.not_supported"));
+    assert!(
+        !fixture.root.join("local").exists(),
+        "no local group operation should be created"
+    );
+    std::fs::remove_dir_all(fixture.root).unwrap();
+}

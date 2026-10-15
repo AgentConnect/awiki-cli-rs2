@@ -1082,6 +1082,7 @@ export interface DidDocumentService {
 }
 
 export interface ImCoreNodeClient {
+  backendCapabilities(authenticated?: boolean, force?: boolean): Promise<BackendCapabilitySnapshot>
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
   resolveHandleForDeviceJoin(handle: string): Promise<string>
@@ -1198,4 +1199,19 @@ export interface GroupOperationStatus {
   readonly encryptionReady: boolean
   readonly reason?: string
   readonly nextAction: string
+}
+
+/** Safe projection of the versioned home backend contract; never an authorization grant. */
+export interface BackendCapabilitySnapshot {
+  context?: { tenant_scope: string; authenticated: boolean; runtime_generation: number }
+  capabilities_version: 1
+  status: 'confirmed' | 'stale' | 'unavailable' | 'incompatible'
+  fetched_at: number | null
+  expired: boolean
+  capabilities: Readonly<Record<string, {
+    support: 'supported' | 'unsupported' | 'unknown'
+    protocol_version: number | null
+    reason_code: string | null
+    limits: Readonly<Record<string, number | string>>
+  }>>
 }

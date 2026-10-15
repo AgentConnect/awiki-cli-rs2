@@ -132,3 +132,16 @@ pub async fn validate_paths(core: &Arc<DartImCore>) -> Result<Vec<String>, DartI
     );
     Ok(lines)
 }
+
+/// Safe versioned capability projection; does not expose credentials or exception text.
+pub async fn public_backend_capabilities(
+    instance: &Arc<DartImCore>,
+    force: bool,
+) -> Result<String, DartImError> {
+    let snapshot = instance
+        .clone_inner()?
+        .backend_capabilities_async(force)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(snapshot).to_string())
+}

@@ -14,6 +14,9 @@ impl<'a> GroupService<'a> {
         #[cfg(feature = "group-e2ee")]
         {
             require_group_e2ee_v2(self.client)?;
+            self.client
+                .backend_capabilities(false)?
+                .require("group_e2ee")?;
             crate::internal::group_e2ee::v2_lifecycle::publish_current_key_package(
                 self.client,
                 request,
@@ -33,6 +36,10 @@ impl<'a> GroupService<'a> {
         #[cfg(feature = "group-e2ee")]
         {
             require_group_e2ee_v2(self.client)?;
+            self.client
+                .backend_capabilities_async(false)
+                .await?
+                .require("group_e2ee")?;
             crate::internal::group_e2ee::v2_lifecycle::publish_current_key_package_async(
                 self.client,
                 request,
@@ -77,6 +84,10 @@ impl<'a> GroupService<'a> {
         #[cfg(feature = "group-e2ee")]
         if secure_required {
             require_group_e2ee_v2(self.client)?;
+            self.client
+                .backend_capabilities_async(false)
+                .await?
+                .require("group_e2ee")?;
         }
         #[cfg(feature = "group-e2ee")]
         let recovery_key = format!(

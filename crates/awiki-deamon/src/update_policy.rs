@@ -86,6 +86,10 @@ struct CachedDaemonUpdatePolicy {
 #[derive(Debug, Deserialize)]
 struct ServerInfoResponse {
     #[serde(default)]
+    capabilities_version: Option<u64>,
+    #[serde(default)]
+    client_updates: serde_json::Value,
+    #[serde(default)]
     schema_version: u64,
     #[serde(default)]
     client_versions: Option<ServerClientVersions>,
@@ -135,6 +139,14 @@ pub fn load_daemon_update_policy(config: &DaemonConfig) -> Result<DaemonUpdatePo
 
     match fetch_policy_blocking(config, &policy_url, &expected_origin) {
         Ok(network) => {
+            if network.policy_revision == 0 && !network.enabled {
+                if let Some(mut cached) = cached {
+                    cached.source = DaemonUpdatePolicySource::Cache;
+                    cached.refresh_error = None;
+                    return Ok(cached);
+                }
+                return Ok(network);
+            }
             if let Some(cached) = cached.as_ref() {
                 if network.policy_revision < cached.policy_revision {
                     return Ok(cache_after_refresh_failure(
@@ -176,7 +188,7 @@ pub fn load_daemon_update_policy(config: &DaemonConfig) -> Result<DaemonUpdatePo
 pub fn daemon_update_policy_url(config: &DaemonConfig) -> Result<String> {
     let origin = tenant_origin(&config.user_service_base_url)?;
     Ok(format!(
-        "{}/user-service/v1/server-info?client_platform=daemon",
+        "{}/user-service/v1/server-info?client_platform=daemon&capabilities_version=1",
         origin.trim_end_matches('/')
     ))
 }
@@ -300,6 +312,32 @@ fn policy_from_server_info(
 ) -> Result<DaemonUpdatePolicy> {
     if body.schema_version != 1 {
         bail!("server-info has an unsupported schema version");
+    }
+    if body.capabilities_version == Some(1)
+        && body
+            .client_updates
+            .pointer("/policy/protocol_version")
+            .and_then(|v| v.as_u64())
+            == Some(1)
+        && body
+            .client_updates
+            .pointer("/policy/enabled")
+            .and_then(|v| v.as_bool())
+            == Some(false)
+    {
+        return Ok(DaemonUpdatePolicy {
+            enabled: false,
+            policy_origin: expected_origin.into(),
+            policy_revision: 0,
+            published_at: String::new(),
+            recommended_version: None,
+            minimum_supported_version: None,
+            upgrade_url: None,
+            artifact_manifest_url: None,
+            policy_url: policy_url.into(),
+            source: DaemonUpdatePolicySource::Network,
+            refresh_error: None,
+        });
     }
     let releases = body
         .client_versions
