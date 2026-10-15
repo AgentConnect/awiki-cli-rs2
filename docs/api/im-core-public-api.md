@@ -2380,3 +2380,8 @@ CLI 在 workspace upgrade、Vault 打开及读取一次性 Token 之前执行同
 `ContentService` 与 `SiteService` 的同步/异步公开入口分别检查 `content.pages`
 和 `content.sites`，在认证或远端读写前拒绝关闭/未知能力；不使用 `content.hosting`
 控制已有基础页面和站点操作。
+
+设备撤销的启动恢复与 Registry 对账恢复同样先检查 `identity.device_revoke`。
+存在未完成记录且能力关闭或未确认时，保留原 operation、候选文档和所有 Vault
+恢复记录，不发起设备 Registry、DID 解析或撤销请求，不伪造恢复完成。没有待恢复
+记录时不因打开本地身份额外发起能力发现；支持重新确认后可继续原精确恢复。
