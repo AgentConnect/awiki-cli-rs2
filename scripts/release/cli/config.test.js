@@ -121,6 +121,10 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsedServer.cli_download_max_total, 4);
     assert.equal(parsedServer.cli_download_rate_after, '1m');
     assert.equal(parsedServer.cli_download_rate, '512k');
+    assert.equal(parsedServer.installer_root, '/var/lib/awiki-cli/installers/stable');
+    fs.writeFileSync(server, fs.readFileSync(example,'utf8').replace(/^installer_root = .*\n/m,''));
+    assert.throws(() => readServerConfig(server), /missing publish-server keys: installer_root/);
+    fs.copyFileSync(example, server);
     fs.appendFileSync(server, 'unknown = "value"\n');
     assert.throws(() => readServerConfig(server), /unknown publish-server keys/);
 

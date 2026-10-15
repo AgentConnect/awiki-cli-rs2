@@ -36,8 +36,22 @@ test('renders all public CLI routes inside the configured namespace', t => {
   }
   assert.match(result.stdout, /location \^~ \/cli\/ \{/);
   assert.match(result.stdout, /autoindex off;/);
-  assert.equal((result.stdout.match(/max-age=31536000, immutable/g) || []).length, 2);
+  assert.equal((result.stdout.match(/max-age=31536000, immutable/g) || []).length, 3);
   assert.equal((result.stdout.match(/no-cache, no-store, must-revalidate/g) || []).length, 1);
   assert.doesNotMatch(result.stdout, /location = \/onboarding\.md/);
   assert.doesNotMatch(result.stdout, /location = \/skill\.md/);
+});
+
+
+test('rejects an existing versioned route pointing at a different installer directory',t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'cli-nginx-conflict-'));
+ t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const site=path.join(root,'site.conf'),server=path.join(root,'server.toml');
+ fs.writeFileSync(site,'location ^~ /cli/stable/releases/ { alias /wrong-directory/; }');
+ fs.writeFileSync(server,fs.readFileSync(path.join(__dirname,'publish-server.example.toml'),'utf8')
+  .replaceAll('example.com','anpclaw.com')
+  .replace('/etc/nginx/conf.d/anpclaw.com.conf',site)
+  .replace('/etc/awiki/cli-document-tenants.json',path.join(__dirname,'document-tenants.singapore.json')));
+ const result=spawnSync(process.execPath,[path.join(__dirname,'render-nginx-snippet.js'),server],{encoding:'utf8'});
+ assert.notEqual(result.status,0);assert.match(result.stderr,/does not match installer_root/);
 });

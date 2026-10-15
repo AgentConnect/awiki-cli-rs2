@@ -6,7 +6,7 @@ const path = require('path');
 
 const SERVER_KEYS = new Set([
   'public_origin', 'public_base_path', 'default_backend_base_url', 'default_did_host',
-  'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+  'web_root', 'archive_root', 'installer_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
   'nginx_backup_root', 'document_tenants', 'github_repo', 'github_workflow', 'github_token',
   'cli_download_max_per_ip', 'cli_download_max_total', 'cli_download_rate_after',
   'cli_download_rate',
@@ -64,7 +64,7 @@ function readServerConfig(filePath) {
     throw new Error('public_base_path must be an absolute URL path without a trailing slash');
   }
   for (const key of [
-    'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+    'web_root', 'archive_root', 'installer_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
     'nginx_backup_root', 'document_tenants',
   ]) {
     if (!path.isAbsolute(config[key])) throw new Error(`${key} must be an absolute filesystem path`);

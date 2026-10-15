@@ -17,8 +17,33 @@ for (const document of ['onboarding.md', 'skill.md']) {
   process.stdout.write('    add_header Cache-Control "no-store" always;\n');
   process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n}\n');
 }
+// Silicon Valley already has this exact prefix in the site config. Reuse it
+// only when its actual alias agrees with the explicitly configured install root.
+const fs = require('node:fs');
+const site = fs.existsSync(config.nginx_config) ? fs.readFileSync(config.nginx_config, 'utf8') : '';
+const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const prefix = `${publicPath}stable/releases/`;
+const existing = [...site.matchAll(new RegExp(`^[ \t]*location\\s+\\^~\\s+${escapeRegex(prefix)}\\s*\\{([^{}]*)\\}`, 'gm'))];
+if (existing.length) {
+  if (existing.length !== 1 || !new RegExp(`\\balias\\s+${escapeRegex(config.installer_root.replace(/\/+$/, ''))}/?;`).test(existing[0][1])) {
+    throw new Error('existing versioned installer route does not match installer_root; review site config');
+  }
+} else {
+  process.stdout.write(`location ^~ ${prefix} {\n`);
+  process.stdout.write(`    alias ${config.installer_root.replace(/\/+$/, '')}/;\n`);
+  process.stdout.write('    autoindex off;\n    default_type application/octet-stream;\n');
+  process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n');
+  process.stdout.write('    add_header Cache-Control "public, max-age=31536000, immutable" always;\n}\n');
+}
 process.stdout.write('# Channel metadata remains mutable; only versioned platform packages use download limits and immutable caching.\n');
 for (const channel of ['stable', 'beta']) {
+  // Exact mutable files must also win over production's /cli/stable/ prefix.
+  for (const file of ['awiki-cli.tgz', 'awiki-cli-skill.tar.gz', '.well-known/agent-skills/index.json']) {
+    process.stdout.write(`location = ${publicPath}${channel}/${file} {\n`);
+    process.stdout.write(`    alias ${webRoot}${channel}/${file};\n`);
+    process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n');
+    process.stdout.write('    add_header Cache-Control "no-store" always;\n}\n');
+  }
   process.stdout.write(`location = ${publicPath}${channel}/ {\n`);
   process.stdout.write(`    rewrite ^ ${publicPath}${channel}/manifest.json last;\n`);
   process.stdout.write('}\n');

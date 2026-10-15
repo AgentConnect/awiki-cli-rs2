@@ -34,6 +34,7 @@ function prepare(root) {
     default_did_host: 'tenant.example.com',
     web_root: path.join(root, 'web'),
     archive_root: path.join(root, 'archive'),
+    installer_root: path.join(root, 'installers'),
     nginx_config: nginxConfig,
     nginx_http_snippet: httpSnippet,
     nginx_snippet: serverSnippet,

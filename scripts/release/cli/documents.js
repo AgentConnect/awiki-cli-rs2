@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const durable = require('./durable-files.js');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const hash = file => digest(fs.readFileSync(file));
@@ -110,41 +111,36 @@ async function verify(directory, publicDocuments = true) {
   }
   return r;
 }
-function link(target, pointer) {
-  fs.mkdirSync(path.dirname(pointer), { recursive: true });
-  check(!fs.existsSync(pointer) || fs.lstatSync(pointer).isSymbolicLink(), `pointer must be symlink: ${pointer}`);
-  const tmp = `${pointer}.tmp-${process.pid}`; fs.symlinkSync(target, tmp); fs.renameSync(tmp, pointer);
-}
+const link = durable.link;
 function snapshot(pointer) { try { check(fs.lstatSync(pointer).isSymbolicLink(), 'existing pointer is not symlink'); return fs.readlinkSync(pointer); } catch(e) { if(e.code === 'ENOENT') return null; throw e; } }
-function restore(pointer, old) { if (old === null) fs.rmSync(pointer, { force: true }); else link(old, pointer); }
+const restore = durable.restore;
 function install(stage, archive) {
   validate(stage);
   const id = hash(path.join(stage, 'release.json'));
   const dest = path.resolve(archive, 'document-releases', id);
   if (!fs.existsSync(dest)) {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    durable.mkdir(path.dirname(dest));
     const tmp = `${dest}.tmp-${process.pid}`; fs.cpSync(stage, tmp, { recursive: true }); validate(tmp);
     for (const host of fs.readdirSync(tmp)) {
       const p = path.join(tmp, host);
       if(fs.statSync(p).isDirectory()) { for(const f of fs.readdirSync(p)) fs.chmodSync(path.join(p,f), 0o444); fs.chmodSync(p,0o555); }
       else fs.chmodSync(p,0o444);
     }
-    fs.chmodSync(tmp,0o555); fs.renameSync(tmp,dest);
+    fs.renameSync(tmp,dest); fs.chmodSync(dest,0o555);
   }
-  validate(dest); return dest;
+  validate(dest); durable.tree(dest); durable.sync(path.dirname(dest)); return dest;
 }
 async function activate(directory, pointer, verifyFn = verify) {
   const record = validate(directory);
   check(record.channel === 'stable' || path.basename(pointer) !== 'docs', 'Beta cannot change Stable documents');
   const old = snapshot(pointer);
   const journal = `${pointer}.transaction.json`;
-  check(!fs.existsSync(journal) || read(journal).status !== 'pending', 'unfinished document activation; restore first');
+  check(!fs.existsSync(journal) || !['pending', 'restoring'].includes(read(journal).status), 'unfinished document activation; restore first');
   const entry = { pointer, old, next: path.resolve(directory), status: 'pending' };
-  fs.mkdirSync(path.dirname(pointer), { recursive: true });
-  fs.writeFileSync(journal, JSON.stringify(entry));
+  durable.json(journal, entry);
   try { link(entry.next, pointer); await verifyFn(directory); entry.status = 'complete'; }
   catch (e) { restore(pointer,old); entry.status = 'restored'; throw e; }
-  finally { fs.writeFileSync(journal, JSON.stringify(entry)); }
+  finally { durable.json(journal, entry); }
 }
 async function main() {
   const [action, ...args] = process.argv.slice(2);
@@ -154,8 +150,12 @@ async function main() {
   } else if(action === 'install') console.log(install(...args));
   else if(action === 'activate') await activate(...args);
   else if(action === 'verify') await verify(args[0], args[1] !== '--before-activation');
-  else if(action === 'restore') { const j = read(`${args[0]}.transaction.json`); restore(j.pointer,j.old); j.status='restored'; fs.writeFileSync(`${args[0]}.transaction.json`,JSON.stringify(j)); }
+  else if(action === 'restore') {
+    const journal = `${args[0]}.transaction.json`, j = read(journal);
+    if (j.kind === 'cli-release') require('./release-transaction.js').recover(journal);
+    else { restore(j.pointer,j.old); j.status='restored'; durable.json(journal,j); }
+  }
   else throw new Error('usage: documents.js prepare TEMPLATE TENANTS MANIFEST OUTPUT SOURCE_SHA [PUBLIC_BASE_PATH] | install STAGE ARCHIVE | activate RELEASE POINTER | verify RELEASE [--before-activation] | restore POINTER');
 }
-if(require.main === module) main().catch(e => { console.error(e.message); process.exitCode=1; });
 module.exports = { prepare, validate, render, tenants, verify, install, activate, snapshot, restore, link };
+if(require.main === module) main().catch(e => { console.error(e.message); process.exitCode=1; });

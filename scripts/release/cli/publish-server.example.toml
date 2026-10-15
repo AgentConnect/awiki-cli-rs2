@@ -5,6 +5,8 @@ default_backend_base_url = "https://example.com"
 default_did_host = "example.com"
 web_root = "/var/www/awiki-web/cli"
 archive_root = "/var/lib/awiki-cli"
+# Existing production versioned downloads: use their current versioned installer directory, preserving old releases.
+installer_root = "/var/lib/awiki-cli/installers/stable"
 nginx_config = "/etc/nginx/conf.d/example.com.conf"
 nginx_http_snippet = "/etc/nginx/conf.d/00-awiki-cli-download-zones.conf"
 nginx_snippet = "/etc/nginx/snippets/awiki-cli-release.conf"
