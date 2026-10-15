@@ -154,6 +154,23 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: message not found: {message_id}"),
             "Check the message id.",
         ),
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability.starts_with("backend.") =>
+        {
+            let unconfirmed = capability.ends_with(".unconfirmed");
+            let mut mapped = ExitError::new(
+                if unconfirmed { "capability_unconfirmed" } else { "not_supported" },
+                2,
+                format!("{context}: {capability}"),
+                if unconfirmed {
+                    "Server capability discovery has not confirmed this operation. Refresh server capabilities and try again."
+                } else {
+                    "This server does not support this operation. Choose a supported operation or another server."
+                },
+            );
+            mapped.detail.details = serde_json::json!({"reason_code": capability});
+            mapped
+        }
         im_core::ImError::UnsupportedCapability { capability } => ExitError::new(
             "unsupported_capability",
             2,

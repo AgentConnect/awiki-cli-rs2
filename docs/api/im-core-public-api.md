@@ -2360,3 +2360,8 @@ Schema 3 Snapshot 为 true，P5/P6 和加密为 false。Core 请求显式空通�
 公开 DTO 不包含 Token、密钥、原始异常。缓存上下文必须包含服务端点、存储范围、
 合同版本，登录后绑定身份、设备授权和运行代次；成功新鲜期 300 秒，失败保留同上下文
 成功结果（stale），首次失败 unavailable；迟到响应不能跨上下文应用。
+
+CLI 将明确关闭能力映射为 `not_supported`，未确认能力映射为
+`capability_unconfirmed`；非零退出码、`details.reason_code` 与人类输出保持同一
+稳定原因（例如 `backend.group_e2ee.not_supported`）。这些预检拒绝不标记为
+内部异常或可自动重试，也不建议绕过 Core 使用旧业务入口。

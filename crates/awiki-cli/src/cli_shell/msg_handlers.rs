@@ -1601,6 +1601,11 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
         MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
+        MessageAdapterError::BackendCapability(capability) => {
+            crate::m_core_cli_adapter::error::map_im_error(
+                im_core::ImError::UnsupportedCapability { capability }, "message operation",
+            )
+        }
         MessageAdapterError::PublicServiceCode(service_code)
             if service_code == "anp.unauthorized" =>
         {
@@ -1749,6 +1754,17 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn backend_capability_rejection_is_not_an_internal_error() {
+        let reason = "backend.group_e2ee.not_supported";
+        let mapped = super::message_exit(
+            super::MessageAdapterError::BackendCapability(reason.into()),
+            "network hint",
+        );
+        assert_eq!(mapped.detail.code, "not_supported");
+        assert_eq!(mapped.detail.details["reason_code"], reason);
+        assert!(!mapped.detail.hint.contains("network"));
+    }
     use super::*;
 
     #[test]
