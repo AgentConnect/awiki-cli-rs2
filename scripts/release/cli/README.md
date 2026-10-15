@@ -8,7 +8,7 @@
 - `publish-server.example.toml`：服务器配置模板。
 - `publish-server.toml`：服务器真实配置，必须位于同目录、权限为 `0600`，且被 Git 忽略。
 
-编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、Nginx 备份路径、下载并发/限速参数、gateway checkout、gateway 内网 origin 和 GitHub token 只能来自 `publish-server.toml`。
+编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、Nginx 备份路径、下载并发/限速参数、显式 document_tenants 配置路径 和 GitHub token 只能来自 `publish-server.toml`。
 
 CLI 产品包中的两个内置租户则由构建参数决定：
 
@@ -41,9 +41,53 @@ tag commit 与通道名称，随后执行原有下载、产物校验和发布流
 Daemon 的独立入口也支持 `--run-id <ID>`，要求配置中的 `source_ref` 为精确 SHA，
 且 workflow controller 与产品源码属于该次相同提交；平台包和版本检查保持原样。
 
-只有 Stable 发布会更新 `/cli/onboarding.md` 和 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
+Stable 发布必须生成、安装并校验文档后才完成；Beta 不改变 Stable 文档指针。
 
-服务器脚本不会创建 commit 或 tag。任何失败都必须先修复并发布更高版本，不能移动 tag 或把旧归档重新提升为 latest。
+服务器脚本不会创建 commit 或 tag。产品内容变化必须发布更高版本，不能移动 tag 或覆盖旧归档。
+若仅因政策尚未协调或网络验证失败，可以重新激活同一份已安装、已核对摘要的制品，不重新打包或替换内容。
+
+### Stable 版本化安装地址与两阶段发布
+
+Stable 的包内元数据、manifest 和引导文档统一使用
+`<public_origin><public_base_path>/stable/releases/<版本>/awiki-cli.tgz`；Beta 保留通道别名。
+新增必填 `installer_root`：实际安装到 `installer_root/<版本>/awiki-cli.tgz`。
+已有同版本文件仅在摘要相同时复用，内容不同时拒绝覆盖。安装不会更改 User Service 政策。
+
+**先核对现有下载目录再部署 Nginx**。已有生产版本化包时，`installer_root` 必须指向其当前版本化安装包目录，
+保留旧版本文件和符号链接；不得用一个空目录替换旧版本下载树。缺此配置时发布和 Nginx 生成均失败关闭。
+站点生成器增加更精确的版本化路径及通道安装包、Skill 下载/发现文件路由，保留 User Service 的 manifest 精确代理。
+若站点已有版本化路径（例如硅谷），只有其 alias 与 `installer_root` 一致时复用；不重复生成同名 location，冲突则拒绝生成。
+
+政策尚未提升时，通过同一个发布入口分两步执行：
+
+```bash
+# 只安装完整制品及文档；不切换通道或文档，不修改政策。
+scripts/release/cli/publish-cli-release.sh --config SERVER_CONFIG --run-id RUN_ID --stage-only stable
+# 按既有 User Service 流程协调推荐版本、版本化 URL 和制品摘要；不由本脚本另建政策。
+# 使用上一步 installed_release 输出，避免重建同版本安装包。
+sudo scripts/release/cli/publish-cli-release.sh --release activate SERVER_CONFIG INSTALLED_RELEASE
+```
+
+政策已就绪时仍可直接运行原 `publish-cli-release.sh stable`。验证同时兼容通道静态 manifest
+与生产 User Service 投影；版本、URL、摘要、公开文档均通过才报告完成。
+
+### 发布中断恢复
+
+常规发布使用同一份事务记录保存旧/新通道及 Stable 文档目标；Beta 只保存 Beta 通道。
+记录在第一次公开指针变化前原子写入并同步文件与目录。Stable 使用 `web_root/docs.transaction.json`，
+Beta 使用 `web_root/beta.transaction.json`；网站部署保护两份记录。
+出现 `pending` 或 `restoring` 时，禁止继续发布，先恢复：
+
+```bash
+sudo scripts/release/cli/publish-cli-release.sh --release restore SERVER_CONFIG stable
+# Beta 对应：--release restore SERVER_CONFIG beta
+```
+
+恢复可在新进程中执行，也可重复执行；中途再次被强制结束后继续同一恢复。
+检测到与记录无关的人工指针变化时拒绝覆盖。普通验证异常自动恢复；SIGKILL/重启后按上述入口显式恢复。
+旧 `--documents restore <web_root>/docs` 入口也能识别常规发布记录并恢复完整组合；纯文档迁移的旧记录保持兼容。
+同环境发布、文档迁移、恢复和网站部署须串行。没有后台恢复服务，也不承诺多个符号链接在请求层同时可见；
+保证的是发布完成前验证配套关系，以及中断后能够恢复完整旧组合。保留恢复记录引用的制品。
 
 ## Nginx
 
@@ -75,8 +119,8 @@ scripts/release/cli/deploy-nginx-config.sh \
 
 ### 下载与缓存边界
 
-- 只有 `stable/beta/artifacts/` 下文件名已包含版本号的平台包使用并发限制、速度限制和 `immutable` 长期缓存。
-- `manifest.json`、`awiki-cli.tgz`、Skill 包、Skill 发现文件、通道根路径和 CLI 站点文件继续使用 `no-cache, no-store, must-revalidate`。
+- `stable/beta/artifacts/` 下平台包使用并发限制、速度限制和 `immutable` 长期缓存；Stable 版本化安装包使用 `immutable`，不套用大型二进制限速。
+- 通道别名 `awiki-cli.tgz`、Skill 包及发现文件返回 `no-store`；其余可变通道/站点文件保留 `no-cache, no-store, must-revalidate`。生产 manifest 仍由原 User Service 代理控制。
 - 保留 Nginx 静态文件的 HTTP Range 能力，不对小型 npm 引导包应用大型二进制下载限制。
 - CLI 站点目前同时包含带哈希和不带哈希的资源，不允许将整个 `/cli/assets/` 设为 `immutable`。
 
@@ -91,9 +135,40 @@ scripts/release/cli/deploy-nginx-config.sh \
 
 ## 公开接口
 
-`/cli/onboarding.md` 和 `/cli/skill.md` 由生成的 Nginx snippet 代理到 protocol-gateway。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`；channel 根路径直接返回同一份 `manifest.json`，未发布的 channel 返回 `404`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
+`/cli/onboarding.md` 和 `/cli/skill.md` 由 Nginx 提供同一份完成租户渲染的静态 Markdown。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`；channel 根路径直接返回同一份 `manifest.json`，未发布的 channel 返回 `404`。通道入口读取当前 channel 指针，Stable 版本化安装包独立保留在 `installer_root`，完整历史制品保存在 `archive_root`。
 
-Onboarding 只跟随 stable。protocol-gateway 应读取 `archive_root/channels/stable-onboarding.md`，而不是读取服务器上的活动 Git checkout。
+Onboarding 只跟随 stable。文档位于 `archive_root/document-releases/<release.json SHA-256>/`，
+活动指针为 `web_root/docs`；目录内按显式租户域名隔离。模板和渲染由本仓拥有，网站不复制正文。
+`release.json` 记录 `public_base_path`、CLI 版本/来源、installer URL 与摘要、模板摘要、文档来源提交、完整租户配置及摘要和每个文件 SHA-256。
+正常备包自动沿用 `publish-server.toml` 的 `public_base_path`，文档、Skill 地址和验证请求使用同一路径；未含此字段的旧文档记录按 `/cli` 读取。
+Nginx 返回 `text/markdown; charset=utf-8`、`Cache-Control: no-store`，未知租户不自动推断。
+
+## 配套现有 CLI 迁移文档
+
+`document-tenants.shanghai.json` 默认中国租户；`silicon-valley` 显式选择硅谷；
+`singapore` 为主站及三个隔离域名分别生成目标租户。隔离域名下载政策明确绑定新加坡主站。
+先核对现有 CLI 的 `tenant setup --help` 及正文命令兼容性，准备包含来源和 installer 摘要的原 manifest；
+不要使用无 source 字段的政策投影伪造构建来源。
+
+```bash
+CLI=scripts/release/cli/publish-cli-release.sh
+bash "$CLI" --documents prepare onboarding.md document-tenants.json existing-manifest.json /tmp/docs-stage FULL_DOCUMENT_SOURCE_SHA /cli
+sudo bash "$CLI" --documents install /tmp/docs-stage /var/lib/awiki-cli
+# install 输出不可变路径 DOC_RELEASE；准备/安装均不改变 Stable。
+bash "$CLI" --documents verify "$DOC_RELEASE" --before-activation
+sudo bash "$CLI" --documents activate "$DOC_RELEASE" /var/www/awiki-web/cli/docs
+# 失败自动恢复；进程中断可按持久 journal 显式恢复：
+sudo bash "$CLI" --documents restore /var/www/awiki-web/cli/docs
+```
+
+迁移命令最后一个参数为可选 `PUBLIC_BASE_PATH`（默认 `/cli`）；自定义路径必须与目标服务器配置一致。
+激活必须校验 User Service 有效政策、公开 manifest、文档实际 installer URL 与摘要和全部租户文档的
+Content-Type/缓存/SHA-256。生产政策仍由 User Service 拥有；准备阶段不更改政策。正文安装命令使用 manifest 的精确 installer.url，必须与有效政策 URL 一致，并实际下载该 URL 核对摘要；旧 URL 失效或仅摘要一致也会拒绝激活。Skill 地址保持原有通道合同。
+若正常新版本发布时政策尚未指向对应 CLI，发布会失败并恢复通道/文档指针；按既有政策发布流程协调后重试。
+同一环境的发布/迁移必须串行，不在切换期间运行网站发布或第二个 CLI 发布。
+纯文档迁移的回滚记录同样位于 `web_root/docs.transaction.json`；与常规 Stable 发布串行共用，恢复入口按记录类型处理。保留当前和恢复指针引用的旧制品，不自动清理。
+首次静态切换使用 System Test 的专用退役入口协调 Nginx、文档指针和旧服务恢复；
+后续只使用本发布流程，不另设手工同步目录。
 
 ## 发布构建使用线上 SDK
 

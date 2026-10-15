@@ -6,6 +6,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const documents = require('./documents.js');
+const { execFileSync } = require('child_process');
 const { readReleaseConfig, readServerConfig } = require('./config.js');
 
 function die(message) { throw new Error(message); }
@@ -62,7 +64,7 @@ function validateTenantConfig(raw, label) {
   return config;
 }
 function renderTemplate(text, values, label) {
-  let rendered = text;
+  let rendered = text.replaceAll('{{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz', values.AWIKI_CLI_INSTALLER_URL);
   for (const [token, value] of Object.entries(values)) rendered = rendered.replaceAll(`{{${token}}}`, value);
   const unresolved = rendered.match(/\{\{[A-Z0-9_]+\}\}/g);
   if (unresolved) die(`${label} contains unresolved release tokens: ${[...new Set(unresolved)].join(', ')}`);
@@ -97,7 +99,10 @@ function main() {
   const entry = releaseConfig.channels[channel];
   const version = entry.version;
   const channelBaseUrl = `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}`;
-  const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl };
+  const installerUrl = channel === 'stable'
+    ? `${channelBaseUrl}/releases/${version}/awiki-cli.tgz`
+    : `${channelBaseUrl}/awiki-cli.tgz`;
+  const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl, AWIKI_CLI_INSTALLER_URL: installerUrl };
   if (sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
@@ -164,12 +169,11 @@ the accompanying LICENSE file.
     packageJson.awikiCli.minSupportedVersion = entry.min_supported_version;
     delete packageJson.scripts['test:installer'];
     fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
-    const updateBaseUrl = channelBaseUrl;
     fs.writeFileSync(path.join(packageStage, 'awiki-release.json'), `${JSON.stringify({
       schema_version: 1,
       version,
       channel,
-      installer_url: `${updateBaseUrl}/awiki-cli.tgz`,
+      installer_url: installerUrl,
       builtin_tenants: tenantConfig,
       builtin_tenants_sha256: tenantConfigSha256,
       packages,
@@ -219,7 +223,7 @@ the accompanying LICENSE file.
     source: { tag: sourceTag, commit: sourceCommit },
     builtin_tenants_sha256: crypto.createHash('sha256').update(tenantConfigRaw).digest('hex'),
     installer: {
-      url: `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}/awiki-cli.tgz`,
+      url: installerUrl,
       sha256: sha256(path.join(outputDir, 'awiki-cli.tgz')),
       size: fs.statSync(path.join(outputDir, 'awiki-cli.tgz')).size,
     },
@@ -231,6 +235,13 @@ the accompanying LICENSE file.
     },
   };
   fs.writeFileSync(path.join(outputDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  documents.prepare({
+    publicBasePath: serverConfig.public_base_path,
+    template: fs.readFileSync(path.join(root, 'onboarding.md'), 'utf8'),
+    config: JSON.parse(fs.readFileSync(serverConfig.document_tenants, 'utf8')),
+    manifest, output: path.join(outputDir, 'documents'),
+    documentSource: execFileSync('git', ['rev-parse', 'HEAD'], {cwd:root,encoding:'utf8'}).trim(),
+  });
   console.log(JSON.stringify({ version, channel, output: outputDir, manifest }, null, 2));
 }
 

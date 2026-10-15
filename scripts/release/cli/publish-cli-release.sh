@@ -3,16 +3,30 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# Document-only migration pairs existing CLI artifacts without building/publishing a client.
+if [[ "${1:-}" == "--documents" ]]; then
+  shift
+  exec node "${SCRIPT_DIR}/documents.js" "$@"
+fi
+# Reuse the same transaction implementation for staged promotion and crash recovery.
+if [[ "${1:-}" == "--release" ]]; then
+  shift
+  exec 9>"/tmp/awiki-cli-release.lock"
+  flock -n 9 || { echo 'Error: another CLI release operation is running' >&2; exit 1; }
+  exec node "${SCRIPT_DIR}/release-transaction.js" "$@"
+fi
 RELEASE_CONFIG="${SCRIPT_DIR}/release-config.json"
 SERVER_CONFIG="${SCRIPT_DIR}/publish-server.toml"
 CHANNEL=""
 REUSE_RUN_ID=""
+STAGE_ONLY=0
 
-usage() { echo "Usage: $0 [--config FILE] [--run-id ID] beta|stable"; }
+usage() { echo "Usage: $0 [--config FILE] [--run-id ID] [--stage-only] beta|stable"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) SERVER_CONFIG="${2:-}"; shift 2 ;;
     --run-id) REUSE_RUN_ID="${2:-}"; [[ "$REUSE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Error: invalid run ID' >&2; exit 2; }; shift 2 ;;
+    --stage-only) STAGE_ONLY=1; shift ;;
     beta|stable) CHANNEL="$1"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown argument $1" >&2; usage >&2; exit 2 ;;
@@ -39,6 +53,8 @@ TAG="cli-v${VERSION}"
 command -v gh >/dev/null && command -v node >/dev/null && command -v npm >/dev/null && command -v curl >/dev/null || { echo "Error: gh, node, npm, and curl are required" >&2; exit 1; }
 exec 9>"/tmp/awiki-cli-release.lock"
 flock -n 9 || { echo "Error: another awiki-cli release is running" >&2; exit 1; }
+
+node "${SCRIPT_DIR}/release-transaction.js" check "${SERVER_CONFIG}" "${CHANNEL}"
 
 tag_commit="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/ref/tags/${TAG}" --jq '.object.sha')"
 if [[ "$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/tags/${tag_commit}" --jq '.object.type' 2>/dev/null || true)" == "commit" ]]; then
@@ -81,36 +97,13 @@ node "${SCRIPT_DIR}/stage-release.js" --channel "${CHANNEL}" --release-config "$
   --server-config "${SERVER_CONFIG}" --artifacts "${tmp}/artifacts" --output "${tmp}/stage" \
   --source-tag "${TAG}" --source-commit "${tag_commit}"
 
-release_dir="${ARCHIVE_ROOT}/releases/${VERSION}/${CHANNEL}"
-sudo mkdir -p "$(dirname "${release_dir}")" "${ARCHIVE_ROOT}/channels" "${WEB_ROOT}"
-[[ ! -e "${release_dir}" ]] || { echo "Error: release archive already exists at ${release_dir}" >&2; exit 1; }
-sudo rm -rf "${release_dir}.staging"
-sudo cp -R "${tmp}/stage" "${release_dir}.staging"
-sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
-sudo mv "${release_dir}.staging" "${release_dir}"
-link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
-sudo ln -s "${release_dir}" "${link_tmp}"
-sudo mv -Tf "${link_tmp}" "${WEB_ROOT}/${CHANNEL}"
-
-if [[ "${CHANNEL}" == "stable" ]]; then
-  onboarding_tmp="${ARCHIVE_ROOT}/channels/.stable-onboarding.$$"
-  sudo ln -s "${release_dir}/onboarding.md" "${onboarding_tmp}"
-  sudo mv -Tf "${onboarding_tmp}" "${ARCHIVE_ROOT}/channels/stable-onboarding.md"
-  public_onboarding_tmp="${WEB_ROOT}/.onboarding.${VERSION}.$$"
-  sudo ln -s "${release_dir}/onboarding.md" "${public_onboarding_tmp}"
-  sudo mv -Tf "${public_onboarding_tmp}" "${WEB_ROOT}/onboarding.md"
+release_dir="$(sudo node "${SCRIPT_DIR}/release-transaction.js" install "${SERVER_CONFIG}" "${tmp}/stage")"
+if [[ "${STAGE_ONLY}" == "1" ]]; then
+  echo "installed_release=${release_dir}"
+  echo "Activate after coordinating User Service policy: --release activate CONFIG ${release_dir}"
+  exit 0
 fi
-
-mapfile -t versions < <(sudo find "${ARCHIVE_ROOT}/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
-if (( ${#versions[@]} > KEEP_VERSIONS )); then
-  for old in "${versions[@]:KEEP_VERSIONS}"; do
-    [[ "${old}" == "${ARCHIVE_ROOT}/releases/${VERSION}" ]] || sudo rm -rf "${old}"
-  done
-fi
-
-curl -fsS "${PUBLIC_ORIGIN}${PUBLIC_BASE_PATH}/${CHANNEL}/manifest.json" | node -e \
-  'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s);if(m.latest!==process.argv[1])process.exit(1)})' "${VERSION}"
-curl -fsSI "${PUBLIC_ORIGIN}${PUBLIC_BASE_PATH}/${CHANNEL}/awiki-cli.tgz" >/dev/null
+sudo node "${SCRIPT_DIR}/release-transaction.js" activate "${SERVER_CONFIG}" "${release_dir}"
 echo "channel=${CHANNEL}"
 echo "version=${VERSION}"
 echo "tag=${TAG}"

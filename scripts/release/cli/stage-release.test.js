@@ -15,21 +15,21 @@ function run(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
-function writeServerConfig(filePath, root) {
+function writeServerConfig(filePath, root, publicBasePath = '/cli') {
+  fs.writeFileSync(path.join(root, 'tenants.json'), JSON.stringify({schema_version:1,tenants:[{origin:'https://awiki.info',backend_origin:'https://awiki.info',did_host:'awiki.info',download_origin:'https://awiki.info',name:'test-tenant',mode:'setup'}]}));
   const values = {
     public_origin: 'https://awiki.info',
-    public_base_path: '/cli',
+    public_base_path: publicBasePath,
     default_backend_base_url: 'https://awiki.info',
     default_did_host: 'awiki.info',
     web_root: `${root}/web`,
     archive_root: `${root}/archive`,
+    installer_root: `${root}/installers`,
     nginx_config: `${root}/nginx.conf`,
     nginx_http_snippet: `${root}/nginx-http-snippet.conf`,
     nginx_snippet: `${root}/nginx-snippet.conf`,
     nginx_backup_root: `${root}/backups`,
-    protocol_gateway_checkout: `${root}/gateway`,
-    protocol_gateway_origin: 'http://127.0.0.1:9896',
-    protocol_gateway_service: 'protocol-gateway',
+    document_tenants: path.join(root, 'tenants.json'),
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
     github_token: 'test-token',
@@ -217,3 +217,90 @@ test('rejects platform artifacts built with different tenant catalogs', () => {
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
+
+for (const channel of ['stable', 'beta']) {
+  test(`stages ${channel} documents and Nginx routes under the configured public path`, t => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-stage-custom-path-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    const publicBasePath = '/downloads/awiki-cli';
+    const artifacts = path.join(temp, 'artifacts'), output = path.join(temp, 'output');
+    const serverConfig = path.join(temp, 'server.toml');
+    const version = JSON.parse(fs.readFileSync(releaseConfig)).channels[channel].version;
+    fs.mkdirSync(artifacts);
+    writeServerConfig(serverConfig, temp, publicBasePath);
+    writeArtifacts(artifacts, version);
+    const result = run(process.execPath, [path.join(scriptDir, 'stage-release.js'),
+      '--channel', channel, '--release-config', releaseConfig, '--server-config', serverConfig,
+      '--artifacts', artifacts, '--output', output, '--source-tag', `cli-v${version}`,
+      '--source-commit', 'a'.repeat(40)], { cwd: rootDir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = require('./documents.js').validate(path.join(output, 'documents'));
+    assert.equal(record.public_base_path, publicBasePath);
+    const document = fs.readFileSync(path.join(output, 'documents/awiki.info/skill.md'), 'utf8');
+    const baseUrl = `https://awiki.info${publicBasePath}/${channel}`;
+    const installerUrl = channel === 'stable' ? `${baseUrl}/releases/${version}/awiki-cli.tgz` : `${baseUrl}/awiki-cli.tgz`;
+    assert.equal(record.installer.url, installerUrl);
+    assert(document.includes(installerUrl));
+    const metadata = run('tar', ['-xOzf', path.join(output,'awiki-cli.tgz'), 'package/awiki-release.json']);
+    assert.equal(JSON.parse(metadata.stdout).installer_url, installerUrl);
+    assert(document.includes(`npx skills add ${baseUrl} --agent`));
+    const index = JSON.parse(fs.readFileSync(path.join(output, '.well-known/agent-skills/index.json')));
+    assert.equal(index.skills[0].url, `${baseUrl}/awiki-cli-skill.tar.gz`);
+    assert(!document.includes('https://awiki.info/cli/'));
+    const nginx = run(process.execPath, [path.join(scriptDir, 'render-nginx-snippet.js'), serverConfig]);
+    assert.equal(nginx.status, 0, nginx.stderr);
+    for (const name of ['onboarding.md', 'skill.md']) assert(nginx.stdout.includes(`location = ${publicBasePath}/${name}`));
+  });
+}
+
+for (const host of ['awiki.me', 'awiki.ai', 'anpclaw.com']) {
+  test(`${host} versioned policy publishes staged CLI and documents through real Nginx`, async t => {
+    const {serve,writable}=require('./test-fixtures/nginx-policy.js');
+    const transaction=require('./release-transaction.js');
+    const temp=fs.mkdtempSync(path.join(os.tmpdir(),'cli-production-layout-'));
+    const artifacts=path.join(temp,'artifacts'),output=path.join(temp,'stage'),server=path.join(temp,'server.toml');
+    fs.mkdirSync(artifacts);writeServerConfig(server,temp);
+    fs.writeFileSync(server,fs.readFileSync(server,'utf8').replaceAll('awiki.info',host).replace(`${temp}/installers`,`${temp}/policy/cli/stable/releases`));
+    const tenantsFile=path.join(temp,'tenants.json');fs.writeFileSync(tenantsFile,fs.readFileSync(tenantsFile,'utf8').replaceAll('awiki.info',host));
+    const version=JSON.parse(fs.readFileSync(releaseConfig)).channels.stable.version;
+    writeArtifacts(artifacts,version);
+    const staged=run(process.execPath,[path.join(scriptDir,'stage-release.js'),'--channel','stable','--release-config',releaseConfig,'--server-config',server,'--artifacts',artifacts,'--output',output,'--source-tag',`cli-v${version}`,'--source-commit','a'.repeat(40)]);
+    assert.equal(staged.status,0,staged.stderr);
+    const manifest=JSON.parse(fs.readFileSync(path.join(output,'manifest.json')));
+    assert.equal(manifest.installer.url,`https://${host}/cli/stable/releases/${version}/awiki-cli.tgz`);
+    const fixture=await serve(t,temp,server,manifest,path.resolve(rootDir,`../awiki-web/deploy/nginx/${host==='awiki.me'?'awiki.me':'awiki.ai'}.conf`),host==='anpclaw.com');
+    t.after(()=>{writable(temp);fs.rmSync(temp,{recursive:true,force:true});});
+    fs.mkdirSync(fixture.config.web_root,{recursive:true});
+    fs.symlinkSync('/previous-cli',path.join(fixture.config.web_root,'stable'));
+    fs.symlinkSync('/previous-docs',path.join(fixture.config.web_root,'docs'));
+    const publish=require('./test-fixtures/publisher.js').publisher(temp,server,artifacts,version,fixture.config.public_origin,fixture.localOrigin);
+    const result=publish(['--config',server,'--run-id','1',...(host==='awiki.me'?['--stage-only']:[]),'stable']);
+    assert.equal(result.status,0,result.stderr || result.stdout);
+    const release=path.join(fixture.config.archive_root,'releases',version,'stable');
+    if(host==='awiki.me') {
+      assert.equal(fs.readlinkSync(path.join(fixture.config.web_root,'stable')),'/previous-cli');
+      const activated=publish(['--release','activate',server,release]);
+      assert.equal(activated.status,0,activated.stderr);
+    }
+    const downloaded=await fetch(manifest.installer.url);
+    assert.equal(downloaded.status,200);
+    assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()),fs.readFileSync(path.join(output,'awiki-cli.tgz')));
+    assert.equal(fs.readlinkSync(path.join(fixture.config.web_root,'stable')),release);
+    assert.equal((await fetch(`https://${host}/cli/skill.md`)).status,200);
+    const index=await (await fetch(`https://${host}/cli/stable/.well-known/agent-skills/index.json`)).json();
+    assert.equal(index.skills[0].url,`https://${host}/cli/stable/awiki-cli-skill.tar.gz`);
+    assert.equal((await fetch(index.skills[0].url)).status,200);
+    assert.equal((await fetch(`https://${host}/cli/stable/awiki-cli.tgz`)).status,200);
+    // Validation through actual HTTP rolls back a policy mismatch.
+    transaction.recover(transaction.journalPath(fixture.config,'stable'));
+    fixture.info.client_versions.products.cli.installer={...manifest.installer,url:`https://${host}/cli/stable/awiki-cli.tgz`};
+    fs.writeFileSync(fixture.infoFile,JSON.stringify(fixture.info));
+    await assert.rejects(transaction.activate(release,fixture.config),/binding mismatch/);
+    assert.equal(fs.readlinkSync(path.join(fixture.config.web_root,'stable')),'/previous-cli');
+    fixture.info.client_versions.products.cli.installer=manifest.installer;
+    fs.writeFileSync(fixture.infoFile,JSON.stringify(fixture.info));
+    // Reuse the exact immutable release after failure; no repacking or new policy.
+    await transaction.activate(release,fixture.config);
+    assert.equal(JSON.parse(fs.readFileSync(transaction.journalPath(fixture.config,'stable'))).status,'complete');
+  });
+}

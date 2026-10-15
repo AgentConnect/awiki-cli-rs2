@@ -121,18 +121,12 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsedServer.cli_download_max_total, 4);
     assert.equal(parsedServer.cli_download_rate_after, '1m');
     assert.equal(parsedServer.cli_download_rate, '512k');
+    assert.equal(parsedServer.installer_root, '/var/lib/awiki-cli/installers/stable');
+    fs.writeFileSync(server, fs.readFileSync(example,'utf8').replace(/^installer_root = .*\n/m,''));
+    assert.throws(() => readServerConfig(server), /missing publish-server keys: installer_root/);
+    fs.copyFileSync(example, server);
     fs.appendFileSync(server, 'unknown = "value"\n');
     assert.throws(() => readServerConfig(server), /unknown publish-server keys/);
-
-    const invalidGateway = path.join(root, 'invalid-gateway.toml');
-    fs.writeFileSync(
-      invalidGateway,
-      fs.readFileSync(example, 'utf8').replace(
-        'protocol_gateway_origin = "http://127.0.0.1:9896"',
-        'protocol_gateway_origin = "http://user@127.0.0.1:9896/path"',
-      ),
-    );
-    assert.throws(() => readServerConfig(invalidGateway), /protocol_gateway_origin/);
 
     const invalidDownloadLimit = path.join(root, 'invalid-download-limit.toml');
     fs.writeFileSync(

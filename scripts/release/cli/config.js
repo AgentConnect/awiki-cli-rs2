@@ -6,9 +6,8 @@ const path = require('path');
 
 const SERVER_KEYS = new Set([
   'public_origin', 'public_base_path', 'default_backend_base_url', 'default_did_host',
-  'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
-  'nginx_backup_root', 'protocol_gateway_checkout', 'protocol_gateway_origin',
-  'protocol_gateway_service', 'github_repo', 'github_workflow', 'github_token',
+  'web_root', 'archive_root', 'installer_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+  'nginx_backup_root', 'document_tenants', 'github_repo', 'github_workflow', 'github_token',
   'cli_download_max_per_ip', 'cli_download_max_total', 'cli_download_rate_after',
   'cli_download_rate',
 ]);
@@ -60,20 +59,13 @@ function readServerConfig(filePath) {
     }
     config[key] = url.origin;
   }
-  const gatewayOrigin = new URL(config.protocol_gateway_origin);
-  if (!['http:', 'https:'].includes(gatewayOrigin.protocol)
-      || gatewayOrigin.username || gatewayOrigin.password
-      || gatewayOrigin.pathname !== '/' || gatewayOrigin.search || gatewayOrigin.hash) {
-    throw new Error('protocol_gateway_origin must be an HTTP(S) origin without credentials or a path');
-  }
-  config.protocol_gateway_origin = gatewayOrigin.origin;
   if (!/^\/(?:[a-z0-9._-]+(?:\/[a-z0-9._-]+)*)$/i.test(config.public_base_path)
       || config.public_base_path.split('/').some(part => part === '.' || part === '..')) {
     throw new Error('public_base_path must be an absolute URL path without a trailing slash');
   }
   for (const key of [
-    'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
-    'nginx_backup_root', 'protocol_gateway_checkout',
+    'web_root', 'archive_root', 'installer_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+    'nginx_backup_root', 'document_tenants',
   ]) {
     if (!path.isAbsolute(config[key])) throw new Error(`${key} must be an absolute filesystem path`);
     if (!/^\/[a-z0-9._/-]+$/i.test(config[key]) || config[key].split('/').includes('..')) {
@@ -82,9 +74,6 @@ function readServerConfig(filePath) {
   }
   if (!/^[a-z0-9.-]+$/i.test(config.default_did_host) || config.default_did_host.includes('..')) {
     throw new Error('default_did_host must be a bare DNS host');
-  }
-  if (!/^[a-z0-9_.@-]+$/i.test(config.protocol_gateway_service)) {
-    throw new Error('protocol_gateway_service must be a systemd service name');
   }
   if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(config.github_repo)) {
     throw new Error('github_repo must use owner/repository syntax');
