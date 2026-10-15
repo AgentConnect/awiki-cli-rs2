@@ -2332,3 +2332,7 @@ P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{gr
 `device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
 
 Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。
+
+2026-10-15：`DeviceJoinRequestNotice.join_purpose`（Dart/Node `joinPurpose`）从已验证签名请求
+投影，可供批准页展示用途；不含原 proof、SAS 或私钥。缺省为旧管理设备用途，
+最终确认仍以 Core 批准 prompt 的 `management_allowed` 为权威，不能由宿主文案改变权限。

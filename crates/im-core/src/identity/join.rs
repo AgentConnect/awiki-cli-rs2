@@ -392,6 +392,9 @@ pub struct DeviceRegistryAuthorizedDeviceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceJoinRequestNotice {
+    /// Purpose from the verified signed Join request; absent for legacy management joins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_purpose: Option<String>,
     pub event_id: String,
     pub join_session_id: String,
     pub did: crate::ids::Did,

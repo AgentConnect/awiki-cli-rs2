@@ -1662,6 +1662,7 @@ where
                 crate::internal::system_notification::wire::JoinPayload::Requested(_)
             ) && local.is_none();
             notices.push(crate::identity::DeviceJoinRequestNotice {
+                join_purpose: request.and_then(|value| value.join_purpose.clone()),
                 event_id: notification.event_id,
                 join_session_id: notification.join_session_id,
                 did: crate::ids::Did::parse(&notification.did)?,

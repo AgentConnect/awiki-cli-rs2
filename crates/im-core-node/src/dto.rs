@@ -363,6 +363,7 @@ pub struct NodeDeviceRegistrySnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeDeviceJoinRequestNotice {
+    pub join_purpose: Option<String>,
     pub event_id: String,
     pub join_session_id: String,
     pub did: String,
@@ -582,6 +583,7 @@ pub(crate) fn device_join_request_notice(
     value: im_core::identity::DeviceJoinRequestNotice,
 ) -> NodeDeviceJoinRequestNotice {
     NodeDeviceJoinRequestNotice {
+        join_purpose: value.join_purpose,
         event_id: value.event_id,
         join_session_id: value.join_session_id,
         did: value.did.as_str().to_owned(),

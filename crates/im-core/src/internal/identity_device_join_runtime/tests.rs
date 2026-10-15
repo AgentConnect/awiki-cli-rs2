@@ -1631,6 +1631,10 @@ async fn orphan_terminal_notice_does_not_block_new_join_requests() {
         )
         .await
         .unwrap();
+    // This fixture enters the already-verified notification projection boundary.
+    // Signed-purpose integrity itself is covered by system_notification verification tests.
+    let mut verified_request = serde_json::to_value(&started.join_request).unwrap();
+    verified_request["join_purpose"] = json!("messages_only");
     let client = core
         .client(crate::identity::IdentitySelector::Default)
         .unwrap();
@@ -1649,7 +1653,7 @@ async fn orphan_terminal_notice_does_not_block_new_join_requests() {
             started.session.join_session_id.clone(),
             "awiki.device.join-requested.v1",
             "pending",
-            json!({"join_request":started.join_request}),
+            json!({"join_request":verified_request}),
         ),
     ] {
         let notification_value = json!({
@@ -1723,6 +1727,7 @@ async fn orphan_terminal_notice_does_not_block_new_join_requests() {
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].join_session_id, started.session.join_session_id);
         assert!(notices[0].can_start_verification);
+        assert_eq!(notices[0].join_purpose.as_deref(), Some("messages_only"));
         assert_eq!(
             notices[0].state,
             crate::identity::DeviceJoinRemoteState::Pending

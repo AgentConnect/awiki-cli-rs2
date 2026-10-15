@@ -1426,3 +1426,7 @@ Dart 暴露 `identityDeviceCapabilityStatus` 与 `identityUpgradeDeviceCapabilit
 设备批准进度新增 `managementAllowed`，由签名 Join 请求用途决定。APP 显示 `false` 时只能走普通成员批准，不得调用自动根密钥授予。未知用途或被篡改的用途由 Core 拒绝；不能根据设备名称判断。
 
 APP 的邮箱验证码发送与账号验证沿用既有 Host 账号适配器；获得仅 Join 用途的 grant 后，身份加入、持久化 operation、配对与通信继续由 Core 完成。Rust `DeviceJoinService.begin_with_email` / `send_email_code` 为 CLI 提供相同验证入口。邮箱加入不提供网页或 APP 邮箱 Recovery 捷径。
+
+2026-10-15：`DeviceJoinRequestNotice.join_purpose`（Dart/Node `joinPurpose`）从已验证签名请求
+投影，可供批准页展示用途；不含原 proof、SAS 或私钥。缺省为旧管理设备用途，
+最终确认仍以 Core 批准 prompt 的 `management_allowed` 为权威，不能由宿主文案改变权限。

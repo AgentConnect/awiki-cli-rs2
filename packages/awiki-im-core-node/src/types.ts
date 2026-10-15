@@ -480,6 +480,7 @@ export interface DeviceRegistrySnapshot {
 }
 
 export interface DeviceJoinRequestNotice {
+  readonly joinPurpose?: string
   readonly eventId: string
   readonly joinSessionId: string
   readonly did: string

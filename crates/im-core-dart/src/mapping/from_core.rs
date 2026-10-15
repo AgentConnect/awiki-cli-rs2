@@ -509,6 +509,7 @@ impl From<im_core::identity::DeviceRegistryAuthorizedDeviceSummary>
 impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
     fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
         Self {
+            join_purpose: value.join_purpose,
             event_id: value.event_id,
             join_session_id: value.join_session_id,
             did: value.did.as_str().to_owned(),

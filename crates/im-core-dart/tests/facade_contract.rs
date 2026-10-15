@@ -1647,6 +1647,7 @@ fn device_join_progress_debug_redacts_short_lived_sas() {
 #[test]
 fn device_join_request_notice_is_closed_and_secret_free() {
     let notice = im_core::identity::DeviceJoinRequestNotice {
+        join_purpose: Some("messages_only".to_owned()),
         event_id: "join-event-1".to_owned(),
         join_session_id: "join-safe-id".to_owned(),
         did: im_core::ids::Did::parse("did:wba:example.test:alice").unwrap(),
@@ -1660,6 +1661,7 @@ fn device_join_request_notice_is_closed_and_secret_free() {
     };
     let dart: awiki_im_core::dto::identity::DartDeviceJoinRequestNotice = notice.into();
 
+    assert_eq!(dart.join_purpose.as_deref(), Some("messages_only"));
     assert_eq!(dart.event_id, "join-event-1");
     assert_eq!(
         dart.state,

@@ -347,6 +347,7 @@ pub struct DartDeviceRegistryAuthorizedDeviceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRequestNotice {
+    pub join_purpose: Option<String>,
     pub event_id: String,
     pub join_session_id: String,
     pub did: String,

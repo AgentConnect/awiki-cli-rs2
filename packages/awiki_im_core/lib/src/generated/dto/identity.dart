@@ -451,6 +451,7 @@ enum DartDeviceJoinRemoteState {
 }
 
 class DartDeviceJoinRequestNotice {
+  final String? joinPurpose;
   final String eventId;
   final String joinSessionId;
   final String did;
@@ -463,6 +464,7 @@ class DartDeviceJoinRequestNotice {
   final bool canStartVerification;
 
   const DartDeviceJoinRequestNotice({
+    this.joinPurpose,
     required this.eventId,
     required this.joinSessionId,
     required this.did,
@@ -477,6 +479,7 @@ class DartDeviceJoinRequestNotice {
 
   @override
   int get hashCode =>
+      joinPurpose.hashCode ^
       eventId.hashCode ^
       joinSessionId.hashCode ^
       did.hashCode ^
@@ -493,6 +496,7 @@ class DartDeviceJoinRequestNotice {
       identical(this, other) ||
       other is DartDeviceJoinRequestNotice &&
           runtimeType == other.runtimeType &&
+          joinPurpose == other.joinPurpose &&
           eventId == other.eventId &&
           joinSessionId == other.joinSessionId &&
           did == other.did &&
