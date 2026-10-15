@@ -547,6 +547,7 @@ impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
 impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprovalPrompt {
     fn from(value: im_core::identity::DeviceJoinApprovalPrompt) -> Self {
         Self {
+            management_allowed: value.management_allowed,
             approval_handle: value.approval_handle,
             join_session_id: value.join_session_id,
             sas: value.sas,

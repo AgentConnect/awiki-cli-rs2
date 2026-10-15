@@ -440,6 +440,8 @@ impl std::fmt::Debug for NodeAdminDeviceJoinProgress {
 #[derive(Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeDeviceJoinApprovalPrompt {
+    /// False for a signed messages-only enrollment.
+    pub management_allowed: bool,
     pub approval_handle: String,
     pub join_session_id: String,
     pub sas: String,
@@ -611,6 +613,7 @@ pub(crate) fn device_join_approval_prompt(
     value: im_core::identity::DeviceJoinApprovalPrompt,
 ) -> NodeDeviceJoinApprovalPrompt {
     NodeDeviceJoinApprovalPrompt {
+        management_allowed: value.management_allowed,
         approval_handle: value.approval_handle,
         join_session_id: value.join_session_id,
         sas: value.sas,

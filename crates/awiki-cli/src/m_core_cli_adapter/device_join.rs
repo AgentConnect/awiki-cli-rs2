@@ -157,7 +157,7 @@ pub(crate) async fn approve_via_im_core_async<F>(
     confirm: F,
 ) -> Result<CommandResult, ExitError>
 where
-    F: FnOnce(&str) -> Result<(), ExitError>,
+    F: FnOnce(&str, bool) -> Result<(), ExitError>,
 {
     let join_session_id = required_value(join_session_id, "--session")?;
     let core = super::build_im_core_async(resolved).await?;
@@ -165,7 +165,7 @@ where
         .device_join()
         .prepare_device_join_approval(selector.clone(), &join_session_id, true)
         .map_err(|err| super::map_im_error(err, "id device join approve"))?;
-    confirm(&prompt.sas)?;
+    confirm(&prompt.sas, prompt.management_allowed)?;
     let approved = core
         .device_join()
         .confirm_device_join_with_management(DeviceJoinConfirmApprovalRequest {
@@ -174,6 +174,13 @@ where
         })
         .await
         .map_err(|err| super::map_im_error(err, "id device join approve"))?;
+    if !prompt.management_allowed {
+        return progress_result(
+            "device_join_approve",
+            approved,
+            "Device joined for messaging only; no management keys transferred",
+        );
+    }
     let management = loop {
         let statuses = core
             .device_join()
@@ -437,4 +444,71 @@ mod tests {
 
         assert!(result.data["result"].get("sas").is_none());
     }
+}
+
+pub async fn begin_email_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    did: &str,
+    handle: &str,
+    operation_id: &str,
+    ttl_seconds: u64,
+    send_code: bool,
+) -> Result<CommandResult, ExitError> {
+    use std::io::Read;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        email: String,
+        code: Option<String>,
+    }
+    let invalid = || {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            "Invalid email verification input.",
+            "Provide one JSON object containing email and code via stdin.",
+        )
+    };
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    std::io::stdin()
+        .lock()
+        .take(2049)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() > 2048 {
+        return Err(invalid());
+    }
+    let input: Input = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let did = parse_did(did)?;
+    let operation_id = required_value(operation_id, "--operation-id")?;
+    let handle = required_value(handle, "--handle")?;
+    let core = super::build_im_core_async(resolved).await?;
+    if send_code {
+        if input.code.is_some() {
+            return Err(invalid());
+        }
+        core.device_join()
+            .send_email_code(&input.email, &handle)
+            .await
+            .map_err(|err| super::map_im_error(err, "id device join start"))?;
+        return command_value_result(
+            "device_join_code_sent",
+            serde_json::json!({"sent":true}),
+            "Email code sent".into(),
+        );
+    }
+    let code = input.code.ok_or_else(invalid)?;
+    let result = core
+        .device_join()
+        .begin_with_email(im_core::identity::EmailDeviceJoinRequest {
+            email: input.email,
+            code,
+            full_handle: handle,
+            did,
+            operation_id,
+            ttl_seconds,
+        })
+        .await
+        .map_err(|err| super::map_im_error(err, "id device join start"))?;
+    progress_result("device_join_start", result, "Device Join request created")
 }

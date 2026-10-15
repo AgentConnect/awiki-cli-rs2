@@ -1773,6 +1773,11 @@ where
         sas_confirmed: bool,
         configure_management: bool,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        let configure_management = configure_management
+            && crate::internal::identity_device_join::allows_management(
+                self.core,
+                join_session_id,
+            )?;
         let prepared = match crate::internal::identity_device_join::load_prepared_admin_approval(
             self.core,
             join_session_id,

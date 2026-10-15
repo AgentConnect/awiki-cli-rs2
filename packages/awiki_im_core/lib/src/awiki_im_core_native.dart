@@ -3062,6 +3062,7 @@ extension on DeviceJoinRejectReason {
 
 extension on gen_identity.DartDeviceJoinApprovalPrompt {
   DeviceJoinApprovalPrompt _toModel() => DeviceJoinApprovalPrompt(
+    managementAllowed: managementAllowed,
     approvalHandle: approvalHandle,
     joinSessionId: joinSessionId,
     sas: sas,

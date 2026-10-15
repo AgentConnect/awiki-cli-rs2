@@ -1420,3 +1420,9 @@ Native App 明确调用 `confirmDeviceJoinWithManagement`，选择 Core `confirm
 ### 设备群能力升级
 
 Dart 暴露 `identityDeviceCapabilityStatus` 与 `identityUpgradeDeviceCapabilities`，参数为身份选择器、可选目标设备与明确的用户确认。返回 typed `DeviceCapabilityUpgradeStatus`。APP 在登录后独立检查，当前 ready admin 自动完成兼容增量，其他设备由管理设备确认，不阻塞会话或 Handle 恢复。网络失败呈现局部重试，不能在初始化时自动弹全局错误。
+
+### 托管 Gateway 的消息用途与邮箱加入
+
+设备批准进度新增 `managementAllowed`，由签名 Join 请求用途决定。APP 显示 `false` 时只能走普通成员批准，不得调用自动根密钥授予。未知用途或被篡改的用途由 Core 拒绝；不能根据设备名称判断。
+
+APP 的邮箱验证码发送与账号验证沿用既有 Host 账号适配器；获得仅 Join 用途的 grant 后，身份加入、持久化 operation、配对与通信继续由 Core 完成。Rust `DeviceJoinService.begin_with_email` / `send_email_code` 为 CLI 提供相同验证入口。邮箱加入不提供网页或 APP 邮箱 Recovery 捷径。

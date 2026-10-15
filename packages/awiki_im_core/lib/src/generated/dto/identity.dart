@@ -252,12 +252,15 @@ class DartDeviceCapabilityUpgradeStatus {
 }
 
 class DartDeviceJoinApprovalPrompt {
+  /// False for a signed messages-only enrollment.
+  final bool managementAllowed;
   final String approvalHandle;
   final String joinSessionId;
   final String sas;
   final String expiresAt;
 
   const DartDeviceJoinApprovalPrompt({
+    required this.managementAllowed,
     required this.approvalHandle,
     required this.joinSessionId,
     required this.sas,
@@ -266,6 +269,7 @@ class DartDeviceJoinApprovalPrompt {
 
   @override
   int get hashCode =>
+      managementAllowed.hashCode ^
       approvalHandle.hashCode ^
       joinSessionId.hashCode ^
       sas.hashCode ^
@@ -276,6 +280,7 @@ class DartDeviceJoinApprovalPrompt {
       identical(this, other) ||
       other is DartDeviceJoinApprovalPrompt &&
           runtimeType == other.runtimeType &&
+          managementAllowed == other.managementAllowed &&
           approvalHandle == other.approvalHandle &&
           joinSessionId == other.joinSessionId &&
           sas == other.sas &&

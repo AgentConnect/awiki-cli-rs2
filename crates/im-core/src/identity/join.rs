@@ -106,6 +106,8 @@ pub struct DeviceJoinRequest {
     pub pairing_public_key: String,
     pub profiles: Vec<String>,
     pub requested_role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_purpose: Option<String>,
     pub issued_at: String,
     pub expires_at: String,
     pub join_request_proof: DeviceJoinRequestProof,
@@ -430,6 +432,8 @@ impl std::fmt::Debug for DeviceJoinProgress {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DeviceJoinApprovalPrompt {
+    /// False for a signed messages-only enrollment.
+    pub management_allowed: bool,
     pub approval_handle: String,
     pub join_session_id: String,
     pub sas: String,
@@ -477,6 +481,19 @@ pub struct DeviceJoinService<'a> {
 }
 
 impl<'a> DeviceJoinService<'a> {
+    /// Send an exact-Handle, five-minute email factor for ordinary device Join.
+    pub async fn send_email_code(&self, email: &str, full_handle: &str) -> crate::ImResult<()> {
+        super::join_factor::send(self.core, email, full_handle).await
+    }
+
+    /// Exchange one numeric email factor and start the existing durable Join flow.
+    pub async fn begin_with_email(
+        &self,
+        request: super::EmailDeviceJoinRequest,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        super::join_factor::begin(self.core, request).await
+    }
+
     pub(crate) fn new(core: &'a crate::core::ImCore) -> Self {
         Self { core }
     }
@@ -834,6 +851,10 @@ impl<'a> DeviceJoinService<'a> {
             },
         )?;
         Ok(DeviceJoinApprovalPrompt {
+            management_allowed: crate::internal::identity_device_join::allows_management(
+                self.core,
+                join_session_id,
+            )?,
             approval_handle: handle,
             join_session_id: session.join_session_id,
             sas,
@@ -899,6 +920,11 @@ impl<'a> DeviceJoinService<'a> {
                 return Err(crate::ImError::SessionExpired);
             }
         };
+        let configure_management = configure_management
+            && crate::internal::identity_device_join::allows_management(
+                self.core,
+                &state.join_session_id,
+            )?;
         let confirmed_at = state
             .user_presence_at
             .clone()

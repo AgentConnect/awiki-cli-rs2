@@ -50,6 +50,7 @@ fn join_grant_and_approval_prompt_debug_are_redacted() {
     assert!(rendered.contains("redacted"));
 
     let prompt = awiki_im_core::identity::DeviceJoinApprovalPrompt {
+        management_allowed: true,
         approval_handle: "approval-handle-must-not-appear".to_owned(),
         join_session_id: "join-safe-id".to_owned(),
         sas: "123456".to_owned(),

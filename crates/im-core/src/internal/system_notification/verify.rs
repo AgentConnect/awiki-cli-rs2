@@ -289,6 +289,10 @@ fn verify_join_request(
         || request.did != expected_did
         || request.join_session_id != expected_session
         || request.requested_role != "member"
+        || request
+            .join_purpose
+            .as_deref()
+            .is_some_and(|purpose| purpose != "messages_only")
         || !crate::internal::identity_device_join::join_profiles_are_supported(
             expected_did,
             &request.profiles,
@@ -333,7 +337,7 @@ fn verify_join_request(
         .map_err(|_| invalid_join_request())?;
     let signature =
         decode_canonical_b64u(&proof.proof_value_b64u, 64).map_err(|_| invalid_join_request())?;
-    let unsigned_request = json!({
+    let mut unsigned_request = json!({
         "type": request.request_type,
         "did": request.did,
         "join_session_id": request.join_session_id,
@@ -346,6 +350,9 @@ fn verify_join_request(
         "issued_at": request.issued_at,
         "expires_at": request.expires_at,
     });
+    if let Some(purpose) = &request.join_purpose {
+        unsigned_request["join_purpose"] = json!(purpose);
+    }
     let proof_options = json!({
         "type": proof.proof_type,
         "algorithm": proof.algorithm,

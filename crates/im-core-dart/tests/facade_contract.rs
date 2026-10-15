@@ -1611,6 +1611,7 @@ fn device_join_bridge_projection_excludes_internal_state_and_redacts_prompt() {
     }
 
     let prompt = awiki_im_core::dto::identity::DartDeviceJoinApprovalPrompt {
+        management_allowed: true,
         approval_handle: "approval-secret-handle".to_owned(),
         join_session_id: "join-safe-id".to_owned(),
         sas: "123456".to_owned(),

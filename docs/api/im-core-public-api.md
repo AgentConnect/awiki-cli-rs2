@@ -1,5 +1,11 @@
 # im-core Public API：公共接口总览
 
+## 消息用途 Join（2026-10-15）
+
+Join 请求可携带签名覆盖的 `join_purpose: "messages_only"`；缺省继续原 APP/CLI 管理设备流程。该用途不是设备名称推断；完整请求摘要已经绑定 challenge、SAS 与批准记录。未知用途拒绝。消息用途使 Core 在准备批准与执行自动管理任务前收敛为普通成员批准，即使调用管理设备便捷入口也不得授根。旧客户端的闭合请求解析拒绝此字段，应使用配套版本。
+
+邮箱普通 Join 新增 `DeviceJoinService.send_email_code` 和 `begin_with_email`；五分钟数字验证码绑定 full Handle，Core 内部交换仅 Join 用途 grant，然后走已有持久化 Join。输入 Debug 隐藏邮箱和验证码，不返回 grant。网络结果不明时保留原 operation/workspace，通过已有 local sessions/poll 对账。
+
 ## 一次 Join 授权自动配置管理权限（2026-09-15）
 
 App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。

@@ -853,8 +853,10 @@ class DeviceJoinApprovalPrompt {
     required this.joinSessionId,
     required this.sas,
     required this.expiresAt,
+    this.managementAllowed = true,
   });
 
+  final bool managementAllowed;
   final String approvalHandle;
   final String joinSessionId;
   final String sas;

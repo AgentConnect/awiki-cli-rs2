@@ -481,6 +481,7 @@ pub(crate) async fn start(
         pairing_public_key,
         profiles: join_device_profiles(request.did.as_str()),
         requested_role: "member".to_owned(),
+        join_purpose: None,
         issued_at: format_time(now)?,
         expires_at: format_time(expires_at)?,
         join_request_proof: DeviceJoinRequestProof {
@@ -1595,6 +1596,7 @@ pub(crate) async fn prepare_admin_approval_with_management_async(
     sas_confirmed: bool,
     configure_management: bool,
 ) -> crate::ImResult<PreparedAdminApproval> {
+    let configure_management = configure_management && allows_management(core, join_session_id)?;
     let operation_id = required("operation_id", operation_id)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let user_presence_at = required("user_presence_at", user_presence_at)?;
@@ -4403,6 +4405,16 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
     let did = crate::ids::Did::parse(&request.did)?;
     crate::ids::ProtocolDeviceId::parse(&request.device_id)?;
     required("join_request.join_session_id", &request.join_session_id)?;
+    if request
+        .join_purpose
+        .as_deref()
+        .is_some_and(|purpose| purpose != "messages_only")
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("join_request.join_purpose".into()),
+            "unsupported Join purpose",
+        ));
+    }
     if request.requested_role != "member" {
         return Err(crate::ImError::invalid_input(
             Some("join_request.requested_role".to_owned()),
@@ -5948,3 +5960,19 @@ fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// The signed Join request, never the caller's device display name, owns this decision.
+pub(crate) fn allows_management(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<bool> {
+    let _guard = lock_join_state(core)?;
+    let stored = JoinStateStore::new(core)
+        .load(join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| invalid_state("Join request unavailable"))?;
+    match stored.join_request.join_purpose.as_deref() {
+        None => Ok(true),
+        Some("messages_only") => Ok(false),
+        Some(_) => Err(crate::ImError::PermissionDenied),
+    }
+}

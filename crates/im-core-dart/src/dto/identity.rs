@@ -454,6 +454,8 @@ impl std::fmt::Debug for DartDeviceJoinProgress {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinApprovalPrompt {
+    /// False for a signed messages-only enrollment.
+    pub management_allowed: bool,
     pub approval_handle: String,
     pub join_session_id: String,
     pub sas: String,
