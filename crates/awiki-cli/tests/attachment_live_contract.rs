@@ -23,6 +23,19 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     std::fs::write(&attachment_path, payload).expect("attachment fixture");
 
     let server = TestServer::new(vec![
+        TestResponse::json(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "v7",
+            "group_event_seq": 7,
+            "group_profile": {"display_name":"Attachment group"},
+            "group_policy": {"message_security_profile":"transport-protected","attachments_allowed":true},
+            "member_role":"member", "member_status":"active", "member_count":2
+        }))),
+        TestResponse::json(&json_rpc_result(json!({
+            "group_did": group_did, "group_state_version":"v7",
+            "group_profile":{"display_name":"Attachment group"},
+            "group_policy":{"message_security_profile":"transport-protected","attachments_allowed":true}
+        }))),
         TestResponse::json(&json_rpc_error(1401, "jwt expired")),
         TestResponse::json(&json_rpc_result(json!({
             "attachment_id": "__REQUEST_ATTACHMENT_ID__",
@@ -142,6 +155,12 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(envelope["data"]["delivery"]["group_event_seq"], "77");
 
     let requests = server.requests();
+    assert_eq!(requests.len(), 7);
+    let policy = json_body(&requests[0]);
+    assert_eq!(policy["method"], "group.get");
+    assert_eq!(policy["params"]["body"]["group_did"], group_did);
+    assert_eq!(json_body(&requests[1])["method"], "group.get_info");
+    let requests = &requests[2..];
     assert_eq!(requests.len(), 5);
 
     let create_text = request_text(&requests[0]);
@@ -1149,9 +1168,15 @@ impl TestResponse {
         {
             return self;
         }
-        let attachment_id = json_body(request)["params"]["body"]["attachment_id"]
+        let request_json = json_body(request);
+        let attachment_id = request_json["params"]["body"]["attachment_id"]
             .as_str()
-            .expect("response marker requires a request attachment_id")
+            .unwrap_or_else(|| {
+                panic!(
+                    "response marker requires attachment_id for method {}",
+                    request_json["method"].as_str().unwrap_or("unknown")
+                )
+            })
             .to_owned();
         self.body = String::from_utf8_lossy(&self.body)
             .replace("__REQUEST_ATTACHMENT_ID__", &attachment_id)

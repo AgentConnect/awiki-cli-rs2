@@ -2744,6 +2744,8 @@ mod tests {
             name: Some("Group".to_owned()),
             display_name: None,
             avatar_uri: None,
+            avatar_members: None,
+            group_state_version: None,
             my_role: Some("member".to_owned()),
             membership_status: Some("active".to_owned()),
             member_count: Some(1),
