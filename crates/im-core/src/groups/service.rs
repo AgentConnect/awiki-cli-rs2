@@ -89,6 +89,21 @@ impl<'a> GroupService<'a> {
                 .await?
                 .require("group_e2ee")?;
         }
+        let capabilities = self.client.backend_capabilities_async(false).await?;
+        capabilities.require("groups")?;
+        check_group_policy_capabilities(
+            &capabilities,
+            request.admission_mode.as_ref(),
+            request.max_members,
+        )?;
+        capabilities.check_limit(
+            "groups",
+            "max_members",
+            request.initial_members.len() as u64 + 1,
+        )?;
+        if !request.initial_members.is_empty() {
+            capabilities.require("group_admin_add")?;
+        }
         #[cfg(feature = "group-e2ee")]
         let recovery_key = format!(
             "recovery:create:{}",
@@ -221,6 +236,9 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupJoinRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.client
+            .backend_capabilities(false)?
+            .require("group_open_join")?;
         let group = request.group.as_str().to_string();
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
@@ -237,6 +255,10 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupJoinRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.client
+            .backend_capabilities_async(false)
+            .await?
+            .require("group_open_join")?;
         let group = request.group.as_str().to_string();
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
@@ -335,6 +357,10 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.client
+            .backend_capabilities_async(false)
+            .await?
+            .require("group_admin_add")?;
         #[cfg(feature = "group-e2ee")]
         let requested_member_is_did = request.member.is_did();
         let secure_required = request.security.required();
@@ -726,6 +752,11 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupUpdatePolicyRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        check_group_policy_capabilities(
+            &self.client.backend_capabilities(false)?,
+            request.patch.admission_mode.as_ref(),
+            request.patch.max_members,
+        )?;
         let group = request.group.as_str().to_string();
         if let Ok(Some(snapshot)) = crate::internal::group_runtime::cache::cached_group_snapshot(
             self.client,
@@ -750,6 +781,11 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupUpdatePolicyRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        check_group_policy_capabilities(
+            &self.client.backend_capabilities_async(false).await?,
+            request.patch.admission_mode.as_ref(),
+            request.patch.max_members,
+        )?;
         let group = request.group.as_str().to_string();
         if let Ok(Some(snapshot)) =
             crate::internal::group_runtime::cache::cached_group_snapshot_async(
@@ -783,6 +819,11 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupUpdateRequest,
     ) -> crate::ImResult<super::GroupUpdateResult> {
+        check_group_policy_capabilities(
+            &self.client.backend_capabilities(false)?,
+            request.policy_patch.admission_mode.as_ref(),
+            request.policy_patch.max_members,
+        )?;
         if request.profile_patch == super::GroupProfilePatch::default()
             && request.policy_patch == super::GroupPolicyPatch::default()
         {
@@ -863,6 +904,11 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupUpdateRequest,
     ) -> crate::ImResult<super::GroupUpdateResult> {
+        check_group_policy_capabilities(
+            &self.client.backend_capabilities_async(false).await?,
+            request.policy_patch.admission_mode.as_ref(),
+            request.policy_patch.max_members,
+        )?;
         if request.profile_patch == super::GroupProfilePatch::default()
             && request.policy_patch == super::GroupPolicyPatch::default()
         {
@@ -1754,3 +1800,24 @@ fn require_v2_leave_safe(
 
 #[cfg(all(test, feature = "group-e2ee"))]
 mod tests;
+
+// Invite-only admission means administrator-managed membership. It is distinct
+// from invitation links/codes, so it must not require group_invite support.
+fn check_group_policy_capabilities(
+    capabilities: &crate::backend_capabilities::CapabilitySnapshot,
+    admission: Option<&super::GroupAdmissionMode>,
+    max_members: Option<super::GroupMemberLimit>,
+) -> crate::ImResult<()> {
+    match admission {
+        Some(super::GroupAdmissionMode::OpenJoin) => capabilities.require("group_open_join")?,
+        Some(super::GroupAdmissionMode::ApprovalRequired) => {
+            capabilities.require("group_approval")?
+        }
+        Some(super::GroupAdmissionMode::InviteOnly) => capabilities.require("group_admin_add")?,
+        _ => {}
+    }
+    if let Some(limit) = max_members {
+        capabilities.check_limit("groups", "max_members", u64::from(limit.as_u32()))?;
+    }
+    Ok(())
+}

@@ -371,3 +371,110 @@ async fn declared_disabled_encryption_stops_before_group_or_key_material_writes(
     );
     std::fs::remove_dir_all(fixture.root).unwrap();
 }
+
+#[tokio::test]
+async fn disabled_membership_and_policy_operations_reject_before_side_effects() {
+    let fixture = Fixture::new();
+    let client = fixture.client_with_group_v2(true);
+    client.backend_capabilities.discover(false, || async {
+        crate::backend_capabilities::CapabilitySnapshot::from_message_discovery(&json!({
+            "awiki_local": {"capabilities_version": 1, "capabilities": {
+                "groups": {"enabled": true, "protocol_version": 1, "limits": {"max_members": 2}},
+                "group_open_join": {"enabled": false, "protocol_version": 1},
+                "group_admin_add": {"enabled": false, "protocol_version": 1},
+                "group_approval": {"enabled": false, "protocol_version": 1}
+            }}
+        }))
+    }).await.unwrap();
+    let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+    let join = client
+        .groups()
+        .join_async(crate::groups::GroupJoinRequest {
+            group: group.clone(),
+            member_handle: None,
+            reason_text: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(join
+        .to_string()
+        .contains("backend.group_open_join.not_supported"));
+    let add = client
+        .groups()
+        .add_member_async(crate::groups::GroupMemberMutationRequest {
+            group: group.clone(),
+            member: crate::groups::GroupMemberRef::parse("bob", "example.test").unwrap(),
+            role: None,
+            reason_text: None,
+            leave_request_id: None,
+            security: Default::default(),
+        })
+        .await
+        .unwrap_err();
+    assert!(add
+        .to_string()
+        .contains("backend.group_admin_add.not_supported"));
+    let mut create = crate::groups::GroupCreateRequest::new("exceeds server limit");
+    create.max_members = Some(crate::groups::GroupMemberLimit::new(3).unwrap());
+    let error = client.groups().create_async(create).await.unwrap_err();
+    assert!(error.to_string().contains("backend.groups.limit_exceeded"));
+    let policy = crate::groups::GroupPolicyPatch {
+        admission_mode: Some(crate::groups::GroupAdmissionMode::ApprovalRequired),
+        ..Default::default()
+    };
+    let error = client
+        .groups()
+        .update_policy_async(crate::groups::GroupUpdatePolicyRequest {
+            group: group.clone(),
+            patch: policy.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("backend.group_approval.not_supported"));
+    let error = client
+        .groups()
+        .update_async(crate::groups::GroupUpdateRequest {
+            group,
+            profile_patch: crate::groups::GroupProfilePatch {
+                name: Some("must not be written".into()),
+                ..Default::default()
+            },
+            policy_patch: policy,
+        })
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("backend.group_approval.not_supported"));
+    assert!(
+        !fixture.root.join("local").exists(),
+        "preflight must not write group state"
+    );
+    std::fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn administrator_managed_membership_does_not_require_invitation_links() {
+    let snapshot =
+        crate::backend_capabilities::CapabilitySnapshot::from_message_discovery(&json!({
+            "awiki_local": {"capabilities_version": 1, "capabilities": {
+                "group_admin_add": {"enabled": true, "protocol_version": 1},
+                "group_invite": {"enabled": false, "protocol_version": 1}
+            }}
+        }))
+        .unwrap();
+    assert!(super::check_group_policy_capabilities(
+        &snapshot,
+        Some(&crate::groups::GroupAdmissionMode::InviteOnly),
+        None
+    )
+    .is_ok());
+    assert!(super::check_group_policy_capabilities(
+        &snapshot,
+        Some(&crate::groups::GroupAdmissionMode::ApprovalRequired),
+        None
+    )
+    .is_err());
+}

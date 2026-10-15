@@ -2365,3 +2365,9 @@ CLI 将明确关闭能力映射为 `not_supported`，未确认能力映射为
 `capability_unconfirmed`；非零退出码、`details.reason_code` 与人类输出保持同一
 稳定原因（例如 `backend.group_e2ee.not_supported`）。这些预检拒绝不标记为
 内部异常或可自动重试，也不建议绕过 Core 使用旧业务入口。
+
+群生命周期预检：创建群在写入恢复记录前检查 `groups`、初始成员数及声明的
+`max_members`；初始成员和管理员加成员检查 `group_admin_add`，开放加入检查
+`group_open_join`。创建或修改审批入群策略检查 `group_approval`，组合资料/策略
+修改在任何资料写入前完成该检查。`invite-only` 表示管理员控制成员，不等价于
+邀请码/链接能力 `group_invite`。服务端仍负责群策略、成员权限及实际成员数的最终校验。
