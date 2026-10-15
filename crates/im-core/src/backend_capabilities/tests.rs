@@ -245,3 +245,34 @@ async fn expired_authentication_is_not_hidden_as_discovery_unavailable() {
         assert!(cache.state.lock().await.snapshot.is_none());
     }
 }
+
+#[tokio::test]
+async fn rpc_authentication_codes_are_propagated_without_stale_fallback() {
+    for code in ["1401", "1403"] {
+        let cache = CapabilityCache::default();
+        cache
+            .discover(false, || async {
+                CapabilitySnapshot::from_message_discovery(&message(true))
+            })
+            .await
+            .unwrap();
+        let result = cache
+            .discover(true, || async {
+                Err(crate::ImError::Service {
+                    status_code: Some(200),
+                    code: Some(code.into()),
+                    message: "authentication required".into(),
+                    data: None,
+                })
+            })
+            .await;
+        assert!(matches!(result, Err(crate::ImError::Service { .. })));
+        let state = cache.state.lock().await;
+        assert_eq!(state.failures, 0);
+        assert!(state.retry_at.is_none());
+        assert_eq!(
+            state.snapshot.as_ref().unwrap().support("direct_e2ee"),
+            Support::Supported
+        );
+    }
+}

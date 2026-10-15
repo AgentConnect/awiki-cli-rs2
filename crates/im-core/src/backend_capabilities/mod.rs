@@ -505,6 +505,9 @@ impl CapabilityCache {
                     ..
                 },
             )) => Err(error),
+            Ok(Err(error)) if matches!(&error, crate::ImError::Service { code: Some(code), .. } if matches!(code.as_str(), "1401" | "1403")) => {
+                Err(error)
+            }
             _ => {
                 state.completed_at = Some(Instant::now());
                 state.failures = state.failures.saturating_add(1);
