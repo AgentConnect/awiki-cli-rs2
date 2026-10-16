@@ -39,6 +39,30 @@ impl App {
     ) -> Result<(), ExitError> {
         reject_dry_run(self, "id device join start")?;
         let resolved = self.resolve_config_for_workspace()?;
+        if flag(command, "email-verification-stdin") == "true" {
+            let result = crate::m_core_cli_adapter::device_join::begin_email_via_im_core_async(
+                &resolved,
+                flag(command, "did"),
+                flag(command, "handle"),
+                flag(command, "operation-id"),
+                u64_flag(command, "ttl-seconds", 600)?,
+                flag(command, "send-code") == "true",
+            )
+            .await?;
+            return self.render_identity_result(
+                "awiki-cli id device join start",
+                &resolved,
+                result,
+            );
+        }
+        if flag(command, "send-code") == "true" {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "Email verification input is required.",
+                "Use --email-verification-stdin.",
+            ));
+        }
         let result = crate::m_core_cli_adapter::device_join::begin_via_im_core_async(
             &resolved,
             flag(command, "did"),
@@ -179,7 +203,7 @@ fn reject_dry_run(app: &App, command: &str) -> Result<(), ExitError> {
     ))
 }
 
-fn confirm_sas_and_user_presence(sas: &str) -> Result<(), ExitError> {
+fn confirm_sas_and_user_presence(sas: &str, management_allowed: bool) -> Result<(), ExitError> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(ExitError::new(
             "user_presence_required",
@@ -209,7 +233,12 @@ fn confirm_sas_and_user_presence(sas: &str) -> Result<(), ExitError> {
 
     write!(
         stderr,
-        "Type APPROVE to allow this device to join and become a management device: "
+        "{}",
+        if management_allowed {
+            "Type APPROVE to join and configure identity management on this device: "
+        } else {
+            "Type APPROVE to join for messaging only (no root key or management permission): "
+        }
     )
     .map_err(io_error)?;
     stderr.flush().map_err(io_error)?;

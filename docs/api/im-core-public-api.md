@@ -1,5 +1,17 @@
 # im-core Public API：公共接口总览
 
+## 消息用途 Join（2026-10-15）
+
+Join 请求可携带签名覆盖的 `join_purpose: "messages_only"`；缺省继续原 APP/CLI 管理设备流程。该用途不是设备名称推断；完整请求摘要已经绑定 challenge、SAS 与批准记录。未知用途拒绝。消息用途使 Core 在准备批准与执行自动管理任务前收敛为普通成员批准，即使调用管理设备便捷入口也不得授根。旧客户端的闭合请求解析拒绝此字段，应使用配套版本。
+
+邮箱普通 Join 新增 `DeviceJoinService.send_email_code` 和 `begin_with_email`；五分钟数字验证码绑定 full Handle，Core 内部交换仅 Join 用途 grant，然后走已有持久化 Join。输入 Debug 隐藏邮箱和验证码，不返回 grant。网络结果不明时保留原 operation/workspace，通过已有 local sessions/poll 对账。
+
+已批准的 WBA 加入在接收端生成本地身份资料时，同时支持 Gateway 的
+`did:wba:{domain}:{handle}:{e1_fingerprint}` 与既有
+`did:wba:{domain}:user:{handle}:{e1_fingerprint}` 路径。仅识别这两种 Handle
+布局；仍先验证完整 DID 文档、批准 checkpoint、精确设备密钥及权限，再保存本地资料。
+失败或重启继续同一已批准 Join，不重新创建身份或导入其他根密钥。
+
 ## 一次 Join 授权自动配置管理权限（2026-09-15）
 
 App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。
@@ -2326,3 +2338,7 @@ P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{gr
 `device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
 
 Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。
+
+2026-10-15：`DeviceJoinRequestNotice.join_purpose`（Dart/Node `joinPurpose`）从已验证签名请求
+投影，可供批准页展示用途；不含原 proof、SAS 或私钥。缺省为旧管理设备用途，
+最终确认仍以 Core 批准 prompt 的 `management_allowed` 为权威，不能由宿主文案改变权限。

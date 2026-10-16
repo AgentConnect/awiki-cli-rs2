@@ -176,6 +176,8 @@ pub(crate) struct JoinRequest {
     pub(crate) pairing_public_key: String,
     pub(crate) profiles: Vec<String>,
     pub(crate) requested_role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) join_purpose: Option<String>,
     pub(crate) issued_at: String,
     pub(crate) expires_at: String,
     pub(crate) join_request_proof: JoinRequestProof,

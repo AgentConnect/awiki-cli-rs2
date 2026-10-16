@@ -1662,6 +1662,7 @@ where
                 crate::internal::system_notification::wire::JoinPayload::Requested(_)
             ) && local.is_none();
             notices.push(crate::identity::DeviceJoinRequestNotice {
+                join_purpose: request.and_then(|value| value.join_purpose.clone()),
                 event_id: notification.event_id,
                 join_session_id: notification.join_session_id,
                 did: crate::ids::Did::parse(&notification.did)?,
@@ -1773,6 +1774,11 @@ where
         sas_confirmed: bool,
         configure_management: bool,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        let configure_management = configure_management
+            && crate::internal::identity_device_join::allows_management(
+                self.core,
+                join_session_id,
+            )?;
         let prepared = match crate::internal::identity_device_join::load_prepared_admin_approval(
             self.core,
             join_session_id,

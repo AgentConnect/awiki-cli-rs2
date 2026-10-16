@@ -2988,6 +2988,7 @@ extension on gen_identity.DartDeviceJoinAuthorizedDeviceSummary {
 
 extension on gen_identity.DartDeviceJoinRequestNotice {
   DeviceJoinRequestNotice _toModel() => DeviceJoinRequestNotice(
+    joinPurpose: joinPurpose,
     eventId: eventId,
     joinSessionId: joinSessionId,
     did: did,
@@ -3062,6 +3063,7 @@ extension on DeviceJoinRejectReason {
 
 extension on gen_identity.DartDeviceJoinApprovalPrompt {
   DeviceJoinApprovalPrompt _toModel() => DeviceJoinApprovalPrompt(
+    managementAllowed: managementAllowed,
     approvalHandle: approvalHandle,
     joinSessionId: joinSessionId,
     sas: sas,

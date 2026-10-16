@@ -11291,11 +11291,13 @@ impl SseDecode for crate::dto::identity::DartDeviceCapabilityUpgradeStatus {
 impl SseDecode for crate::dto::identity::DartDeviceJoinApprovalPrompt {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_managementAllowed = <bool>::sse_decode(deserializer);
         let mut var_approvalHandle = <String>::sse_decode(deserializer);
         let mut var_joinSessionId = <String>::sse_decode(deserializer);
         let mut var_sas = <String>::sse_decode(deserializer);
         let mut var_expiresAt = <String>::sse_decode(deserializer);
         return crate::dto::identity::DartDeviceJoinApprovalPrompt {
+            management_allowed: var_managementAllowed,
             approval_handle: var_approvalHandle,
             join_session_id: var_joinSessionId,
             sas: var_sas,
@@ -11449,6 +11451,7 @@ impl SseDecode for crate::dto::identity::DartDeviceJoinRemoteState {
 impl SseDecode for crate::dto::identity::DartDeviceJoinRequestNotice {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_joinPurpose = <Option<String>>::sse_decode(deserializer);
         let mut var_eventId = <String>::sse_decode(deserializer);
         let mut var_joinSessionId = <String>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
@@ -11461,6 +11464,7 @@ impl SseDecode for crate::dto::identity::DartDeviceJoinRequestNotice {
         let mut var_claimedByCurrentDevice = <bool>::sse_decode(deserializer);
         let mut var_canStartVerification = <bool>::sse_decode(deserializer);
         return crate::dto::identity::DartDeviceJoinRequestNotice {
+            join_purpose: var_joinPurpose,
             event_id: var_eventId,
             join_session_id: var_joinSessionId,
             did: var_did,
@@ -17280,6 +17284,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDeviceCapabilit
 impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDeviceJoinApprovalPrompt {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.management_allowed.into_into_dart().into_dart(),
             self.approval_handle.into_into_dart().into_dart(),
             self.join_session_id.into_into_dart().into_dart(),
             self.sas.into_into_dart().into_dart(),
@@ -17494,6 +17499,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDeviceJoinRemot
 impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDeviceJoinRequestNotice {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.join_purpose.into_into_dart().into_dart(),
             self.event_id.into_into_dart().into_dart(),
             self.join_session_id.into_into_dart().into_dart(),
             self.did.into_into_dart().into_dart(),
@@ -22234,6 +22240,7 @@ impl SseEncode for crate::dto::identity::DartDeviceCapabilityUpgradeStatus {
 impl SseEncode for crate::dto::identity::DartDeviceJoinApprovalPrompt {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.management_allowed, serializer);
         <String>::sse_encode(self.approval_handle, serializer);
         <String>::sse_encode(self.join_session_id, serializer);
         <String>::sse_encode(self.sas, serializer);
@@ -22375,6 +22382,7 @@ impl SseEncode for crate::dto::identity::DartDeviceJoinRemoteState {
 impl SseEncode for crate::dto::identity::DartDeviceJoinRequestNotice {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.join_purpose, serializer);
         <String>::sse_encode(self.event_id, serializer);
         <String>::sse_encode(self.join_session_id, serializer);
         <String>::sse_encode(self.did, serializer);

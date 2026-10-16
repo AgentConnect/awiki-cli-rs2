@@ -82,3 +82,6 @@ pub use self::root_key_transfer::{
 };
 pub use self::service::IdentityService;
 pub use crate::error::DeviceRevokeOutcomeCategory;
+
+mod join_factor;
+pub use join_factor::EmailDeviceJoinRequest;

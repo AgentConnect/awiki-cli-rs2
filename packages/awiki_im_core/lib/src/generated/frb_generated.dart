@@ -9106,13 +9106,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartDeviceJoinApprovalPrompt(
-      approvalHandle: dco_decode_String(arr[0]),
-      joinSessionId: dco_decode_String(arr[1]),
-      sas: dco_decode_String(arr[2]),
-      expiresAt: dco_decode_String(arr[3]),
+      managementAllowed: dco_decode_bool(arr[0]),
+      approvalHandle: dco_decode_String(arr[1]),
+      joinSessionId: dco_decode_String(arr[2]),
+      sas: dco_decode_String(arr[3]),
+      expiresAt: dco_decode_String(arr[4]),
     );
   }
 
@@ -9221,19 +9222,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return DartDeviceJoinRequestNotice(
-      eventId: dco_decode_String(arr[0]),
-      joinSessionId: dco_decode_String(arr[1]),
-      did: dco_decode_String(arr[2]),
-      protocolDeviceId: dco_decode_String(arr[3]),
-      candidateKeyFingerprint: dco_decode_String(arr[4]),
-      issuedAt: dco_decode_String(arr[5]),
-      expiresAt: dco_decode_String(arr[6]),
-      state: dco_decode_dart_device_join_remote_state(arr[7]),
-      claimedByCurrentDevice: dco_decode_bool(arr[8]),
-      canStartVerification: dco_decode_bool(arr[9]),
+      joinPurpose: dco_decode_opt_String(arr[0]),
+      eventId: dco_decode_String(arr[1]),
+      joinSessionId: dco_decode_String(arr[2]),
+      did: dco_decode_String(arr[3]),
+      protocolDeviceId: dco_decode_String(arr[4]),
+      candidateKeyFingerprint: dco_decode_String(arr[5]),
+      issuedAt: dco_decode_String(arr[6]),
+      expiresAt: dco_decode_String(arr[7]),
+      state: dco_decode_dart_device_join_remote_state(arr[8]),
+      claimedByCurrentDevice: dco_decode_bool(arr[9]),
+      canStartVerification: dco_decode_bool(arr[10]),
     );
   }
 
@@ -13680,11 +13682,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_managementAllowed = sse_decode_bool(deserializer);
     var var_approvalHandle = sse_decode_String(deserializer);
     var var_joinSessionId = sse_decode_String(deserializer);
     var var_sas = sse_decode_String(deserializer);
     var var_expiresAt = sse_decode_String(deserializer);
     return DartDeviceJoinApprovalPrompt(
+      managementAllowed: var_managementAllowed,
       approvalHandle: var_approvalHandle,
       joinSessionId: var_joinSessionId,
       sas: var_sas,
@@ -13821,6 +13825,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_joinPurpose = sse_decode_opt_String(deserializer);
     var var_eventId = sse_decode_String(deserializer);
     var var_joinSessionId = sse_decode_String(deserializer);
     var var_did = sse_decode_String(deserializer);
@@ -13832,6 +13837,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_claimedByCurrentDevice = sse_decode_bool(deserializer);
     var var_canStartVerification = sse_decode_bool(deserializer);
     return DartDeviceJoinRequestNotice(
+      joinPurpose: var_joinPurpose,
       eventId: var_eventId,
       joinSessionId: var_joinSessionId,
       did: var_did,
@@ -19240,6 +19246,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.managementAllowed, serializer);
     sse_encode_String(self.approvalHandle, serializer);
     sse_encode_String(self.joinSessionId, serializer);
     sse_encode_String(self.sas, serializer);
@@ -19346,6 +19353,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.joinPurpose, serializer);
     sse_encode_String(self.eventId, serializer);
     sse_encode_String(self.joinSessionId, serializer);
     sse_encode_String(self.did, serializer);

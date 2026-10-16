@@ -176,3 +176,37 @@ async fn web_join_rejects_legacy_profiles_roles_and_each_tampered_signature() {
         );
     }
 }
+
+#[test]
+fn messages_only_purpose_is_signed_and_unknown_purposes_fail_closed() {
+    let (mut incoming, source, mut transport, time) = fixture();
+    let join = &mut incoming["params"]["body"]["payload"]["payload"]["join_request"];
+    join["join_purpose"] = json!("messages_only");
+    tests::resign_join_request(join);
+    tests::resign_origin_proof(&mut incoming, &source);
+    let verified = verify_with_transport(&mut transport, DID, &incoming, time).unwrap();
+    assert_eq!(
+        verified
+            .envelope
+            .notification
+            .initial_join_request
+            .unwrap()
+            .join_purpose
+            .as_deref(),
+        Some("messages_only")
+    );
+
+    // Even a valid notification signature cannot hide a modified device request.
+    incoming["params"]["body"]["payload"]["payload"]["join_request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("join_purpose");
+    tests::resign_origin_proof(&mut incoming, &source);
+    assert!(verify_with_transport(&mut transport, DID, &incoming, time).is_err());
+
+    let join = &mut incoming["params"]["body"]["payload"]["payload"]["join_request"];
+    join["join_purpose"] = json!("root_transfer");
+    tests::resign_join_request(join);
+    tests::resign_origin_proof(&mut incoming, &source);
+    assert!(verify_with_transport(&mut transport, DID, &incoming, time).is_err());
+}

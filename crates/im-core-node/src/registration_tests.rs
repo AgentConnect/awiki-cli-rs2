@@ -166,6 +166,7 @@ fn admin_join_and_approval_debug_redact_sas_and_handle() {
     assert!(!rendered.contains("482917"));
 
     let prompt = device_join_approval_prompt(im_core::identity::DeviceJoinApprovalPrompt {
+        management_allowed: true,
         approval_handle: "secret-approval-handle".to_owned(),
         join_session_id: "join-registration-1".to_owned(),
         sas: "482917".to_owned(),
