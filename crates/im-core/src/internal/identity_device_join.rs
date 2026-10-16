@@ -3409,14 +3409,14 @@ fn join_local_identity_projection(
             .strip_prefix(&format!("did:wba:{domain}:"))
             .ok_or(crate::ImError::PermissionDenied)?;
         let components = rest.split(':').collect::<Vec<_>>();
-        if components.len() != 3
-            || components[0] != "user"
-            || components[1].trim().is_empty()
-            || !components[2].starts_with("e1_")
-        {
+        let (handle, fingerprint) = match components.as_slice() {
+            [handle, fingerprint] | ["user", handle, fingerprint] => (*handle, *fingerprint),
+            _ => return Err(crate::ImError::PermissionDenied),
+        };
+        if handle.trim().is_empty() || !fingerprint.starts_with("e1_") {
             return Err(crate::ImError::PermissionDenied);
         }
-        let handle = components[1].to_ascii_lowercase();
+        let handle = handle.to_ascii_lowercase();
         let full_handle = format!("{handle}.{domain}");
         (handle, full_handle)
     };

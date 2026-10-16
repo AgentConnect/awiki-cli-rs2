@@ -6,6 +6,12 @@ Join 请求可携带签名覆盖的 `join_purpose: "messages_only"`；缺省继�
 
 邮箱普通 Join 新增 `DeviceJoinService.send_email_code` 和 `begin_with_email`；五分钟数字验证码绑定 full Handle，Core 内部交换仅 Join 用途 grant，然后走已有持久化 Join。输入 Debug 隐藏邮箱和验证码，不返回 grant。网络结果不明时保留原 operation/workspace，通过已有 local sessions/poll 对账。
 
+已批准的 WBA 加入在接收端生成本地身份资料时，同时支持 Gateway 的
+`did:wba:{domain}:{handle}:{e1_fingerprint}` 与既有
+`did:wba:{domain}:user:{handle}:{e1_fingerprint}` 路径。仅识别这两种 Handle
+布局；仍先验证完整 DID 文档、批准 checkpoint、精确设备密钥及权限，再保存本地资料。
+失败或重启继续同一已批准 Join，不重新创建身份或导入其他根密钥。
+
 ## 一次 Join 授权自动配置管理权限（2026-09-15）
 
 App/CLI 的正常加入确认含义为“允许该设备加入并成为管理设备”。保留身份/SAS 核对及一次 user presence；取消此路径后续独立 root 授权。Core 的既有普通 Join 接口仍供 Node/DSH 使用，独立 root-key send 仍要求单独明确授权，不能将 user_presence_confirmed 硬编码为 true 接入自动流程。

@@ -4429,3 +4429,29 @@ async fn management_budget_is_signed_and_legacy_authorization_survives_upgrade()
         .max_attempts = 4;
     assert!(management::validate_authority(&restored).is_err());
 }
+
+#[test]
+fn joined_identity_projection_supports_gateway_and_legacy_wba_paths() {
+    let index = crate::internal::identity_store::IndexPayload::default();
+    for path in ["alice:e1_root", "user:alice:e1_root"] {
+        let did = crate::ids::Did::parse(format!("did:wba:example.test:{path}")).unwrap();
+        let projected = join_local_identity_projection(&did, "dev-joined", &index, None).unwrap();
+        assert_eq!(
+            projected,
+            (
+                "alice".into(),
+                "alice".into(),
+                "alice.example.test".into(),
+                true
+            )
+        );
+    }
+    for path in [
+        "team:alice:e1_root",
+        "user:alice:extra:e1_root",
+        "alice:other_root",
+    ] {
+        let did = crate::ids::Did::parse(format!("did:wba:example.test:{path}")).unwrap();
+        assert!(join_local_identity_projection(&did, "dev-joined", &index, None).is_err());
+    }
+}
