@@ -10138,7 +10138,6 @@ END;
                             message: "device authorization epoch is stale".to_owned(),
                             data: None,
                         }),
-                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Ok(sync_group_read_ack(
                             &binding,
@@ -10172,7 +10171,6 @@ END;
                 "sync.delta",
                 "message.get_batch",
                 "read_state.mark_read",
-                "anp.get_capabilities",
                 "sync.bootstrap",
                 "read_state.mark_read"
             ]
@@ -10248,12 +10246,7 @@ END;
             ReloadingSyncSnapshotTransport {
                 inner: SyncSnapshotTransport::queued(
                     Rc::clone(&calls),
-                    vec![
-                        Err(rejected),
-                        Ok(explicit_sync_negotiation_response()),
-                        Ok(lane_bootstrap),
-                        Ok(retry_delta),
-                    ],
+                    vec![Err(rejected), Ok(lane_bootstrap), Ok(retry_delta)],
                 ),
                 authentication_reloads: Rc::clone(&authentication_reloads),
             },
@@ -10273,12 +10266,7 @@ END;
                     .iter()
                     .map(|call| call.method.as_str())
                     .collect::<Vec<_>>(),
-                [
-                    "sync.delta",
-                    "anp.get_capabilities",
-                    "sync.bootstrap",
-                    "sync.delta"
-                ]
+                ["sync.delta", "sync.bootstrap", "sync.delta"]
             );
             assert_eq!(
                 calls[0]
@@ -10336,12 +10324,7 @@ END;
             ReloadingSyncSnapshotTransport {
                 inner: SyncSnapshotTransport::queued(
                     Rc::clone(&calls),
-                    vec![
-                        Err(rejected()),
-                        Ok(explicit_sync_negotiation_response()),
-                        Ok(lane_bootstrap),
-                        Err(rejected()),
-                    ],
+                    vec![Err(rejected()), Ok(lane_bootstrap), Err(rejected())],
                 ),
                 authentication_reloads: Rc::clone(&authentication_reloads),
             },
@@ -10364,12 +10347,7 @@ END;
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "sync.delta",
-                "anp.get_capabilities",
-                "sync.bootstrap",
-                "sync.delta"
-            ]
+            ["sync.delta", "sync.bootstrap", "sync.delta"]
         );
     }
 
