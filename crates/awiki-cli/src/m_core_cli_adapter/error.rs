@@ -157,12 +157,15 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
         im_core::ImError::UnsupportedCapability { capability }
             if capability.starts_with("backend.") =>
         {
-            let unconfirmed = capability.ends_with(".unconfirmed");
+            let upgrade_required = capability.ends_with(".server_upgrade_required");
+            let unconfirmed = upgrade_required || capability.ends_with(".unconfirmed");
             let mut mapped = ExitError::new(
                 if unconfirmed { "capability_unconfirmed" } else { "not_supported" },
                 2,
                 format!("{context}: {capability}"),
-                if unconfirmed {
+                if upgrade_required {
+                    "This server must be upgraded to the versioned capability contract before remote operations can continue. Local identities and history remain available."
+                } else if unconfirmed {
                     "Server capability discovery has not confirmed this operation. Refresh server capabilities and try again."
                 } else {
                     "This server does not support this operation. Choose a supported operation or another server."
@@ -467,6 +470,22 @@ pub fn map_identity_boundary_error(err: ExitError) -> ExitError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_upgrade_is_unconfirmed_and_auth_keeps_original_category() {
+        let upgrade = map_im_error(
+            im_core::ImError::unsupported("backend.direct.server_upgrade_required"),
+            "send",
+        );
+        assert_eq!(upgrade.detail.code, "capability_unconfirmed");
+        let auth = map_im_error(im_core::ImError::AuthRequired, "send");
+        assert_eq!(auth.detail.code, "auth_required");
+        let disabled = map_im_error(
+            im_core::ImError::unsupported("backend.direct.not_supported"),
+            "send",
+        );
+        assert_eq!(disabled.detail.code, "not_supported");
+    }
 
     #[test]
     fn local_identity_recovery_is_not_reported_as_permission_denied() {

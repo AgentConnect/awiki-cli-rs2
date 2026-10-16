@@ -203,6 +203,10 @@ impl RuntimeRealtimeSupervisor {
     }
 
     pub(super) async fn stop(mut self) {
+        self.pause().await;
+    }
+
+    pub(super) async fn pause(&mut self) {
         let agent_dids = self.sessions.keys().cloned().collect::<Vec<_>>();
         for agent_did in agent_dids {
             self.stop_agent_session(&agent_did).await;

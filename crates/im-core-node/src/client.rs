@@ -218,7 +218,12 @@ impl ClientInner {
 
     async fn complete_close(&self, realtime_result: SafeResult<()>) -> SafeResult<()> {
         let mut environment = self.environment.write().await;
-        environment.take();
+        if let Some(environment) = environment.take() {
+            environment.core.stop_backend_discovery();
+            if let Some(client) = environment.client {
+                client.stop_backend_capabilities();
+            }
+        }
         self.identity_provider
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -330,6 +335,37 @@ impl ProcessingReader {
         }
     }
 }
+#[napi(js_name = "NativeCapabilitySubscription")]
+pub struct NativeCapabilitySubscription {
+    updates: tokio::sync::Mutex<
+        tokio::sync::watch::Receiver<im_core::backend_capabilities::CapabilityState>,
+    >,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+impl Drop for NativeCapabilitySubscription {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+#[napi]
+impl NativeCapabilitySubscription {
+    #[napi(catch_unwind)]
+    pub async fn next_update(&self) -> napi::Result<Option<String>> {
+        let mut updates = self.updates.lock().await;
+        tokio::select! {
+            _ = self.cancellation.cancelled() => Ok(None),
+            result = updates.changed() => {
+                if result.is_err() { return Ok(None); }
+                Ok(Some(serde_json::json!(*updates.borrow_and_update()).to_string()))
+            }
+        }
+    }
+    #[napi(catch_unwind)]
+    pub fn stop(&self) {
+        self.cancellation.cancel();
+    }
+}
+
 #[napi(js_name = "NativeProcessingSession")]
 pub struct NativeProcessingSession {
     client: Arc<ClientInner>,
@@ -671,6 +707,71 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn set_backend_discovery_active(&self, active: bool) -> napi::Result<()> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                if let Some(client) = operation.environment()?.client.as_ref() {
+                    if active {
+                        client.resume_backend_capabilities();
+                    } else {
+                        client.stop_backend_capabilities();
+                    }
+                }
+                Ok(())
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn backend_capabilities_snapshot(&self, authenticated: bool) -> napi::Result<String> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let snapshot = if authenticated {
+                    operation
+                        .client()?
+                        .backend_capabilities_snapshot_async()
+                        .await
+                } else {
+                    operation
+                        .environment()?
+                        .core
+                        .backend_capabilities_snapshot_async()
+                        .await
+                };
+                Ok(serde_json::json!(snapshot).to_string())
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn subscribe_backend_capabilities(
+        &self,
+        authenticated: bool,
+    ) -> napi::Result<NativeCapabilitySubscription> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let mut updates = if authenticated {
+                    operation.client()?.subscribe_backend_capabilities()
+                } else {
+                    operation
+                        .environment()?
+                        .core
+                        .subscribe_backend_capabilities()
+                };
+                updates.mark_changed();
+                Ok(NativeCapabilitySubscription {
+                    updates: tokio::sync::Mutex::new(updates),
+                    cancellation: self.inner.cancellation.child_token(),
+                })
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn backend_capabilities(
         &self,
         authenticated: bool,
@@ -856,7 +957,9 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         client.messages().maintain_encrypted_messaging_async().await;
-        environment.client = Some(client);
+        if let Some(previous) = environment.client.replace(client) {
+            previous.stop_backend_capabilities();
+        }
         let metadata = environment.state.metadata();
         let identity_id = identity.id.as_str().to_owned();
         let registered_at_ms =
@@ -1044,7 +1147,9 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         client.messages().maintain_encrypted_messaging_async().await;
-        environment.client = Some(client);
+        if let Some(previous) = environment.client.replace(client) {
+            previous.stop_backend_capabilities();
+        }
         let metadata = environment.state.metadata();
         let identity_id = identity.id.as_str().to_owned();
         let registered_at_ms =
@@ -2946,7 +3051,9 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         client.messages().maintain_encrypted_messaging_async().await;
-        environment.client = Some(client);
+        if let Some(previous) = environment.client.replace(client) {
+            previous.stop_backend_capabilities();
+        }
         Ok(())
     }
 
@@ -2976,7 +3083,9 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        environment.client = None;
+        if let Some(previous) = environment.client.take() {
+            previous.stop_backend_capabilities();
+        }
         environment.state.harden_permissions()?;
         Ok(())
     }

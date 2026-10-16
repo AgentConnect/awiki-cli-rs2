@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'generated/api/capabilities.dart' as gen_capabilities;
 import 'generated/api/auth.dart' as gen_auth;
 import 'generated/api/attachments.dart' as gen_attachments;
 import 'generated/api/client.dart' as gen_client;
@@ -106,6 +107,14 @@ extension on gen_error.DartDeviceRevokeOutcomeCategory {
 }
 
 class AwikiImCore {
+  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() async => jsonDecode(
+    await _mapNativeErrors(() => gen_capabilities.publicCapabilitySnapshot(instance: _inner)),
+  ) as Map<String, dynamic>;
+
+  Stream<Map<String, dynamic>> watchBackendCapabilities() => _watchCapabilityStates(
+    () => gen_capabilities.subscribePublicCapabilities(instance: _inner),
+  );
+
   Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async {
     final raw = await _mapNativeErrors(() => gen_core.publicBackendCapabilities(instance: _inner, force: force));
     return jsonDecode(raw) as Map<String, dynamic>;
@@ -113,7 +122,7 @@ class AwikiImCore {
 
   AwikiImCore._(this._inner);
 
-  final gen_client.ArcDartImCore _inner;
+  final gen_capabilities.ArcDartImCore _inner;
   bool _disposed = false;
 
   static Future<AwikiImCore> open({
@@ -1120,6 +1129,14 @@ class AwikiImCore {
 }
 
 class AwikiImClient {
+  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() async => jsonDecode(
+    await _mapNativeErrors(() => gen_capabilities.localCapabilitySnapshot(instance: _inner)),
+  ) as Map<String, dynamic>;
+
+  Stream<Map<String, dynamic>> watchBackendCapabilities() => _watchCapabilityStates(
+    () => gen_capabilities.subscribeLocalCapabilities(instance: _inner),
+  );
+
   Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async {
     final raw = await _mapNativeErrors(() => gen_client.localBackendCapabilities(instance: _inner, force: force));
     return jsonDecode(raw) as Map<String, dynamic>;
@@ -4932,4 +4949,40 @@ Future<T> _mapRootKeyTransferErrors<T>(Future<T> Function() action) async {
       retryable: error.retryable,
     );
   }
+}
+
+Stream<Map<String, dynamic>> _watchCapabilityStates(
+  Future<gen_capabilities.ArcDartCapabilitySubscription> Function() subscribe,
+) {
+  gen_capabilities.ArcDartCapabilitySubscription? subscription;
+  var cancelled = false;
+  late StreamController<Map<String, dynamic>> controller;
+  controller = StreamController<Map<String, dynamic>>(
+    onListen: () async {
+      try {
+        final active = subscription = await subscribe();
+        if (cancelled) {
+          await gen_capabilities.closeCapabilitySubscription(subscription: active);
+          return;
+        }
+        while (!cancelled) {
+          final raw = await gen_capabilities.nextCapabilityState(subscription: active);
+          if (raw == null || cancelled) break;
+          controller.add(jsonDecode(raw) as Map<String, dynamic>);
+        }
+      } catch (error, stack) {
+        if (!cancelled) controller.addError(error, stack);
+      } finally {
+        final active = subscription;
+        if (active != null) await gen_capabilities.closeCapabilitySubscription(subscription: active);
+        if (!cancelled) await controller.close();
+      }
+    },
+    onCancel: () async {
+      cancelled = true;
+      final active = subscription;
+      if (active != null) await gen_capabilities.closeCapabilitySubscription(subscription: active);
+    },
+  );
+  return controller.stream;
 }

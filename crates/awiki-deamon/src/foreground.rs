@@ -371,7 +371,20 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             break;
         }
         if !capability_notice_shown {
-            eprintln!("This server does not currently provide the required Daemon features. Local state and diagnostics are retained.");
+            let reason = match capabilities.support("agents.daemon") {
+                im_core::backend_capabilities::Support::Unsupported => {
+                    "This server does not support Daemon features."
+                }
+                _ if capabilities.refresh_error
+                    == Some(
+                        im_core::backend_capabilities::CapabilityRefreshError::UpgradeRequired,
+                    ) =>
+                {
+                    "The server must be upgraded before Daemon features can be confirmed."
+                }
+                _ => "Connecting to confirm Daemon features; discovery will retry.",
+            };
+            eprintln!("{reason} Local state and diagnostics are retained.");
             capability_notice_shown = true;
         }
         if let Some(path) = options.ready_file.as_ref() {
@@ -403,13 +416,13 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         rpc_outbox.clone(),
         queue_notifier.clone(),
     )?;
-    let queue_scheduler = QueueScheduler::start(
+    let mut queue_scheduler = Some(QueueScheduler::start(
         config.clone(),
         state.clone(),
         im_core.clone(),
         rpc_outbox.clone(),
         queue_notifier.clone(),
-    );
+    ));
     {
         let outbox = rpc_outbox
             .lock()
@@ -464,12 +477,29 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processing_ready = HashMap::<String, runtime_realtime::RealtimeSource>::new();
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
+    let mut backend_enabled = true;
     let exit_reason = loop {
         let capabilities = backend_discovery.backend_capabilities_async(false).await?;
-        if capabilities.support("agents.daemon")
-            != im_core::backend_capabilities::Support::Supported
-        {
-            break "backend_daemon_unavailable".to_owned();
+        let enabled = capabilities.support("agents.daemon")
+            == im_core::backend_capabilities::Support::Supported;
+        if enabled != backend_enabled {
+            backend_enabled = enabled;
+            if enabled {
+                realtime_supervisor.reconcile_active_agents().await?;
+                queue_scheduler = Some(QueueScheduler::start(
+                    config.clone(),
+                    state.clone(),
+                    im_core.clone(),
+                    rpc_outbox.clone(),
+                    queue_notifier.clone(),
+                ));
+                queue_notifier.notify_all();
+            } else {
+                realtime_supervisor.pause().await;
+                if let Some(scheduler) = queue_scheduler.take() {
+                    scheduler.stop().await;
+                }
+            }
         }
         if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
             let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
@@ -489,7 +519,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             }
         }
         tokio::select! {
-            notification = realtime_supervisor.recv() => {
+            notification = realtime_supervisor.recv(), if backend_enabled => {
                 if let Some(notification) = notification {
                     if let RuntimeRealtimeNotification::ProcessingReady { source } = notification {
                         processing_ready.insert(source.agent_did.clone(), source);
@@ -512,7 +542,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 &options,
                 realtime_sync.reconciliation_interval(),
                 last_runtime_inbox_reconciliation,
-            )) => {
+            )), if backend_enabled => {
                 realtime_supervisor.reconcile_active_agents().await?;
                 let newly_processed =
                     process_inbox_once(
@@ -533,7 +563,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 }
                 last_runtime_inbox_reconciliation = Some(Instant::now());
             }
-            _ = tokio::time::sleep(realtime_sync.next_due_delay()) => {
+            _ = tokio::time::sleep(realtime_sync.next_due_delay()), if backend_enabled => {
                 let newly_processed = process_due_realtime_sync_work(
                     &config,
                     &state,
@@ -550,7 +580,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     queue_notifier.notify_all();
                 }
             }
-            _ = std::future::ready(()), if !processing_ready.is_empty() => {
+            _ = std::future::ready(()), if backend_enabled && !processing_ready.is_empty() => {
                 let key = processing_ready.keys().next().cloned().expect("guarded processing hint");
                 let source = processing_ready.remove(&key).expect("pending processing source");
                 if let Some(client) = realtime_supervisor.client_for_source(&source) {
@@ -561,6 +591,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 }
             }
             _ = heartbeat_interval.tick() => {
+                if !backend_enabled { continue; }
                 {
                     let outbox = rpc_outbox
                         .lock()
@@ -591,7 +622,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     crate::acp::store::request_shutdown(&state)?;
     runtime_routes.shutdown().await;
     rpc_worker.stop();
-    queue_scheduler.stop().await;
+    if let Some(scheduler) = queue_scheduler {
+        scheduler.stop().await;
+    }
     let _ = std::fs::remove_file(&config.local_socket_path);
     Ok(ForegroundRunSummary {
         status,

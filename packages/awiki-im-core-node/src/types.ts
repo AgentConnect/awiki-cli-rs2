@@ -1081,7 +1081,19 @@ export interface DidDocumentService {
   readonly securityProfiles?: readonly string[]
 }
 
+export interface BackendCapabilityState {
+  readonly snapshot: BackendCapabilitySnapshot
+  readonly refresh_error: 'unavailable' | 'authentication_required' | 'upgrade_required' | null
+  readonly persistence_failed: boolean
+}
+export interface BackendCapabilitySubscription {
+  nextUpdate(): Promise<BackendCapabilityState | null>
+  stop(): void
+}
 export interface ImCoreNodeClient {
+  setBackendDiscoveryActive(active: boolean): Promise<void>
+  backendCapabilitiesSnapshot(authenticated?: boolean): Promise<BackendCapabilitySnapshot>
+  subscribeBackendCapabilities(authenticated?: boolean): Promise<BackendCapabilitySubscription>
   backendCapabilities(authenticated?: boolean, force?: boolean): Promise<BackendCapabilitySnapshot>
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
@@ -1203,6 +1215,7 @@ export interface GroupOperationStatus {
 
 /** Safe projection of the versioned home backend contract; never an authorization grant. */
 export interface BackendCapabilitySnapshot {
+  refresh_error?: 'unavailable' | 'authentication_required' | 'upgrade_required'
   context?: { tenant_scope: string; authenticated: boolean; runtime_generation: number }
   capabilities_version: 1
   status: 'confirmed' | 'stale' | 'unavailable' | 'incompatible'

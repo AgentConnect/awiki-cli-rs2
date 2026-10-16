@@ -10,6 +10,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod persistence;
+mod worker;
+pub(crate) use worker::DiscoveryWorker;
+
+const PUBLIC_KEYS: &[&str] = &[
+    "identity.multi_device",
+    "identity.device_revoke",
+    "identity.capability_upgrade",
+    "identity.root_transfer",
+    "identity.account_recovery",
+    "agents.managed_agents",
+    "agents.daemon",
+    "agents.skill_onboarding",
+    "agents.skill_group_membership",
+    "account.state_sync",
+    "services.mail",
+    "services.model_proxy",
+    "services.guest_gateway",
+    "content.pages",
+    "content.sites",
+    "content.hosting",
+    "client_updates.policy",
+    "registration.phone",
+    "registration.email",
+    "registration.handle_only",
+];
+
 pub const CONTRACT_VERSION: u32 = 1;
 pub const FRESH_SECONDS: u64 = 300;
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
@@ -139,6 +166,8 @@ pub struct CapabilitySnapshot {
     pub status: DiscoveryStatus,
     pub fetched_at: Option<i64>,
     pub expired: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<CapabilityRefreshError>,
     pub capabilities: BTreeMap<String, Capability>,
 }
 impl CapabilitySnapshot {
@@ -149,6 +178,7 @@ impl CapabilitySnapshot {
             status: DiscoveryStatus::Unavailable,
             fetched_at: None,
             expired: true,
+            refresh_error: None,
             capabilities: BTreeMap::new(),
         }
     }
@@ -189,7 +219,12 @@ impl CapabilitySnapshot {
                 "backend.{name}.not_supported"
             ))),
             Support::Unknown => Err(crate::ImError::unsupported(format!(
-                "backend.{name}.unconfirmed"
+                "backend.{name}.{}",
+                if self.refresh_error == Some(CapabilityRefreshError::UpgradeRequired) {
+                    "server_upgrade_required"
+                } else {
+                    "unconfirmed"
+                }
             ))),
         }
     }
@@ -198,7 +233,11 @@ impl CapabilitySnapshot {
         let Some(local) = raw.get("awiki_local") else {
             return Ok(Self::empty());
         };
-        if local.get("capabilities_version").and_then(Value::as_u64) != Some(1) {
+        let Some(version) = local.get("capabilities_version") else {
+            return Ok(Self::empty());
+        };
+        let version = version.as_u64().ok_or_else(invalid_contract)?;
+        if version != 1 {
             return Ok(Self {
                 status: DiscoveryStatus::Incompatible,
                 ..Self::empty()
@@ -218,6 +257,7 @@ impl CapabilitySnapshot {
             status: DiscoveryStatus::Confirmed,
             fetched_at: Some(chrono::Utc::now().timestamp()),
             expired: false,
+            refresh_error: None,
             capabilities,
         })
     }
@@ -226,9 +266,15 @@ impl CapabilitySnapshot {
         if raw.get("capabilities_version").is_none() {
             return Ok(Self::empty());
         }
-        if raw.get("schema_version").and_then(Value::as_u64) != Some(1)
-            || raw.get("capabilities_version").and_then(Value::as_u64) != Some(1)
-        {
+        let schema = raw
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(invalid_contract)?;
+        let version = raw
+            .get("capabilities_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(invalid_contract)?;
+        if schema != 1 || version != 1 {
             return Ok(Self {
                 status: DiscoveryStatus::Incompatible,
                 ..Self::empty()
@@ -336,6 +382,7 @@ impl CapabilitySnapshot {
             status: DiscoveryStatus::Confirmed,
             fetched_at: Some(chrono::Utc::now().timestamp()),
             expired: false,
+            refresh_error: None,
             capabilities,
         })
     }
@@ -354,18 +401,36 @@ fn check_size(raw: &Value) -> crate::ImResult<()> {
     Ok(())
 }
 
-/// Owned by one immutable Core or exact identity runtime, never process-global.
+/// Safe state notifications contain no transport errors or authentication material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapabilityState {
+    pub snapshot: CapabilitySnapshot,
+    pub refresh_error: Option<CapabilityRefreshError>,
+    pub persistence_failed: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityRefreshError {
+    Unavailable,
+    AuthenticationRequired,
+    UpgradeRequired,
+}
+
+/// Network serialization and snapshot access have separate locks.
 pub(crate) struct CapabilityCache {
     generation: AtomicU64,
     state: tokio::sync::Mutex<CacheState>,
+    refresh: tokio::sync::Mutex<()>,
+    scheduled: std::sync::atomic::AtomicBool,
+    cancellation: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+    persistence: Option<persistence::Persistence>,
+    persistence_enabled: std::sync::atomic::AtomicBool,
+    changes: tokio::sync::watch::Sender<CapabilityState>,
 }
 static NEXT_RUNTIME_GENERATION: AtomicU64 = AtomicU64::new(1);
 impl Default for CapabilityCache {
     fn default() -> Self {
-        Self {
-            state: Default::default(),
-            generation: AtomicU64::new(NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed)),
-        }
+        Self::new(None)
     }
 }
 #[derive(Default)]
@@ -375,10 +440,127 @@ struct CacheState {
     retry_at: Option<Instant>,
     failures: u32,
     completed_at: Option<Instant>,
+    revision: u64,
+    refresh_error: Option<CapabilityRefreshError>,
+    persistence_failed: bool,
 }
 impl CapabilityCache {
+    fn new(persistence: Option<persistence::Persistence>) -> Self {
+        let snapshot = persistence.as_ref().and_then(|p| p.read());
+        let age = snapshot
+            .as_ref()
+            .and_then(|s| s.fetched_at)
+            .map(|at| chrono::Utc::now().timestamp().saturating_sub(at));
+        let success_at = age
+            .filter(|age| *age >= 0 && *age < FRESH_SECONDS as i64)
+            .and_then(|age| Instant::now().checked_sub(Duration::from_secs(age as u64)));
+        let state = CacheState {
+            snapshot,
+            success_at,
+            ..Default::default()
+        };
+        let (changes, _) = tokio::sync::watch::channel(CapabilityState {
+            snapshot: current(&state),
+            refresh_error: None,
+            persistence_failed: false,
+        });
+        Self {
+            state: tokio::sync::Mutex::new(state),
+            refresh: Default::default(),
+            scheduled: Default::default(),
+            cancellation: Default::default(),
+            persistence,
+            persistence_enabled: std::sync::atomic::AtomicBool::new(true),
+            changes,
+            generation: AtomicU64::new(NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed)),
+        }
+    }
+    pub(crate) fn public(config: &crate::ImCoreConfig, paths: &crate::ImCorePaths) -> Self {
+        Self::new(Some(persistence::Persistence::public(config, paths)))
+    }
+    pub(crate) fn identity(
+        core: &crate::core::ImCoreInner,
+        runtime: &crate::internal::identity_runtime::ClientIdentityRuntime,
+    ) -> Self {
+        Self::new(Some(persistence::Persistence::identity(core, runtime)))
+    }
+    fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub(crate) fn stop(&self) {
+        self.cancellation_token().cancel();
+        self.generation.store(
+            NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed),
+            Ordering::Release,
+        );
+    }
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+    async fn snapshot(&self) -> CapabilitySnapshot {
+        current(&*self.state.lock().await)
+    }
+    fn schedule<F, Fut>(self: &std::sync::Arc<Self>, worker: &DiscoveryWorker, fetch: F)
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        if self.scheduled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        struct Scheduled(std::sync::Arc<CapabilityCache>);
+        impl Drop for Scheduled {
+            fn drop(&mut self) {
+                self.0.scheduled.store(false, Ordering::Release);
+            }
+        }
+        let scheduled = Scheduled(self.clone());
+        let generation = self.generation();
+        let cancellation = self.cancellation_token();
+        let _ = worker.spawn(async move {
+            let cache = &scheduled.0;
+            loop {
+                let delay = {
+                    let state = cache.state.lock().await;
+                    if generation != cache.generation()
+                        || fresh(&state)
+                        || state.refresh_error
+                            == Some(CapabilityRefreshError::AuthenticationRequired)
+                    {
+                        break;
+                    }
+                    state.retry_at.map_or(Duration::ZERO, |at| {
+                        at.saturating_duration_since(Instant::now())
+                    })
+                };
+                tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                if generation != cache.generation() || fresh(&*cache.state.lock().await) {
+                    break;
+                }
+                fetch().await;
+            }
+        });
+    }
+    fn publish(&self, state: &CacheState) {
+        self.changes.send_replace(CapabilityState {
+            snapshot: current(state),
+            refresh_error: state.refresh_error,
+            persistence_failed: state.persistence_failed,
+        });
+    }
+    fn persist(&self, state: &mut CacheState) {
+        if !self.persistence_enabled.load(Ordering::Acquire) {
+            return;
+        }
+        if let (Some(persistence), Some(snapshot)) = (&self.persistence, &state.snapshot) {
+            state.persistence_failed = persistence.write(snapshot).is_err();
+        }
     }
     pub(crate) async fn observe_rpc_result(
         &self,
@@ -427,19 +609,30 @@ impl CapabilityCache {
             },
         );
         state.snapshot = Some(snapshot);
+        state.revision += 1;
         state.success_at = Some(Instant::now());
         state.retry_at = None;
         state.failures = 0;
+        state.refresh_error = None;
+        self.persist(&mut state);
+        self.publish(&state);
     }
     pub(crate) async fn invalidate_authorization(&self) {
+        // A mutable session advanced beyond this immutable client's disk binding.
+        // The replacement client will persist under its own verified context.
+        self.persistence_enabled.store(false, Ordering::Release);
         let mut state = self.state.lock().await;
-        *state = CacheState::default();
+        let revision = state.revision + 1;
+        *state = CacheState {
+            revision,
+            ..Default::default()
+        };
         self.generation.store(
             NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed),
             Ordering::Release,
         );
+        self.publish(&state);
     }
-
     pub(crate) async fn discover<F, Fut>(
         &self,
         force: bool,
@@ -449,101 +642,182 @@ impl CapabilityCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = crate::ImResult<CapabilitySnapshot>>,
     {
-        // Keep the lease across I/O: concurrent callers share a successful result and backoff.
+        // Ordinary reads never wait on an outstanding request, even when stale.
+        if !force && self.state.lock().await.snapshot.is_some() {
+            return Ok(self.snapshot().await);
+        }
         let requested_at = Instant::now();
+        let generation = self.generation();
+        let _lease = self.refresh.lock().await;
+        let revision = {
+            let state = self.state.lock().await;
+            if generation != self.generation() {
+                return Err(context_changed());
+            }
+            if state.completed_at.is_some_and(|at| at >= requested_at)
+                || (!force && fresh(&state))
+                || state.retry_at.is_some_and(|at| at > Instant::now())
+            {
+                return match state.refresh_error {
+                    Some(CapabilityRefreshError::AuthenticationRequired) => {
+                        Err(crate::ImError::AuthRequired)
+                    }
+                    _ => Ok(current(&state)),
+                };
+            }
+            state.revision
+        };
+        let cancellation = self.cancellation_token();
+        let result = tokio::select! {
+            _ = cancellation.cancelled() => return Err(context_changed()),
+            result = tokio::time::timeout(Duration::from_secs(10), fetch()) => result,
+        };
         let mut state = self.state.lock().await;
-        let now = Instant::now();
-        if state.completed_at.is_some_and(|at| at >= requested_at) {
-            return Ok(if state.failures == 0 {
-                state
-                    .snapshot
-                    .clone()
-                    .unwrap_or_else(CapabilitySnapshot::empty)
-            } else {
-                stale(&state)
-            });
+        if generation != self.generation() {
+            return Err(context_changed());
         }
-        if !force
-            && state.failures == 0
-            && state
-                .success_at
-                .is_some_and(|at| now.duration_since(at) < Duration::from_secs(FRESH_SECONDS))
-        {
-            return Ok(state
-                .snapshot
-                .clone()
-                .unwrap_or_else(CapabilitySnapshot::empty));
+        // An explicit business rejection committed after this request began wins.
+        if revision != state.revision {
+            return Ok(current(&state));
         }
-        if state.retry_at.is_some_and(|at| at > now) {
-            return Ok(stale(&state));
-        }
-        let result = tokio::time::timeout(Duration::from_secs(10), fetch()).await;
+        state.completed_at = Some(Instant::now());
         match result {
-            Ok(Ok(snapshot)) if snapshot.status == DiscoveryStatus::Confirmed => {
-                state.completed_at = Some(Instant::now());
-                state.snapshot = Some(snapshot.clone());
+            Ok(Ok(mut snapshot))
+                if matches!(
+                    snapshot.status,
+                    DiscoveryStatus::Confirmed | DiscoveryStatus::Incompatible
+                ) =>
+            {
+                snapshot.fetched_at = Some(chrono::Utc::now().timestamp());
+                state.snapshot = Some(snapshot);
                 state.success_at = Some(Instant::now());
                 state.retry_at = None;
                 state.failures = 0;
-                Ok(snapshot)
+                state.refresh_error = None;
+                state.revision += 1;
+                self.persist(&mut state);
             }
-            Ok(Ok(snapshot)) if snapshot.status == DiscoveryStatus::Incompatible => {
-                state.completed_at = Some(Instant::now());
-                state.snapshot = Some(snapshot.clone());
-                state.success_at = None;
-                state.retry_at = Some(Instant::now() + Duration::from_secs(30));
-                Ok(snapshot)
+            Ok(Err(error)) if authentication_error(&error) => {
+                state.refresh_error = Some(CapabilityRefreshError::AuthenticationRequired);
+                self.publish(&state);
+                return Err(error);
             }
-            Ok(Err(
-                error @ (crate::ImError::PermissionDenied
-                | crate::ImError::AuthRequired
-                | crate::ImError::SessionExpired),
-            )) => Err(error),
-            Ok(Err(
-                error @ crate::ImError::Service {
-                    status_code: Some(401 | 403),
-                    ..
-                },
-            )) => Err(error),
-            Ok(Err(error)) if matches!(&error, crate::ImError::Service { code: Some(code), .. } if matches!(code.as_str(), "1401" | "1403")) => {
-                Err(error)
-            }
-            _ => {
-                state.completed_at = Some(Instant::now());
+            result => {
+                let missing_contract = matches!(result, Ok(Ok(snapshot)) if snapshot.status == DiscoveryStatus::Unavailable);
                 state.failures = state.failures.saturating_add(1);
                 state.retry_at = Some(
                     Instant::now() + Duration::from_secs((5u64 << state.failures.min(6)).min(300)),
                 );
-                Ok(stale(&state))
+                state.refresh_error = Some(if missing_contract {
+                    CapabilityRefreshError::UpgradeRequired
+                } else {
+                    CapabilityRefreshError::Unavailable
+                });
             }
         }
+        self.publish(&state);
+        Ok(current(&state))
     }
 }
-fn stale(state: &CacheState) -> CapabilitySnapshot {
+fn context_changed() -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: "capability authorization context changed".into(),
+    }
+}
+fn authentication_error(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::PermissionDenied
+            | crate::ImError::AuthRequired
+            | crate::ImError::SessionExpired
+            | crate::ImError::Service {
+                status_code: Some(401 | 403),
+                ..
+            }
+    ) || matches!(error, crate::ImError::Service { code: Some(code), .. } if matches!(code.as_str(), "1401" | "1403"))
+}
+fn fresh(state: &CacheState) -> bool {
+    state.failures == 0
+        && state
+            .success_at
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(FRESH_SECONDS))
+}
+fn current(state: &CacheState) -> CapabilitySnapshot {
     let mut snapshot = state
         .snapshot
         .clone()
         .unwrap_or_else(CapabilitySnapshot::empty);
-    if snapshot.status == DiscoveryStatus::Confirmed {
-        snapshot.status = DiscoveryStatus::Stale;
+    snapshot.refresh_error = state.refresh_error;
+    if !fresh(state) {
+        if snapshot.status == DiscoveryStatus::Confirmed {
+            snapshot.status = DiscoveryStatus::Stale;
+        }
+        snapshot.expired = true;
     }
-    snapshot.expired = true;
     snapshot
 }
 
 impl crate::ImCore {
-    /// Blocking discovery for synchronous consumers; never nests a Tokio runtime.
+    pub fn stop_backend_discovery(&self) {
+        self.inner().backend_capabilities.stop();
+        let sessions = self
+            .inner()
+            .identity_capability_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for cache in sessions
+            .values()
+            .flatten()
+            .filter_map(|cache| cache.upgrade())
+        {
+            cache.stop();
+        }
+        self.inner().capability_worker.stop();
+    }
+
     pub fn backend_capabilities(&self, force: bool) -> crate::ImResult<CapabilitySnapshot> {
         let core = self.clone();
         blocking_discovery(async move { core.backend_capabilities_async(force).await })
     }
-    /// Public discovery before login. This Core's endpoint and storage scope are immutable.
+    pub async fn backend_capabilities_snapshot_async(&self) -> CapabilitySnapshot {
+        let mut snapshot = self.inner().backend_capabilities.snapshot().await;
+        snapshot.context = Some(capability_context(
+            self.inner(),
+            false,
+            self.inner().backend_capabilities.generation(),
+        ));
+        snapshot
+    }
+    pub fn subscribe_backend_capabilities(&self) -> tokio::sync::watch::Receiver<CapabilityState> {
+        self.inner().backend_capabilities.changes.subscribe()
+    }
     pub async fn backend_capabilities_async(
         &self,
         force: bool,
     ) -> crate::ImResult<CapabilitySnapshot> {
-        let mut snapshot = self
-            .inner()
+        let cache = &self.inner().backend_capabilities;
+        if cache.cancellation_token().is_cancelled() {
+            return Err(context_changed());
+        }
+        if force || cache.state.lock().await.snapshot.is_none() {
+            self.refresh_backend_capabilities(force).await?;
+        }
+        let weak = self.weak_handle();
+        cache.schedule(&self.inner().capability_worker, move || {
+            let core = weak();
+            async move {
+                if let Some(core) = core {
+                    let _ = core.refresh_backend_capabilities(true).await;
+                }
+            }
+        });
+        Ok(self.backend_capabilities_snapshot_async().await)
+    }
+    async fn refresh_backend_capabilities(
+        &self,
+        force: bool,
+    ) -> crate::ImResult<CapabilitySnapshot> {
+        self.inner()
             .backend_capabilities
             .discover(force, || async {
                 let query = BTreeMap::from([
@@ -558,16 +832,7 @@ impl crate::ImCore {
                     .await?;
                 CapabilitySnapshot::from_server_info(&raw)
             })
-            .await?;
-        snapshot.context = Some(capability_context(
-            self.inner(),
-            false,
-            self.inner()
-                .backend_capabilities
-                .generation
-                .load(Ordering::Acquire),
-        ));
-        Ok(snapshot)
+            .await
     }
 }
 impl crate::ImClient {
@@ -575,28 +840,74 @@ impl crate::ImClient {
         let client = self.clone();
         blocking_discovery(async move { client.backend_capabilities_async(force).await })
     }
-    /// Authenticated local declaration, isolated from public federation broadcasts.
+    pub async fn backend_capabilities_snapshot_async(&self) -> CapabilitySnapshot {
+        let mut snapshot = self.backend_capabilities.snapshot().await;
+        snapshot.context = Some(capability_context(
+            self.core_inner(),
+            true,
+            self.backend_capabilities.generation(),
+        ));
+        snapshot
+    }
+    pub fn subscribe_backend_capabilities(&self) -> tokio::sync::watch::Receiver<CapabilityState> {
+        self.backend_capabilities.changes.subscribe()
+    }
+    /// Hosts stop authenticated discovery when signing out; persisted facts remain
+    /// available when the same valid local identity is explicitly reopened.
+    pub fn stop_backend_capabilities(&self) {
+        self.backend_capabilities.stop();
+    }
+    pub fn resume_backend_capabilities(&self) {
+        let mut token = self
+            .backend_capabilities
+            .cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if token.is_cancelled() {
+            *token = tokio_util::sync::CancellationToken::new();
+        }
+    }
     pub async fn backend_capabilities_async(
         &self,
         force: bool,
     ) -> crate::ImResult<CapabilitySnapshot> {
-        let generation = self.backend_capabilities.generation.load(Ordering::Acquire);
-        let mut snapshot = self
-            .discover_backend_with_transport(
-                &mut crate::internal::transport::CoreHttpTransport::new(self),
-                force,
-            )
-            .await?;
-        if generation != self.backend_capabilities.generation.load(Ordering::Acquire) {
-            return Err(crate::ImError::IdentityBindingConflict {
-                detail: "capability authorization context changed".into(),
-            });
+        self.discover_backend_with_transport(
+            &mut crate::internal::transport::CoreHttpTransport::new(self),
+            force,
+        )
+        .await?;
+        Ok(self.backend_capabilities_snapshot_async().await)
+    }
+    pub(crate) async fn discover_backend_with_transport<T: AsyncAuthenticatedRpcTransport>(
+        &self,
+        transport: &mut T,
+        force: bool,
+    ) -> crate::ImResult<CapabilitySnapshot> {
+        let cache = &self.backend_capabilities;
+        if cache.cancellation_token().is_cancelled() {
+            return Err(crate::ImError::SessionExpired);
         }
-        snapshot.context = Some(capability_context(self.core_inner(), true, generation));
-        Ok(snapshot)
+        if force || cache.state.lock().await.snapshot.is_none() {
+            self.fetch_backend_with_transport(transport, force).await?;
+        }
+        let weak = self.weak_handle();
+        cache.schedule(&self.core_inner().capability_worker, move || {
+            let client = weak();
+            async move {
+                if let Some(client) = client {
+                    let _ = client
+                        .fetch_backend_with_transport(
+                            &mut crate::internal::transport::CoreHttpTransport::new(&client),
+                            true,
+                        )
+                        .await;
+                }
+            }
+        });
+        Ok(cache.snapshot().await)
     }
 
-    pub(crate) async fn discover_backend_with_transport<T: AsyncAuthenticatedRpcTransport>(
+    async fn fetch_backend_with_transport<T: AsyncAuthenticatedRpcTransport>(
         &self,
         transport: &mut T,
         force: bool,
@@ -622,24 +933,13 @@ impl crate::ImClient {
             .await
     }
 }
-
 fn capability_context(
     core: &crate::core::ImCoreInner,
     authenticated: bool,
     runtime_generation: u64,
 ) -> CapabilityContext {
-    let mut digest = Sha256::new();
-    digest.update(serde_json::to_vec(core.sdk_config()).unwrap_or_default());
-    digest.update(
-        core.sdk_paths()
-            .local_state
-            .sqlite_path
-            .to_string_lossy()
-            .as_bytes(),
-    );
-    digest.update(CONTRACT_VERSION.to_be_bytes());
     CapabilityContext {
-        tenant_scope: format!("{:x}", digest.finalize()),
+        tenant_scope: persistence::tenant_key(core.sdk_config(), core.sdk_paths()),
         authenticated,
         runtime_generation,
     }

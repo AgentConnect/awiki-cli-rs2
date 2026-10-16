@@ -523,6 +523,9 @@ impl App {
         for (source, snapshot) in [("public", Some(&public)), ("message", message.as_ref())] {
             if let Some(snapshot) = snapshot {
                 lines.push(format!("{source}: {:?}", snapshot.status));
+                if let Some(error) = snapshot.refresh_error {
+                    lines.push(format!("  refresh_error: {}", serde_json::json!(error)));
+                }
                 lines.extend(
                     snapshot
                         .capabilities

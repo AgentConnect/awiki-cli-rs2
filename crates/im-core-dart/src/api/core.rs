@@ -96,7 +96,9 @@ pub fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {
         .state
         .write()
         .map_err(|_| DartImError::internal("core lock poisoned"))?;
-    guard.inner = None;
+    if let Some(core) = guard.inner.take() {
+        core.stop_backend_discovery();
+    }
     Ok(())
 }
 

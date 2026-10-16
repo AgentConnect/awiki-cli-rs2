@@ -10,6 +10,9 @@ UnsupportedError _unsupported() => UnsupportedError(
 );
 
 class AwikiImCore {
+  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() => backendCapabilities();
+  Stream<Map<String, dynamic>> watchBackendCapabilities() => const Stream.empty();
+
   Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async =>
       {'capabilities_version': 1, 'status': 'unavailable', 'fetched_at': null, 'expired': true, 'capabilities': <String, dynamic>{}};
 
@@ -396,6 +399,9 @@ class AwikiImCore {
 }
 
 class AwikiImClient {
+  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() => backendCapabilities();
+  Stream<Map<String, dynamic>> watchBackendCapabilities() => const Stream.empty();
+
   Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async =>
       {'capabilities_version': 1, 'status': 'unavailable', 'fetched_at': null, 'expired': true, 'capabilities': <String, dynamic>{}};
 

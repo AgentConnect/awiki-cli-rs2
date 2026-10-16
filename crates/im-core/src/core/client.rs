@@ -23,8 +23,22 @@ impl ImClient {
         runtime: crate::internal::identity_runtime::ClientIdentityRuntime,
     ) -> Self {
         let identity = runtime.summary.clone();
+        let backend_capabilities = Arc::new(
+            crate::backend_capabilities::CapabilityCache::identity(&core, &runtime),
+        );
+        {
+            let mut sessions = core
+                .identity_capability_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let sessions = sessions
+                .entry(runtime.owner.identity_id.as_str().to_owned())
+                .or_default();
+            sessions.retain(|cache| cache.strong_count() > 0);
+            sessions.push(Arc::downgrade(&backend_capabilities));
+        }
         Self {
-            backend_capabilities: Arc::new(Default::default()),
+            backend_capabilities,
             core,
             identity,
             runtime: Arc::new(runtime),
@@ -351,6 +365,30 @@ impl ImClient {
         &self,
     ) -> &Arc<crate::external_http_auth::ExternalHttpAuthState> {
         &self.external_http_auth_state
+    }
+
+    // Retry timers must not keep their owning Core (and executor) alive.
+    pub(crate) fn weak_handle(&self) -> impl Fn() -> Option<Self> + Send + Sync + 'static {
+        let core = Arc::downgrade(&self.core);
+        let backend_capabilities = self.backend_capabilities.clone();
+        let identity = self.identity.clone();
+        let runtime = self.runtime.clone();
+        let conversation_store = self.conversation_store.clone();
+        let message_store = self.message_store.clone();
+        let system_notification_store = self.system_notification_store.clone();
+        let external_http_auth_state = self.external_http_auth_state.clone();
+        move || {
+            Some(Self {
+                core: core.upgrade()?,
+                backend_capabilities: backend_capabilities.clone(),
+                identity: identity.clone(),
+                runtime: runtime.clone(),
+                conversation_store: conversation_store.clone(),
+                message_store: message_store.clone(),
+                system_notification_store: system_notification_store.clone(),
+                external_http_auth_state: external_http_auth_state.clone(),
+            })
+        }
     }
 
     pub(crate) fn core_inner(&self) -> &super::ImCoreInner {

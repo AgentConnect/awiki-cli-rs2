@@ -1545,13 +1545,16 @@ where
     }
 
     async fn refresh_session_and_lane_epoch(&mut self) -> crate::ImResult<()> {
+        let previous_binding = self.client.active_sync_account_binding().await?;
         self.session_provider.refresh_session().await?;
         self.transport.reload_authentication_state()?;
-        self.client
-            .backend_capabilities
-            .invalidate_authorization()
-            .await;
         let binding = self.client.active_sync_account_binding().await?;
+        if previous_binding.device_auth_generation != binding.device_auth_generation {
+            self.client
+                .backend_capabilities
+                .invalidate_authorization()
+                .await;
+        }
         let db = self.client.core_inner().local_state_db().await?;
         let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
         Ok(())

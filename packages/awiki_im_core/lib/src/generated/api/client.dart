@@ -7,6 +7,7 @@ import '../dto/error.dart';
 import '../dto/identity.dart';
 import '../frb_generated.dart';
 import 'attachments.dart';
+import 'capabilities.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `clone_core`, `clone_inner`, `close`, `lock_runtime_refresh`, `new_with_core`, `replace_inner`, `with_inner`
@@ -35,6 +36,3 @@ Future<String> localBackendCapabilities({
   instance: instance,
   force: force,
 );
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>
-abstract class ArcDartImCore implements RustOpaqueInterface {}

@@ -109,7 +109,9 @@ impl DartImClient {
             .state
             .write()
             .map_err(|_| DartImError::internal("client lock poisoned"))?;
-        guard.inner = None;
+        if let Some(client) = guard.inner.take() {
+            client.stop_backend_capabilities();
+        }
         Ok(())
     }
 }

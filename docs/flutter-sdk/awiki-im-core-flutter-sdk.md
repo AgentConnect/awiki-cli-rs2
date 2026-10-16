@@ -1428,3 +1428,13 @@ Dart 暴露 `identityDeviceCapabilityStatus` 与 `identityUpgradeDeviceCapabilit
 包含 status、fetched_at、expired、capabilities（support、protocol_version、reason_code、limits）。
 Host 使用当前租户和身份运行代次消费结果，切换后忽略迟到结果；临时失败保留旧快照，
 不删除本地身份、历史、草稿或同步游标。公开和本域来源分别权威，不能混用字段。
+
+
+### 后端能力快照与状态通知（开发候选）
+
+`AwikiImCore` / `AwikiImClient.backendCapabilitiesSnapshot()` 只读 Core 当前快照，不发起
+网络；`watchBackendCapabilities()` 提供安全状态流（snapshot、refresh_error、
+persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立即返回并安排必要
+刷新；`force: true` 等待合并刷新。公开和消息来源分别订阅，认证错误不转为不支持。
+取消 Dart 订阅释放其原生读取会话；dispose Client 停止认证发现，dispose Core 停止全部
+发现工作。新 native bridge 与生成 Dart 文件必须一同构建，不能混用旧制品。

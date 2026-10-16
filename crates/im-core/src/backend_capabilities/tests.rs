@@ -276,3 +276,280 @@ async fn rpc_authentication_codes_are_propagated_without_stale_fallback() {
         );
     }
 }
+
+#[tokio::test]
+async fn hung_refresh_does_not_block_reads_or_override_newer_disable() {
+    let cache = CapabilityCache::default();
+    cache
+        .discover(false, || async {
+            CapabilitySnapshot::from_message_discovery(&message(true))
+        })
+        .await
+        .unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let refresh = cache.discover(true, || async {
+        started_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        CapabilitySnapshot::from_message_discovery(&message(true))
+    });
+    let read_and_disable = async {
+        started_rx.await.unwrap();
+        let snapshot = tokio::time::timeout(
+            Duration::from_millis(100),
+            cache.discover(false, || async { panic!("read must not fetch") }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.support("direct_e2ee"), Support::Supported);
+        let error = Err(crate::ImError::Service {
+            status_code: Some(200),
+            code: Some("not_supported".into()),
+            message: "not_supported".into(),
+            data: None,
+        });
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            cache.observe_rpc_result(
+                cache.generation(),
+                "direct.e2ee.publish_prekey_bundle",
+                &error,
+            ),
+        )
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+    };
+    let (result, _) = tokio::join!(refresh, read_and_disable);
+    assert_eq!(result.unwrap().support("direct_e2ee"), Support::Unsupported);
+    assert_eq!(
+        cache.snapshot().await.support("direct_e2ee"),
+        Support::Unsupported
+    );
+}
+
+#[tokio::test]
+async fn disk_snapshot_survives_restart_failure_and_corruption_is_isolated() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ImCoreConfig::new(
+        crate::ServiceEndpoint::parse("https://tenant.example").unwrap(),
+        "tenant.example",
+    )
+    .unwrap();
+    let paths = crate::ImCorePaths {
+        identities: crate::IdentityRegistryPaths {
+            identity_root_dir: dir.path().join("identities"),
+            registry_path: dir.path().join("registry"),
+            default_identity_path: None,
+        },
+        local_state: crate::LocalStatePaths {
+            sqlite_path: dir.path().join("state.sqlite"),
+        },
+        runtime: crate::RuntimePaths {
+            cache_dir: dir.path().join("cache"),
+            temp_dir: dir.path().join("tmp"),
+        },
+    };
+    let cache = CapabilityCache::public(&config, &paths);
+    cache.discover(false, || async { CapabilitySnapshot::from_server_info(&json!({"schema_version":1,"capabilities_version":1,"agents":{"daemon":{"enabled":true,"protocol_version":1}}})) }).await.unwrap();
+    let restored = CapabilityCache::public(&config, &paths);
+    assert_ne!(cache.generation(), restored.generation());
+    assert_eq!(
+        restored
+            .discover(false, || async {
+                panic!("fresh disk snapshot must not fetch")
+            })
+            .await
+            .unwrap()
+            .support("agents.daemon"),
+        Support::Supported
+    );
+    let snapshot = restored
+        .discover(true, || async { Err(invalid_contract()) })
+        .await
+        .unwrap();
+    assert_eq!(snapshot.support("agents.daemon"), Support::Supported);
+    let mut other = config.clone();
+    other.did_domain = "other.example".into();
+    assert_eq!(
+        CapabilityCache::public(&other, &paths)
+            .snapshot()
+            .await
+            .status,
+        DiscoveryStatus::Unavailable
+    );
+    let path = paths
+        .runtime
+        .cache_dir
+        .join("backend-capabilities-v1")
+        .join(persistence::tenant_key(&config, &paths))
+        .join("public.json");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    std::fs::write(&path, b"not json").unwrap();
+    assert_eq!(
+        CapabilityCache::public(&config, &paths)
+            .snapshot()
+            .await
+            .status,
+        DiscoveryStatus::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn changes_report_authentication_and_keep_last_success() {
+    let cache = CapabilityCache::default();
+    let mut receiver = cache.changes.subscribe();
+    cache
+        .discover(false, || async {
+            CapabilitySnapshot::from_message_discovery(&message(true))
+        })
+        .await
+        .unwrap();
+    receiver.changed().await.unwrap();
+    assert_eq!(
+        receiver.borrow_and_update().snapshot.support("direct_e2ee"),
+        Support::Supported
+    );
+    assert!(cache
+        .discover(true, || async { Err(crate::ImError::SessionExpired) })
+        .await
+        .is_err());
+    receiver.changed().await.unwrap();
+    let state = receiver.borrow_and_update();
+    assert_eq!(
+        state.refresh_error,
+        Some(CapabilityRefreshError::AuthenticationRequired)
+    );
+    assert_eq!(state.snapshot.support("direct_e2ee"), Support::Supported);
+}
+
+#[tokio::test]
+async fn missing_contract_requires_upgrade_only_without_confirmed_snapshot() {
+    let cache = CapabilityCache::default();
+    let unknown = cache
+        .discover(false, || async { Ok(CapabilitySnapshot::empty()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        unknown.refresh_error,
+        Some(CapabilityRefreshError::UpgradeRequired)
+    );
+    assert!(format!("{:?}", unknown.require("direct_e2ee").unwrap_err())
+        .contains("server_upgrade_required"));
+    cache.state.lock().await.retry_at = None;
+    cache
+        .discover(true, || async {
+            CapabilitySnapshot::from_message_discovery(&message(true))
+        })
+        .await
+        .unwrap();
+    let retained = cache
+        .discover(true, || async { Ok(CapabilitySnapshot::empty()) })
+        .await
+        .unwrap();
+    assert_eq!(retained.support("direct_e2ee"), Support::Supported);
+    assert_eq!(
+        retained.refresh_error,
+        Some(CapabilityRefreshError::UpgradeRequired)
+    );
+}
+
+#[tokio::test]
+async fn persistence_failure_does_not_revoke_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ImCoreConfig::new(
+        crate::ServiceEndpoint::parse("https://tenant.example").unwrap(),
+        "tenant.example",
+    )
+    .unwrap();
+    let paths = crate::ImCorePaths {
+        identities: crate::IdentityRegistryPaths {
+            identity_root_dir: dir.path().join("identities"),
+            registry_path: dir.path().join("registry"),
+            default_identity_path: None,
+        },
+        local_state: crate::LocalStatePaths {
+            sqlite_path: dir.path().join("state.sqlite"),
+        },
+        runtime: crate::RuntimePaths {
+            cache_dir: dir.path().join("cache"),
+            temp_dir: dir.path().join("tmp"),
+        },
+    };
+    std::fs::write(&paths.runtime.cache_dir, b"blocked directory").unwrap();
+    let cache = CapabilityCache::public(&config, &paths);
+    let snapshot = cache
+        .discover(false, || async {
+            CapabilitySnapshot::from_message_discovery(&message(true))
+        })
+        .await
+        .unwrap();
+    assert_eq!(snapshot.support("direct_e2ee"), Support::Supported);
+    assert!(cache.changes.borrow().persistence_failed);
+    assert_eq!(
+        cache.snapshot().await.support("direct_e2ee"),
+        Support::Supported
+    );
+}
+
+#[tokio::test]
+async fn background_retry_uses_owned_executor_and_stop_cancels_hung_request() {
+    let cache = std::sync::Arc::new(CapabilityCache::default());
+    let worker = DiscoveryWorker::default();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let started = std::sync::Arc::new(std::sync::Mutex::new(Some(started_tx)));
+    let retry_cache = cache.clone();
+    cache.schedule(&worker, move || {
+        let cache = retry_cache.clone();
+        let started = started.clone();
+        async move {
+            let _ = cache
+                .discover(true, || async {
+                    started.lock().unwrap().take().unwrap().send(()).unwrap();
+                    std::future::pending::<crate::ImResult<CapabilitySnapshot>>().await
+                })
+                .await;
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), started_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    cache.stop();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while cache.scheduled.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(cache.snapshot().await.status, DiscoveryStatus::Unavailable);
+    worker.stop();
+}
+
+#[test]
+fn malformed_versions_are_not_explicit_incompatibility() {
+    for version in [json!(null), json!("1"), json!(-1)] {
+        let mut raw = message(true);
+        raw["awiki_local"]["capabilities_version"] = version.clone();
+        assert!(CapabilitySnapshot::from_message_discovery(&raw).is_err());
+        assert!(CapabilitySnapshot::from_server_info(
+            &json!({"schema_version":1,"capabilities_version":version})
+        )
+        .is_err());
+    }
+    assert_eq!(
+        CapabilitySnapshot::from_message_discovery(&json!({"awiki_local": {}}))
+            .unwrap()
+            .status,
+        DiscoveryStatus::Unavailable
+    );
+}

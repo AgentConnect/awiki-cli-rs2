@@ -110,7 +110,14 @@ export interface NativeExternalHttpAuthAttempt {
   handleResponse(response: ExternalHttpResponse): Promise<NativeExternalHttpAuthAttempt | null>
 }
 
+export interface NativeCapabilitySubscription {
+  nextUpdate(): Promise<string | null>
+  stop(): void
+}
 export interface NativeImCoreNodeClient {
+  setBackendDiscoveryActive(active: boolean): Promise<void>
+  backendCapabilitiesSnapshot(authenticated: boolean): Promise<string>
+  subscribeBackendCapabilities(authenticated: boolean): Promise<NativeCapabilitySubscription>
   backendCapabilities(authenticated: boolean, force: boolean): Promise<string>
   prepareExternalHttpRequest(
     input: Omit<ExternalHttpRequest, 'headers' | 'body'> & {

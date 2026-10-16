@@ -16,7 +16,14 @@ pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
-    pub(crate) backend_capabilities: crate::backend_capabilities::CapabilityCache,
+    pub(crate) identity_capability_sessions: std::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            Vec<std::sync::Weak<crate::backend_capabilities::CapabilityCache>>,
+        >,
+    >,
+    pub(crate) capability_worker: crate::backend_capabilities::DiscoveryWorker,
+    pub(crate) backend_capabilities: Arc<crate::backend_capabilities::CapabilityCache>,
     pub(crate) sdk_config: crate::ImCoreConfig,
     pub(crate) sdk_paths: crate::ImCorePaths,
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
@@ -63,6 +70,7 @@ impl ImCore {
     /// current `ImCore` instance must not be used afterwards.
     #[cfg(feature = "sqlite")]
     pub async fn shutdown_local_state_for_reset(&self) -> crate::ImResult<()> {
+        self.stop_backend_discovery();
         if let Some(database) = self.inner.local_state_db.get() {
             database.shutdown().await?;
         }
@@ -131,7 +139,11 @@ impl ImCore {
         }
         let core = Self {
             inner: Arc::new(ImCoreInner {
-                backend_capabilities: Default::default(),
+                identity_capability_sessions: Default::default(),
+                capability_worker: Default::default(),
+                backend_capabilities: Arc::new(
+                    crate::backend_capabilities::CapabilityCache::public(&sdk_config, &sdk_paths),
+                ),
                 sdk_config,
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
@@ -777,6 +789,11 @@ impl ImCore {
             },
         };
         Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
+    pub(crate) fn weak_handle(&self) -> impl Fn() -> Option<Self> + Send + Sync + 'static {
+        let inner = Arc::downgrade(&self.inner);
+        move || inner.upgrade().map(|inner| Self { inner })
     }
 
     pub(crate) fn inner(&self) -> &ImCoreInner {
