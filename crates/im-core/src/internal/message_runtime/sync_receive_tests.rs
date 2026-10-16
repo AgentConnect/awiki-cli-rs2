@@ -676,7 +676,7 @@ async fn p6_epoch_recovery_preserves_old_inputs_and_other_stream_checkpoints() {
             Rc::clone(&calls),
             vec![
                 Ok(rejected),
-                Ok(explicit_sync_negotiation_response()),
+                // Discovery remains fresh; recovery reuses the confirmed declaration.
                 Ok(bootstrap),
                 Ok(resumed),
             ],
@@ -730,24 +730,19 @@ async fn p6_epoch_recovery_preserves_old_inputs_and_other_stream_checkpoints() {
             .iter()
             .map(|call| call.method.as_str())
             .collect::<Vec<_>>(),
-        [
-            "sync.delta",
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "sync.delta"
-        ]
+        ["sync.delta", "sync.bootstrap", "sync.delta"]
     );
-    assert_eq!(calls[3].params["body"]["cursor"]["scan_seq"], "1");
+    assert_eq!(calls[2].params["body"]["cursor"]["scan_seq"], "1");
     assert_eq!(
-        calls[3].params["body"]["lanes"]["p5_device"]["cursor"]["scan_seq"],
+        calls[2].params["body"]["lanes"]["p5_device"]["cursor"]["scan_seq"],
         "1"
     );
     assert_eq!(
-        calls[3].params["body"]["lanes"]["p6_group"]["cursor"]["stream_epoch"],
+        calls[2].params["body"]["lanes"]["p6_group"]["cursor"]["stream_epoch"],
         "43"
     );
     assert_eq!(
-        calls[3].params["body"]["lanes"]["p6_group"]["cursor"]["scan_seq"],
+        calls[2].params["body"]["lanes"]["p6_group"]["cursor"]["scan_seq"],
         "0"
     );
 }
@@ -882,7 +877,6 @@ async fn hundred_page_snapshot_keeps_its_own_budget_and_receives_all_post_anchor
         .collect::<Vec<_>>();
     assert_eq!(cursors, vec![json!("10"), json!("100"), json!("101")]);
 }
-
 
 #[cfg(feature = "group-e2ee")]
 #[tokio::test]

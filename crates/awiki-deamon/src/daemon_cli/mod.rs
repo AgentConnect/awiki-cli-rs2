@@ -101,6 +101,10 @@ pub fn setup_daemon_agent_from_token(
     if options.controller_did.trim().is_empty() {
         bail!("--controller-did is required");
     }
+    let discovery = im_core::ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+    discovery
+        .backend_capabilities(false)?
+        .require("agents.daemon")?;
     crate::cli_runtime_env::capture_and_write(config)
         .context("capture daemon CLI runtime environment")?;
     let registration_client =
@@ -134,7 +138,11 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
     config.anp_service_did = format!("did:wba:{}", config.did_domain);
     config.validate()?;
     // Reject invalid build/runtime metadata before changing an existing install.
-    config.im_core_config()?;
+    let discovery = im_core::ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+    discovery
+        .backend_capabilities_async(true)
+        .await?
+        .require("agents.daemon")?;
     let registration_client =
         UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     ensure_install_environment_matches_existing_state(&config)?;

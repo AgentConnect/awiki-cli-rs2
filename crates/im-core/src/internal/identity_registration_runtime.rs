@@ -2055,9 +2055,41 @@ async fn publish_v2_messaging_material_after_registration_async(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
 ) -> Vec<String> {
-    let prekey_result = publish_v2_prekeys_after_registration_async(core, did).await;
-    let group_key_package_result = if core.inner().group_e2ee_v2_enabled() {
-        Some(publish_v2_group_key_package_after_registration_async(core, did).await)
+    let Ok(client) = core
+        .client_async(crate::identity::IdentitySelector::Did(did.clone()))
+        .await
+    else {
+        return registration_messaging_material_unavailable_warnings(
+            core.inner().group_e2ee_v2_enabled(),
+        );
+    };
+    let Ok(capabilities) = client.backend_capabilities_async(false).await else {
+        return registration_messaging_material_unavailable_warnings(
+            core.inner().group_e2ee_v2_enabled(),
+        );
+    };
+    use crate::backend_capabilities::Support;
+    let prekey_result = if capabilities.support("direct_e2ee") == Support::Unsupported {
+        Ok(())
+    } else if capabilities.support("direct_e2ee") == Support::Supported {
+        publish_v2_prekeys_after_registration_async(core, did).await
+    } else {
+        Err(crate::ImError::unsupported(
+            "backend.direct_e2ee.unconfirmed",
+        ))
+    };
+    let group_key_package_result = if core.inner().group_e2ee_v2_enabled()
+        && capabilities.support("group_e2ee") != Support::Unsupported
+    {
+        Some(
+            if capabilities.support("group_e2ee") == Support::Supported {
+                publish_v2_group_key_package_after_registration_async(core, did).await
+            } else {
+                Err(crate::ImError::unsupported(
+                    "backend.group_e2ee.unconfirmed",
+                ))
+            },
+        )
     } else {
         None
     };

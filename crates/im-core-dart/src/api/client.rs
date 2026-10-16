@@ -109,7 +109,9 @@ impl DartImClient {
             .state
             .write()
             .map_err(|_| DartImError::internal("client lock poisoned"))?;
-        guard.inner = None;
+        if let Some(client) = guard.inner.take() {
+            client.stop_backend_capabilities();
+        }
         Ok(())
     }
 }
@@ -135,4 +137,17 @@ pub async fn current_identity(
 ) -> Result<crate::dto::identity::DartIdentitySummary, DartImError> {
     let inner = client.clone_inner()?;
     Ok(inner.current_identity().clone().into())
+}
+
+/// Safe versioned capability projection; does not expose credentials or exception text.
+pub async fn local_backend_capabilities(
+    instance: &Arc<DartImClient>,
+    force: bool,
+) -> Result<String, DartImError> {
+    let snapshot = instance
+        .clone_inner()?
+        .backend_capabilities_async(force)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(snapshot).to_string())
 }

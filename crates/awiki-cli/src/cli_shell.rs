@@ -435,6 +435,114 @@ impl App {
         )
     }
 
+    pub async fn run_backend_capabilities_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        // Public diagnostics must not migrate custody or create an identity.
+        let core = im_core::ImCore::new(
+            crate::m_core_cli_adapter::build_im_core_config(&resolved)?,
+            crate::m_core_cli_adapter::paths::build_im_core_paths(&resolved)?,
+        )
+        .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "backend capabilities"))?;
+        let snapshot = core
+            .backend_capabilities_async(true)
+            .await
+            .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "backend capabilities"))?;
+        let local = if command
+            .flags
+            .get("authenticated")
+            .is_some_and(|value| value == "true")
+        {
+            let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
+            let selector = if self.globals.identity.is_empty() {
+                im_core::identity::IdentitySelector::Default
+            } else {
+                im_core::identity::IdentitySelector::LocalAlias(self.globals.identity.clone())
+            };
+            Some(
+                core.client_async(selector)
+                    .await
+                    .map_err(|error| {
+                        crate::m_core_cli_adapter::map_im_error(error, "backend capabilities")
+                    })?
+                    .backend_capabilities_async(true)
+                    .await
+                    .map_err(|error| {
+                        crate::m_core_cli_adapter::map_im_error(error, "backend capabilities")
+                    })?,
+            )
+        } else {
+            None
+        };
+        self.render_backend_capabilities(&resolved, snapshot, local)
+    }
+
+    pub fn run_backend_capabilities(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let core = im_core::ImCore::new(
+            crate::m_core_cli_adapter::build_im_core_config(&resolved)?,
+            crate::m_core_cli_adapter::paths::build_im_core_paths(&resolved)?,
+        )
+        .map_err(|error| crate::m_core_cli_adapter::map_im_error(error, "backend capabilities"))?;
+        let snapshot = core.backend_capabilities(true).map_err(|error| {
+            crate::m_core_cli_adapter::map_im_error(error, "backend capabilities")
+        })?;
+        let local = if command
+            .flags
+            .get("authenticated")
+            .is_some_and(|value| value == "true")
+        {
+            let core = crate::m_core_cli_adapter::build_im_core(&resolved)?;
+            let selector = if self.globals.identity.is_empty() {
+                im_core::identity::IdentitySelector::Default
+            } else {
+                im_core::identity::IdentitySelector::LocalAlias(self.globals.identity.clone())
+            };
+            Some(
+                core.client(selector)
+                    .and_then(|client| client.backend_capabilities(true))
+                    .map_err(|error| {
+                        crate::m_core_cli_adapter::map_im_error(error, "backend capabilities")
+                    })?,
+            )
+        } else {
+            None
+        };
+        self.render_backend_capabilities(&resolved, snapshot, local)
+    }
+
+    fn render_backend_capabilities(
+        &self,
+        resolved: &crate::workspace_config::Resolved,
+        public: im_core::backend_capabilities::CapabilitySnapshot,
+        message: Option<im_core::backend_capabilities::CapabilitySnapshot>,
+    ) -> Result<(), ExitError> {
+        let mut lines = Vec::new();
+        for (source, snapshot) in [("public", Some(&public)), ("message", message.as_ref())] {
+            if let Some(snapshot) = snapshot {
+                lines.push(format!("{source}: {:?}", snapshot.status));
+                if let Some(error) = snapshot.refresh_error {
+                    lines.push(format!("  refresh_error: {}", serde_json::json!(error)));
+                }
+                lines.extend(
+                    snapshot
+                        .capabilities
+                        .iter()
+                        .map(|(name, value)| format!("  {name}: {:?}", value.support)),
+                );
+            }
+        }
+        self.render_success(
+            "awiki-cli doctor capabilities",
+            resolved,
+            serde_json::json!({"public": public, "message": message}),
+            &lines.join("\n"),
+            Vec::new(),
+        )
+    }
+
     pub fn run_doctor(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let report = diagnostics::run(&resolved);

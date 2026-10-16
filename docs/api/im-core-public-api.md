@@ -2326,3 +2326,72 @@ P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{gr
 `device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
 
 Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。
+
+## 后端能力合同 v1（2026-10-15 开发候选）
+
+客户端对 `/user-service/v1/server-info?capabilities_version=1` 请求完整合同。
+外层 `schema_version` 保持 1；响应必须回显 `capabilities_version: 1`。不带参数
+保持原有响应语义；未知版本返回 422。`client_platform` 不改变事实。
+注册复用 `identity.handle_registration`；免验证流程声明 `handle_only`。
+新增能力复用 `identity`、`agents`、`services` 分组，并增加 `account`、`content`、
+`client_updates` 分组。每个新能力包含 `enabled: bool`、`protocol_version: 1`；
+关闭使用 `reason_code: not_supported`，限制在 `limits` 对象中。
+
+已知能力：identity 下 multi_device/device_revoke/capability_upgrade/root_transfer；
+account 下 state_sync；agents 下 managed_agents/daemon 和既有 skill_onboarding/
+skill_group_membership；services 下 mail/model_proxy/guest_gateway；content 下
+pages/sites/hosting；client_updates 下 policy。注册与找回复用既有方法列表。
+
+消息真相只来自已认证本域 `/im/rpc` 的 `anp.get_capabilities.awiki_local`：
+`{"capabilities_version":1,"capabilities":{...}}`。已知键为 direct、groups、
+attachments、history、read_state、sync、snapshot、p5_device、p6_group、direct_e2ee、
+group_e2ee、encrypted_attachments、group_open_join、group_admin_add、group_invite、
+group_approval；各值沿用上述能力形态。公网 `/anp-im/rpc` 不输出本域扩展。
+
+缺失为 unknown，显式 false 为 unsupported，未知合同版本为 incompatible；
+不能根据域名、品牌、edition、DID 方法、接口试调用或公网未广播来推断本域支持。
+新字段可忽略，既有字段语义变化必须升合同版本。能力不是授权：操作仍需满足
+客户端实现、协议协商、身份/设备权限与群策略。
+
+Open Server 示例：注册 handle_only；普通消息、群、附件、历史、已读、普通同步和
+Schema 3 Snapshot 为 true，P5/P6 和加密为 false。Core 请求显式空通道集合，
+不回退 legacy bootstrap；显式加密意图不得改为明文。身份与本地历史保留。
+
+公开 DTO 不包含 Token、密钥、原始异常。缓存上下文必须包含服务端点、存储范围、
+合同版本，登录后绑定本地身份、DID、设备和有效授权上下文。运行代次只用于拒绝迟到响应，
+不进入跨重启缓存键；客户端版本与普通 Token 刷新不使缓存失效。`runtime.cache_dir`
+中的版本化文件只保存解析后的安全字段，以受限权限原子替换；损坏或不匹配按无缓存处理，
+写入失败仅记录安全诊断，不推翻内存成功结果。删除身份只清理该身份的能力缓存。
+
+成功新鲜期 300 秒只决定刷新调度，不是功能失效时间。普通查询有快照立即返回，过期时
+合并后台刷新；无快照首次发现最多等待 10 秒。只读 `backend_capabilities_snapshot_async`
+不发起网络，`subscribe_backend_capabilities` 返回状态变化订阅。主动刷新允许等待，
+但不清空旧快照。网络失败、畸形响应或缺少新版合同保留最后完整结果；显式不兼容仅暂停
+对应来源。公开与认证消息发现独立。刷新期间不持有快照锁，提交检查授权代次及快照修订，
+旧响应不得覆盖之后的关闭声明。后台工作由 Core 生命周期持有，不依赖临时同步 runtime；
+CLI 结束无需等待刷新。认证失败保持原错误分类，并通过安全状态通知宿主。
+
+CLI 将明确关闭能力映射为 `not_supported`，未确认能力映射为
+`capability_unconfirmed`；非零退出码、`details.reason_code` 与人类输出保持同一
+稳定原因（例如 `backend.group_e2ee.not_supported`）。这些预检拒绝不标记为
+内部异常或可自动重试，也不建议绕过 Core 使用旧业务入口。
+
+群生命周期预检：创建群在写入恢复记录前检查 `groups`、初始成员数及声明的
+`max_members`；初始成员和管理员加成员检查 `group_admin_add`，开放加入检查
+`group_open_join`。创建或修改审批入群策略检查 `group_approval`，组合资料/策略
+修改在任何资料写入前完成该检查。`invite-only` 表示管理员控制成员，不等价于
+邀请码/链接能力 `group_invite`。服务端仍负责群策略、成员权限及实际成员数的最终校验。
+
+Skill onboarding 的 claim、resume 和 legacy-claim recovery 先检查
+`agents.skill_onboarding`，明确关闭或未知时保留所有未完成 journal 与身份材料。
+CLI 在 workspace upgrade、Vault 打开及读取一次性 Token 之前执行同一公开发现预检。
+本地 legacy migration 不被误当作新 Skill 注册。
+
+`ContentService` 与 `SiteService` 的同步/异步公开入口分别检查 `content.pages`
+和 `content.sites`，在认证或远端读写前拒绝关闭/未知能力；不使用 `content.hosting`
+控制已有基础页面和站点操作。
+
+设备撤销的启动恢复与 Registry 对账恢复同样先检查 `identity.device_revoke`。
+存在未完成记录且能力关闭或未确认时，保留原 operation、候选文档和所有 Vault
+恢复记录，不发起设备 Registry、DID 解析或撤销请求，不伪造恢复完成。没有待恢复
+记录时不因打开本地身份额外发起能力发现；支持重新确认后可继续原精确恢复。

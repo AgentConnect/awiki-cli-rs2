@@ -527,6 +527,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinBeginRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let DeviceJoinBeginRequest {
             operation_id,
             did,
@@ -619,6 +623,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let mut runtime =
             crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
                 self.core,
@@ -656,6 +664,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         admin_identity: super::IdentitySelector,
     ) -> crate::ImResult<DeviceJoinRegistrySnapshot> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let admin_client = self.core.client_async(admin_identity.clone()).await?;
         let current_device = self
             .core
@@ -773,6 +785,10 @@ impl<'a> DeviceJoinService<'a> {
         operation_id: &str,
         challenge_ttl_seconds: u64,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let admin_client = self.core.client_async(admin_identity).await?;
         let mut runtime =
             crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
@@ -845,6 +861,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinConfirmApprovalRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         self.confirm_device_join_approval_policy(request, false)
             .await
     }
@@ -855,6 +875,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinConfirmApprovalRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         self.confirm_device_join_approval_policy(request, true)
             .await
     }
@@ -952,6 +976,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<Vec<DeviceJoinManagementStatus>> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let client = self.core.client_async(selector).await?;
         #[cfg(feature = "sqlite")]
         crate::internal::identity_join_management::start_worker(&client);
@@ -977,6 +1005,10 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<()> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let client = self.core.client_async(selector).await?;
         crate::internal::identity_join_management::run(&client).await
     }
@@ -987,6 +1019,10 @@ impl<'a> DeviceJoinService<'a> {
         selector: super::IdentitySelector,
         join_session_id: &str,
     ) -> crate::ImResult<()> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let client = self.core.client_async(selector).await?;
         crate::internal::identity_join_management::retry(&client, join_session_id).await?;
         crate::internal::identity_join_management::start_worker(&client);
@@ -999,6 +1035,10 @@ impl<'a> DeviceJoinService<'a> {
         join_session_id: &str,
         reason: DeviceJoinRejectReason,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.multi_device")?;
         let admin_client = self.core.client_async(admin_identity).await?;
         let mut runtime =
             crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(

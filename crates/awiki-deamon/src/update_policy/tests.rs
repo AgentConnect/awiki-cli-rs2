@@ -134,7 +134,7 @@ fn requests_registered_tenant_server_info_with_daemon_platform() {
     assert_eq!(policy.source, DaemonUpdatePolicySource::Network);
     assert_eq!(
         server.paths(),
-        vec!["/user-service/v1/server-info?client_platform=daemon"]
+        vec!["/user-service/v1/server-info?client_platform=daemon&capabilities_version=1"]
     );
 }
 
@@ -302,4 +302,24 @@ fn only_revision_three_can_bridge_the_legacy_missing_artifact_field() {
     let temporary = tempfile::tempdir().unwrap();
     let error = load_daemon_update_policy(&config(temporary.path(), &current.origin)).unwrap_err();
     assert!(error.to_string().contains("missing artifact_manifest_url"));
+}
+
+#[test]
+fn explicitly_absent_policy_is_normal_and_has_no_download_source() {
+    let server = TestServer::new(|_| {
+        vec![(
+            200,
+            Vec::new(),
+            serde_json::to_vec(&json!({
+                "schema_version":1, "capabilities_version":1,
+                "client_updates":{"policy":{"enabled":false,"protocol_version":1}}
+            }))
+            .unwrap(),
+        )]
+    });
+    let temporary = tempfile::tempdir().unwrap();
+    let policy = load_daemon_update_policy(&config(temporary.path(), &server.origin)).unwrap();
+    assert!(!policy.enabled);
+    assert!(policy.artifact_manifest_url.is_none());
+    assert!(policy.refresh_error.is_none());
 }

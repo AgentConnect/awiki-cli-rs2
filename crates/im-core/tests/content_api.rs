@@ -261,6 +261,25 @@ impl RpcTestServer {
             .collect::<Vec<RpcResponse>>();
         let join = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
+            // Public discovery is separate from authenticated business RPCs.
+            let mut discovery = accept_before_deadline(&listener, deadline);
+            let request = String::from_utf8(read_http_request(&mut discovery)).unwrap();
+            assert!(request.starts_with("GET /user-service/v1/server-info?"));
+            assert!(request.contains("capabilities_version=1"));
+            assert!(!request.to_ascii_lowercase().contains("\r\nauthorization:"));
+            write_http_response(
+                &mut discovery,
+                200,
+                &serde_json::to_vec(&json!({
+                    "schema_version": 1, "capabilities_version": 1,
+                    "content": {
+                        "pages": {"enabled": true, "protocol_version": 1},
+                        "sites": {"enabled": true, "protocol_version": 1},
+                        "hosting": {"enabled": false, "protocol_version": 1}
+                    }
+                }))
+                .unwrap(),
+            );
             for response in responses {
                 let mut stream = accept_before_deadline(&listener, deadline);
                 let request = read_rpc_request(&mut stream);
@@ -382,10 +401,8 @@ fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
                     None
                 }
             });
-            if let Some(length) = content_length {
-                if buffer.len() >= header_end + length {
-                    break;
-                }
+            if buffer.len() >= header_end + content_length.unwrap_or(0) {
+                break;
             }
         }
     }

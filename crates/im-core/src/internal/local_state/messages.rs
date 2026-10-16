@@ -958,7 +958,8 @@ fn inherit_committed_read_watermark(
     // sequence), and apply read truth before updating the conversation summary.
     connection
         .execute(
-            &format!(r#"
+            &format!(
+                r#"
 UPDATE messages
 SET is_read = 1
 WHERE owner_identity_id = ?1 AND msg_id = ?2
@@ -974,7 +975,8 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
         AND state.thread_id = messages.conversation_id
         AND state.read_watermark_seq IS NOT NULL
         AND messages.server_seq <= CAST(state.read_watermark_seq AS INTEGER)
-  )"#),
+  )"#
+            ),
             rusqlite::params![owner_identity_id, message_id],
         )
         .map_err(super::local_state_unavailable)?;

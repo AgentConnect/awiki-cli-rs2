@@ -1545,9 +1545,16 @@ where
     }
 
     async fn refresh_session_and_lane_epoch(&mut self) -> crate::ImResult<()> {
+        let previous_binding = self.client.active_sync_account_binding().await?;
         self.session_provider.refresh_session().await?;
         self.transport.reload_authentication_state()?;
         let binding = self.client.active_sync_account_binding().await?;
+        if previous_binding.device_auth_generation != binding.device_auth_generation {
+            self.client
+                .backend_capabilities
+                .invalidate_authorization()
+                .await;
+        }
         let db = self.client.core_inner().local_state_db().await?;
         let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
         Ok(())
@@ -1587,12 +1594,28 @@ where
         // An already-negotiated empty set can come from an older client build.
         // Re-negotiate changed consumer capabilities before attempting any delta;
         // authorization generation alone cannot detect a newly enabled P5 lane.
-        let desired_lanes = desired_v1b_lanes(&db, &owner_identity_id).await?;
+        let server = self
+            .client
+            .discover_backend_with_transport(&mut self.transport, false)
+            .await?;
+        let desired_lanes = if matches!(
+            server.status,
+            crate::backend_capabilities::DiscoveryStatus::Confirmed
+                | crate::backend_capabilities::DiscoveryStatus::Stale
+        ) {
+            server_supported_lanes(desired_v1b_lanes(&db, &owner_identity_id).await?, &server)
+        } else {
+            db.load_lane_sync_states(owner_identity_id.clone())
+                .await?
+                .into_iter()
+                .map(|s| s.lane)
+                .collect()
+        };
         if db
             .lane_capability_negotiation_required_with_lanes(
                 owner_identity_id.clone(),
                 binding.device_auth_generation.clone(),
-                Some(desired_lanes),
+                Some(desired_lanes.clone()),
             )
             .await?
         {
@@ -1600,6 +1623,7 @@ where
         }
         let mut lane_states =
             lane_state_map(db.load_lane_sync_states(owner_identity_id.clone()).await?);
+        lane_states.retain(|lane, _| desired_lanes.contains(lane));
         let p6_client_instance_id = db
             .load_or_create_sync_client_instance_id(owner_identity_id)
             .await?;
@@ -2568,11 +2592,14 @@ where
         run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
-        require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
+        let server = require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
         let client_instance_id = db
             .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
             .await?;
-        let requested_lanes = desired_v1b_lanes(db, &binding.owner_identity_id).await?;
+        let requested_lanes = server_supported_lanes(
+            desired_v1b_lanes(db, &binding.owner_identity_id).await?,
+            &server,
+        );
         let params = crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
             &wire_identity(self.client),
             &client_instance_id,
@@ -2817,11 +2844,14 @@ pub(crate) async fn refresh_lane_bootstrap_with_transport_async<T>(
 where
     T: AsyncAuthenticatedRpcTransport,
 {
-    require_explicit_sync_negotiation(transport, client).await?;
+    let server = require_explicit_sync_negotiation(transport, client).await?;
     let client_instance_id = db
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await?;
-    let requested_lanes = desired_v1b_lanes(db, &binding.owner_identity_id).await?;
+    let requested_lanes = server_supported_lanes(
+        desired_v1b_lanes(db, &binding.owner_identity_id).await?,
+        &server,
+    );
     let params = crate::internal::wire::sync_v2::build_bootstrap_params_with_lanes(
         &wire_identity(client),
         &client_instance_id,
@@ -2992,19 +3022,35 @@ async fn require_current_sync_run_generation(
     Ok(())
 }
 
+fn server_supported_lanes(
+    desired: BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+    server: &crate::backend_capabilities::CapabilitySnapshot,
+) -> BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3> {
+    use crate::internal::wire::sync_v2::SyncLaneV3;
+    desired
+        .into_iter()
+        .filter(|lane| {
+            server.support(match lane {
+                SyncLaneV3::P5Device => "p5_device",
+                SyncLaneV3::P6Group => "p6_group",
+            }) == crate::backend_capabilities::Support::Supported
+        })
+        .collect()
+}
+
 async fn require_explicit_sync_negotiation<T>(
     transport: &mut T,
     client: &crate::core::ImClient,
-) -> crate::ImResult<()>
+) -> crate::ImResult<crate::backend_capabilities::CapabilitySnapshot>
 where
     T: AsyncAuthenticatedRpcTransport,
 {
-    let params =
-        crate::internal::wire::sync_v2::build_capability_discovery_params(&wire_identity(client))?;
-    let raw = transport
-        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "anp.get_capabilities", params)
+    let snapshot = client
+        .discover_backend_with_transport(transport, false)
         .await?;
-    crate::internal::wire::sync_v2::require_explicit_sync_negotiation_capability(&raw)
+    snapshot.require("sync")?;
+    snapshot.require("snapshot")?;
+    Ok(snapshot)
 }
 
 fn bootstrap_p6_activation_matches(
@@ -5271,15 +5317,17 @@ mod tests {
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 Self::paths(&self.root),
-                crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(enabled).with_identity_secret_vault(
-                    crate::IdentitySecretStoragePolicy::VaultRequired,
-                    crate::ImCoreSecretVaultOptions::new(
-                        DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
-                        self.root.join("vault"),
-                        Self::WORKSPACE_ID,
-                        Self::VAULT_DEVICE_ID,
+                crate::ImCoreOpenOptions::default()
+                    .with_multi_device_group_e2ee_enabled(enabled)
+                    .with_identity_secret_vault(
+                        crate::IdentitySecretStoragePolicy::VaultRequired,
+                        crate::ImCoreSecretVaultOptions::new(
+                            DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                            self.root.join("vault"),
+                            Self::WORKSPACE_ID,
+                            Self::VAULT_DEVICE_ID,
+                        ),
                     ),
-                ),
             )
             .unwrap()
             .client(crate::identity::IdentitySelector::LocalAlias(
@@ -5627,6 +5675,12 @@ mod tests {
 
     fn explicit_sync_negotiation_response() -> Value {
         json!({
+            "awiki_local": {"capabilities_version": 1, "capabilities": {
+                "sync": {"enabled": true, "protocol_version": 1},
+                "snapshot": {"enabled": true, "protocol_version": 1},
+                "p5_device": {"enabled": true, "protocol_version": 1},
+                "p6_group": {"enabled": true, "protocol_version": 1}
+            }},
             "supported_profiles": [
                 crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1,
                 crate::internal::wire::sync_v2::SNAPSHOT_PAGING_V1
@@ -6476,6 +6530,16 @@ mod tests {
         scan_seq: &str,
     ) {
         seed_legacy_sync_snapshot_ready_state(client, binding, stream_epoch, scan_seq).await;
+        // This fixture represents a previously discovered and negotiated session.
+        client
+            .backend_capabilities
+            .discover(true, || async {
+                crate::backend_capabilities::CapabilitySnapshot::from_message_discovery(
+                    &explicit_sync_negotiation_response(),
+                )
+            })
+            .await
+            .unwrap();
         let db = client.core_inner().local_state_db().await.unwrap();
         let lanes = desired_v1b_lanes(&db, &binding.owner_identity_id)
             .await
@@ -6704,6 +6768,112 @@ mod tests {
             Rc::clone(&calls),
             vec![
                 Ok(explicit_sync_negotiation_response()),
+                Ok(json!({
+                    "mode": "tail_only",
+                    "account_id": binding.account_id,
+                    "device_id": binding.protocol_device_id,
+                    "server_time": "2026-08-27T00:00:00Z",
+                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                    "read_state_baseline": [],
+                    "group_state_baseline": [],
+                    "warnings": [],
+                    "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
+                    "sync_capabilities": []
+                })),
+                Ok(sync_snapshot_delta("1", "0", Vec::new())),
+            ],
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+
+        {
+            let calls = calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
+            );
+            assert_eq!(
+                calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
+                json!([])
+            );
+            assert!(calls[2].params["body"].get("lanes").is_none());
+            assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        }
+        let db = client.core_inner().local_state_db().await.unwrap();
+        assert!(db
+            .load_lane_sync_states(binding.owner_identity_id.clone())
+            .await
+            .unwrap()
+            .is_empty());
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM lane_sync_state WHERE owner_identity_id = ?1",
+                    [&binding.owner_identity_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    // This cross-stream contract requires a negotiable P5 consumer.
+    #[tokio::test]
+    async fn server_disabled_lanes_preserve_history_and_poll_ordinary_only() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let fixture = SyncSnapshotFixture::new("backend-explicit-zero");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .replace_lane_sync_states(
+                &binding.owner_identity_id,
+                vec![
+                    crate::internal::local_state::sync_v2::LaneSyncState {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        lane: SyncLaneV3::P5Device,
+                        stream_epoch: "41".to_owned(),
+                        scan_seq: "7".to_owned(),
+                        committed_seq: "7".to_owned(),
+                    },
+                    crate::internal::local_state::sync_v2::LaneSyncState {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        lane: SyncLaneV3::P6Group,
+                        stream_epoch: "42".to_owned(),
+                        scan_seq: "9".to_owned(),
+                        committed_seq: "9".to_owned(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        let mut discovery = explicit_sync_negotiation_response();
+        for lane in ["p5_device", "p6_group"] {
+            discovery["awiki_local"]["capabilities"][lane]["enabled"] = json!(false);
+        }
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let transport = SyncSnapshotTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                Ok(discovery),
                 Ok(json!({
                     "mode": "tail_only",
                     "account_id": binding.account_id,
@@ -9968,7 +10138,6 @@ END;
                             message: "device authorization epoch is stale".to_owned(),
                             data: None,
                         }),
-                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Ok(sync_group_read_ack(
                             &binding,
@@ -10002,7 +10171,6 @@ END;
                 "sync.delta",
                 "message.get_batch",
                 "read_state.mark_read",
-                "anp.get_capabilities",
                 "sync.bootstrap",
                 "read_state.mark_read"
             ]
@@ -10078,12 +10246,7 @@ END;
             ReloadingSyncSnapshotTransport {
                 inner: SyncSnapshotTransport::queued(
                     Rc::clone(&calls),
-                    vec![
-                        Err(rejected),
-                        Ok(explicit_sync_negotiation_response()),
-                        Ok(lane_bootstrap),
-                        Ok(retry_delta),
-                    ],
+                    vec![Err(rejected), Ok(lane_bootstrap), Ok(retry_delta)],
                 ),
                 authentication_reloads: Rc::clone(&authentication_reloads),
             },
@@ -10103,12 +10266,7 @@ END;
                     .iter()
                     .map(|call| call.method.as_str())
                     .collect::<Vec<_>>(),
-                [
-                    "sync.delta",
-                    "anp.get_capabilities",
-                    "sync.bootstrap",
-                    "sync.delta"
-                ]
+                ["sync.delta", "sync.bootstrap", "sync.delta"]
             );
             assert_eq!(
                 calls[0]
@@ -10166,12 +10324,7 @@ END;
             ReloadingSyncSnapshotTransport {
                 inner: SyncSnapshotTransport::queued(
                     Rc::clone(&calls),
-                    vec![
-                        Err(rejected()),
-                        Ok(explicit_sync_negotiation_response()),
-                        Ok(lane_bootstrap),
-                        Err(rejected()),
-                    ],
+                    vec![Err(rejected()), Ok(lane_bootstrap), Err(rejected())],
                 ),
                 authentication_reloads: Rc::clone(&authentication_reloads),
             },
@@ -10194,12 +10347,7 @@ END;
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "sync.delta",
-                "anp.get_capabilities",
-                "sync.bootstrap",
-                "sync.delta"
-            ]
+            ["sync.delta", "sync.bootstrap", "sync.delta"]
         );
     }
 

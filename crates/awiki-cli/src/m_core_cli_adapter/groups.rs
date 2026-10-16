@@ -1552,6 +1552,11 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-e2ee" => {
             MessageAdapterError::GroupNotSupported
         }
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability.starts_with("backend.") =>
+        {
+            MessageAdapterError::BackendCapability(capability)
+        }
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => {
             MessageAdapterError::IdentityRequired("authentication is required".to_string())
         }
@@ -1630,6 +1635,16 @@ fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
 
 #[cfg(test)]
 mod group_message_projection_tests {
+    #[test]
+    fn backend_capability_reason_survives_group_adapter() {
+        let reason = "backend.group_e2ee.not_supported";
+        assert_eq!(
+            super::im_error_to_message_error(im_core::ImError::UnsupportedCapability {
+                capability: reason.into(),
+            }),
+            super::MessageAdapterError::BackendCapability(reason.into())
+        );
+    }
     use serde_json::json;
 
     use super::{

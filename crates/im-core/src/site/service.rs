@@ -11,6 +11,13 @@ impl<'a> SiteService<'a> {
     }
 
     pub fn get_root(&self, domain: super::SiteDomain) -> crate::ImResult<super::SiteRootDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -22,6 +29,11 @@ impl<'a> SiteService<'a> {
         &self,
         domain: super::SiteDomain,
     ) -> crate::ImResult<super::SiteRootDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -34,6 +46,13 @@ impl<'a> SiteService<'a> {
         &self,
         draft: super::SiteRootDraft,
     ) -> crate::ImResult<super::SiteRootDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -45,6 +64,11 @@ impl<'a> SiteService<'a> {
         &self,
         draft: super::SiteRootDraft,
     ) -> crate::ImResult<super::SiteRootDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -57,6 +81,13 @@ impl<'a> SiteService<'a> {
         &self,
         query: super::SitePageQuery,
     ) -> crate::ImResult<crate::ids::Page<super::SitePageDocument>> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -68,6 +99,11 @@ impl<'a> SiteService<'a> {
         &self,
         query: super::SitePageQuery,
     ) -> crate::ImResult<crate::ids::Page<super::SitePageDocument>> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -77,6 +113,13 @@ impl<'a> SiteService<'a> {
     }
 
     pub fn get_page(&self, page: super::SitePageRef) -> crate::ImResult<super::SitePageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -88,6 +131,11 @@ impl<'a> SiteService<'a> {
         &self,
         page: super::SitePageRef,
     ) -> crate::ImResult<super::SitePageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -100,6 +148,13 @@ impl<'a> SiteService<'a> {
         &self,
         draft: super::SitePageDraft,
     ) -> crate::ImResult<super::SitePageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -111,6 +166,11 @@ impl<'a> SiteService<'a> {
         &self,
         draft: super::SitePageDraft,
     ) -> crate::ImResult<super::SitePageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -124,6 +184,13 @@ impl<'a> SiteService<'a> {
         page: super::SitePageRef,
         patch: super::SitePageUpdate,
     ) -> crate::ImResult<super::SitePageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -136,6 +203,11 @@ impl<'a> SiteService<'a> {
         page: super::SitePageRef,
         patch: super::SitePageUpdate,
     ) -> crate::ImResult<super::SitePageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -149,6 +221,13 @@ impl<'a> SiteService<'a> {
         page: super::SitePageRef,
         target: crate::content::PageSlug,
     ) -> crate::ImResult<super::SitePageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -161,6 +240,11 @@ impl<'a> SiteService<'a> {
         page: super::SitePageRef,
         target: crate::content::PageSlug,
     ) -> crate::ImResult<super::SitePageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -173,6 +257,13 @@ impl<'a> SiteService<'a> {
         &self,
         page: super::SitePageRef,
     ) -> crate::ImResult<crate::content::PageDeleteResult> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.sites")?;
+        }
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -184,6 +275,11 @@ impl<'a> SiteService<'a> {
         &self,
         page: super::SitePageRef,
     ) -> crate::ImResult<crate::content::PageDeleteResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.sites")?;
         SiteRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),

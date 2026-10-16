@@ -167,27 +167,58 @@ impl HttpClient {
         if let Some(err) = &self.init_error {
             return Err(err.clone());
         }
+        let discovery = request
+            .url
+            .split('?')
+            .next()
+            .is_some_and(|url| url.ends_with("/server-info"))
+            || serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .is_some_and(|body| body["method"] == "anp.get_capabilities");
         let client = self.async_client.as_ref().map_err(Clone::clone)?;
         let mut builder = client
             .request(parse_method(&request.method)?, request.url.trim())
-            .timeout(RESPONSE_TIMEOUT);
+            .timeout(if discovery {
+                Duration::from_secs(10)
+            } else {
+                RESPONSE_TIMEOUT
+            });
         for (key, value) in request.headers {
             builder = builder.header(key.trim(), value.trim());
         }
         if !request.body.is_empty() {
             builder = builder.body(request.body);
         }
-        let response = builder
+        let mut response = builder
             .send()
             .await
             .map_err(reqwest_transport_unavailable)?;
         let status_code = response.status().as_u16();
         let headers = response_headers(response.headers());
-        let body = response
-            .bytes()
-            .await
-            .map_err(reqwest_transport_unavailable)?
-            .to_vec();
+        let body = if discovery {
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(reqwest_transport_unavailable)?
+            {
+                if body.len().saturating_add(chunk.len())
+                    > crate::backend_capabilities::MAX_RESPONSE_BYTES
+                {
+                    return Err(crate::ImError::TransportUnavailable {
+                        detail: "backend_capabilities_response_too_large".into(),
+                    });
+                }
+                body.extend_from_slice(&chunk);
+            }
+            body
+        } else {
+            response
+                .bytes()
+                .await
+                .map_err(reqwest_transport_unavailable)?
+                .to_vec()
+        };
         Ok(HttpResponse {
             status_code,
             headers,

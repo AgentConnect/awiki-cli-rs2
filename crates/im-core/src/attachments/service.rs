@@ -41,6 +41,11 @@ impl<'a> AttachmentService<'a> {
         mut request: super::AttachmentSendRequest,
         client_message_id: Option<crate::ids::MessageId>,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        preflight_attachment(
+            &self.client.backend_capabilities(false)?,
+            &request.input,
+            &request.security,
+        )?;
         request.security =
             crate::messages::security::resolve(self.client, &target, request.security)?;
         if attachment_security_is_secure(&request.security) {
@@ -115,6 +120,11 @@ impl<'a> AttachmentService<'a> {
         &self,
         request: super::SendConversationAttachmentRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        preflight_attachment(
+            &self.client.backend_capabilities(false)?,
+            &request.input,
+            &request.security,
+        )?;
         let mut resolved = self.resolve_conversation_attachment_request(request)?;
         resolved.request.security = crate::messages::security::resolve(
             self.client,
@@ -189,6 +199,11 @@ impl<'a> AttachmentService<'a> {
         &self,
         request: super::SendConversationAttachmentRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        preflight_attachment(
+            &self.client.backend_capabilities_async(false).await?,
+            &request.input,
+            &request.security,
+        )?;
         let mut resolved = self.resolve_conversation_attachment_request(request)?;
         resolved.request.security = crate::messages::security::resolve_async(
             self.client,
@@ -445,6 +460,11 @@ impl<'a> AttachmentService<'a> {
         mut request: super::AttachmentSendRequest,
         client_message_id: Option<crate::ids::MessageId>,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        preflight_attachment(
+            &self.client.backend_capabilities_async(false).await?,
+            &request.input,
+            &request.security,
+        )?;
         request.security =
             crate::messages::security::resolve_async(self.client, &target, request.security)
                 .await?;
@@ -1187,3 +1207,26 @@ mod tests {
 #[cfg(test)]
 #[path = "secure_result_tests.rs"]
 mod secure_result_tests;
+
+fn preflight_attachment(
+    snapshot: &crate::backend_capabilities::CapabilitySnapshot,
+    input: &super::AttachmentInput,
+    security: &crate::messages::MessageSecurityMode,
+) -> crate::ImResult<()> {
+    snapshot.require("attachments")?;
+    if attachment_security_is_secure(security) {
+        snapshot.require("encrypted_attachments")?;
+    }
+    let size = match input {
+        super::AttachmentInput::Bytes { bytes, .. } => bytes.len() as u64,
+        super::AttachmentInput::LocalFile(path) => std::fs::metadata(path)
+            .map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("attachment".into()),
+                    "attachment file unavailable",
+                )
+            })?
+            .len(),
+    };
+    snapshot.check_limit("attachments", "max_object_bytes", size)
+}

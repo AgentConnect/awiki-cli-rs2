@@ -232,3 +232,72 @@ fn refresh_rejects_different_core_owner_did_account_and_device() {
         ));
     }
 }
+
+#[tokio::test]
+async fn backend_capabilities_persistence_binds_identity_device_and_authorization_not_runtime() {
+    use crate::backend_capabilities::{CapabilitySnapshot, DiscoveryStatus, Support};
+    let fixture = ClientFixture::new();
+    let first = fixture.client(ClientSpec::default());
+    first.backend_capabilities.discover(false, || async {
+        CapabilitySnapshot::from_message_discovery(&serde_json::json!({"awiki_local":{"capabilities_version":1,"capabilities":{"direct":{"enabled":true,"protocol_version":1}}}}))
+    }).await.unwrap();
+    first.stop_backend_capabilities();
+    let reopened = fixture.client(ClientSpec::default());
+    assert_eq!(
+        reopened
+            .backend_capabilities_snapshot_async()
+            .await
+            .support("direct"),
+        Support::Supported
+    );
+    assert_ne!(
+        first.backend_capabilities.generation(),
+        reopened.backend_capabilities.generation()
+    );
+    for spec in [
+        ClientSpec {
+            identity_id: "identity-2",
+            owner_identity_id: "identity-2",
+            ..ClientSpec::default()
+        },
+        ClientSpec {
+            did: "did:example:other",
+            ..ClientSpec::default()
+        },
+        ClientSpec {
+            protocol_device_id: "device-2",
+            ..ClientSpec::default()
+        },
+        ClientSpec {
+            device_auth_generation: "2",
+            ..ClientSpec::default()
+        },
+        ClientSpec {
+            role: DeviceAuthorizationRole::Admin,
+            ..ClientSpec::default()
+        },
+        ClientSpec {
+            management_ready: true,
+            ..ClientSpec::default()
+        },
+    ] {
+        assert_eq!(
+            fixture
+                .client(spec)
+                .backend_capabilities_snapshot_async()
+                .await
+                .status,
+            DiscoveryStatus::Unavailable
+        );
+    }
+    crate::backend_capabilities::persistence::remove_identity(&fixture.core, "identity-1").unwrap();
+    assert!(reopened.backend_capabilities_async(false).await.is_err());
+    assert_eq!(
+        fixture
+            .client(ClientSpec::default())
+            .backend_capabilities_snapshot_async()
+            .await
+            .status,
+        DiscoveryStatus::Unavailable
+    );
+}

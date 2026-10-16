@@ -69,6 +69,7 @@ pub enum MessageAdapterError {
     PermissionDenied,
     LocalStateUnavailable(String),
     PublicServiceCode(String),
+    BackendCapability(String),
     Service(ServiceError),
     Identity(IdentityError),
     PathUnavailable(String),
@@ -171,6 +172,7 @@ impl fmt::Display for MessageAdapterError {
                         error_code.as_deref().unwrap_or("none"), warnings.join(","))
                 }
             }
+            Self::BackendCapability(reason) => formatter.write_str(reason),
             Self::SecureNotSupported => {
                 formatter.write_str("secure messaging is not supported for this command yet")
             }
