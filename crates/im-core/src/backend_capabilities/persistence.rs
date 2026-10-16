@@ -130,7 +130,7 @@ impl Persistence {
                 "limits": capability.limits
             })))
             .ok()?;
-            if projected.limits != capability.limits {
+            if projected != *capability {
                 return None;
             }
         }
@@ -192,7 +192,7 @@ pub(crate) fn remove_identity(core: &crate::ImCore, identity_id: &str) -> std::i
         .remove(identity_id)
     {
         for cache in sessions.into_iter().filter_map(|cache| cache.upgrade()) {
-            cache.stop();
+            cache.retire();
         }
     }
     let path = core

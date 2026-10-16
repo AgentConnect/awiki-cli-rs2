@@ -553,3 +553,13 @@ fn malformed_versions_are_not_explicit_incompatibility() {
         DiscoveryStatus::Unavailable
     );
 }
+
+#[tokio::test]
+async fn retired_context_never_starts_discovery() {
+    let cache = CapabilityCache::default();
+    cache.retire();
+    let result = cache
+        .discover(true, || async { panic!("retired context must not fetch") })
+        .await;
+    assert!(result.is_err());
+}

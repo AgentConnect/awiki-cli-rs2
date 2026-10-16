@@ -425,6 +425,7 @@ pub(crate) struct CapabilityCache {
     cancellation: std::sync::Mutex<tokio_util::sync::CancellationToken>,
     persistence: Option<persistence::Persistence>,
     persistence_enabled: std::sync::atomic::AtomicBool,
+    persistence_gate: std::sync::Mutex<()>,
     changes: tokio::sync::watch::Sender<CapabilityState>,
 }
 static NEXT_RUNTIME_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -471,6 +472,7 @@ impl CapabilityCache {
             cancellation: Default::default(),
             persistence,
             persistence_enabled: std::sync::atomic::AtomicBool::new(true),
+            persistence_gate: Default::default(),
             changes,
             generation: AtomicU64::new(NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed)),
         }
@@ -495,6 +497,17 @@ impl CapabilityCache {
         self.generation.store(
             NEXT_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed),
             Ordering::Release,
+        );
+    }
+    pub(crate) fn retire(&self) {
+        self.stop();
+        self.persistence_enabled.store(false, Ordering::Release);
+        // Complete an already-started write before the owner removes its cache
+        // directory. Future writes check the flag while holding this same gate.
+        drop(
+            self.persistence_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
     }
     pub(crate) fn generation(&self) -> u64 {
@@ -555,6 +568,10 @@ impl CapabilityCache {
         });
     }
     fn persist(&self, state: &mut CacheState) {
+        let _gate = self
+            .persistence_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.persistence_enabled.load(Ordering::Acquire) {
             return;
         }
@@ -642,6 +659,9 @@ impl CapabilityCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = crate::ImResult<CapabilitySnapshot>>,
     {
+        if self.cancellation_token().is_cancelled() {
+            return Err(context_changed());
+        }
         // Ordinary reads never wait on an outstanding request, even when stale.
         if !force && self.state.lock().await.snapshot.is_some() {
             return Ok(self.snapshot().await);
