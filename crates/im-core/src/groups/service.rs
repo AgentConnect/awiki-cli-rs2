@@ -91,6 +91,7 @@ impl<'a> GroupService<'a> {
         }
         let capabilities = self.client.backend_capabilities_async(false).await?;
         capabilities.require("groups")?;
+        resolve_group_create_defaults(&mut request, &capabilities)?;
         check_group_policy_capabilities(
             &capabilities,
             request.admission_mode.as_ref(),
@@ -1818,6 +1819,29 @@ fn check_group_policy_capabilities(
     }
     if let Some(limit) = max_members {
         capabilities.check_limit("groups", "max_members", u64::from(limit.as_u32()))?;
+    }
+    Ok(())
+}
+
+// Resolve the same empty-policy defaults used on the wire before capability
+// validation. Explicit caller policy is never silently reduced or replaced.
+fn resolve_group_create_defaults(
+    request: &mut super::GroupCreateRequest,
+    capabilities: &crate::backend_capabilities::CapabilitySnapshot,
+) -> crate::ImResult<()> {
+    if request.admission_mode.is_none()
+        && request.attachments_allowed.is_none()
+        && request.max_members.is_none()
+        && request.member_max_messages.is_none()
+        && request.member_max_total_chars.is_none()
+    {
+        let maximum = capabilities
+            .limit("groups", "max_members")
+            .unwrap_or(500)
+            .min(500);
+        request.max_members = Some(super::GroupMemberLimit::new(maximum as u32)?);
+        request.admission_mode = Some(super::GroupAdmissionMode::OpenJoin);
+        request.attachments_allowed = Some(true);
     }
     Ok(())
 }

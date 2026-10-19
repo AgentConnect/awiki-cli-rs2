@@ -526,3 +526,56 @@ async fn disabled_content_and_sites_reject_before_authentication_or_remote_write
         Err(crate::ImError::UnsupportedCapability { .. })
     ));
 }
+
+#[test]
+fn default_group_capacity_is_resolved_before_wire_and_explicit_policy_is_preserved() {
+    for (advertised, expected) in [
+        (Some(100), 100),
+        (Some(500), 500),
+        (Some(1000), 500),
+        (None, 500),
+    ] {
+        let limits = advertised
+            .map(|value| json!({"max_members": value}))
+            .unwrap_or(json!({}));
+        let snapshot =
+            crate::backend_capabilities::CapabilitySnapshot::from_message_discovery(&json!({
+                "awiki_local": {"capabilities_version": 1, "capabilities": {
+                    "groups": {"enabled": true, "protocol_version": 1, "limits": limits},
+                    "group_open_join": {"enabled": true, "protocol_version": 1}
+                }}
+            }))
+            .unwrap();
+        let mut request = crate::groups::GroupCreateRequest::new("default capacity");
+        super::resolve_group_create_defaults(&mut request, &snapshot).unwrap();
+        super::check_group_policy_capabilities(
+            &snapshot,
+            request.admission_mode.as_ref(),
+            request.max_members,
+        )
+        .unwrap();
+        let payload = crate::internal::wire::group::build_group_create_payload(
+            "did:example:alice",
+            &request,
+            &crate::ids::Did::parse("did:example:service").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload.body["group_policy"]["max_members"],
+            expected.to_string()
+        );
+        assert_eq!(payload.body["group_policy"]["admission_mode"], "open-join");
+        assert_eq!(payload.body["group_policy"]["attachments_allowed"], true);
+        request.max_members = Some(crate::groups::GroupMemberLimit::new(700).unwrap());
+        super::resolve_group_create_defaults(&mut request, &snapshot).unwrap();
+        assert_eq!(request.max_members.unwrap().as_u32(), 700);
+        if advertised.is_some_and(|limit| limit < 700) {
+            assert!(super::check_group_policy_capabilities(
+                &snapshot,
+                request.admission_mode.as_ref(),
+                request.max_members
+            )
+            .is_err());
+        }
+    }
+}
