@@ -8,6 +8,10 @@ use std::sync::{
 };
 
 async fn predecessor(core: &crate::ImCore, path: &[&str]) -> Value {
+    predecessor_with_port(core, path, None).await
+}
+
+async fn predecessor_with_port(core: &crate::ImCore, path: &[&str], port: Option<u16>) -> Value {
     let mut create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
         "awiki.test",
         "alice",
@@ -15,6 +19,7 @@ async fn predecessor(core: &crate::ImCore, path: &[&str]) -> Value {
         None,
     )
     .unwrap();
+    create.spec.port = port;
     create.spec.path_segments = path.iter().map(|s| (*s).to_owned()).collect();
     controller_custody_provider(core)
         .await
@@ -126,23 +131,26 @@ fn otp_request() -> HandleRecoveryOtpRequest {
 
 #[tokio::test]
 async fn recovery_subject_path_survives_otp_restart_and_grant_exchange() {
-    for path in [
-        vec!["alice"],
-        vec!["user", "alice"],
-        vec!["agents", "primary"],
+    for (path, port) in [
+        (vec!["alice"], None),
+        (vec!["user", "alice"], None),
+        (vec!["agents", "primary"], None),
+        (vec!["alice"], Some(443)),
+        (vec!["agents", "primary"], Some(8443)),
     ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let root = tempfile::tempdir().unwrap();
         let core = recovery_test_core(root.path(), &endpoint, [131; 32]);
-        let previous = predecessor(&core, &path).await;
+        let previous = predecessor_with_port(&core, &path, port).await;
         let previous_did = previous["id"].as_str().unwrap();
         let server = Server::start(listener, binding(previous_did), previous_did.to_owned());
         let otp = core
             .handle_recovery()
             .request_handle_recovery_otp(otp_request())
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("OTP request for port {port:?}: {error:?}"));
+        assert!(otp.accepted);
         let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
         let (_, before) = store.load_v4(&otp.operation_id).unwrap().unwrap();
         drop(store);
@@ -173,6 +181,12 @@ async fn recovery_subject_path_survives_otp_restart_and_grant_exchange() {
         );
         assert_eq!(after.local_previous_did, previous_did);
         assert!(!after.commit_attempted);
+        let successor = anp::authentication::parse_did_wba_e1(after.identity.did.as_str()).unwrap();
+        assert_eq!(
+            successor.origin,
+            port.map(|port| format!("awiki.test%3A{port}"))
+                .unwrap_or_else(|| "awiki.test".to_owned())
+        );
         // Exercise ANP's actual proof and transition validator, the same
         // stable-path contract that rejected the production recovery.
         anp::authentication::verify_active_e1_document(
@@ -315,7 +329,18 @@ async fn recovery_subject_path_binding_change_stops_before_freezing_or_committin
 
 #[tokio::test]
 async fn recovery_subject_path_invalid_discovery_creates_no_keys_or_operation() {
-    for invalid in ["inactive", "wrong_handle", "wrong_domain", "malformed_e1"] {
+    for invalid in [
+        "inactive",
+        "wrong_handle",
+        "wrong_domain",
+        "wrong_domain_with_port",
+        "empty_port",
+        "nondigit_port",
+        "out_of_range_port",
+        "noncanonical_port",
+        "authority_suffix",
+        "malformed_e1",
+    ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let root = tempfile::tempdir().unwrap();
@@ -326,6 +351,20 @@ async fn recovery_subject_path_invalid_discovery_creates_no_keys_or_operation() 
             "inactive" => doc["status"] = json!("revoked"),
             "wrong_handle" => doc["handle"] = json!("bob.awiki.test"),
             "wrong_domain" => doc["did"] = json!(did.replace("awiki.test", "other.test")),
+            "wrong_domain_with_port" => {
+                doc["did"] = json!(did.replace("awiki.test", "other.test%3A8443"));
+            }
+            "empty_port" => doc["did"] = json!(did.replace("awiki.test", "awiki.test%3A")),
+            "nondigit_port" => doc["did"] = json!(did.replace("awiki.test", "awiki.test%3Ahttps")),
+            "out_of_range_port" => {
+                doc["did"] = json!(did.replace("awiki.test", "awiki.test%3A65536"));
+            }
+            "noncanonical_port" => {
+                doc["did"] = json!(did.replace("awiki.test", "awiki.test%3A08443"));
+            }
+            "authority_suffix" => {
+                doc["did"] = json!(did.replace("awiki.test", "awiki.test%3A8443@other.test"));
+            }
             _ => doc["did"] = json!("did:wba:awiki.test:alice:e1_invalid"),
         }
         let server = Server::start(listener, doc, did);

@@ -106,12 +106,15 @@ Rules:
 
 E1 Recovery preserves the predecessor's encoded origin and stable subject path; registration's
 `user/<handle>` default is not a recovery authority. A fresh owner resolves the validated WNS
-binding before provisioning custody, while a local owner uses its existing DID. Candidate reuse
+binding before provisioning custody, while a local owner uses its existing DID.
+Public WNS checks compare the Handle provider to the WBA hostname only, validating and excluding
+the encoded port from that comparison while retaining it in the DID and recovery subject path.
+Malformed ports and different hostnames fail before fresh custody or OTP is created. Candidate reuse
 is limited to that same subject and excludes the predecessor itself. The factor-exchange binding
 and the frozen Commit predecessor are checked again before submission. A mismatched pre-attempt
 operation requires explicit discard/restart; an attempted operation retains its exact keys,
 intent and audit state and reports `unknown_epoch`. No retry silently rewrites those materials.
-Non-E1 recovery behavior is unchanged.
+Non-E1 recovery candidate generation is unchanged.
 
 Manifest Handle Recovery V4.0 is an environment-level, host-neutral Core state machine behind the
 default-off `multi_device_handle_recovery_enabled` option. Core owns OTP/grant exchange,

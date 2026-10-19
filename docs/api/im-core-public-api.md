@@ -990,7 +990,9 @@ nullable success。
 对 E1 身份，Recovery 候选必须保留前身 DID 的 origin 和完整 stable subject path，
 只轮换指纹与密钥；不能使用注册默认的 `user/<handle>` 路径推导旧账号。新机器首次创建
 候选前读取并验证权威 WNS binding，本地已有目标则使用其现有 DID；OTP 重发和重启继续
-复用原操作。Grant exchange 后再次核对权威前身与候选路径。路径不一致且尚未尝试 Commit
+复用原操作。WNS 的 `did:wba` 主机名校验忽略合法的编码端口，后继 DID 仍保留该端口；
+端口格式错误或主机名不一致时，在创建候选与发送 OTP 前拒绝。
+Grant exchange 后再次核对权威前身与候选路径。路径不一致且尚未尝试 Commit
 时返回 `state_changed_requires_new_operation`，只允许显式丢弃后重建；已尝试操作保持
 不可变 intent 和密钥，不自动清理或换钥，返回 `unknown_epoch` 并保留审计状态。
 Commit 前同样校验，防止旧客户端遗留的错误候选继续提交。此检查不改变非 E1 恢复合同，
@@ -1697,6 +1699,9 @@ Direct 与 target-first attachment 只从目标域公开 WNS 文档读取并验�
 subject。公开文档中即使出现 `user_id` / `subject_id` 也必须忽略；generation 必须是无固定位宽
 限制的 canonical positive decimal string。相同 local-part 位于不同 domain 时始终属于不同
 scope。stale-DID 重试也必须重新走该权威路由，不能使用错误响应携带的私有 subject ID。
+`did:wba` 与 Handle provider 的域名一致性只比较 hostname；编码端口须与身份生成规则一致，
+为 `u16` 范围内的规范十进制整数，比较时忽略，原始 DID 与 stable subject path 保持不变。错误主机和非法
+端口仍 fail closed，不会因剥离端口而放宽跨域绑定。
 
 旧预发布实现若曾使用公开 WNS 中的私有 ID 生成 scope，Core 不猜测该 ID 与完整 Handle 的
 唯一对应关系，也不自动创建合并 alias；当前没有足够可信输入完成无歧义迁移。新解析统一使用
