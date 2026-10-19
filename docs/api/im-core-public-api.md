@@ -987,6 +987,14 @@ OTP request 接受规范化 full Handle、phone 与 optional identity：提供 s
 default/current identity。Core 生成并返回 operation ID 与权威 owner ID；prepare、status、
 activate 和 resume 都精确接受 operation ID，不按 identity scope 猜测，也不把 unknown 映射成
 nullable success。
+对 E1 身份，Recovery 候选必须保留前身 DID 的 origin 和完整 stable subject path，
+只轮换指纹与密钥；不能使用注册默认的 `user/<handle>` 路径推导旧账号。新机器首次创建
+候选前读取并验证权威 WNS binding，本地已有目标则使用其现有 DID；OTP 重发和重启继续
+复用原操作。Grant exchange 后再次核对权威前身与候选路径。路径不一致且尚未尝试 Commit
+时返回 `state_changed_requires_new_operation`，只允许显式丢弃后重建；已尝试操作保持
+不可变 intent 和密钥，不自动清理或换钥，返回 `unknown_epoch` 并保留审计状态。
+Commit 前同样校验，防止旧客户端遗留的错误候选继续提交。此检查不改变非 E1 恢复合同，
+也不以 WNS 私有字段代替 Grant 中的账号授权。
 `HandleRecoveryProgress` 包含 secret-free impact 和 initiator reset projection；authorized Join
 返回 `AuthorizedJoinActivationProgress { join, reset_reference }`，其中 joined-device reset 的
 source ID 是精确普通 Join session ID，App 不需要也不得猜 epoch tuple。

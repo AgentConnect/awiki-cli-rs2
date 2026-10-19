@@ -154,23 +154,29 @@ pub(crate) async fn request_otp(
                     identity: None,
                 }
             } else {
-            let identity =
-                crate::internal::identity_custody::provision_handle_recovery_identity_async(
+                let binding = crate::internal::handle_discovery::resolve_authoritative_recovery_binding_async(
                     core,
-                    &canonical.domain,
-                    &canonical.local_part,
+                    &canonical.full,
                 )
                 .await?;
-            let unique_id = identity.unique_id()?;
-            RecoveryLocalContext {
-                owner_identity_id: unique_id.clone(),
-                local_alias: unique_id,
-                display_name: canonical.local_part.clone(),
-                make_default: index.default_credential_name.is_empty(),
-                local_previous_did: format!("{}:unbound", identity.did.as_str()),
-                fresh_local_state: true,
-                identity: Some(identity),
-            }
+                let identity =
+                    crate::internal::identity_custody::provision_handle_recovery_identity_async(
+                        core,
+                        &canonical.domain,
+                        &canonical.local_part,
+                        binding.did.as_str(),
+                    )
+                    .await?;
+                let unique_id = identity.unique_id()?;
+                RecoveryLocalContext {
+                    owner_identity_id: unique_id.clone(),
+                    local_alias: unique_id,
+                    display_name: canonical.local_part.clone(),
+                    make_default: index.default_credential_name.is_empty(),
+                    local_previous_did: format!("{}:unbound", identity.did.as_str()),
+                    fresh_local_state: true,
+                    identity: Some(identity),
+                }
             }
         }
     };
@@ -201,6 +207,7 @@ pub(crate) async fn request_otp(
                     core,
                     &canonical.domain,
                     &canonical.local_part,
+                    &context.local_previous_did,
                 )
                 .await?
             }
@@ -910,6 +917,20 @@ pub(crate) async fn prepare(
             }
         }
     }
+    if !crate::internal::identity_generation::handle_recovery_subject_matches(
+        &grant.current_binding.current_did,
+        pending.identity.did.as_str(),
+    )? {
+        // The grant is authority, not the earlier WNS snapshot or local index.
+        // Never rewrite the candidate keys/intent under an existing operation.
+        let code = if post_attempt_refresh {
+            HandleRecoveryErrorCode::UnknownEpoch
+        } else {
+            HandleRecoveryErrorCode::StateChanged
+        };
+        persist_nonterminal_error_v4(core, &store, &mut pending, code)?;
+        return Err(recovery_error(code));
+    }
     let local_index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
@@ -1603,6 +1624,20 @@ async fn send_commit_v4(
             pending,
             HandleRecoveryErrorCode::FactorRetryRequired,
         )?;
+        return Ok(false);
+    }
+    if !crate::internal::identity_generation::handle_recovery_subject_matches(
+        &pending.local_previous_did,
+        pending.identity.did.as_str(),
+    )? {
+        // Old clients may have already persisted a mismatched candidate. Do not
+        // resubmit it or replace its immutable intent after a Commit attempt.
+        let code = if pending.commit_attempted {
+            HandleRecoveryErrorCode::UnknownEpoch
+        } else {
+            HandleRecoveryErrorCode::StateChanged
+        };
+        persist_nonterminal_error_v4(core, store, pending, code)?;
         return Ok(false);
     }
     let expires = std::cmp::min(now + time::Duration::seconds(120), grant_expires);
@@ -3260,6 +3295,7 @@ mod tests {
     mod postcommit_authority;
     mod retirement;
     mod state_machine;
+    mod subject_path;
 
     #[test]
     fn fresh_recovery_builds_unsigned_predecessor_without_old_private_key() {
@@ -3848,7 +3884,7 @@ mod tests {
             .unwrap();
 
         let predecessor_did =
-            "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice".to_owned();
+            "did:wba:alice.fixture.invalid:agents:primary:e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
         let mut predecessor =
             crate::internal::identity_generation::generate_handle_recovery_identity(
                 "invalid", "fixture", None, None,
@@ -3935,7 +3971,7 @@ mod tests {
                             "current_binding": {
                                 "account_user_id": "fixture-account-0714",
                                 "full_handle": "fixture.invalid",
-                                "current_did": "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice",
+                                "current_did": "did:wba:alice.fixture.invalid:agents:primary:e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                                 "binding_generation": "1"
                             }
                         }),

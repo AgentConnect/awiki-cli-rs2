@@ -385,9 +385,17 @@ async fn recovery_registration_cleanup_request_otp_captures_candidate_once_and_p
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
-        for _ in 0..2 {
+        for request_index in 0..3 {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_http_request(&mut stream);
+            if request_index == 0 {
+                assert!(request.starts_with("GET /.well-known/handle/alice "));
+                write_json_response(&mut stream, &json!({
+                    "handle": "alice.awiki.test", "did": format!("did:wba:awiki.test:user:alice:e1_{}", "A".repeat(43)),
+                    "status": "active", "binding_generation": "7"
+                }));
+                continue;
+            }
             let body: Value =
                 serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
             write_json_response(
