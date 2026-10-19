@@ -8,7 +8,8 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`
+// These functions are ignored because they are not marked as `pub`: `new_local`, `new`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `SubscriptionState`
 
 Future<String> publicCapabilitySnapshot({required ArcDartImCore instance}) =>
     RustLib.instance.api.crateApiCapabilitiesPublicCapabilitySnapshot(

@@ -10,26 +10,33 @@ pub struct DartImClient {
 struct DartImClientState {
     core: Option<im_core::ImCore>,
     inner: Option<im_core::ImClient>,
+    capability_source: tokio::sync::watch::Sender<Option<super::capabilities::CapabilityUpdates>>,
+}
+
+impl DartImClientState {
+    fn new(core: Option<im_core::ImCore>, inner: im_core::ImClient) -> Self {
+        let (capability_source, _) =
+            tokio::sync::watch::channel(Some(inner.subscribe_backend_capabilities()));
+        Self {
+            core,
+            inner: Some(inner),
+            capability_source,
+        }
+    }
 }
 
 impl DartImClient {
     #[cfg(test)]
     pub(crate) fn new(inner: im_core::ImClient) -> Self {
         Self {
-            state: Arc::new(RwLock::new(DartImClientState {
-                core: None,
-                inner: Some(inner),
-            })),
+            state: Arc::new(RwLock::new(DartImClientState::new(None, inner))),
             runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
     pub(crate) fn new_with_core(core: im_core::ImCore, inner: im_core::ImClient) -> Self {
         Self {
-            state: Arc::new(RwLock::new(DartImClientState {
-                core: Some(core),
-                inner: Some(inner),
-            })),
+            state: Arc::new(RwLock::new(DartImClientState::new(Some(core), inner))),
             runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -96,12 +103,34 @@ impl DartImClient {
         let (refreshed, authorization_context_changed) = current
             .refresh_runtime_from(inner)
             .map_err(DartImError::from)?;
+        if authorization_context_changed {
+            current.stop_backend_capabilities();
+            guard
+                .capability_source
+                .send_replace(Some(refreshed.subscribe_backend_capabilities()));
+        }
         guard.inner = Some(refreshed);
         Ok(authorization_context_changed)
     }
 
     pub(crate) async fn lock_runtime_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.runtime_refresh_lock.lock().await
+    }
+
+    pub(crate) fn subscribe_capability_source(
+        &self,
+    ) -> Result<
+        tokio::sync::watch::Receiver<Option<super::capabilities::CapabilityUpdates>>,
+        DartImError,
+    > {
+        let guard = self
+            .state
+            .read()
+            .map_err(|_| DartImError::internal("client lock poisoned"))?;
+        if guard.inner.is_none() {
+            return Err(DartImError::object_closed("DartImClient"));
+        }
+        Ok(guard.capability_source.subscribe())
     }
 
     pub(crate) fn close(&self) -> Result<(), DartImError> {
@@ -112,6 +141,7 @@ impl DartImClient {
         if let Some(client) = guard.inner.take() {
             client.stop_backend_capabilities();
         }
+        guard.capability_source.send_replace(None);
         Ok(())
     }
 }

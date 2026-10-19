@@ -41,4 +41,5 @@ tokio.workspace = true
 apple-native-keyring-store = { version = "=1.0.2", features = ["protected"] }
 
 [dev-dependencies]
+base64.workspace = true
 tempfile = "=3.3.0"

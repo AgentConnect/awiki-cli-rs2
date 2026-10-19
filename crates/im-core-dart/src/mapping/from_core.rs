@@ -2746,6 +2746,8 @@ mod tests {
             my_role: Some("member".to_owned()),
             membership_status: Some("active".to_owned()),
             member_count: Some(1),
+            avatar_members: None,
+            group_state_version: None,
             last_message_at: None,
         });
 

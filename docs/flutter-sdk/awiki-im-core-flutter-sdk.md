@@ -1438,3 +1438,7 @@ persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立�
 刷新；`force: true` 等待合并刷新。公开和消息来源分别订阅，认证错误不转为不支持。
 取消 Dart 订阅释放其原生读取会话；dispose Client 停止认证发现，dispose Core 停止全部
 发现工作。新 native bridge 与生成 Dart 文件必须一同构建，不能混用旧制品。
+
+同一 Dart Client 在 Root 导入或权限升级后更换授权上下文时，现有消息能力订阅跟随
+新的缓存并立即发出新上下文的初始状态，不要求 App 重建订阅；旧上下文的排队结果
+不得覆盖新状态。普通 Token 刷新保留原订阅。关闭 Client 会唤醒并结束等待中的订阅。
