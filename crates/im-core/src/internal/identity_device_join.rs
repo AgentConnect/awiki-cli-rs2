@@ -2858,20 +2858,18 @@ fn promote_join_identity_local(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    if pending.did.as_str().starts_with("did:web:") {
-        crate::internal::access_token::validate_device_access_token(
-            &access.access_token,
-            &crate::internal::access_token::ExpectedDeviceAccess {
-                did: pending.did.as_str(),
-                user_id: &access.user_id,
-                device_id: &pending.authorization.device.device_id,
-                key_id: &pending.authorization.device.signing_key_id,
-                auth_generation: pending.authorization.device.auth_generation,
-                role: pending.authorization.device.role,
-                management_ready: false,
-            },
-        )?;
-    }
+    crate::internal::access_token::validate_device_access_token(
+        &access.access_token,
+        &crate::internal::access_token::ExpectedDeviceAccess {
+            did: pending.did.as_str(),
+            user_id: &access.user_id,
+            device_id: &pending.authorization.device.device_id,
+            key_id: &pending.authorization.device.signing_key_id,
+            auth_generation: pending.authorization.device.auth_generation,
+            role: pending.authorization.device.role,
+            management_ready: false,
+        },
+    )?;
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
         IDENTITY_DEVICE_STATE_SCHEMA_VERSION,

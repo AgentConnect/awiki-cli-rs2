@@ -1042,7 +1042,10 @@ where
                 join_session_id,
             )?
         {
-            if pending.did.as_str().starts_with("did:web:") {
+            if crate::internal::identity_device_join::web_activation::requires_current_confirmation(
+                self.core,
+                join_session_id,
+            )? {
                 return self
                     .complete_web_activation(join_session_id, &pending.did)
                     .await;
@@ -1058,10 +1061,7 @@ where
         )?;
         let status = match self.remote.status(join_session_id, &token).await {
             Ok(status) => status,
-            Err(_)
-                if local.did.as_str().starts_with("did:web:")
-                    && local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared =>
-            {
+            Err(_) if local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared => {
                 return self
                     .complete_web_activation(join_session_id, &local.did)
                     .await;
@@ -1073,9 +1073,7 @@ where
         }
         match status.state {
             DeviceJoinRemoteState::Expired => {
-                if local.did.as_str().starts_with("did:web:")
-                    && local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared
-                {
+                if local.phase == crate::identity::DeviceJoinLocalPhase::ResponsePrepared {
                     return self
                         .complete_web_activation(join_session_id, &local.did)
                         .await;
@@ -1163,7 +1161,10 @@ where
                 ),
             }),
             DeviceJoinRemoteState::Consumed => {
-                if local.did.as_str().starts_with("did:web:") {
+                if crate::internal::identity_device_join::web_activation::requires_current_confirmation(
+                    self.core,
+                    join_session_id,
+                )? {
                     return self
                         .complete_web_activation(join_session_id, &local.did)
                         .await;

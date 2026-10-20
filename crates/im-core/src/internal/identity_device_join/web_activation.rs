@@ -1,4 +1,4 @@
-//! Current-device confirmation for a Web Join, before local activation.
+//! Current-device confirmation for Web and expired WBA Join recovery.
 //!
 //! The enrollment signer exists only for this fixed read sequence. A consumed
 //! Join is historical evidence; current Registry membership and key bytes must
@@ -28,13 +28,34 @@ fn snapshot(core: &crate::core::ImCore, session_id: &str) -> crate::ImResult<Sto
     let stored = JoinStateStore::new(core)
         .load(session_id, DeviceJoinSide::NewDevice)?
         .ok_or(crate::ImError::PermissionDenied)?;
-    if !stored.join_request.did.starts_with("did:web:")
+    if !(stored.join_request.did.starts_with("did:web:")
+        || stored.join_request.did.starts_with("did:wba:"))
         || stored.phase != DeviceJoinLocalPhase::ResponsePrepared
         || stored.join_custody.is_none()
     {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(stored)
+}
+
+/// A committed approval outlives its pairing deadline, but late activation
+/// must revalidate the exact device's current authority rather than extending
+/// the lifetime of the old Join token or challenge.
+pub(crate) fn requires_current_confirmation(
+    core: &crate::core::ImCore,
+    session_id: &str,
+) -> crate::ImResult<bool> {
+    let mut stored = snapshot(core, session_id)?;
+    if stored.join_request.did.starts_with("did:web:") {
+        return Ok(true);
+    }
+    // A persisted activation does not exempt recovery from current authority.
+    stored.activation_pending = false;
+    match ensure_not_expired(&stored) {
+        Ok(()) => Ok(false),
+        Err(crate::ImError::SessionExpired) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 /// No arbitrary URL, RPC method or payload can be supplied by the product.

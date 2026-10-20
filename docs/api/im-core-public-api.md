@@ -738,7 +738,8 @@ Web 注册完成前通过同一候选设备认证后读取 `device_registry_get.
 历史候选不变，当前文档及检查点另存并用于本地投影；缺失结果、当前撤销或权限变化保留
 pending。Web pending 不进入 WBA 退役候选替换或过期根 proof 刷新分支。
 
-Web Join 仍通过现有 `device_join().advance` 推进。Join Token 过期或响应丢失后，
+Web/WBA Join 仍通过现有 `device_join().advance` 推进。Join Token 过期、响应丢失，
+或 WBA 已批准但接收时配对挑战过期后，
 Core 可用本次 enrollment 的精确设备键查询已 consumed 的会话，但只在当前设备仍
 有效时激活本地身份。失败保留 pending，不向 Host 暴露任意未激活身份的 HTTP 签名。
 恢复会接受批准后的合法文档更新，并在 custody 激活后的崩溃恢复中重新校验 Registry。

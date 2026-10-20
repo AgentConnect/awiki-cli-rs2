@@ -139,7 +139,9 @@ impl PendingJoinActivation {
                     return Err(crate::ImError::PermissionDenied);
                 }
             }
-            let freshness = crate::internal::access_token::validate_device_access_token_binding(
+            // An expired token remains readable recovery material; activation
+            // still requires a fresh token and current-device confirmation.
+            crate::internal::access_token::validate_device_access_token_binding(
                 &result.access_token,
                 &crate::internal::access_token::ExpectedDeviceAccess {
                     did: self.did.as_str(),
@@ -151,11 +153,6 @@ impl PendingJoinActivation {
                     management_ready: false,
                 },
             )?;
-            if !self.did.as_str().starts_with("did:web:")
-                && freshness == crate::internal::access_token::DeviceAccessTokenFreshness::Expired
-            {
-                return Err(crate::ImError::SessionExpired);
-            }
         }
         Ok(())
     }
