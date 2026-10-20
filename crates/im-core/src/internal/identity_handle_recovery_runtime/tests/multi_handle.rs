@@ -251,33 +251,33 @@ async fn two_legacy_handle_recoveries_resume_through_auth_and_prekeys_in_either_
         if reverse {
             pending.reverse();
         }
-        let error = resume(
+        let completed = resume(
             &core,
             HandleRecoveryResumeRequest {
                 operation_id: pending[0].operation_id.clone(),
             },
         )
         .await
-        .unwrap_err();
+        .unwrap();
         assert_eq!(
-            service_code(&error),
-            Some("identity.local_registry_conflict")
+            completed.phase,
+            crate::identity::HandleRecoveryPhase::Applied
         );
         assert_eq!(store.load_index().unwrap().credentials.len(), 3);
-        assert!(core.identities().list().is_err());
+        assert_eq!(core.identities().list().unwrap().len(), 1);
         let sqlite = &core.inner().sdk_paths().local_state.sqlite_path;
         assert_eq!(
             operations::load(sqlite, &pending[0].operation_id)
                 .unwrap()
                 .unwrap()
                 .lifecycle_class,
-            Lifecycle::LocalTransitionPending
+            Lifecycle::Applied
         );
         // Restart with one repaired Handle and one still conflicting Handle.
         // Both exact operation journals must remain reachable without login.
         drop(core);
         let core = recovery_test_core(root.path(), &endpoint, [125; 32]);
-        assert!(core.identities().list().is_err());
+        assert_eq!(core.identities().list().unwrap().len(), 1);
         let sqlite = &core.inner().sdk_paths().local_state.sqlite_path;
         for p in [&pending[1], &pending[0]] {
             let context = crate::internal::identity_handle_recovery_context::inspect(
@@ -289,9 +289,14 @@ async fn two_legacy_handle_recoveries_resume_through_auth_and_prekeys_in_either_
             )
             .await
             .unwrap();
-            assert!(context
-                .allowed_actions
-                .contains(&crate::identity::HandleRecoveryAction::Resume));
+            assert!(
+                context
+                    .allowed_actions
+                    .contains(&crate::identity::HandleRecoveryAction::Resume)
+                    || context
+                        .allowed_actions
+                        .contains(&crate::identity::HandleRecoveryAction::ActivateIdentity)
+            );
             let progress = resume(
                 &core,
                 HandleRecoveryResumeRequest {

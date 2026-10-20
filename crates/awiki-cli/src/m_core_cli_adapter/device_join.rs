@@ -310,7 +310,7 @@ fn required_value(value: &str, flag: &str) -> Result<String, ExitError> {
     Ok(value.to_owned())
 }
 
-fn progress_result(
+pub(crate) fn progress_result(
     action: &str,
     progress: DeviceJoinProgress,
     summary: &str,

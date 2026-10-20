@@ -183,6 +183,27 @@ pub struct MessageMetadata {
     pub attributes: Vec<MessageMetadataAttribute>,
 }
 
+impl MessageMetadata {
+    /// Actual Core projection provenance, independent of composer/send intent.
+    /// Decryption changes content_type to the inner type; provenance survives.
+    pub fn is_end_to_end_encrypted(&self) -> bool {
+        self.attributes.iter().any(|attribute| {
+            matches!(
+                attribute.key.as_str(),
+                "security" | "security_profile" | "message_security_profile"
+            ) && matches!(attribute.value.as_str(), "direct-e2ee" | "group-e2ee")
+                || attribute.key == "secure_wire_content_type" && !attribute.value.is_empty()
+        }) || self.content_type.as_deref().is_some_and(|kind| {
+            matches!(
+                kind,
+                "application/anp-direct-init+json"
+                    | "application/anp-direct-cipher+json"
+                    | "application/anp-group-cipher+json"
+            )
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationIdentity {
     pub conversation_id: String,

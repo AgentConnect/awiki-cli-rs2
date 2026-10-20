@@ -37,6 +37,9 @@ pub(crate) struct ImCoreInner {
     pub(crate) direct_rebind_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    pub(crate) group_lifecycle_locks: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     pub(crate) registration_join_preparations:
@@ -146,6 +149,7 @@ impl ImCore {
                     .external_http_allow_insecure_loopback_for_testing,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                group_lifecycle_locks: Default::default(),
                 device_join_approvals: Default::default(),
                 registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
@@ -1143,6 +1147,32 @@ impl ImCoreInner {
         );
         let mut locks = self
             .direct_rebind_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&scope).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(scope, Arc::downgrade(&lock));
+        lock
+    }
+
+    pub(crate) fn group_lifecycle_lock(
+        &self,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let scope = format!(
+            "{}\0{}\0{}",
+            crate::internal::identity_transition_pending::state_root_fingerprint(
+                &self.sdk_paths.local_state.sqlite_path,
+            ),
+            owner_identity_id,
+            conversation_id,
+        );
+        let mut locks = self
+            .group_lifecycle_locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         locks.retain(|_, lock| lock.strong_count() > 0);

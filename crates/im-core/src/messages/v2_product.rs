@@ -387,6 +387,10 @@ async fn send_group_async_impl(
             "P6 v2 group target must be a DID",
         ));
     }
+    let group_lock = client
+        .core_inner()
+        .group_lifecycle_lock(client.current_identity().id.as_str(), group_did);
+    let _group_guard = group_lock.lock().await;
     let device = current_vnext_device(client)?;
     let device_revocation_pending =
         group_device_revocation_pending_for_send_async(client, group_did).await?;
@@ -395,11 +399,23 @@ async fn send_group_async_impl(
     // active owner converge its accepted local tree to the authoritative P4/P2
     // roster. Non-owners and already-converged owners are no-ops.
     if !device_revocation_pending {
-        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
+        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
             client,
             group.clone(),
         )
         .await?;
+    }
+    if !device_revocation_pending
+        && !client
+            .secure()
+            .group(group.clone())
+            .status_async()
+            .await?
+            .can_send_secure
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "group_membership_change_pending".to_owned(),
+        });
     }
     let logical_message_id = required_message_id(&request)?.to_owned();
     let operation_id = request
@@ -598,31 +614,8 @@ struct CurrentVNextDevice {
 
 #[cfg(feature = "group-e2ee")]
 fn current_vnext_device(client: &crate::core::ImClient) -> crate::ImResult<CurrentVNextDevice> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index = crate::internal::identity_store::IdentityStore::new(
-        &client.core_inner().sdk_paths().identities,
-    )
-    .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .filter(|state| {
-            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let authorization = state
-        .authorization
-        .as_ref()
-        .filter(|authorization| {
-            authorization.status
-                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(client)?;
     Ok(CurrentVNextDevice {
         device_id: authorization.protocol_device_id.as_str().to_owned(),
         signing_key_id: authorization.signing_key_id.clone(),
@@ -712,7 +705,8 @@ async fn group_device_revocation_pending_for_send_async(
 
 #[cfg(feature = "group-e2ee")]
 fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult<bool> {
-    ensure_group_e2ee_v2_send_not_paused(snapshot)?;
+    // Membership maintenance must reach the owner reconciliation below. The
+    // authoritative paused gate is checked again before preparing ciphertext.
     let Some(maintenance) = snapshot.get("e2ee_maintenance") else {
         return Ok(false);
     };
@@ -729,10 +723,19 @@ fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult
             detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
         });
     }
-    Ok(
-        maintenance.get("reason").and_then(Value::as_str) == Some("device_revocation_pending")
-            && maintenance.get("send_paused").and_then(Value::as_bool) == Some(false),
-    )
+    match (
+        maintenance.get("reason").and_then(Value::as_str),
+        maintenance.get("send_paused").and_then(Value::as_bool),
+    ) {
+        (Some("device_revocation_pending"), Some(false)) => Ok(true),
+        (Some("device_revocation_pending"), Some(true)) => {
+            ensure_group_e2ee_v2_send_not_paused(snapshot).map(|()| true)
+        }
+        (Some("group_membership_change_pending"), Some(true)) => Ok(false),
+        _ => Err(crate::ImError::LocalStateUnavailable {
+            detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
+        }),
+    }
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -759,6 +762,21 @@ fn group_result(
     accepted: &anp::group_e2ee::V2GroupSendResult,
     attachment_projection: Option<&Value>,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
+    // P4 history/receive identify a group event by group DID + sequence.
+    // Keep the original P6 message ID as an alias so the queued bubble is
+    // atomically replaced by the same canonical row after Host acceptance.
+    let canonical_id = crate::ids::MessageId::parse(format!(
+        "{}:{}",
+        accepted.group_did, accepted.group_event_seq
+    ))?;
+    let server_sequence = accepted
+        .group_event_seq
+        .parse::<i64>()
+        .ok()
+        .filter(|sequence| *sequence > 0)
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "accepted group event sequence cannot be projected".to_owned(),
+        })?;
     let projection_body = attachment_projection
         .map(|payload| crate::messages::MessageBody::Payload {
             payload: payload.clone(),
@@ -768,10 +786,7 @@ fn group_result(
         client,
         &request.target,
         &projection_body,
-        request
-            .client_message_id
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?,
+        &canonical_id,
         Some(accepted.operation_id.as_str()),
         crate::messages::DeliveryState::Accepted,
         None,
@@ -792,6 +807,8 @@ fn group_result(
             &crate::attachments::manifest::manifest_content_string(manifest),
         );
     }
+    result.message.metadata.server_sequence = Some(server_sequence);
+    add_product_attribute(&mut result, "raw_message_id", &accepted.message_id);
     result.message.sent_at = Some(accepted.accepted_at.clone());
     add_product_attribute(&mut result, "security", "group-e2ee");
     add_product_attribute(&mut result, "message_security_profile", "group-e2ee");
@@ -1047,6 +1064,64 @@ mod tests {
 
         let result = group_result(&client, &request, &accepted, None).unwrap();
 
+        assert_eq!(result.message.id.as_str(), "did:example:group:7");
+        assert_eq!(result.message.metadata.server_sequence, Some(7));
+        assert_eq!(
+            result
+                .message
+                .metadata
+                .send_state
+                .as_ref()
+                .unwrap()
+                .message_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "did:example:group:7"
+        );
+        assert!(result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "raw_message_id"
+                && attribute.value == "msg-group-final"));
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        let pending = crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-group-final".to_owned(),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            conversation_id: "group:did:example:group".to_owned(),
+            thread_id: "group:did:example:group".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            sender_did: client.did().as_str().to_owned(),
+            direction: 1,
+            content: "hello group".to_owned(),
+            content_type: "text/plain".to_owned(),
+            ..Default::default()
+        }
+        .with_resolved_wire_thread("group", "did:example:group");
+        crate::internal::local_state::messages::upsert_message(&connection, &pending).unwrap();
+        crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
+            &client,
+            "did:example:group",
+            "hello group",
+            &crate::messages::MessageKind::Text,
+            &result,
+        )
+        .unwrap();
+        let rows: Vec<(String, i64, bool)> = connection
+            .prepare("SELECT msg_id, server_seq, is_e2ee FROM messages")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![("did:example:group:7".to_owned(), 7, true)]);
         assert_eq!(result.delivery, crate::messages::DeliveryState::Accepted);
         assert!(result
             .message
@@ -1128,6 +1203,18 @@ mod tests {
     #[test]
     #[cfg(feature = "group-e2ee")]
     fn p6_v2_send_keeps_device_revocation_pending_out_of_inline_repair() {
+        for maintenance in [
+            serde_json::json!({"reason": "device_revocation_pending", "send_paused": true}),
+            serde_json::json!({"reason": "group_membership_change_pending", "send_paused": "true"}),
+            serde_json::json!({"reason": "unknown", "send_paused": false}),
+        ] {
+            assert!(
+                group_device_revocation_pending_for_send(&serde_json::json!({
+                    "e2ee_maintenance": maintenance
+                }))
+                .is_err()
+            );
+        }
         assert!(
             !group_device_revocation_pending_for_send(&serde_json::json!({
                 "group_did": "did:example:group"
@@ -1145,14 +1232,14 @@ mod tests {
             .unwrap()
         );
         assert!(
-            group_device_revocation_pending_for_send(&serde_json::json!({
+            !group_device_revocation_pending_for_send(&serde_json::json!({
                 "group_did": "did:example:group",
                 "e2ee_maintenance": {
                     "reason": "group_membership_change_pending",
                     "send_paused": true
                 }
             }))
-            .is_err()
+            .unwrap()
         );
     }
 }

@@ -271,6 +271,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
   @protected
+  DartGroupSecureStatus dco_decode_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  );
+
+  @protected
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
   @protected
@@ -584,6 +589,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceCapabilityUpgradeState
+  dco_decode_dart_device_capability_upgrade_state(dynamic raw);
+
+  @protected
+  DartDeviceCapabilityUpgradeStatus
+  dco_decode_dart_device_capability_upgrade_status(dynamic raw);
+
+  @protected
   DartDeviceJoinApprovalPrompt dco_decode_dart_device_join_approval_prompt(
     dynamic raw,
   );
@@ -716,6 +729,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartEmailNotificationPage dco_decode_dart_email_notification_page(
     dynamic raw,
   );
+
+  @protected
+  DartGroupAvatarMember dco_decode_dart_group_avatar_member(dynamic raw);
 
   @protected
   DartGroupIdentityMode dco_decode_dart_group_identity_mode(dynamic raw);
@@ -1247,6 +1263,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartGroupAvatarMember> dco_decode_list_dart_group_avatar_member(
+    dynamic raw,
+  );
+
+  @protected
   List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
 
   @protected
@@ -1350,6 +1371,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDeviceRevokeOutcomeCategory?
   dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
+  DartGroupSecureStatus? dco_decode_opt_box_autoadd_dart_group_secure_status(
+    dynamic raw,
+  );
 
   @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
@@ -1458,6 +1484,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? dco_decode_opt_list_String(dynamic raw);
+
+  @protected
+  List<DartGroupAvatarMember>? dco_decode_opt_list_dart_group_avatar_member(
+    dynamic raw,
+  );
 
   @protected
   int dco_decode_u_16(dynamic raw);
@@ -1694,6 +1725,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDownloadAttachmentRequest
   sse_decode_box_autoadd_dart_download_attachment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartGroupSecureStatus sse_decode_box_autoadd_dart_group_secure_status(
     SseDeserializer deserializer,
   );
 
@@ -2083,6 +2119,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceCapabilityUpgradeState
+  sse_decode_dart_device_capability_upgrade_state(SseDeserializer deserializer);
+
+  @protected
+  DartDeviceCapabilityUpgradeStatus
+  sse_decode_dart_device_capability_upgrade_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDeviceJoinApprovalPrompt sse_decode_dart_device_join_approval_prompt(
     SseDeserializer deserializer,
   );
@@ -2253,6 +2299,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartEmailNotificationPage sse_decode_dart_email_notification_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartGroupAvatarMember sse_decode_dart_group_avatar_member(
     SseDeserializer deserializer,
   );
 
@@ -2932,6 +2983,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartGroupAvatarMember> sse_decode_list_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartGroupMember> sse_decode_list_dart_group_member(
     SseDeserializer deserializer,
   );
@@ -3063,6 +3119,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupSecureStatus? sse_decode_opt_box_autoadd_dart_group_secure_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   );
@@ -3185,6 +3246,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<DartGroupAvatarMember>? sse_decode_opt_list_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
 
   @protected
   int sse_decode_u_16(SseDeserializer deserializer);
@@ -3450,6 +3516,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus self,
     SseSerializer serializer,
   );
 
@@ -3905,6 +3977,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_device_capability_upgrade_state(
+    DartDeviceCapabilityUpgradeState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_capability_upgrade_status(
+    DartDeviceCapabilityUpgradeStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_device_join_approval_prompt(
     DartDeviceJoinApprovalPrompt self,
     SseSerializer serializer,
@@ -4111,6 +4195,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_email_notification_page(
     DartEmailNotificationPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_group_avatar_member(
+    DartGroupAvatarMember self,
     SseSerializer serializer,
   );
 
@@ -4940,6 +5030,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_group_avatar_member(
+    List<DartGroupAvatarMember> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_group_member(
     List<DartGroupMember> self,
     SseSerializer serializer,
@@ -5093,6 +5189,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_group_secure_status(
+    DartGroupSecureStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
     SseSerializer serializer,
@@ -5230,6 +5332,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_dart_group_avatar_member(
+    List<DartGroupAvatarMember>? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_u_16(int self, SseSerializer serializer);

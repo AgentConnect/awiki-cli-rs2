@@ -315,6 +315,7 @@ fn create_runtime_with_alias(
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
+            security: RuntimeMessageSecurity::DefaultPlain,
             message_id,
             conversation_id: Some(conversation_id),
             sender_did: "did:wba:example.test:user:alice".to_string(),
@@ -1085,6 +1086,7 @@ fn runtime_msg_send_in_group_mention_run_is_structured_as_reply_to_requester() {
     let profile = generic_cli_profile(root.path());
     state.upsert_runtime_agent_profile(&profile).unwrap();
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_group_mention_msg_send_1".to_string(),
         agent_did: profile.agent_did.clone(),
         agent_handle: profile.agent_handle.clone(),
@@ -1639,6 +1641,7 @@ fn group_runtime_task_submits_recent_group_context_to_acp() {
         &state,
         &outbox,
         ControllerTextMessage {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "group_mention_prompt_context".to_string(),
             conversation_id: Some("group:did:group:team".to_string()),
             sender_did: "did:human:bob".to_string(),
@@ -1692,6 +1695,7 @@ fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
         None,
     );
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_group_mention_generated".to_string(),
         agent_did: "did:agent:hermes".to_string(),
         agent_handle: "alice-hermes".to_string(),
@@ -1720,6 +1724,7 @@ fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
 #[test]
 fn runtime_task_status_correlation_falls_back_to_task_message_id() {
     let mut task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_msg_direct_1".to_string(),
         agent_did: "did:agent:hermes".to_string(),
         agent_handle: "alice-hermes".to_string(),
@@ -1901,6 +1906,7 @@ fn denied_external_direct_invocation_emits_feedback_and_failed_status_without_ru
         Some("bob.anpclaw.com"),
         "blacklist_denied",
         "blacklist",
+        RuntimeMessageSecurity::DefaultPlain,
     )
     .unwrap();
 
@@ -1990,6 +1996,7 @@ fn controller_rebind_retired_sender_is_terminal_without_unroutable_feedback() {
         None,
         "sender_handle_not_found",
         "blacklist",
+        RuntimeMessageSecurity::DefaultPlain,
     )
     .unwrap();
 
@@ -2046,6 +2053,7 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
         &state,
         &outbox,
         ControllerTextMessage {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: "msg_foreground_rotated_controller".to_string(),
             conversation_id: Some("direct:did:wba:example.test:user:alice-new".to_string()),
             sender_did: "did:wba:example.test:user:alice-new".to_string(),
@@ -3925,4 +3933,84 @@ fn install_acp_test_client(
     cli.binary_path = Some(executable);
     state.upsert_cli_runtime_profile(&cli).unwrap();
     workspace
+}
+
+#[test]
+fn only_successfully_decrypted_messages_can_trigger_runtime_with_encrypted_replies() {
+    for mut message in [
+        plain_direct_message("encrypted-direct"),
+        group_mention_message("did:group:team:17", "did:agent:hermes"),
+    ] {
+        assert!(!is_opaque_group_e2ee_message(&message));
+        message
+            .metadata
+            .attributes
+            .push(im_core::messages::MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: if message.group.is_some() {
+                    "group-e2ee"
+                } else {
+                    "direct-e2ee"
+                }
+                .to_owned(),
+            });
+        assert!(is_opaque_group_e2ee_message(&message));
+        assert_eq!(
+            RuntimeMessageSecurity::from_message(&message),
+            RuntimeMessageSecurity::E2eeRequired
+        );
+        message
+            .metadata
+            .attributes
+            .push(im_core::messages::MessageMetadataAttribute {
+                key: "decryption_state".to_owned(),
+                value: "failed".to_owned(),
+            });
+        assert!(is_opaque_group_e2ee_message(&message));
+        message.metadata.attributes.last_mut().unwrap().value = "decrypted".to_owned();
+        assert!(!is_opaque_group_e2ee_message(&message));
+        assert_eq!(
+            RuntimeMessageSecurity::from_message(&message),
+            RuntimeMessageSecurity::E2eeRequired
+        );
+    }
+}
+
+#[test]
+fn encrypted_runtime_status_and_final_callbacks_never_use_plain_payload_sender() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "agent",
+        Arc::clone(&calls),
+    ));
+    let outbox = ControllerRuntimeOutbox::new(
+        sender.clone(),
+        sender,
+        None,
+        "did:human:bob",
+        None,
+        "secure-task",
+        Some("direct:did:human:bob".to_owned()),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .with_message_security(RuntimeMessageSecurity::E2eeRequired);
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "secure-token".into(),
+        agent_did: "did:agent:runtime".into(),
+        runtime_profile_id: "profile".into(),
+        run_id: "run".into(),
+        method: crate::security::runtime_token::RpcMethod::TaskStatus,
+    };
+    outbox
+        .send_status(&context, "running", Some("secret status"))
+        .unwrap();
+    outbox.send_final(&context, Some("secret final")).unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    for call in calls.iter() {
+        assert_eq!(call.kind, "message");
+        assert_eq!(call.security, Some(RuntimeMessageSecurity::E2eeRequired));
+        assert!(call.payload.is_some());
+    }
 }

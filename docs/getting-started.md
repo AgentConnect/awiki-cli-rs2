@@ -88,6 +88,16 @@ cargo run -p awiki-cli -- id register \
 
 Never include example phone numbers or OTPs in real screenshots or logs.
 
+已有账号的手机号验证也使用这两个 `id register` 调用。验证成功后，CLI 在同一个 Core
+进程内消费普通 Join preparation 并创建设备加入会话，返回 `action=device_join_start`、
+`verification_state=join_pending` 和 `result.session.join_session_id`。随后在已登录 App
+审批该请求，新设备运行 `id device join poll --session <join_session_id>` 查看状态并在
+前台终端核对 SAS。手机号验证不能代替管理设备审批，授权 token 和 preparation 不输出、
+不作为命令参数传递。需要 Recovery 用户确认的 preparation 不会自动续接。
+
+自动化调用可用 `--verification-stdin`，分别通过 stdin JSON 提供 `phone`，以及
+`phone` 和 `otp`；不要把真实手机号、验证码写进 argv 或日志。
+
 CLI 在注册完成后，会先为本次注册的身份建立消息同步基线，再返回成功；
 之后到达的普通消息可以直接通过 `msg inbox` / `msg history` 的 HTTP 同步接收，
 无需先启动 WebSocket listener。仅发送验证码、等待邮箱验证或进入设备 Join
@@ -96,6 +106,10 @@ CLI 在注册完成后，会先为本次注册的身份建立消息同步基线�
 如果返回 `registration_receive_pending`，身份注册已经提交，接收初始化尚未完成。
 保留工作区，运行 `--identity <registered-identity> msg inbox` 重试，成功后再开始收消息；
 不要重新注册或删除本地状态。该重试不承诺补回首次基线建立之前的消息。
+JSON 错误的 `details` 区分 `identity_selection`、`client_open`、`initial_sync` 和
+`sync_readiness` 阶段，提供安全的原因分类、HTTP 状态或同步状态／已知 warnings。
+未知同步错误码与 warnings 仅记录被隐藏的数量，不输出身份、凭据或服务端正文。
+顶层错误不宣称注册命令可重试；恢复仍只针对同一身份的消息同步。
 收件箱或历史查询若因时间/分页预算耗尽而未同步完成，会返回包含
 `sync.budget_exhausted` 的错误；再次查询会从已提交的同步进度继续。
 

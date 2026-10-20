@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anp",
  "base64 0.22.1",
@@ -420,6 +420,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite",
+ "uuid",
  "webpki-roots 0.26.11",
  "windows-service",
  "windows-sys 0.52.0",
@@ -429,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.107"
+version = "0.1.108"
 dependencies = [
  "agent-client-protocol",
  "anp",
@@ -466,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.6"
+version = "0.1.9"
 dependencies = [
  "anp",
  "anp-identity",

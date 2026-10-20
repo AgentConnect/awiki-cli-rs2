@@ -509,12 +509,27 @@ pub enum OutboxRecordKind {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMessageSecurity {
     DefaultPlain,
+    E2eeRequired,
+}
+
+impl Default for RuntimeMessageSecurity {
+    fn default() -> Self {
+        Self::DefaultPlain
+    }
 }
 
 impl RuntimeMessageSecurity {
+    pub fn from_message(message: &im_core::messages::Message) -> Self {
+        if message.metadata.is_end_to_end_encrypted() {
+            Self::E2eeRequired
+        } else {
+            Self::DefaultPlain
+        }
+    }
     pub fn parse(input: Option<&str>) -> Result<Self> {
         match input.unwrap_or("default_plain").trim() {
             "" | "default_plain" | "plain" => Ok(Self::DefaultPlain),
+            "e2ee_required" => Ok(Self::E2eeRequired),
             "direct_e2ee" | "secure_direct" | "group_e2ee" | "group-e2ee" | "secure_group" => {
                 anyhow::bail!("unsupported msg.send security: only default_plain is supported")
             }
@@ -525,15 +540,22 @@ impl RuntimeMessageSecurity {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::DefaultPlain => "default_plain",
+            Self::E2eeRequired => "e2ee_required",
         }
     }
 
     fn to_im_core(self, _target: &RuntimeMessageTarget) -> Result<MessageSecurityMode> {
-        Ok(MessageSecurityMode::DefaultPlain)
+        Ok(match self {
+            Self::DefaultPlain => MessageSecurityMode::DefaultPlain,
+            Self::E2eeRequired => MessageSecurityMode::E2eeRequired,
+        })
     }
 
     fn to_im_core_direct(self) -> Result<MessageSecurityMode> {
-        Ok(MessageSecurityMode::DefaultPlain)
+        Ok(match self {
+            Self::DefaultPlain => MessageSecurityMode::DefaultPlain,
+            Self::E2eeRequired => MessageSecurityMode::E2eeRequired,
+        })
     }
 }
 

@@ -27,6 +27,10 @@ pub struct NodeOpenOptions {
     pub client_version_info: Option<NodeClientVersionInfo>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    #[napi(js_name = "multiDeviceDirectE2eeEnabled")]
+    pub multi_device_direct_e2ee_enabled: Option<bool>,
+    #[napi(js_name = "multiDeviceGroupE2eeEnabled")]
+    pub multi_device_group_e2ee_enabled: Option<bool>,
     pub multi_device_device_revoke_enabled: Option<bool>,
     pub multi_device_handle_recovery_enabled: Option<bool>,
     pub multi_device_audience: Option<String>,
@@ -48,6 +52,8 @@ impl Clone for NodeOpenOptions {
             client_version_info: self.client_version_info.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
+            multi_device_direct_e2ee_enabled: self.multi_device_direct_e2ee_enabled,
+            multi_device_group_e2ee_enabled: self.multi_device_group_e2ee_enabled,
             multi_device_device_revoke_enabled: self.multi_device_device_revoke_enabled,
             multi_device_handle_recovery_enabled: self.multi_device_handle_recovery_enabled,
             multi_device_audience: self.multi_device_audience.clone(),
@@ -701,6 +707,23 @@ pub struct NodeProfile {
     pub bio: Option<String>,
     pub tags: Vec<String>,
     pub updated_at: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
+    pub profile_version: Option<String>,
+    pub avatar_upload_enabled: bool,
+}
+
+#[napi(object)]
+pub struct NodeSetAvatarInput {
+    pub request_id: String,
+    pub expected_profile_version: String,
+    pub image_base64: String,
+}
+
+#[napi(object)]
+pub struct NodeClearAvatarInput {
+    pub request_id: String,
+    pub expected_profile_version: String,
 }
 
 #[napi(object)]
@@ -753,9 +776,12 @@ pub struct NodeDisplayProfileBatchInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeDisplayProfile {
+    pub subject_type: Option<String>,
     pub did: Option<String>,
     pub handle: Option<String>,
     pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
     pub cache_hit: bool,
     pub is_stale: bool,
 }
@@ -763,6 +789,8 @@ pub struct NodeDisplayProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeCreateGroupInput {
+    pub operation_id: Option<String>,
+    pub encrypted: Option<bool>,
     pub name: String,
     pub description: Option<String>,
 }
@@ -770,6 +798,12 @@ pub struct NodeCreateGroupInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeGroup {
+    pub operation: Option<NodeGroupOperation>,
+    pub encrypted: Option<bool>,
+    pub secure_state: Option<String>,
+    pub can_send_secure: Option<bool>,
+    pub secure_retryable: Option<bool>,
+    pub secure_problem: Option<String>,
     pub did: String,
     pub conversation_id: String,
     pub title: String,
@@ -777,6 +811,17 @@ pub struct NodeGroup {
     pub member_count: Option<u32>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_members: Option<Vec<NodeGroupAvatarMember>>,
+    pub group_state_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupAvatarMember {
+    pub member_key: String,
+    pub member_did: String,
+    pub member_handle: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,6 +835,7 @@ pub struct NodeAddGroupMemberInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeGroupMember {
+    pub operation: Option<NodeGroupOperation>,
     pub did: String,
     pub handle: Option<String>,
 }
@@ -991,6 +1037,10 @@ pub struct NodeConversation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeMessage {
+    pub encrypted: bool,
+    pub encryption_required: bool,
+    pub decryption_state: Option<String>,
+    pub send_state: Option<String>,
     pub id: String,
     pub conversation_id: String,
     pub conversation_kind: String,
@@ -1040,6 +1090,8 @@ pub struct NodeMarkReadResult {
 
 #[napi(object)]
 pub struct NodeSendTextInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub text: String,
     pub markdown: Option<bool>,
@@ -1049,6 +1101,8 @@ pub struct NodeSendTextInput {
 
 #[napi(object)]
 pub struct NodeSendPayloadInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub payload_json: String,
     pub client_message_id: Option<String>,
@@ -1122,6 +1176,8 @@ pub struct NodeHandleRecoveryOperationSummary {
 
 #[napi(object)]
 pub struct NodeSendAttachmentInput {
+    /// `plain` (default) or `e2ee-required`; immutable for this send/retry.
+    pub security: Option<String>,
     pub conversation_id: String,
     pub file_name: String,
     pub mime_type: String,
@@ -1492,6 +1548,10 @@ pub(crate) fn identity(
 
 pub(crate) fn profile(value: im_core::identity::Profile) -> NodeProfile {
     NodeProfile {
+        avatar_uri: value.avatar_uri.or(value.avatar_url),
+        avatar_thumbnail_uri: value.avatar_thumbnail_uri,
+        profile_version: value.profile_version,
+        avatar_upload_enabled: value.avatar_upload_enabled,
         did: value.subject.as_str().to_owned(),
         handle: value.handle.map(|handle| handle.as_str().to_owned()),
         display_name: value.display_name,
@@ -1538,6 +1598,9 @@ pub(crate) fn display_profiles(
     values
         .into_iter()
         .map(|value| NodeDisplayProfile {
+            subject_type: value.subject_type,
+            avatar_uri: value.avatar_uri.or(value.avatar_url),
+            avatar_thumbnail_uri: value.avatar_thumbnail_uri,
             did: value.did.map(|did| did.as_str().to_owned()),
             handle: value.handle.map(|handle| handle.as_str().to_owned()),
             display_name: value.display_name,
@@ -1559,14 +1622,33 @@ pub(crate) fn group_create_request(
         ));
     }
     let mut request = im_core::groups::GroupCreateRequest::new(name);
+    if let Some(id) = input.operation_id {
+        if id.is_empty()
+            || id.len() > 100
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(SafeError::new(
+                "invalid_input",
+                "Invalid group operation identity.",
+                false,
+            ));
+        }
+        request.slug = Some(id);
+    }
     request.description = input
         .description
         .map(|description| description.trim().to_owned())
         .filter(|description| !description.is_empty());
     request.discoverability = Some(im_core::groups::GroupDiscoverability::Private);
     request.admission_mode = Some(im_core::groups::GroupAdmissionMode::OpenJoin);
-    request.message_security_profile =
-        Some(im_core::groups::GroupMessageSecurityProfile::TransportProtected);
+    request.e2ee = input.encrypted.unwrap_or(false);
+    request.message_security_profile = Some(if request.e2ee {
+        im_core::groups::GroupMessageSecurityProfile::GroupE2ee
+    } else {
+        im_core::groups::GroupMessageSecurityProfile::TransportProtected
+    });
     Ok(request)
 }
 
@@ -1585,7 +1667,16 @@ pub(crate) fn created_group(
     fallback_title: &str,
 ) -> SafeResult<NodeGroup> {
     let snapshot = value.group.ok_or_else(SafeError::internal)?;
-    Ok(created_group_from_snapshot(snapshot, fallback_title))
+    let mut group = created_group_from_snapshot(snapshot, fallback_title);
+    group.operation = value.operation.map(Into::into);
+    if let Some(status) = value.secure_status {
+        group.encrypted = Some(true);
+        group.secure_state = Some(format!("{:?}", status.state));
+        group.can_send_secure = Some(status.can_send_secure);
+        group.secure_problem = status.problem.as_ref().map(group_problem_message);
+        group.secure_retryable = Some(status.problem.is_some_and(|p| p.retryable));
+    }
+    Ok(group)
 }
 
 pub(crate) fn created_group_from_snapshot(
@@ -1602,6 +1693,24 @@ pub(crate) fn created_group_from_snapshot(
         .or_else(|| snapshot.name.clone())
         .unwrap_or_else(|| fallback_title.to_owned());
     NodeGroup {
+        operation: None,
+        encrypted: None,
+        secure_state: None,
+        can_send_secure: None,
+        secure_retryable: None,
+        secure_problem: None,
+        avatar_uri: snapshot.avatar_uri,
+        avatar_members: snapshot.avatar_members.map(|members| {
+            members
+                .into_iter()
+                .map(|m| NodeGroupAvatarMember {
+                    member_key: m.member_key,
+                    member_did: m.member_did.as_str().to_owned(),
+                    member_handle: m.member_handle,
+                })
+                .collect()
+        }),
+        group_state_version: snapshot.group_state_version,
         did: snapshot.did.as_str().to_owned(),
         conversation_id,
         title,
@@ -1622,6 +1731,24 @@ pub(crate) fn group_from_summary(snapshot: im_core::groups::GroupSummary) -> Nod
         .or(snapshot.name)
         .unwrap_or_else(|| snapshot.did.as_str().to_owned());
     NodeGroup {
+        operation: None,
+        encrypted: None,
+        secure_state: None,
+        can_send_secure: None,
+        secure_retryable: None,
+        secure_problem: None,
+        avatar_uri: snapshot.avatar_uri,
+        avatar_members: snapshot.avatar_members.map(|members| {
+            members
+                .into_iter()
+                .map(|m| NodeGroupAvatarMember {
+                    member_key: m.member_key,
+                    member_did: m.member_did.as_str().to_owned(),
+                    member_handle: m.member_handle,
+                })
+                .collect()
+        }),
+        group_state_version: snapshot.group_state_version,
         did: snapshot.did.as_str().to_owned(),
         conversation_id,
         title,
@@ -1800,11 +1927,14 @@ pub(crate) fn added_group_member(
     value: im_core::groups::GroupReadResult,
 ) -> SafeResult<NodeGroupMember> {
     let member = value.resolved_member.ok_or_else(SafeError::internal)?;
-    Ok(group_member(member))
+    let mut member = group_member(member);
+    member.operation = value.operation.map(Into::into);
+    Ok(member)
 }
 
 pub(crate) fn group_member(member: im_core::groups::GroupMemberResolution) -> NodeGroupMember {
     NodeGroupMember {
+        operation: None,
         did: member.did.as_str().to_owned(),
         handle: member.handle.map(|handle| handle.as_str().to_owned()),
     }
@@ -1951,7 +2081,11 @@ pub(crate) fn uploaded_attachment(
             id: value.attachment.attachment_id,
             file_name: value.attachment.filename,
             mime_type: value.attachment.mime_type,
-            size_bytes: value.attachment.size,
+            size_bytes: value
+                .attachment
+                .plaintext_size_bytes
+                .map(|size| size.to_string())
+                .unwrap_or(value.attachment.size),
             sha256_hex: digest_hex(&value.attachment.digest_b64u),
             digest_b64u: value.attachment.digest_b64u,
         }),
@@ -1969,6 +2103,17 @@ pub(crate) fn uploaded_attachment(
 pub(crate) fn downloaded_attachment(
     value: im_core::attachments::DownloadedAttachment,
 ) -> SafeResult<NodeDownload> {
+    use sha2::Digest as _;
+    let bytes: Buffer = match value.destination {
+        im_core::attachments::DownloadedAttachmentDestination::Memory(bytes) => bytes.into(),
+        im_core::attachments::DownloadedAttachmentDestination::LocalFile(_) => {
+            return Err(SafeError::internal());
+        }
+    };
+    // Core has already verified the object and authenticated decryption. The
+    // download DTO describes these returned bytes, not their encrypted object.
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(bytes.as_ref()));
     let selection = value.selection;
     let attachment = NodeAttachment {
         id: selection
@@ -1985,24 +2130,9 @@ pub(crate) fn downloaded_attachment(
             .map(|item| item.mime_type.clone())
             .or(value.mime_type)
             .unwrap_or_else(|| "application/octet-stream".to_owned()),
-        size_bytes: selection
-            .as_ref()
-            .map(|item| item.size.clone())
-            .or_else(|| value.size_bytes.map(|size| size.to_string()))
-            .unwrap_or_else(|| "0".to_owned()),
-        digest_b64u: selection
-            .as_ref()
-            .map(|item| item.digest_b64u.clone())
-            .unwrap_or_default(),
-        sha256_hex: selection
-            .as_ref()
-            .and_then(|item| digest_hex(&item.digest_b64u)),
-    };
-    let bytes = match value.destination {
-        im_core::attachments::DownloadedAttachmentDestination::Memory(bytes) => bytes.into(),
-        im_core::attachments::DownloadedAttachmentDestination::LocalFile(_) => {
-            return Err(SafeError::internal());
-        }
+        size_bytes: bytes.len().to_string(),
+        sha256_hex: digest_hex(&digest),
+        digest_b64u: digest,
     };
     Ok(NodeDownload { attachment, bytes })
 }
@@ -2101,6 +2231,15 @@ fn message(
         .or_else(|| message_attribute(&value, "senderName"))
         .or_else(|| message_attribute(&value, "sender_name"));
     Ok(NodeMessage {
+        encrypted: value.metadata.is_end_to_end_encrypted(),
+        encryption_required: message_attribute(&value, "encryption_required").as_deref()
+            == Some("true"),
+        decryption_state: message_attribute(&value, "decryption_state"),
+        send_state: value
+            .metadata
+            .send_state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state).to_lowercase()),
         id: value.id.as_str().to_owned(),
         conversation_id: canonical_conversation_id,
         conversation_kind: conversation_kind.to_owned(),
@@ -2146,7 +2285,10 @@ fn message_content(
                                 id: attachment.attachment_id.clone(),
                                 file_name: attachment.filename.clone(),
                                 mime_type: attachment.mime_type.clone(),
-                                size_bytes: attachment.size.clone(),
+                                size_bytes: attachment
+                                    .plaintext_size
+                                    .clone()
+                                    .unwrap_or_else(|| attachment.size.clone()),
                                 digest_b64u: attachment.digest_b64u.clone(),
                                 sha256_hex: digest_hex(&attachment.digest_b64u),
                             }),
@@ -2234,6 +2376,10 @@ fn digest_hex(value: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "conversation_dto_tests.rs"]
 mod conversation_tests;
+
+#[cfg(test)]
+#[path = "attachment_dto_tests.rs"]
+mod attachment_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2413,17 +2559,27 @@ mod tests {
             did: Some(im_core::ids::Did::parse("did:wba:awiki.ai:user:bob").unwrap()),
             handle: Some(im_core::ids::Handle::parse("bob.awiki.ai", "awiki.ai").unwrap()),
             display_name: Some("Bob".to_owned()),
-            avatar_uri: None,
+            avatar_uri: Some("https://example/main.jpg".to_owned()),
             avatar_url: None,
+            avatar_thumbnail_uri: Some("https://example/thumb.jpg".to_owned()),
             profile_uri: None,
-            subject_type: None,
+            subject_type: Some("agent".to_owned()),
             cache_hit: true,
             is_stale: false,
             legacy_fallback: false,
             warnings: Vec::new(),
         }]);
+        assert_eq!(
+            mapped[0].avatar_uri.as_deref(),
+            Some("https://example/main.jpg")
+        );
+        assert_eq!(
+            mapped[0].avatar_thumbnail_uri.as_deref(),
+            Some("https://example/thumb.jpg")
+        );
         assert_eq!(mapped[0].handle.as_deref(), Some("bob.awiki.ai"));
         assert_eq!(mapped[0].display_name.as_deref(), Some("Bob"));
+        assert_eq!(mapped[0].subject_type.as_deref(), Some("agent"));
         assert!(mapped[0].cache_hit);
 
         let error = display_profile_batch_request(
@@ -2486,4 +2642,53 @@ pub struct NodeDeviceJoinManagementStatus {
     pub recipient_device_id: String,
     pub phase: String,
     pub attempts: u32,
+}
+
+/// Reject unknown policies rather than silently reverting to plain.
+pub(crate) fn message_security(
+    value: Option<&str>,
+) -> SafeResult<im_core::messages::MessageSecurityMode> {
+    match value {
+        None | Some("plain") => Ok(im_core::messages::MessageSecurityMode::DefaultPlain),
+        Some("e2ee-required") => Ok(im_core::messages::MessageSecurityMode::E2eeRequired),
+        _ => Err(SafeError::new(
+            "invalid_input",
+            "Unknown message security policy.",
+            false,
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupOperation {
+    pub operation_id: String,
+    pub group_did: String,
+    pub phase: String,
+    pub business_committed: bool,
+    pub encryption_ready: bool,
+    pub reason: Option<String>,
+    pub next_action: String,
+}
+impl From<im_core::groups::GroupOperationStatus> for NodeGroupOperation {
+    fn from(v: im_core::groups::GroupOperationStatus) -> Self {
+        Self {
+            operation_id: v.operation_id,
+            group_did: v.group_did,
+            phase: v.phase,
+            business_committed: v.business_committed,
+            encryption_ready: v.encryption_ready,
+            reason: v.reason,
+            next_action: v.next_action,
+        }
+    }
+}
+
+pub(crate) fn group_problem_message(problem: &im_core::secure::SecureProblem) -> String {
+    match problem.message.as_str() {
+        "请在原群主设备上完成加密准备"
+        | "等待成员完成加密准备"
+        | "加密准备未完成，请检查连接后重试" => problem.message.clone(),
+        _ => "正在准备加密聊天…".to_owned(),
+    }
 }

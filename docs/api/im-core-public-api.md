@@ -109,12 +109,16 @@ pub struct ImCoreSecretVaultOptions {
 pub struct ClientVersionInfo { /* validated product/release/version/build */ }
 ```
 
-`ClientVersionInfo` 只接受 `awiki-me|awiki-cli|awiki-daemon`、四位 release、
+`ClientVersionInfo` 只接受 `awiki-me|awiki-cli|awiki-daemon|awiki-dsh|awiki-gateway`、四位 release、
 header-safe version 和可选十进制 build。Core 对配置中同源的 AWiki User/Message/Mail
 产品 HTTP 请求及 Message WebSocket 注入唯一
 `X-AWiki-Client-Version: <product>/<release>/<version>[+<build>]`；公共 ANP、任意 DID
 解析和对象存储请求不携带该头。User Service 产品端点统一使用 canonical
 `/user-service/v1/...`，客户端不回退无版本 alias。
+
+DSH 必须使用 `awiki-dsh/0815/<插件包版本>`，Guest 必须使用
+`awiki-gateway/0815/<Gateway包版本>`；版本取各自产品的真实包版本，不借用或提高
+Daemon 版本绕过最低版本门槛。新增标识不改变既有三个产品的格式、鉴权或请求头作用域。
 
 `ImCoreSecretVaultOptions.device_id` is the existing compatibility spelling for
 the **local vault context device id**. Internally it is parsed as
@@ -748,7 +752,12 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
 Core 将账号验证 token 和可选 Recovery transition 保存在短生命周期、进程内的 opaque
 preparation 中；host 只能读取 preparation ID、typed mode、user-presence 要求、预期 DID 和
-完整 Handle，并通过 `begin_prepared_registration_device_join` 进入 Device Join。若服务端确认该 Handle
+完整 Handle，并通过 `begin_prepared_registration_device_join` 进入 Device Join。
+CLI 的普通手机号 `id register` 消费者在同一次调用、同一个 Core 实例内完成此续接后，
+才返回持久化 Join 会话的安全投影；不能把进程内 preparation ID 留给下一条 CLI 命令。
+需要 Recovery 用户确认的模式保持显式确认门禁，不由普通注册自动授权。
+
+若服务端确认该 Handle
 仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
 原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
 generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。`registered` wire
@@ -778,6 +787,13 @@ journal、不选择 owner，也不把该 ordinary Join 投影为第二次 Recove
 Core 才判定远端未提交并重试同一份注册材料；不得解析错误文案或把所有未认证错误当成缺失。
 
 ### 5.1 Device Join host facade
+
+外部注册身份的 Host（例如独立 Daemon/Runtime）必须在接收器就绪之前调用
+`client.messages().prepare_encrypted_messaging_async()`。Core 重新验证当前 exact-device
+授权，为启用的 P5/P6 发布接收材料；重试复用现有 PreKey 和确定性的 bootstrap
+KeyPackage，不向 Host 暴露私钥或协议对象。未启用的加密能力不执行发布；已启用但
+准备失败时返回错误，Host 保留重试状态，不能宣称加密接收已就绪。普通账号的现有
+注册与设备激活准备流程不变。
 
 Device Join is an AWiki-local control-plane API and has no host-local rollout
 gate. The host facade provides new-device begin/poll/cancel plus
@@ -963,6 +979,7 @@ impl IdentityService<'_> {
 ```
 
 `list_pending_handle_recovery_operations()` 在当前 Core state root 内发现未完成的恢复，
+Node 和 Dart facade 均提供 `listPendingHandleRecoveryOperations()`；Dart 登录页无需先枚举身份或输入 Handle，即可发现旧版重复 Handle 对应的未完成任务。
 也包括仍有关联注册候选待收尾的 Applied 操作。此类操作的 allowed_actions 包含 Resume，
 宿主可重试本地收尾；结果仍为 Applied，完成收尾后移出 pending 列表。
 包括尚未写入公共身份列表的 fresh owner；保留默认关闭的能力门禁。
@@ -1019,6 +1036,11 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 保留原 operation 的 `local_transition_pending`，不宣告 Applied。Host 应允许用户返回处理
 其他 Handle 的已有恢复，再续办本任务；没有可证明的恢复任务时提示保留数据并联系支持。
 不增加 V4 wire 阶段或错误枚举，不允许 Host 直接删改索引。
+
+V4 exchange 的非成功 HTTP 响应仅在精确端点、已知错误码和匹配的 `retryable`
+闭合结构下投影为 typed Service 错误；限流继续映射 `factor_retry_required`，临时不可用
+映射 `outcome_unknown`。同步与异步传输保持一致；其他端点、未知码、重复／额外字段
+或畸形响应不得借此获得恢复动作授权，也不从错误正文猜测恢复状态。
 
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
 `local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5
@@ -1741,6 +1763,36 @@ pub struct Profile {
 做类型展示和交互预判；能力数组只保留前 16 个去重非空字符串。它们不是授权证据，群成员
 准入必须以 Message/User Service 的最终结果为准，也不得从 DID、Handle 或展示文案补造能力。
 
+头像产品扩展新增 `Profile.avatar_thumbnail_uri`、`avatar_upload_enabled`（旧服务默认 false）
+和 `avatar_uri_present`。后者保留 wire 字段出现与否：缺失保留旧值，明确 null 清除主图和
+缩略图，有值替换；canonical `avatar_uri: null` 优先于旧 alias。`to_wire_profile_value`
+保留显式 null。展示 URI 不参与身份、鉴权或路由。
+
+公开资料的可选 canonical `profile_version` 用于头像乱序保护：低版本不能覆盖高版本，
+已缓存版本后，无版本的旧 WNS 投影不能覆盖头像；读取失败或字段缺失保留旧值，
+新版本显式 null 清空。SQLite 可丢弃资料缓存新增 nullable `account_profile_version`，
+与既有存储 opaque `version_id` 的 `peer_profiles.profile_version` 分开；不改变身份或
+路由权威、不改变 `user_version=45`，已有缓存自动补列，旧 CLI 写入仍受兼容约束。
+
+`IdentityService::set_avatar_async(SetAvatarRequest { request_id, expected_profile_version,
+image_jpeg })` 与 `clear_avatar_async(ClearAvatarRequest { request_id, expected_profile_version })`
+操作当前 owner，返回带 Profile version 的权威资料。调用方负责生成并保留 UUID；不确定结果
+沿用同请求 ID/版本/图片重试，七天后重新读取并由用户确认。不自动以新版本覆盖其他设备。
+Core 校验 UUID、服务端版本范围和 512 KiB 字节限额，认证、base64 wire 和 RPC 都在 Core；
+图片预处理、裁剪、压缩及待重试图片字节由产品拥有。头像字节不进入 Core SQLite/资料 JSON，
+请求 Debug 只显示字节数。历史成功回执可能落后于后续资料，消费者必须按 profile_version
+合并；Core 不从头像重放回执回写昵称投影。
+
+`DisplayProfile.avatar_thumbnail_uri` 是可选展示字段。verified Persona 和 display-only
+缓存都遵守上述清空语义与 owner/lease fence；无 TTL 资料默认五分钟过期。Persona 表新增
+nullable thumbnail URI/source URI，查询必须与当前主图匹配，防止旧 Core 只改主图时复用旧缩略图。
+这是 Schema 45 的兼容展示缓存扩展，不升级 user_version，不改身份/消息/路由数据。
+
+`GroupSnapshot` / `GroupSummary` 新增可选 `avatar_members`（最多四位 `member_key`、
+`member_did`、`member_handle`）及 `group_state_version`。只接受带 canonical 版本、唯一 key、
+有效 DID 且长度 ≤4 的完整摘要，保留 Host 顺序；缺失或畸形摘要为 None，由产品字符降级。
+显式群 URI 仍优先，P4/P6 和 CLI/Daemon 功能不新增头像图片读取/上传。
+
 `profile_version` 是 User Service 账号 Profile 域提交后的 canonical non-negative decimal
 string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私有 Profile RPC 返回该版本时存在。
 `version_id` 仍是 WNS DID Subject Profile 的 `versionId` 展示元数据；二者来源和语义独立，
@@ -2217,3 +2269,73 @@ Dart 的三种普通注册入口均支持可选 `didMethod`，默认 WBA。
 `MessageBody::NotifyText { text, level: NotifyLevel::Normal | Urgent }` 只允许 DefaultPlain/Plain Direct；CLI `msg send --text ... --notify normal|urgent` 是该类型化意图的 adapter。Core 生成 `text/plain` body 的 `annotations.awiki.notify.v1.level`，复用原消息 ID、operation 和幂等发送；群、文件、payload、Markdown、secure 不可混用。
 
 读取仍投影 `MessageBodyView::Text`，metadata/snapshot 属性 `notify_level` 保留 normal/urgent；命名空间存在但格式非法时为 invalid，只用于禁止普通提醒回退，不授权紧急展示。持久属性经过消息、会话与 realtime 投影保留。实际展示许可和声振属于 App 本机设置与系统权限，不由注解授予；不新增 User Service Notify 接口；旧客户端仍可读正文。
+
+## 域名注册策略
+
+`ImClient::tenant_registration()` 提供同步及异步 `get_policy`、`list_entries`、
+`configure`、`get_operation`，公开 DTO 位于 `tenant_registration` 模块。
+它通过 UserProfile 认证调用固定 User Service RPC，不依赖 Messaging 初始化。
+`SiteDomain` 是明确的远程 provider domain；本地 tenant profile 只选择后端和身份。
+Core 不存储名单权威或最终准入缓存，服务端按当前有效管理员与策略事务判定。
+
+`IdentityCreationCapabilities.registration_policy` 是可选域名发现元数据。
+查询总是带当前 `SdkConfig.did_domain`；若响应带 policy，其 domain 必须匹配。
+无元数据的旧服务结果保持旧部署能力语义，不报告成租户策略。
+手机号/邮箱准入以本次实际验证因素为准，已有登录/Join/Recovery 不受新建名单收紧影响。
+
+`ConfigureRegistration` 要求规范 UUID、expected revision 和有界原子变更。
+结果不确定时沿用 operation ID 查询，不自动更新 revision 重试覆盖。
+默认 `AllowlistPage` 脱敏，显式 `include_values` 仅用于私密管理导出；Contact Debug
+不显示原文。稳定错误 `tenant_registration.*` 由既有 ImError 服务端错误保留。
+
+CLI：`site registration show|configure|operation|entries list|add|remove|export`。
+每条命令必需 `--domain`；写入必需 `--expected-revision`，支持显式 `--operation-id`。
+`configure --entries-file` 与 `entries add --file` 读取 0600 JSON 联系人数组，
+例如 `[{"contact_type":"email","value":"member@example.test"}]`。
+`entries remove --entry-id` 删除一个明确 UUID；`entries export --output` 创建新 0600
+文件且拒绝覆盖。列表不支持向 stdout 导出原文。写入前在私有 state 目录保存
+operation ID 和请求摘要，进程中断后相同请求仍使用原 ID。`--dry-run` 不发请求。
+
+`id register --verification-stdin` 接收 phone/email 二选一、可选 invite_code；
+只有 phone 可带 otp。邮箱等待及 continuation 沿用既有流程。联系方式、OTP 和
+邀请码无需进入 argv，错误不回显 stdin 内容。
+
+本次能力属于已实现但尚未发布 SDK 的源码功能。验收使用明确记录源码/制品摘要的候选客户端；旧客户端最终仍受服务端策略约束。不能用 CLI 版本号单独推断包含本功能，也不能把候选源码通过报告为 registry SDK 已发布。正式消费端应在相关 SDK 发布后更新固定依赖。
+
+
+### Node 公开头像展示类型（2026-10-08）
+
+`NodeDisplayProfile.subjectType?: string` 直接透传 Core `DisplayProfile.subject_type`，缺失保持 `None`/省略；
+与 `avatarUri`、`avatarThumbnailUri` 同属展示信息，不参与身份、授权或路由。
+DSH 通过既有 hydrate/refreshDisplayProfiles 消费，不读取 User Service 私有 Inventory。
+这是可选增量字段，旧调用者无需改动；旧 native 缺字段时消费者使用静态展示，不猜测 Agent 身份。
+
+### 消息安全意图与候选绑定（2026-10-09）
+
+发送入口在上传附件或落本地发送投影前解析群的权威安全策略。Direct 的 DefaultPlain 保持普通消息，E2eeRequired/SecureDirect 能力不足时失败；Group 的 DefaultPlain 遵循创建时策略，显式冲突要求失败。Node v20 增加发送 security（plain/e2ee-required）、createGroup encrypted/operationId、getGroup 的 encrypted/secureState/canSendSecure/secureRetryable，以及 repairGroupSecurity。未配置的 Core gate 仍默认关闭，APP/DSH/Daemon 候选分别显式开启。旧 native 不可与 v20 包混用。
+
+MessageMetadata::is_end_to_end_encrypted 与 Dart isEndToEndEncrypted 表达 SDK 实际来源。解密后的消息继续保留实际加密属性；输入选择只是发送意图。groups.get_authoritative_group_async 和 GroupReadResult.requires_end_to_end_encryption 为绑定提供经 Core 校验的群策略，不由客户端解析线协议。
+
+带稳定 slug/operationId 的建群使用 Core 的 group_operation_journal 冻结公共请求元数据和 body；相同操作不允许变更内容或群类型。P6 创建使用相同设备、群、时间和 request id 复用协议自身的准备/WAL恢复。表按 owner_identity_id/local_device_id 隔离，随 owner 本地删除清理；不存私钥或历史迁移备份。
+
+### 2026-10-10 设备准备与群操作衔接
+
+`messages.maintain_encrypted_messaging_async()` 是 Host 激活/恢复与两种同步入口共用的有界、幂等设备准备入口。阶段、重试次数及下次尝试时间保存在当前身份/协议设备作用域的既有 operation journal；失败不回滚普通消息同步。每日轮换稳定 KeyPackage 发布标识，成功消费 Welcome 后补包；私钥与 MLS 状态不进入公共结果。
+
+`GroupReadResult.operation` 表达 operation_id、group_did、phase、business_committed、encryption_ready、reason、next_action，`secure_status` 返回本次操作后的就绪投影。业务提交成功后的加密异常保留原群/原操作，由同步调度续接；宿主不可依赖 warnings 判断是否建群或加成员成功。邀请在 P4 写入前校验目标设备并取得租约，续接复用原租约及请求元数据，缺包返回稳定码 `group.member_encryption_not_ready`。
+
+群状态与发送共用完整 P4 roster 校验：版本绑定分页、结束版本复查及本地 MLS DID 集合必须一致；普通成员可执行只读校验，P2 精确设备授权/变更仍走现有受权限约束的协调入口。创建、邀请、修复与发送在 Core 按群串行。新表单关闭不取消已提交操作。
+
+Node 消息 `encryptionRequired` 仅表示固定发送意图，`encrypted` 表示实际加密。自己的 pending/failed/retry 可使用意图锁；成功及收到的消息必须依据实际属性。
+
+P6 群发送接受结果与群历史使用同一规范消息 ID `{group_did}:{group_event_seq}`，并设置 `server_sequence`。原始客户端消息 ID 保存为 `raw_message_id` 别名；本地持久化合并排队记录，避免发送端与接收端出现不同 ID 或重复气泡。此投影适用于文字、结构化内容和附件；协议中的 `message_id` 及幂等操作保持原值。
+
+群 E2EE 附件的 P7 下载票据请求优先使用原始协议消息 ID（`raw_message_id`），不使用本地投影 ID 代替已知的原始 ID。缺少原始 ID 时，按完整字符串回退到本地投影 ID，不拆解或推导；服务端仍执行精确授权校验。该选择不改变本地消息主键、P6 wire `message_id`、普通消息或 P5 的现有路径。
+
+会话快照与消息 DTO 一样保留本地认证后的 `decryption_state`，重启后的客户端据此区分已解密内容和不可用密文；不重新消耗 MLS 密文，也不由 UI 猜测解密结果。
+
+### 设备群能力兼容升级
+
+`device_capability_status_async(selector, target_device_id)` 返回设备 ID 与 ready / upgrade_available / approval_required / unsupported / blocked，不暴露检查点。`upgrade_device_capabilities_async` 复用已验证 ready admin、根签名和单操作 Vault journal；仅为明确目标追加 `anp.group.base.v2`，保留原 DID、键、旧 profiles、群与服务。当前设备可自动升级，其他设备必须 `user_presence_confirmed=true`；不能推断同账号所有设备均已升级。普通 `update_services_async` 仍不能修改 Manifest。响应丢失复用原 operation；明确 CAS 拒绝与前进的已验证检查点才能释放候选。
+
+Recovery 的 JWT 与普通 PreKey 发布仍是激活门禁，P6 准备由独立群能力生命周期负责。能够由精确 Recovery operation + transition marker 证明的重复 Handle 仅隔离该 Handle；其他身份可列出、选择或创建。未知重复仍拒绝。普通写入必须原样保留待恢复 pair，不能重写、扩大或自动删除它。

@@ -10,6 +10,8 @@ pub struct DartUserProfile {
     pub markdown: Option<String>,
     pub avatar_uri: Option<String>,
     pub avatar_url: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
+    pub avatar_upload_enabled: bool,
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub agent_kind: Option<String>,

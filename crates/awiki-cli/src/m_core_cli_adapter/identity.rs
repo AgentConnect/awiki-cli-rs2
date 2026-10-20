@@ -12,6 +12,9 @@ use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::message_result::CommandResult;
 
+#[path = "identity_registration_join.rs"]
+mod registration_join;
+
 fn identity_raw_response(result: &impl IdentityRawResponse) -> Value {
     result.raw_response().cloned().unwrap_or(Value::Null)
 }
@@ -225,13 +228,18 @@ pub fn register_handle_via_im_core(
         .identities()
         .register_handle(request.clone())
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if result.state == HandleRegistrationState::JoinRequired {
+        return registration_join::begin_blocking(&core, &result);
+    }
     if let Some(selector) = registration_receive_selector(&result)? {
-        let outcome = core
+        let client = core
             .client(selector)
-            .and_then(|client| client.messages().sync_now(registration_receive_request()))
-            .map_err(|_| registration_receive_pending())?;
-        super::messages::require_foreground_message_sync(&outcome)
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("client_open", &error))?;
+        let outcome = client
+            .messages()
+            .sync_now(registration_receive_request())
+            .map_err(|error| registration_receive::core_failure("initial_sync", &error))?;
+        registration_receive::require_ready(&outcome)?;
     }
     register_handle_command_result(result, &request)
 }
@@ -257,18 +265,20 @@ pub async fn register_handle_via_im_core_async(
         .register_handle_async(request.clone())
         .await
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if result.state == HandleRegistrationState::JoinRequired {
+        return registration_join::begin(&core, &result).await;
+    }
     if let Some(selector) = registration_receive_selector(&result)? {
         let client = core
             .client_async(selector)
             .await
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("client_open", &error))?;
         let outcome = client
             .messages()
             .sync_now_async(registration_receive_request())
             .await
-            .map_err(|_| registration_receive_pending())?;
-        super::messages::require_foreground_message_sync(&outcome)
-            .map_err(|_| registration_receive_pending())?;
+            .map_err(|error| registration_receive::core_failure("initial_sync", &error))?;
+        registration_receive::require_ready(&outcome)?;
     }
     register_handle_command_result(result, &request)
 }
@@ -283,7 +293,7 @@ fn registration_receive_selector(
         .identity
         .as_ref()
         .map(|identity| Some(IdentitySelector::Id(identity.id.clone())))
-        .ok_or_else(registration_receive_pending)
+        .ok_or_else(registration_receive::missing_identity)
 }
 
 fn registration_receive_request() -> im_core::messages::MessageSyncRequest {
@@ -300,6 +310,9 @@ fn registration_receive_pending() -> ExitError {
         "Keep this workspace and identity. Run --identity <registered-identity> msg inbox to resume synchronization before using it to receive messages; do not register again or clear local state.",
     )
 }
+
+#[path = "identity_receive.rs"]
+mod registration_receive;
 
 fn register_handle_command_result(
     result: HandleRegistrationResult,
@@ -1870,7 +1883,7 @@ fn normalize_registration_phone(phone: &str) -> Result<String, ExitError> {
     Err(super::map_im_error(
         im_core::ImError::invalid_input(
             Some("phone".to_string()),
-            format!("invalid phone number {phone:?}"),
+            "invalid phone number".to_owned(),
         ),
         "id register",
     ))

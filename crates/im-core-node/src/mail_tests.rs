@@ -19,6 +19,8 @@ fn open_options() -> NodeOpenOptions {
         client_version_info: None,
         operation_timeout_ms: None,
         sync_timeout_ms: None,
+        multi_device_direct_e2ee_enabled: None,
+        multi_device_group_e2ee_enabled: None,
         multi_device_device_revoke_enabled: None,
         multi_device_handle_recovery_enabled: None,
         multi_device_audience: None,

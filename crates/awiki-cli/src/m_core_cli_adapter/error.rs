@@ -13,6 +13,7 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "inbox",
     "read_state",
     "sync",
+    "tenant_registration",
 ];
 
 pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
@@ -316,6 +317,20 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             &code,
             "The authoritative group inventory exceeds its allowed limit.",
         ),
+        im_core::ImError::Service { code: Some(code), status_code, .. }
+            if code.starts_with("tenant_registration.") && is_public_service_code(&code) =>
+        {
+            let mut mapped = ExitError::new(
+                &code,
+                if status_code == Some(403) { 4 } else { 5 },
+                format!("{context}: domain registration request failed."),
+                "Inspect the policy and original operation receipt before retrying; preserve the operation ID.",
+            );
+            mapped.detail.retryable = matches!(code.as_str(),
+                "tenant_registration.unavailable" | "tenant_registration.policy_missing");
+            mapped.detail.details = serde_json::json!({"service_code": code});
+            mapped
+        }
         im_core::ImError::Service {
             status_code: Some(401),
             ..

@@ -6,6 +6,7 @@
 import '../frb_generated.dart';
 import 'message.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'secure.dart';
 
 class DartCreateGroupRequest {
   final String name;
@@ -94,6 +95,31 @@ class DartCreateGroupRequest {
           memberMaxTotalChars == other.memberMaxTotalChars;
 }
 
+class DartGroupAvatarMember {
+  final String memberKey;
+  final String memberDid;
+  final String? memberHandle;
+
+  const DartGroupAvatarMember({
+    required this.memberKey,
+    required this.memberDid,
+    this.memberHandle,
+  });
+
+  @override
+  int get hashCode =>
+      memberKey.hashCode ^ memberDid.hashCode ^ memberHandle.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupAvatarMember &&
+          runtimeType == other.runtimeType &&
+          memberKey == other.memberKey &&
+          memberDid == other.memberDid &&
+          memberHandle == other.memberHandle;
+}
+
 enum DartGroupIdentityMode { handle, didOnly }
 
 class DartGroupMember {
@@ -148,6 +174,9 @@ class DartGroupMember {
 }
 
 class DartGroupReadResult {
+  final String? operationJson;
+  final bool? encrypted;
+  final DartGroupSecureStatus? secureStatus;
   final DartGroupSnapshot? group;
   final List<DartGroupSummary> groups;
   final List<DartGroupMember> members;
@@ -161,6 +190,9 @@ class DartGroupReadResult {
   final List<String> warnings;
 
   const DartGroupReadResult({
+    this.operationJson,
+    this.encrypted,
+    this.secureStatus,
     this.group,
     required this.groups,
     required this.members,
@@ -176,6 +208,9 @@ class DartGroupReadResult {
 
   @override
   int get hashCode =>
+      operationJson.hashCode ^
+      encrypted.hashCode ^
+      secureStatus.hashCode ^
       group.hashCode ^
       groups.hashCode ^
       members.hashCode ^
@@ -193,6 +228,9 @@ class DartGroupReadResult {
       identical(this, other) ||
       other is DartGroupReadResult &&
           runtimeType == other.runtimeType &&
+          operationJson == other.operationJson &&
+          encrypted == other.encrypted &&
+          secureStatus == other.secureStatus &&
           group == other.group &&
           groups == other.groups &&
           members == other.members &&
@@ -214,6 +252,8 @@ class DartGroupSnapshot {
   final String? displayName;
   final String? description;
   final String? avatarUri;
+  final List<DartGroupAvatarMember>? avatarMembers;
+  final String? groupStateVersion;
   final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
@@ -227,6 +267,8 @@ class DartGroupSnapshot {
     this.displayName,
     this.description,
     this.avatarUri,
+    this.avatarMembers,
+    this.groupStateVersion,
     this.myRole,
     this.membershipStatus,
     this.memberCount,
@@ -242,6 +284,8 @@ class DartGroupSnapshot {
       displayName.hashCode ^
       description.hashCode ^
       avatarUri.hashCode ^
+      avatarMembers.hashCode ^
+      groupStateVersion.hashCode ^
       myRole.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
@@ -259,6 +303,8 @@ class DartGroupSnapshot {
           displayName == other.displayName &&
           description == other.description &&
           avatarUri == other.avatarUri &&
+          avatarMembers == other.avatarMembers &&
+          groupStateVersion == other.groupStateVersion &&
           myRole == other.myRole &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
@@ -272,6 +318,8 @@ class DartGroupSummary {
   final String? name;
   final String? displayName;
   final String? avatarUri;
+  final List<DartGroupAvatarMember>? avatarMembers;
+  final String? groupStateVersion;
   final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
@@ -284,6 +332,8 @@ class DartGroupSummary {
     this.name,
     this.displayName,
     this.avatarUri,
+    this.avatarMembers,
+    this.groupStateVersion,
     this.myRole,
     this.membershipStatus,
     this.memberCount,
@@ -298,6 +348,8 @@ class DartGroupSummary {
       name.hashCode ^
       displayName.hashCode ^
       avatarUri.hashCode ^
+      avatarMembers.hashCode ^
+      groupStateVersion.hashCode ^
       myRole.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
@@ -314,6 +366,8 @@ class DartGroupSummary {
           name == other.name &&
           displayName == other.displayName &&
           avatarUri == other.avatarUri &&
+          avatarMembers == other.avatarMembers &&
+          groupStateVersion == other.groupStateVersion &&
           myRole == other.myRole &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&

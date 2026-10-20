@@ -54,6 +54,8 @@ import {
   type NodeIdentity,
   type NodeMessage,
   type NodeProfile,
+  type SetAvatarInput,
+  type ClearAvatarInput,
   type NodePeer,
   type OtpChallenge,
   type Page,
@@ -283,6 +285,14 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.getProfile())
   }
 
+  public setAvatar(input: SetAvatarInput): Promise<NodeProfile> {
+    return call(() => this.native.setAvatar(input))
+  }
+
+  public clearAvatar(input: ClearAvatarInput): Promise<NodeProfile> {
+    return call(() => this.native.clearAvatar(input))
+  }
+
   public updateProfile(input: UpdateProfileInput): Promise<NodeProfile> {
     return call(() => this.native.updateProfile({
       ...input,
@@ -309,6 +319,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember> {
     return call(() => this.native.addGroupMember(input))
+  }
+
+  public repairGroupSecurity(input: GroupInput): Promise<NodeGroup> {
+    return call(() => this.native.repairGroupSecurity(input))
   }
 
   public getGroup(input: GroupInput): Promise<NodeGroup> {

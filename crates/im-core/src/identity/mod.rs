@@ -1,3 +1,4 @@
+mod avatar;
 mod creation;
 mod device_revoke;
 mod document;
@@ -10,6 +11,7 @@ mod registry;
 mod root_key_transfer;
 mod service;
 
+pub use self::avatar::{ClearAvatarRequest, SetAvatarRequest};
 pub use self::creation::{IdentityCreationCapabilities, PendingIdentityRegistration};
 pub use self::device_revoke::{
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
@@ -19,7 +21,8 @@ pub use self::dto::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingMethodKind,
     ContactBindingRequest, ContactBindingResult, ContactBindingState,
     DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPublicPackage, DaemonSubkeyPublicProposal,
-    DefaultIdentityChange, DeleteLocalIdentityResult, DidMethod, HandleRegistrationJoinMode,
+    DefaultIdentityChange, DeleteLocalIdentityResult, DeviceCapabilityUpgradeState,
+    DeviceCapabilityUpgradeStatus, DidMethod, HandleRegistrationJoinMode,
     HandleRegistrationJoinRequiredPreparation, HandleRegistrationResult, HandleRegistrationState,
     HostBackedAuthTokenPersistence, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
     IdentityCustodyBackend, IdentityCustodyMigrationIdentityReport, IdentityCustodyMigrationPhase,

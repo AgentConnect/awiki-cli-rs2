@@ -8,6 +8,7 @@ const PUBLIC_SERVICE_CODE_MAX_LEN: usize = 96;
 const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "anp",
     "attachment",
+    "avatar",
     "awiki",
     "client",
     "device",
@@ -17,6 +18,7 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "inbox",
     "read_state",
     "sync",
+    "tenant_registration",
 ];
 
 #[derive(Debug, Deserialize)]

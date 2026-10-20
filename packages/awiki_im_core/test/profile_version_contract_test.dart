@@ -37,19 +37,19 @@ void main() {
     expect(generatedDto, contains('final List<String> agentCapabilities;'));
     expect(
       generatedBridge,
-      contains('agentKind: dco_decode_opt_String(arr[12])'),
+      contains('agentKind: dco_decode_opt_String(arr[14])'),
     );
     expect(
       generatedBridge,
-      contains('agentCapabilities: dco_decode_list_String(arr[13])'),
+      contains('agentCapabilities: dco_decode_list_String(arr[15])'),
     );
     expect(
       generatedBridge,
-      contains('profileVersion: dco_decode_opt_String(arr[15])'),
+      contains('profileVersion: dco_decode_opt_String(arr[17])'),
     );
     expect(
       generatedBridge,
-      contains('versionId: dco_decode_opt_String(arr[16])'),
+      contains('versionId: dco_decode_opt_String(arr[18])'),
     );
     expect(nativeFacade, contains('agentKind: agentKind'));
     expect(nativeFacade, contains('agentCapabilities: agentCapabilities'));

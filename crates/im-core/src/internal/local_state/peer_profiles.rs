@@ -9,8 +9,11 @@ CREATE TABLE IF NOT EXISTS peer_profiles (
     display_name       TEXT,
     full_handle        TEXT NOT NULL,
     avatar_uri         TEXT,
+    avatar_thumbnail_uri TEXT,
+    avatar_thumbnail_source_uri TEXT,
     subject_type       TEXT,
     profile_version    TEXT,
+    account_profile_version TEXT,
     updated_at         TEXT,
     fetched_at         TEXT NOT NULL,
     expires_at         TEXT,
@@ -38,7 +41,10 @@ pub(crate) fn display_profile_for_peer(
         .query_row(
             r#"SELECT persona.full_handle, profile.display_name, profile.avatar_uri,
                       COALESCE(profile.subject_type, persona.subject_type),
-                      current_did.identifier_value, profile.expires_at
+                      current_did.identifier_value,
+                      COALESCE(profile.expires_at, CAST(CAST(profile.fetched_at AS INTEGER) + 300 AS TEXT)),
+                      CASE WHEN profile.avatar_thumbnail_source_uri = profile.avatar_uri
+                           THEN profile.avatar_thumbnail_uri END
 FROM peer_identifiers requested
 JOIN peer_personas persona
   ON persona.owner_identity_id = requested.owner_identity_id
@@ -68,12 +74,21 @@ LIMIT 1"#,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
         .optional()
         .map_err(super::local_state_unavailable)?;
-    let Some((full_handle, display_name, avatar_uri, subject_type, current_did, expires_at)) = row
+    let Some((
+        full_handle,
+        display_name,
+        avatar_uri,
+        subject_type,
+        current_did,
+        expires_at,
+        avatar_thumbnail_uri,
+    )) = row
     else {
         return if is_did {
             super::display_profile_cache::read(
@@ -90,7 +105,7 @@ LIMIT 1"#,
     let is_stale = expires_at
         .as_deref()
         .and_then(|value| value.parse::<i64>().ok())
-        .is_some_and(|value| value <= now);
+        .is_none_or(|value| value <= now);
     let did = if is_did {
         Some(crate::ids::Did::parse(peer_value)?)
     } else {
@@ -105,6 +120,7 @@ LIMIT 1"#,
         display_name,
         avatar_uri,
         avatar_url: None,
+        avatar_thumbnail_uri,
         profile_uri: None,
         subject_type,
         cache_hit: true,
@@ -121,12 +137,21 @@ pub(crate) fn upsert_from_verified_lookup(
     full_handle: &str,
     profile: &crate::identity::Profile,
 ) -> crate::ImResult<()> {
+    let previous_version: Option<String> = connection.query_row(
+        "SELECT account_profile_version FROM peer_profiles WHERE owner_identity_id=?1 AND peer_persona_id=?2",
+        (owner_identity_id.trim(), peer_persona_id.trim()), |row| row.get(0),
+    ).optional().map_err(super::local_state_unavailable)?.flatten();
+    if older_profile_version(
+        profile.profile_version.as_deref(),
+        previous_version.as_deref(),
+    )? {
+        return Ok(());
+    }
+    let update_avatar = profile.has_avatar_update()
+        && (profile.profile_version.is_some() || previous_version.is_none());
     let fetched_at = time::OffsetDateTime::now_utc().unix_timestamp();
-    let expires_at = profile
-        .ttl
-        .and_then(|ttl| i64::try_from(ttl).ok())
-        .and_then(|ttl| fetched_at.checked_add(ttl))
-        .map(|value| value.to_string());
+    let expires_at =
+        Some((fetched_at + profile.ttl.unwrap_or(300).clamp(30, 3600) as i64).to_string());
     let avatar_uri = profile
         .avatar_uri
         .as_deref()
@@ -135,14 +160,18 @@ pub(crate) fn upsert_from_verified_lookup(
         .execute(
             r#"INSERT INTO peer_profiles
     (owner_identity_id, peer_persona_id, display_name, full_handle, avatar_uri,
-     subject_type, profile_version, updated_at, fetched_at, expires_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+     subject_type, profile_version, updated_at, fetched_at, expires_at, avatar_thumbnail_uri,
+     avatar_thumbnail_source_uri, account_profile_version)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?5, ?13)
 ON CONFLICT(owner_identity_id, peer_persona_id) DO UPDATE SET
     display_name = excluded.display_name,
     full_handle = excluded.full_handle,
-    avatar_uri = COALESCE(excluded.avatar_uri, peer_profiles.avatar_uri),
+    avatar_uri = CASE WHEN ?12 THEN excluded.avatar_uri ELSE peer_profiles.avatar_uri END,
+    avatar_thumbnail_uri = CASE WHEN ?12 THEN excluded.avatar_thumbnail_uri ELSE peer_profiles.avatar_thumbnail_uri END,
+    avatar_thumbnail_source_uri = CASE WHEN ?12 THEN excluded.avatar_uri ELSE peer_profiles.avatar_thumbnail_source_uri END,
     subject_type = COALESCE(excluded.subject_type, peer_profiles.subject_type),
     profile_version = COALESCE(excluded.profile_version, peer_profiles.profile_version),
+    account_profile_version = COALESCE(excluded.account_profile_version, peer_profiles.account_profile_version),
     updated_at = COALESCE(excluded.updated_at, peer_profiles.updated_at),
     fetched_at = excluded.fetched_at,
     expires_at = excluded.expires_at"#,
@@ -157,10 +186,25 @@ ON CONFLICT(owner_identity_id, peer_persona_id) DO UPDATE SET
                 profile.updated_at.as_deref(),
                 fetched_at.to_string(),
                 expires_at,
+                profile.avatar_thumbnail_uri.as_deref(),
+                update_avatar,
+                profile.profile_version.as_deref(),
             ],
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+pub(crate) fn older_profile_version(
+    incoming: Option<&str>,
+    previous: Option<&str>,
+) -> crate::ImResult<bool> {
+    match (incoming, previous) {
+        (Some(incoming), Some(previous)) => {
+            Ok(super::sync_v2::compare_decimal(incoming, previous)?.is_lt())
+        }
+        _ => Ok(false),
+    }
 }
 
 pub(crate) fn refresh_existing_from_public_profile(

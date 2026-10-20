@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn inline_send_reconciliation_requires_group_owner_not_identity_management() {
+    assert!(can_reconcile_roster_before_send(Some(
+        RosterReconcileAuthority::Owner
+    )));
+    assert!(!can_reconcile_roster_before_send(Some(
+        RosterReconcileAuthority::SelfDidDeviceManager
+    )));
+    assert!(!can_reconcile_roster_before_send(None));
+}
+
+#[test]
 fn p6_remove_trigger_retry_is_bounded_to_host_forbidden() {
     assert!(!p6_remove_trigger_convergence_pending(
         &crate::ImError::Service {
@@ -114,6 +125,29 @@ fn roster_delta_adds_same_did_device_without_duplicate_business_member() {
         missing,
         vec![("did:example:bob".to_owned(), "device-b2".to_owned())]
     );
+}
+
+#[test]
+fn desired_p6_roster_excludes_read_only_and_incomplete_profile_bundles() {
+    let current = manifest_device("current", true);
+    let mut historical = manifest_device("historical", true);
+    historical.profiles.retain(|p| p != "anp.group.base.v2");
+    historical.profiles.push("anp.group.base.v1".to_owned());
+    let mut draft = manifest_device("all-v2-draft", true);
+    for profile in &mut draft.profiles {
+        if profile == "anp.core.binding.v1" || profile == "anp.identity.discovery.v1" {
+            *profile = profile.replace(".v1", ".v2");
+        }
+    }
+    let mut incomplete = manifest_device("incomplete", true);
+    incomplete
+        .profiles
+        .retain(|p| p != "anp.identity.discovery.v1");
+    let manifest = DeviceManifest {
+        manifest_type: anp::authentication::DEVICE_MANIFEST_TYPE.to_owned(),
+        devices: vec![historical, draft, incomplete, current],
+    };
+    assert_eq!(eligible_device_ids(&manifest), vec!["current".to_owned()]);
 }
 
 #[test]
@@ -462,7 +496,7 @@ fn manifest_device(device_id: &str, group_e2ee: bool) -> anp::authentication::De
     let mut profiles = vec![
         "anp.core.binding.v1".to_owned(),
         "anp.identity.discovery.v1".to_owned(),
-        "anp.group.base.v1".to_owned(),
+        "anp.group.base.v2".to_owned(),
     ];
     if group_e2ee {
         profiles.push(PROFILE_GROUP_E2EE_V2.to_owned());

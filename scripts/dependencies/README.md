@@ -71,9 +71,10 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 registry 依赖使用已发布的 ANP `1.0.5`、Identity `0.2.4`、Core `0.1.6`。
-Core `0.1.6` 于 2026-09-28 从 `im-core-v0.1.6` 发布到 crates.io；临时 Core
-源码联调清单已撤销。正式消费者必须使用对应 registry lock 和实际解析来源。
+当前正式 registry 依赖使用已发布的 ANP `1.0.6`、Identity `0.2.5`、Core `0.1.9`。
+Core `0.1.9` 保留附件／注册修复并增加 DSH 与 Guest 独立产品标识；Core Node `0.2.12`
+的实际原生构建固定消费这一组合，native API 为 `20`。临时源码联调清单已撤销，正式消费者必须使用对应
+registry lock 和实际解析来源。包已发布不表示后续源码改动已进入同版本 SDK。
 2026-09-17 用户授权的两平台 Daemon 临时验证包曾使用显式 `--local-core` 入口，
 其独立锁文件不改变 SDK 的公开发布状态。
 具体范围和复现步骤见 [Daemon 发布说明](../../docs/publish.md)。
@@ -149,3 +150,39 @@ ANP/Identity 沿用本次手工验收的已提交源码，没有为恢复问题�
 固定 Core 修复提交可避免消费端从旧的 source 清单构建出不含本次修复的 SDK。
 APP 的 wrapper 来源应再固定到包含此清单与锁的 Core PR 提交。
 本次仅提交修复与源码联调输入，公共 SDK 和正式 registry pin 未发布或升级。
+
+
+### 本地同源 macOS 测试候选
+
+`AWIKI_APPLE_LOCAL_CONFIG=/绝对路径/dependencies.local.json scripts/flutter/build-sdk-native.sh --macos-only --macos-arch arm64`
+使用现有隔离 local 构建机制选择当前 Core、ANP 与 Identity 源码。必须先提交消费者和
+所选依赖；制品核验拒绝未提交来源、变更的提交/配置/解析锁或原生库摘要。
+解析锁及每架构构建证据保存在 `.artifacts/dependencies/local/`，不修改正式 manifest/lock。
+此入口只允许 Debug 候选的优化原生库，Flutter APP 保持 Debug；与 `AWIKI_RELEASE_REGISTRY=1`
+及 `AWIKI_APPLE_SOURCE_INTEGRATION=1` 互斥，不授予正式发布资格。
+
+### 2026-10-11 加密、头像与系统验证汇总
+
+当前 source 清单固定 Core 实现 `867c15707c0977b9d9b667af15a0ce2703c53626`
+（[Core PR #57](https://github.com/AgentConnect/awiki-cli-rs2/pull/57)）及 ANP
+`fb99a08072ae68e5f6cc49cfef379d3cc2ded807`
+（[ANP PR #67](https://github.com/agent-network-protocol/anp/pull/67)）。
+实现冻结后再提交依赖元数据，Core pin 不引用元数据提交本身，避免自引用循环。
+Identity 仍为 `794f914fd651a66f9f517411e00f0bdb99962201`；其原 Core #56
+组合审查链接保持不变，不表示新建了 Identity PR。
+
+本轮通过 owning `--refresh-lock` 重新解析，配套 source locks 内容没有变化；
+源码模式仍须以 frozen/locked 入口验证。此组合包含加密、头像和群生命周期修复，
+不改变 registry 版本、最低版本或发布状态。正式消费仍须先发布兼容 SDK，更新
+registry pin/lock 并撤销临时 source 清单；本轮不发布或部署。
+
+
+源码模式同时支持只读 `tree --locked` 审计；使用与构建相同的冻结清单和锁文件，不能通过命令参数改用其他 workspace。
+
+### 20261013 Release 整合组合
+
+本次固定源码与关联 PR 以根目录 `dependencies.source.json` 为准；它同时包含新加坡发布修复与隔离系统测试修复。配套锁文件与清单一同提交。该清单仅用于显式源码联调；正式 registry 发布仍须先发布上游 SDK、更新固定版本与锁文件，再移除临时源码清单。旧测试制品、历史 PR 与批次下载地址不能作为此组合的替代来源。
+
+## 2026-10-13 合并依赖收敛
+
+本批 PR 评审后协调发布 ANP `1.0.6`、Identity Rust `0.2.5`、Core Rust `0.1.7` 与 Core Node `0.2.10`。正式消费者以 `registry-dependencies.json` 和 `registry-Cargo.lock` 为准；本批临时 source manifest/lock 已撤销。测试没有因发布而自动运行，发布阶段只保留构建、打包、来源与完整性检查；产品 E2E、安装包和人工验收另行执行。

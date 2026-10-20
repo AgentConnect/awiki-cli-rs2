@@ -636,50 +636,17 @@ fn local_scope_and_authorization(
     super::v2_store::V2OwnerScope,
     crate::internal::identity_device_state::DeviceAuthorizationProjection,
 )> {
-    let authorization = local_authorization(client)?;
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index =
-        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .load_index()?;
-    let state = index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let scope = super::v2_store::V2OwnerScope::from_identity_state(
-        &client.current_identity().id,
-        client.did(),
-        state,
-    )?;
-    Ok((scope, authorization))
+    let _ = core;
+    Ok((
+        super::v2_store::V2OwnerScope::from_client(client)?,
+        local_authorization(client)?,
+    ))
 }
 
 fn local_authorization(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<crate::internal::identity_device_state::DeviceAuthorizationProjection> {
-    let alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let index = crate::internal::identity_store::IdentityStore::new(
-        &client.core_inner().sdk_paths().identities,
-    )
-    .load_index()?;
-    index
-        .credentials
-        .get(alias)
-        .and_then(|entry| entry.device_state.as_ref())
-        .and_then(|state| state.authorization.clone())
-        .filter(|authorization| {
-            authorization.status
-                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        })
-        .ok_or(crate::ImError::PermissionDenied)
+    crate::internal::identity_device_state::active_authorization_for_client(client)
 }
 
 fn split_rpc_request(value: serde_json::Value) -> crate::ImResult<(String, serde_json::Value)> {

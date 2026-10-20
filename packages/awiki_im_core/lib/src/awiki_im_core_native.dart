@@ -229,6 +229,44 @@ class AwikiImCore {
     return summary._toModel();
   }
 
+  Future<DeviceCapabilityUpgradeStatus> identityDeviceCapabilityStatus(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+  }) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.identityDeviceCapabilityStatus(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+      ),
+    );
+    return DeviceCapabilityUpgradeStatus(
+      deviceId: status.deviceId,
+      state: DeviceCapabilityUpgradeState.values.byName(status.state.name),
+    );
+  }
+
+  Future<DeviceCapabilityUpgradeStatus> upgradeDeviceCapabilities(
+    IdentitySelector selector, {
+    String? targetDeviceId,
+    bool userPresenceConfirmed = false,
+  }) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.upgradeDeviceCapabilities(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return DeviceCapabilityUpgradeStatus(
+      deviceId: status.deviceId,
+      state: DeviceCapabilityUpgradeState.values.byName(status.state.name),
+    );
+  }
+
   Future<LegacyRegistryEpochAdoptionAuthority?>
   legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
     _ensureNotDisposed();
@@ -338,6 +376,16 @@ class AwikiImCore {
       ),
     );
     return result._toModel();
+  }
+
+  /// Lists unfinished work in this scope even when the identity registry conflicts.
+  Future<List<HandleRecoveryOperationSummary>>
+  listPendingHandleRecoveryOperations() async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.listPendingHandleRecoveryOperations(core: _inner),
+    );
+    return result.map((operation) => operation._toModel()).toList();
   }
 
   Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
@@ -1379,6 +1427,38 @@ class ProfileApi {
       () => gen_profile.updateProfile(
         client: _client._inner,
         patch: patch._toGen(),
+      ),
+    );
+    return profile._toModel();
+  }
+
+  Future<UserProfile> setAvatar({
+    required String requestId,
+    required String expectedProfileVersion,
+    required Uint8List imageJpeg,
+  }) async {
+    _client._ensureNotDisposed();
+    final profile = await _mapNativeErrors(
+      () => gen_profile.setAvatar(
+        client: _client._inner,
+        requestId: requestId,
+        expectedProfileVersion: expectedProfileVersion,
+        imageJpeg: imageJpeg,
+      ),
+    );
+    return profile._toModel();
+  }
+
+  Future<UserProfile> clearAvatar({
+    required String requestId,
+    required String expectedProfileVersion,
+  }) async {
+    _client._ensureNotDisposed();
+    final profile = await _mapNativeErrors(
+      () => gen_profile.clearAvatar(
+        client: _client._inner,
+        requestId: requestId,
+        expectedProfileVersion: expectedProfileVersion,
       ),
     );
     return profile._toModel();
@@ -3494,6 +3574,7 @@ extension on gen_directory_dto.DartDisplayProfile {
     displayName: displayName,
     avatarUri: avatarUri,
     avatarUrl: avatarUrl,
+    avatarThumbnailUri: avatarThumbnailUri,
     profileUri: profileUri,
     subjectType: subjectType,
     cacheHit: cacheHit,
@@ -3549,6 +3630,8 @@ extension on gen_profile_dto.DartUserProfile {
     markdown: markdown,
     avatarUri: avatarUri,
     avatarUrl: avatarUrl,
+    avatarThumbnailUri: avatarThumbnailUri,
+    avatarUploadEnabled: avatarUploadEnabled,
     profileUri: profileUri,
     subjectType: subjectType,
     agentKind: agentKind,
@@ -4574,6 +4657,16 @@ extension on gen_group_dto.DartGroupSummary {
     name: name,
     displayName: displayName,
     avatarUri: avatarUri,
+    avatarMembers: avatarMembers
+        ?.map(
+          (m) => GroupAvatarMember(
+            memberKey: m.memberKey,
+            memberDid: m.memberDid,
+            memberHandle: m.memberHandle,
+          ),
+        )
+        .toList(growable: false),
+    groupStateVersion: groupStateVersion,
     myRole: myRole,
     membershipStatus: membershipStatus,
     memberCount: memberCount,
@@ -4589,6 +4682,16 @@ extension on gen_group_dto.DartGroupSnapshot {
     name: name,
     displayName: displayName,
     avatarUri: avatarUri,
+    avatarMembers: avatarMembers
+        ?.map(
+          (m) => GroupAvatarMember(
+            memberKey: m.memberKey,
+            memberDid: m.memberDid,
+            memberHandle: m.memberHandle,
+          ),
+        )
+        .toList(growable: false),
+    groupStateVersion: groupStateVersion,
     description: description,
     myRole: myRole,
     membershipStatus: membershipStatus,
@@ -4613,6 +4716,9 @@ extension on gen_group_dto.DartGroupMember {
 
 extension on gen_group_dto.DartGroupReadResult {
   GroupReadResult _toModel() => GroupReadResult(
+    operationJson: operationJson,
+    encrypted: encrypted,
+    secureStatus: secureStatus?._toModel(),
     group: group?._toModel(),
     groups: groups.map((group) => group._toModel()).toList(),
     members: members.map((member) => member._toModel()).toList(),

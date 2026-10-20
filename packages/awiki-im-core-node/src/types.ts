@@ -1,5 +1,7 @@
 /** State and service configuration owned by the Node host. */
 export interface ImCoreNodeOpenOptions {
+  readonly multiDeviceDirectE2eeEnabled?: boolean
+  readonly multiDeviceGroupE2eeEnabled?: boolean
   /** Additional trusted CA bundle; certificate verification remains enabled. */
   readonly caBundle?: string
   /** Absolute, process-exclusive root for identities, SQLite, cache, and metadata. */
@@ -11,9 +13,9 @@ export interface ImCoreNodeOpenOptions {
   readonly mailServiceEndpoint?: string
   readonly anpServiceEndpoint?: string
   readonly anpServiceDid?: string
-  /** Candidate build identity sent by Core on local-product User/Message requests. */
+  /** Host product identity sent only to configured AWiki product endpoints. */
   readonly clientVersionInfo?: {
-    readonly product: 'awiki-me' | 'awiki-cli' | 'awiki-daemon'
+    readonly product: 'awiki-me' | 'awiki-cli' | 'awiki-daemon' | 'awiki-dsh' | 'awiki-gateway'
     readonly release: string
     readonly version: string
     readonly build?: number
@@ -329,12 +331,33 @@ export interface NodeIdentity {
 
 /** Public editable profile projection. Proofs, metadata, and private state are excluded. */
 export interface NodeProfile {
+  readonly avatarUri?: string
+  readonly avatarThumbnailUri?: string
+  readonly profileVersion?: string
+  readonly avatarUploadEnabled?: boolean
   readonly did: string
   readonly handle?: string
   readonly displayName?: string
   readonly bio?: string
   readonly tags: readonly string[]
   readonly updatedAt?: string
+}
+
+export interface ClearAvatarInput {
+  /** Retain this UUID for retries of the same operation, for at most seven days. */
+  readonly requestId: string
+  readonly expectedProfileVersion: string
+}
+
+export interface SetAvatarInput extends ClearAvatarInput {
+  /** Base64 of the prepared 512x512 JPEG, at most 512 KiB before encoding. */
+  readonly imageBase64: string
+}
+
+export interface GroupAvatarMember {
+  readonly memberKey: string
+  readonly memberDid: string
+  readonly memberHandle?: string
 }
 
 export interface UpdateProfileInput {
@@ -542,12 +565,23 @@ export interface NodePeer {
 
 /** Minimal private transport-protected group creation input. */
 export interface CreateGroupInput {
+  readonly operationId?: string
+  readonly encrypted?: boolean
   readonly name: string
   readonly description?: string
 }
 
 /** Created group with its canonical conversation route. */
 export interface NodeGroup {
+  readonly operation?: GroupOperationStatus
+  readonly encrypted?: boolean
+  readonly secureState?: string
+  readonly canSendSecure?: boolean
+  readonly secureRetryable?: boolean
+  readonly secureProblem?: string
+  readonly avatarUri?: string
+  readonly avatarMembers?: readonly GroupAvatarMember[]
+  readonly groupStateVersion?: string
   readonly did: string
   readonly conversationId: string
   readonly title: string
@@ -566,6 +600,7 @@ export interface AddGroupMemberInput {
 
 /** Authoritative member identity returned after group membership mutation. */
 export interface NodeGroupMember {
+  readonly operation?: GroupOperationStatus
   readonly did: string
   readonly handle?: string
 }
@@ -611,6 +646,9 @@ export interface DisplayProfileBatchInput {
 
 /** One locally cached display profile. */
 export interface NodeDisplayProfile {
+  readonly subjectType?: string
+  readonly avatarUri?: string
+  readonly avatarThumbnailUri?: string
   readonly did?: string
   readonly handle?: string
   readonly displayName?: string
@@ -807,6 +845,10 @@ export interface NodeMessageContent {
 
 /** Canonically routed message projection. */
 export interface NodeMessage {
+  readonly encryptionRequired?: boolean
+  readonly encrypted: boolean
+  readonly decryptionState?: string
+  readonly sendState?: string
   readonly id: string
   readonly conversationId: string
   readonly conversationKind: 'direct' | 'group'
@@ -833,6 +875,7 @@ export interface MarkReadResult {
 }
 
 export interface SendTextInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly text: string
   readonly markdown?: boolean
@@ -842,6 +885,7 @@ export interface SendTextInput {
 
 /** Generic JSON Payload send. ANP-P9 mention payloads are validated again in Rust. */
 export interface SendPayloadInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly payloadJson: string
   readonly clientMessageId?: string
@@ -918,6 +962,7 @@ export interface HandleRecoveryOperationSummary {
 
 /** Single attachment send. `bytes` crosses N-API as Uint8Array, never JSON/base64. */
 export interface SendAttachmentInput {
+  readonly security?: 'plain' | 'e2ee-required'
   readonly conversationId: string
   readonly fileName: string
   readonly mimeType: string
@@ -1075,12 +1120,15 @@ export interface ImCoreNodeClient {
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
+  setAvatar(input: SetAvatarInput): Promise<NodeProfile>
+  clearAvatar(input: ClearAvatarInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]>
   refreshDisplayProfiles(input: DisplayProfileBatchInput, force?: boolean): Promise<readonly NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
+  repairGroupSecurity(input: GroupInput): Promise<NodeGroup>
   listGroups(input?: PageInput): Promise<Page<NodeGroup>>
   joinGroup(input: GroupInput): Promise<NodeGroup>
   leaveGroup(input: GroupInput): Promise<void>
@@ -1140,4 +1188,14 @@ export interface PendingIdentityRegistration {
   readonly displayName: string
   readonly verificationKind: string
   readonly phase: 'prepared' | 'remote_committed' | 'local_committed'
+}
+
+export interface GroupOperationStatus {
+  readonly operationId: string
+  readonly groupDid: string
+  readonly phase: string
+  readonly businessCommitted: boolean
+  readonly encryptionReady: boolean
+  readonly reason?: string
+  readonly nextAction: string
 }

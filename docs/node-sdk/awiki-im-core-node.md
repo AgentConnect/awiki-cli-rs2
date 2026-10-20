@@ -194,8 +194,11 @@ finally {
 - `registeredAtMs` 和附件 byte size 是十进制字符串；其他时间是 RFC 3339。
 - 可选输出字段缺失时是 `undefined`，只有 `getDefaultIdentity` 明确用 `null` 表示未注册。
 - 上传、下载使用 `Uint8Array`/Buffer 直接跨 N-API；附件正文不经 JSON/base64。
+- 加密附件的显示大小取 `plaintext_size`；对象传输长度保留在 Core 的对象描述中。
+  `downloadAttachment` 返回的大小及摘要描述已校验、已解密的返回 bytes，供 Host/Browser
+  缓存校验；消息附件中的摘要仍是对象描述摘要，不能用于校验解密后的文件。
 - 当前范围只有单附件，不扩展多附件 UI 或领域 API。
-- `createGroup` 的 Node 产品契约固定为 private、open-join、transport-protected；返回的
+- `createGroup` 固定 private、open-join；通过 `encrypted` 选择群安全类型，默认普通群，返回的
   canonical conversation ID 由 Core 生成，Host 不拼接。初始成员由 `addGroupMember` 逐个添加，
   该方法接受 Handle 或 DID 并返回 Core 权威解析后的身份。
 - External HTTP body 只用 `Uint8Array`/Buffer 跨 N-API；response body 永不跨该接口。
@@ -270,3 +273,18 @@ pnpm --filter @awiki/im-core-node run test
 平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。
+
+
+## 产品版本标识
+
+`clientVersionInfo.product` 接受 `awiki-me`、`awiki-cli`、`awiki-daemon`、`awiki-dsh`、
+`awiki-gateway`。Node 桥接将这组值交给同一 Core 构造器校验，未知产品、别名和含分隔符
+或换行的标识仍被拒绝。原生 API 形状不变，wrapper 与平台包必须使用同一版本。
+
+DSH 配置 `awiki-dsh/0815/<插件包版本>`，Guest 配置
+`awiki-gateway/0815/<Gateway包版本>`。`version` 使用宿主真实包版本，不能伪装成较高的
+Daemon 版本。本次 SDK 不修改服务端最低版本规则或任何产品的下载政策。
+
+Core 只在已配置的 AWiki User/Message/Mail 产品 HTTP 请求和 Message WebSocket 握手
+携带唯一的 `X-AWiki-Client-Version`。公共 ANP、公开 Handle/DID 发现、对象存储及
+其他 origin 的请求保持不带产品头；调用方不能通过预置同名 header 覆盖 Core 配置。

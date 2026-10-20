@@ -10,6 +10,28 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+Future<DartUserProfile> setAvatar({
+  required ArcDartImClient client,
+  required String requestId,
+  required String expectedProfileVersion,
+  required List<int> imageJpeg,
+}) => RustLib.instance.api.crateApiProfileSetAvatar(
+  client: client,
+  requestId: requestId,
+  expectedProfileVersion: expectedProfileVersion,
+  imageJpeg: imageJpeg,
+);
+
+Future<DartUserProfile> clearAvatar({
+  required ArcDartImClient client,
+  required String requestId,
+  required String expectedProfileVersion,
+}) => RustLib.instance.api.crateApiProfileClearAvatar(
+  client: client,
+  requestId: requestId,
+  expectedProfileVersion: expectedProfileVersion,
+);
+
 Future<DartUserProfile> loadMyProfile({required ArcDartImClient client}) =>
     RustLib.instance.api.crateApiProfileLoadMyProfile(client: client);
 

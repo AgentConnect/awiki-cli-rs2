@@ -251,6 +251,14 @@ impl From<AttachmentObjectResponse> for AsyncAttachmentObjectResponse {
 }
 
 pub(crate) trait RawJsonTransport {
+    fn get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.get_json_url(url, headers)
+    }
+
     fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         let url = crate::internal::discovery::did_document::did_document_url(did)?;
         self.get_json_url(
@@ -267,6 +275,14 @@ pub(crate) trait RawJsonTransport {
 }
 
 pub(crate) trait AsyncRawJsonTransport {
+    async fn get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.get_json_url(url, headers).await
+    }
+
     async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         let url = crate::internal::discovery::did_document::did_document_url(did)?;
         self.get_json_url(
@@ -288,6 +304,14 @@ pub(crate) trait RpcTransport {
 
     fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
         Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
+
+    fn directory_get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.directory_get_json_url(url, headers)
     }
 
     fn directory_get_json_url(
@@ -313,6 +337,14 @@ pub(crate) trait AsyncRpcTransport {
 
     async fn directory_resolve_web_document(&mut self, _did: &str) -> crate::ImResult<Value> {
         Err(crate::ImError::unsupported("directory-web-resolution"))
+    }
+
+    async fn directory_get_did_document_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.directory_get_json_url(url, headers).await
     }
 
     async fn directory_get_json_url(
@@ -1841,8 +1873,7 @@ impl RawJsonTransport for CoreHttpTransport<'_> {
 
 fn resolve_web_document_blocking(did: &str) -> crate::ImResult<Value> {
     // P6's synchronous document read is also used by async registration and
-    // messaging. The SDK sync resolver owns a Tokio runtime; run that boundary
-    // on a scoped worker so it cannot nest inside the caller's runtime.
+    // messaging. Use a scoped worker to avoid nesting the resolution runtime.
     let unavailable = || crate::ImError::TransportUnavailable {
         detail: "secure Web DID resolution failed".to_owned(),
     };
@@ -1851,25 +1882,37 @@ fn resolve_web_document_blocking(did: &str) -> crate::ImResult<Value> {
             std::thread::Builder::new()
                 .name("im-core-web-resolution".to_owned())
                 .spawn_scoped(scope, || {
-                    anp::authentication::resolve_did_document_sync(did, true)
+                    tokio::runtime::Runtime::new()
+                        .map_err(|_| unavailable())?
+                        .block_on(resolve_web_document_with_host_network(did))
                 })
                 .map_err(|_| unavailable())?
                 .join()
                 .map_err(|_| unavailable())?
-                .map_err(|_| unavailable())
         })
     } else {
-        anp::authentication::resolve_did_document_sync(did, true).map_err(|_| unavailable())
+        tokio::runtime::Runtime::new()
+            .map_err(|_| unavailable())?
+            .block_on(resolve_web_document_with_host_network(did))
     }
+}
+
+async fn resolve_web_document_with_host_network(did: &str) -> crate::ImResult<Value> {
+    anp::authentication::resolve_did_document_with_address_policy(
+        did,
+        true,
+        &anp::authentication::DidResolutionOptions::default(),
+        anp::authentication::DidResolutionAddressPolicy::HostNetwork,
+    )
+    .await
+    .map_err(|_| crate::ImError::TransportUnavailable {
+        detail: "secure Web DID resolution failed".to_owned(),
+    })
 }
 
 impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
     async fn resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
-        anp::authentication::resolve_did_document(did, true)
-            .await
-            .map_err(|_| crate::ImError::TransportUnavailable {
-                detail: "secure Web DID resolution failed".to_owned(),
-            })
+        resolve_web_document_with_host_network(did).await
     }
 
     async fn get_json_url(
@@ -1966,6 +2009,17 @@ impl RpcTransport for CoreHttpTransport<'_> {
         RawJsonTransport::resolve_web_document(self, did)
     }
 
+    fn directory_get_did_document_json_url(
+        &mut self,
+        url: &str,
+        _headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        crate::internal::public_discovery_http::get_did_document_blocking(
+            url,
+            self.client.core_inner().sdk_config().ca_bundle_path(),
+        )
+    }
+
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc(endpoint, method, params)
     }
@@ -1985,6 +2039,18 @@ impl RpcTransport for CoreHttpTransport<'_> {
 impl AsyncRpcTransport for CoreHttpTransport<'_> {
     async fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         AsyncRawJsonTransport::resolve_web_document(self, did).await
+    }
+
+    async fn directory_get_did_document_json_url(
+        &mut self,
+        url: &str,
+        _headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        crate::internal::public_discovery_http::get_did_document(
+            url,
+            self.client.core_inner().sdk_config().ca_bundle_path(),
+        )
+        .await
     }
 
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
@@ -2119,7 +2185,8 @@ impl RestTransport for CorePlainTransport<'_> {
             self.unsigned_headers(endpoint, None),
         )?;
         if response.status_code >= 400 {
-            return Err(service_error_from_http(
+            return Err(plain_rest_post_error(
+                endpoint,
                 response.status_code,
                 &response.body,
             ));
@@ -2170,7 +2237,8 @@ impl AsyncRestTransport for CorePlainTransport<'_> {
             )
             .await?;
         if response.status_code >= 400 {
-            return Err(service_error_from_http(
+            return Err(plain_rest_post_error(
+                endpoint,
                 response.status_code,
                 &response.body,
             ));
@@ -2403,6 +2471,35 @@ fn percent_encode(value: &str) -> String {
         }
     }
     encoded
+}
+
+// Recovery exchange errors are a closed REST contract, not JSON-RPC errors.
+// Preserve only that endpoint's typed error; never infer it from arbitrary text.
+fn plain_rest_post_error(endpoint: &str, status_code: u16, body: &[u8]) -> crate::ImError {
+    use crate::internal::identity_wire::handle_recovery::{
+        RecoveryExchangeErrorCodeV4, HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT,
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ExchangeError {
+        code: String,
+        retryable: bool,
+    }
+    if endpoint == HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT {
+        if let Ok(payload) = serde_json::from_slice::<ExchangeError>(body) {
+            if let Some(code) = RecoveryExchangeErrorCodeV4::parse(&payload.code) {
+                if payload.retryable == code.retryable() {
+                    return crate::ImError::Service {
+                        status_code: Some(status_code),
+                        code: Some(code.as_str().to_owned()),
+                        message: code.as_str().to_owned(),
+                        data: None,
+                    };
+                }
+            }
+        }
+    }
+    service_error_from_http(status_code, body)
 }
 
 fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {

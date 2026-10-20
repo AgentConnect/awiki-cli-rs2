@@ -834,6 +834,16 @@ async fn direct_attachment_runtime_pages_fresh_p5_wire_by_raw_count_and_reuses_c
 
 #[test]
 fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache() {
+    for wire_id in [
+        "vendor-original-group-message",
+        "did:example:group:e2ee:01",
+        "",
+    ] {
+        download_group_object_with_cached_wire_id(wire_id);
+    }
+}
+
+fn download_group_object_with_cached_wire_id(wire_id: &str) {
     let fixture = Fixture::new();
     let client = fixture.client();
     let object = object_e2ee_case(b"group cached plaintext".to_vec());
@@ -850,7 +860,7 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
                 thread_kind: "group".to_owned(),
                 thread_id: "did:example:group:e2ee".to_owned(),
                 message_id: "did:example:group:e2ee:7".to_owned(),
-                wire_message_id: String::new(),
+                wire_message_id: wire_id.to_owned(),
                 sender_did: "did:web:example.com:bob".to_owned(),
                 message_security_profile: "group-e2ee".to_owned(),
                 content: serde_json::to_string(&object.full_manifest).unwrap(),
@@ -914,8 +924,23 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
     );
     assert_eq!(
         ticket.params["body"]["message_id"],
-        "did:example:group:e2ee:7"
+        if wire_id.is_empty() {
+            "did:example:group:e2ee:7"
+        } else {
+            wire_id
+        }
     );
+    assert_eq!(result.selection.requested_id, "did:example:group:e2ee:7");
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let stored_id: String = connection.query_row(
+        "SELECT message_id FROM attachment_manifest_cache WHERE owner_identity_id = ?1 AND thread_id = ?2",
+        (client.current_identity().id.as_str(), "did:example:group:e2ee"),
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(stored_id, "did:example:group:e2ee:7");
     assert_eq!(ticket.params["body"]["group_did"], "did:example:group:e2ee");
     assert_eq!(ticket.params["body"].get("object_key_b64u"), None);
     assert_eq!(ticket.params["body"].get("nonce_b64u"), None);

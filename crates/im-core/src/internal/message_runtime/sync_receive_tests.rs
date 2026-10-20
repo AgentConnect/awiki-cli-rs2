@@ -882,3 +882,150 @@ async fn hundred_page_snapshot_keeps_its_own_budget_and_receives_all_post_anchor
         .collect::<Vec<_>>();
     assert_eq!(cursors, vec![json!("10"), json!("100"), json!("101")]);
 }
+
+
+#[cfg(feature = "group-e2ee")]
+#[tokio::test]
+async fn p6_own_echo_waits_for_acceptance_then_closes_without_decrypting_again() {
+    use crate::internal::local_state::{sync_inbox, sync_v2::SyncLaneHandoffInput};
+    use crate::internal::wire::sync_v2::SyncLaneV3;
+    let fixture = SyncSnapshotFixture::new("p6-own-echo");
+    let client = fixture.client_with_group_e2ee(true);
+    let binding = client.active_sync_account_binding().await.unwrap();
+    seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+    seed_lane_states(&client, &binding, &[(SyncLaneV3::P6Group, "42")]).await;
+    let db = client.core_inner().local_state_db().await.unwrap();
+    let instance = db
+        .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+        .await
+        .unwrap();
+    let group = "did:wba:awiki.test:groups:own-echo";
+    db.commit_sync_lane_handoff(SyncLaneHandoffInput {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        account_id_snapshot: binding.account_id.clone(),
+        device_id_snapshot: binding.protocol_device_id.clone(),
+        auth_generation_snapshot: binding.device_auth_generation.clone(),
+        client_instance_id_snapshot: instance,
+        lane: SyncLaneV3::P6Group,
+        lane_epoch: "42".into(),
+        position: "1".into(),
+        event_id: "own-echo-1".into(),
+        event_type: "p6.delivery.created".into(),
+        raw_payload: p6_lane_envelope(&binding, "logical-send-1", group, "7"),
+        group_did: Some(group.into()),
+        received_at: "2026-08-28T00:00:00Z".into(),
+        source_created_at: None,
+        source_expires_at: None,
+    })
+    .await
+    .unwrap();
+    let stored = stored_binding(&client, &binding);
+    let claims = db
+        .run_local(move |connection| {
+            sync_inbox::claim_inputs(connection, &stored, unix_time_i64(), 8)
+        })
+        .await
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    let claim = &claims[0];
+    let error = crate::internal::message_runtime::sync_processing::process_p6(&client, claim)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::internal::message_runtime::sync_processing::failure_code(&error),
+        "sync.group_sent_projection_pending"
+    );
+    assert!(crate::internal::message_runtime::sync_processing::retry_at(&error, 1).is_some());
+    // Use the production outgoing writer: accepted sends have direction=1 and
+    // no decryption_state attribute, unlike received plaintext fixtures.
+    let mut accepted = crate::internal::message_runtime::local_projection::send_projection_result(
+        &client,
+        &crate::messages::MessageTarget::Group(crate::ids::GroupRef::parse(group).unwrap()),
+        &crate::messages::MessageBody::Text {
+            text: "accepted own plaintext".into(),
+            kind: crate::messages::MessageKind::Text,
+        },
+        &crate::ids::MessageId::parse(format!("{group}:7")).unwrap(),
+        Some("own-send-operation"),
+        crate::messages::DeliveryState::Accepted,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    accepted.message.metadata.server_sequence = Some(7);
+    // Intent or a pending send cannot authorize consuming a secure echo.
+    accepted.message.metadata.delivery_state = Some("pending".into());
+    crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
+        &client,
+        group,
+        "accepted own plaintext",
+        &crate::messages::MessageKind::Text,
+        &accepted,
+    )
+    .await
+    .unwrap();
+    let error = crate::internal::message_runtime::sync_processing::process_p6(&client, claim)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::internal::message_runtime::sync_processing::failure_code(&error),
+        "sync.group_sent_projection_pending"
+    );
+    accepted.message.metadata.delivery_state = Some("accepted".into());
+    crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
+        &client,
+        group,
+        "accepted own plaintext",
+        &crate::messages::MessageKind::Text,
+        &accepted,
+    )
+    .await
+    .unwrap();
+    let mut other_device = claim.clone();
+    other_device.payload["meta"]["recipient_device_id"] = json!("another-device");
+    assert!(matches!(
+        crate::internal::message_runtime::sync_processing::process_p6(&client, &other_device).await,
+        Err(crate::ImError::PermissionDenied)
+    ));
+    // Reopening a pre-fix blocked echo must recover through the same queue,
+    // without editing application state or issuing a replacement send.
+    let failed = claim.clone();
+    db.run_local(move |connection| {
+        sync_inbox::fail_claim(
+            connection,
+            &failed,
+            "sync.processing_blocked",
+            None,
+            unix_time_i64(),
+        )
+    })
+    .await
+    .unwrap();
+    let stored = stored_binding(&client, &binding);
+    let claims = db
+        .run_local(move |connection| {
+            sync_inbox::claim_inputs(connection, &stored, unix_time_i64(), 8)
+        })
+        .await
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    let claim = &claims[0];
+    let result = crate::internal::message_runtime::sync_processing::process_p6(&client, claim)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.status,
+        crate::messages::MessageProcessingStatus::Applied
+    );
+    assert!(result.committed_incoming_messages.is_empty());
+    let owner = binding.owner_identity_id.clone();
+    let summary = db
+        .run_local(move |connection| {
+            sync_inbox::processing_summary(connection, &owner, unix_time_i64())
+        })
+        .await
+        .unwrap();
+    assert_eq!(summary.pending, 0);
+    assert_eq!(summary.blocked, 0);
+}

@@ -6,6 +6,7 @@ use crate::runtime::reply_payload::{
 
 #[derive(Clone)]
 pub(super) struct ControllerRuntimeOutbox {
+    security: RuntimeMessageSecurity,
     message_sender: ControllerOutboxSender,
     status_sender: ControllerOutboxSender,
     daemon_agent_did: Option<String>,
@@ -70,6 +71,7 @@ impl ControllerRuntimeOutbox {
         sent_message_ids: Arc<Mutex<Vec<String>>>,
     ) -> Self {
         Self {
+            security: RuntimeMessageSecurity::DefaultPlain,
             message_sender,
             status_sender,
             daemon_agent_did,
@@ -87,8 +89,31 @@ impl ControllerRuntimeOutbox {
         }
     }
 
+    pub(super) fn with_message_security(mut self, security: RuntimeMessageSecurity) -> Self {
+        self.security = security;
+        self
+    }
+
     fn send_status_payload(&self, recipient_did: &str, payload: Value) -> Result<()> {
-        let message_id = self.status_sender.send_payload(recipient_did, payload)?;
+        let message_id = if self.security == RuntimeMessageSecurity::DefaultPlain {
+            self.status_sender.send_payload(recipient_did, payload)?
+        } else {
+            self.status_sender
+                .send_runtime_message(&RuntimeMessageSend {
+                    target: RuntimeMessageTarget::Direct {
+                        recipient: recipient_did.to_owned(),
+                        raw_recipient: recipient_did.to_owned(),
+                        resolved_did: Some(recipient_did.to_owned()),
+                    },
+                    text: String::new(),
+                    payload: Some(payload),
+                    file_path: None,
+                    display_filename: None,
+                    mime_type: None,
+                    idempotency_key: None,
+                    security: self.security,
+                })?
+        };
         self.sent_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut ids) = self.sent_message_ids.lock() {
@@ -139,7 +164,7 @@ impl ControllerRuntimeOutbox {
                 "runtime-final-callback:{}:{}",
                 context.agent_did, context.run_id
             )),
-            security: RuntimeMessageSecurity::DefaultPlain,
+            security: self.security,
         })
     }
 
@@ -741,7 +766,8 @@ impl RuntimeCallbackOutbox {
             Some(task.trigger_kind.as_str().to_string()),
             Arc::clone(&self.sent_counter),
             Arc::clone(&self.sent_message_ids),
-        ))
+        )
+        .with_message_security(task.security))
     }
 }
 

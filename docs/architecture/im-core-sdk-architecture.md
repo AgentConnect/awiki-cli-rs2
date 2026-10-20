@@ -80,6 +80,11 @@ parse flags -> build ImCore/ImClient -> call SDK -> render output
 
 CLI may parse `--to`, `--group`, `--text-file`, `--file`, and `--secure`; it passes `MessageTarget`, `MessageBody`, `AttachmentInput`, and `MessageSecurityMode` to SDK services.
 
+头像操作沿用上述分层：Core 拥有鉴权、版本化 set/clear RPC、三态资料投影和刷新租约；
+Dart/Node 只转换类型。产品拥有相册/相机/裁剪和图片字节缓存。Core 不编码图片，不把原图或
+JPEG base64 写入资料或消息数据库。本人返回必须含当前 owner、Profile version 和明确头像字段。
+群头像只透传 Host 的有界稳定成员摘要，不在 Core 扫描 roster 或生成图片。
+
 ## 4. Identity Model
 
 `ImCore` is environment-level and does not bind a current identity. `ImClient` binds one identity and automatically carries actor, auth runtime, local owner, and identity-scoped state.
@@ -98,7 +103,16 @@ Rules:
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
 
+当前 WBA vNext 新建、Device Join 与既有显式 Legacy upgrade 的设备及服务声明采用
+`core.binding.v1 + identity.discovery.v1 + group.base.v2 + group.e2ee.v2` 的 P6
+依赖组合（均带 `anp.` 前缀），与 ANP SDK `6e14129a08e519cc076416d68919620c48de6ec5`
+一致。旧 `group.base.v1` 或 all-v2 草案 Manifest 仍可读取，但不构成当前 P6 设备资格；
+Core 不替兄弟设备推断能力、不自动重写已签名文档、不迁移 MLS 历史密钥。
+P4 负责 DID 级成员操作，P6 负责设备级 MLS 准备和加密消息；P4 active 不等于设备已就绪。
+
 ### 管理设备接续兄弟设备发布的文档
+
+Core 的同步与原生异步密码操作在 Provider 返回明确的 generation conflict 时，重新加载同一 store / identity ID / DID，并仅重试一次原密码请求。第二次仍由 Provider 核验 generation、身份状态和所选密钥权限；删除、撤销、密钥退役及再次冲突必须失败关闭。此重试不重发 HTTP，不重建消息或 operation ID，不适用于文档发布、Root 导入或其他写事务。
 
 新 Join 的 challenge 准备前，若本地 DID 文档落后于认证 Registry，Core 解析并验真远端文档，再以独立的 sibling convergence 权限同步 controller custody 和本地投影。必须保持 DID、根密钥、本机 signing/E2EE 密钥及 auth generation 不变，本机在 Registry 仍为 active/admin/management_ready，文档和 Registry checkpoint 均不可回退。Provider 必须没有 pending document change，并在原子 adoption 中执行根指纹、当前 generation 和本机密钥授权检查；不借用 Recovery 或已确认 Join 的 pending publication 权限。旧 custody 无此保证时失败关闭。成功后重新打开 client，仍按原有精确文档摘要检查准备 challenge；同步不发送根密钥，也不批准 Join。
 
@@ -180,9 +194,13 @@ account/Handle/DID/代次且该 owner 已无活跃凭证时，才可视为历史
 默认身份先写、索引最后原子替换；索引替换失败时恢复原默认文件。两步间崩溃仍保留
 重复索引及原恢复标记，可经原任务续办，不能留下“索引已删除前驱、默认文件仍指向前驱”
 而无法进入恢复的状态。补偿失败同样保留任务和备份并返回错误。
-局部索引修复不等于 Recovery 已 Applied：若其他 Handle 仍重复，普通读取及客户端加载
-继续返回 `identity.local_registry_conflict`，原任务保留 `local_transition_pending`。
-处理其他 Handle 后再 Resume，继续完成 JWT、PreKey 和既有 Applied 收尾，不创建新任务。
+局部索引修复不等于 Recovery 已 Applied。只有被唯一活跃 Recovery 和精确
+`identity_switched` 前后代次证明的冲突记录，才在只读目录中隔离：可用身份列表不包含
+这两个投影，选中该 Handle/身份继续返回 `identity.local_registry_conflict`，恢复入口仍
+通过原任务可达。其他身份可继续注册、加载和完成恢复。普通索引写入只允许原样保留其他
+Handle 的既有冲突（默认身份标记除外），不能扩大或改写冲突；未知冲突继续失败关闭。
+Recovery 的完成门禁为身份接续、JWT、P5 和持久化收尾；P6 准备属于独立的设备能力
+生命周期，不得把已恢复身份永久卡在 `local_transition_pending`。
 
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
@@ -225,6 +243,8 @@ error `outcome_unknown`, and a later resume first calls `handle_recovery_result_
 result is applied locally; `result_absent` permits the same frozen intent to retry Commit. Core never
 blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
 remains `Serialization`; neither classification exposes response content.
+
+凭证已删除后的再次 Recovery：仅在 OTP exchange 冻结 intent 之前，允许精确匹配远端当前账号、Handle、DID 与直接前驱代次的唯一本地绑定，在无相关活跃凭证、无冲突未完成事务，且存在同 owner / DID / protocol device 的已完成删除证明时进入 fresh owner 路径。保留旧绑定和历史，不迁入旧 owner 数据。普通 Join 的 live predecessor matcher 不获得此例外；缺失证明、错误设备、跨账号或更早代次继续失败关闭。
 
 For a fresh-install Recovery target, a successful factor exchange refreshes only the successor DID
 Document root proof immediately before the first Commit or a `result_absent` retry. The DID, root and
@@ -691,6 +711,12 @@ the host atomically replaces only that DID/device/key/generation token. A
 persistence failure fails the refresh before Core publishes the token in memory,
 and no callback may rewrite identity keys, generations, or Sync V2 state.
 
+Daemon attaches a Core encryption vault derived with a separate HKDF context
+from its existing protected local vault root. Core owns P5/P6 prekeys and session
+state in that store; agent identity custody and personal-assistant delegated
+identity storage remain unchanged. Runtime realtime startup awaits Core encrypted
+receive preparation and fails closed when the vault or publication is unavailable.
+
 Independent Skill, Daemon, and Runtime Agent accounts share one Core builder.
 `generate_vnext_agent_bootstrap` fixes the DID path to
 `agent/{skill|daemon|runtime}/{canonical-handle-local}`, produces one random
@@ -843,10 +869,25 @@ For P6, the lane and legacy blocking/async/realtime paths share the same
 internal notice consumer. Once `lanes.p6_group.v1` is negotiated, the legacy
 Inbox piggyback path drops the control candidate without consuming it so only
 the reliable lane owns progress. A standard `group.e2ee.notice` is bound to the current owner
-DID/device, resolved against the current P4 group-member DID documents, and
+DID/device, resolved against current DID documents from the Host's authenticated
+P4 `group.get_info(include_member_list=true, include_policy=true)` snapshot, and
 passed to the SDK's durable, idempotent MLS notice state machine. Controls are
-never projected as messages or events; malformed, unknown-profile, wrong-device,
+never projected as messages or events. The local Home `group.list_members` view
+can be partial for a foreign group and is not a complete roster for Welcome
+validation. The consumer checks group/version, unique DIDs, active-member count,
+local membership and product bounds before calling MLS. It retains the exact
+Remove subject and applicable DID-transition anchors. Incomplete/stale snapshots
+fail before MLS state changes; the SDK atomically rolls back failed Welcome
+consumption and receipts. Malformed, unknown-profile, wrong-device,
 or wrong-group inputs fail closed.
+
+P6 同设备发送回显优先复用当前账号已提交的明文投影，不再次解密本设备发出的 MLS Application。
+缓存允许已验证的接收记录，或 `direction=1`、发送者等于 owner、`group-e2ee`、
+`delivery_state=accepted` 且 canonical ID 与正数群序号一致的发送记录；发送意图或排队记录不能命中。
+复用前仍校验目标 owner/device、群、序号和发送者。回显先于发送响应时保留原同步输入并有界退避；
+旧版本误阻塞的同设备回显仅在对应已接受记录存在时由正常队列重新处理。
+Welcome 消费后的密钥包补充登记复用同步输入提交事务；不得在持有 IM 写事务时另开连接写入操作日志。
+同一 notice 的补充记录幂等，回放不能将已完成的发布重新置为待处理。
 
 ## 5. Paths and Configuration
 
@@ -977,6 +1018,11 @@ write the MLS WAL, or build a Commit. The low-sensitivity maintenance object acc
 `reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
 silently projected.
 
+发送前只有活跃群主执行既有 P4 roster 收敛；普通成员的身份设备管理权限不能触发
+全群枚举或阻止其正常加密发送。成员退出引发的暂停允许群主先完成收敛，随后必须
+重新读取权威群状态并通过暂停检查才能加密。设备撤销仍不在发送入口自动修复，旧版
+`device_revocation_pending + true` 与未知维护状态继续 fail closed。
+
 ## 9.1 Key Material Boundary
 
 The full current technical design is documented in
@@ -1104,7 +1150,7 @@ TTL/显式刷新更新，Persona 的完整 Handle 始终来自权威绑定。
 
 Home 明确返回 Handle 不存在时，按 DID 查询可从经过方法与 proof 校验的 DID 文档发现唯一的 `ANPHandleService`。只接受无凭据、查询参数或 fragment 的标准 HTTPS `/.well-known/handle/<local-part>` 地址；本域仍不得借此绕过 Directory 的稳定账号 subject。外域公开绑定须验证完整 Handle、active 状态、正整数 generation 及与请求 DID 完全相同的当前 DID，之后才可建立 Persona。Home 的认证、网络、权限和身份冲突错误不触发此补充发现路径。缺失、歧义或不合法的服务声明继续保持待解析/失败，不能从 DID 路径、显示资料或通知正文猜测 Handle。
 
-上述公开 Directory 发现（包括首个 WBA DID 文档及后续 WNS 绑定读取）使用独立的公共 HTTPS 读取边界：请求前拒绝非标准端口、凭据、IP 字面量与本地域名；DNS 结果必须全部为公网单播地址且非空，连接固定到已验证地址，不使用环境代理，不跟随重定向。DNS、连接、读取整体限时 30 秒，JSON 响应最多 1 MiB；同步和异步采用同一实现。Web DID 保留 ANP 安全解析器。认证服务请求不共用此边界，任何失败均不落身份投影。
+上述公开 Directory 发现使用独立的 HTTPS 读取边界：请求前拒绝非标准端口、凭据、IP 字面量与本地域名，不使用环境代理，不跟随重定向。WBA DID 文档获取不检查 DNS 结果是否属于公网，以兼容操作系统 TUN/Fake-IP；解析结果必须非空，连接仍固定到该次解析的地址，TLS 使用原始域名并保持现有 CA 证书链与域名校验。后续 WNS 绑定读取仍要求全部 DNS 结果为公网单播地址。DNS、连接、读取整体限时 30 秒，JSON 响应最多 1 MiB；同步和异步采用同一实现。Web DID 保留 ANP 的 URL、TLS、文档 ID 和可选 proof 校验，只显式关闭解析地址的公网分类检查，不使用测试 URL override。DID 绑定、系统通知来源、签名与有效期验证保持原有规则，获取失败不落身份投影。启用 TUN 后的最终网络目标由宿主网络处理，DID 文档获取不再承诺目标地址属于公网；此例外不扩展到 WNS 绑定或普通认证服务请求。
 
 历史版本曾把 Home 返回的私有账号 subject 用于外域 Persona。兼容修复只在新鲜公共 WNS 已验证、明确给出客户端 Home 域的投影事务内执行：旧记录必须匹配 `handle_authority` 来源、同一规范 Provider/Handle、可重算的旧 Persona 和唯一当前 route；所有旧 DID 必须是当前 DID 或经 owner 隔离的 proof-verified transition 链到达当前 DID，generation 不得回退。未知来源、跨 owner 证明、其他 Handle、独立存在的目标 Persona、循环或缺失链路继续拒绝。无证明时不清缓存，也不从显示资料推断连续性。
 
@@ -1393,6 +1439,8 @@ Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承
 
 同步通道能力状态的本地协调使用 `BEGIN IMMEDIATE`，在读取账号绑定前取得 SQLite 写锁，再原子提交通道游标与协商结果。这样并发连接遵循已有忙等待配置，不会因延迟事务的读快照升级而直接返回 `database is locked`；该事务只包含本地数据库操作，不持锁执行网络请求。
 
+接收轮次的 `begin_message_sync_run` 同样先取得写锁，再于同一短事务中校验账号绑定并递增 `run_generation`。接收文件锁不阻止独立处理器等本地写入，因此不能先读取轮次再升级为写事务；等待后必须重读已提交代次，账号绑定已删除时拒绝创建轮次。此调整不重试注册、不放宽同步就绪条件，也不改变原有数据库忙等待时限。
+
 设备授权代次变化仍要求使用新认证重新 bootstrap 并验证 exact account/device 与 lane 协商结果。同一 owner/account/device 的普通 stream epoch 未变时，重新协商保留已经接收的游标，再拉取其后的事件，不能把期间已经投递的 Join 通知当成尾部初始化前的历史而越过；lane 的同 epoch 本地接收位置也不能退回较早的服务端 ACK。新身份/设备的首次初始化、DID transition 清除旧接收状态和 stream epoch 变化继续走各自既有初始化或恢复路径。
 
 Core 原子领取并按类型有限并发分发，处理器只执行单条事件。 `sync_input_leases` 仅保存最多 8 个活动尝试的 token 与租期，不保存输入、身份或处理结果；即使接收载荷被淘汰，实际调用的占位仍延续到调用结束。它与独立维护共用活动上限，避免另一个 Core/连接因看不到已删除的输入而越过并发上限。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
@@ -1420,6 +1468,8 @@ Provider 准备前检查当前领取；Core 交接事务再次检查输入和尝
 输入的未完成责任，不改写身份 Provider 的转移、晋升或恢复协议。
 
 协商后的 Schema 3 WebSocket inline 输入保留为拉取提示，普通消息与 P5/P6 均通过 HTTP 统一接收表处理。WebSocket 不再先行写普通投影、绕过逐条领取或完成证据；旧的非协商 transport 兼容边界保持由既有协议门禁控制。
+旧形态 `direct.incoming` 与已协商 P5 lane 同时出现时，也必须经过相同 lane ownership 门禁；协商未完成时先等待可靠同步，不得预先消费 ratchet，避免可靠队列失去原子 projection/claim 提交证据。无 lane binding 的旧 transport 继续使用原验证路径。
+
 
 普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。按用户 2026-09-10 的决定，累计已读继续按已展示并读过的后续消息推进，不等待更早输入处理成功；例如 102 处理失败、103 已读时，允许本地已读与服务端累计已读推进到 103。102 仍保留独立的处理失败状态，已读推进不构成它的业务处理成功证据。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
 
@@ -1714,6 +1764,7 @@ The coordinator does not own a second owner-wide local-state operation mutex. Ne
 Realtime, and P5/P6 waits never hold a lock that blocks an unrelated committed local projection
 read. SQLite actor commands, atomic apply transactions, `run_generation`, and the existing
 per-input attempt fences remain the write-side serialization and stale-result fences.
+P5 的棘轮、预密钥和待发状态写事务使用 `BEGIN IMMEDIATE`，在读取写入依据之前等待其他写者；不在 deferred WAL 快照上直接升级写锁。既有 revision/CAS 与精确密文重试保持不变，事务中不包含网络等待。
 Consequently `local_inbox_projection` and `local_history` may return the latest committed view while
 a sync run is still in flight; they do not claim that view is remotely fresh. Operations whose
 contract requires freshness still await the coordinated sync result and fail closed when it fails.
@@ -1905,3 +1956,28 @@ completion V2双proof使用独立proof_created_at及最多600秒新鲜窗口；�
 普通 P4 history 没有安全档位字段时，缓存采用 `transport-protected`；仅凭 `group_did`
 不能推断 P6。显式档位、已验证的加密消息标记及完整加密对象仍保留现有安全档位，公开投影
 缺少对象密钥时继续禁止覆盖内部下载缓存。
+
+### Host 设备身份的 E2EE 适配（2026-10-09 候选）
+
+Core 的 active_authorization_for_client 统一读取本地 alias 的当前授权，或已通过 HostBackedDeviceIdentitySigner 校验后生成的 SyncAccountSeed。存在 alias 时必须重新读取当前状态，禁止使用旧 seed 绕过撤销。Direct prekey、加密收发和 Group MLS 使用同一 device_id/signing_key/e2ee_key，密钥留在原 custody。租户由 Core paths 隔离、账号由 owner_identity_id 隔离、设备由 protocol_device_id 隔离。
+
+### 混合消息时间线与发送意图（2026-10-10）
+
+普通 Direct 的线程序号、P5 inbox 序号与 P6 群事件序号不是统一时间轴。
+跨通道合并、摘要和客户端展示先比较解析为 UTC 的服务端消息时间；同时间用安全通道、该通道可比较的序号（P5 不使用 inbox 序号）及稳定消息 ID 决定唯一顺序。
+同样，普通线程的已读水位不能覆盖 P5 v2 device inbox 序号。补收投影继承水位及远端水位应用均排除已认证 P5 v2 缓存消息；其已读状态继续通过既有精确消息 ID 的 local-only 路径提交，不改变协议或追溯重置历史已读标记。
+混合 Direct 的 `mark_conversation_read` 由 Core 按本地已认证消息锚点拆分：同一会话、展示顺序不晚于锚点的 P5 入站消息使用精确 ID 本地提交；普通入站消息仍使用自身线程水位和既有可靠 ACK。P5 inbox 序号不得写入普通已读状态或 RPC。省略水位表示读取当前本地会话快照，不提前标记未来补收消息。返回的有效展示锚点与远端 ACK 独立；客户端不能用普通序号覆盖加密消息的展示锚点。显式锚点必须存在于当前身份的目标会话，不能用另一会话或调用者时间戳扩大读取范围。
+同步和已读仍使用原有分域游标。临时发送使用固定提交时间与消息 ID，回执归并同一 ID。
+加密发送也提交本地 pending/failed 投影；`encryption_required=true` 只表示不可降级的发送意图，不证明已完成加密。
+该投影不得生成普通消息的自动重试指令。实际安全属性仍由 P5/P6 成功结果或接收解密结果提供。
+
+本轮修复补充：`conversation_registry.explicitly_opened` 区分用户主动创建的空会话与后台控制事件形成的行。最近会话隐藏只有控制消息、没有用户消息且未被主动创建的 Direct；不删除消息，不按 Daemon DID 一概隐藏。当前版本数据库通过加列和重建派生摘要兼容升级，保留消息和密钥。
+
+P4 建群成功后 P6 初始化失败，返回已有群身份及准备未完成 warning；发送仍以 Core 权威策略和本设备状态阻断。原创建设备只能从绑定 owner/device 的冻结 journal 恢复初始化，不允许新设备用修复入口重建历史密钥。Node 外部身份的接收入口补充本设备准备：每次身份激活成功一次；失败间隔 30 秒重试并返回 warning，普通接收继续，秘密留在 Core。
+
+### 加密生命周期恢复补充（2026-10-10）
+
+Core 在既有身份/设备作用域 journal 中区分不可变线请求与可更新操作进度；群恢复复用原 P4 operation 和 SDK MLS WAL。同步调度有界执行设备准备与群续接，退避跨重启保存，宿主不编排密钥包/Welcome。邀请先取得精确设备密钥包租约再变更业务成员；之后失败以部分完成保留，不新建替代群。只读就绪校验对所有活跃群成员开放，不能借此扩大群主或设备管理员的写权限。
+
+P6 接收队列同样复用已有的、按 owner/群/服务端序号/sender 验证的明文投影；本机已接受发送的回显不得再次交给 MLS 解密。回显先于发送响应时，保留该输入并按现有退避等待接受投影，不生成入站通知。该路径仍验证接收 DID 和精确设备，不跳过新入站消息的认证解密。
+已被旧版本标记为 `sync.processing_blocked` 的本机回显，仅当原 owner/精确设备/群事件/发送者均匹配已接受加密投影时，由既有队列重新领取（每次最多 64 条），仍走同一业务校验与 claim fencing；不修改消息、MLS 状态或远端群。

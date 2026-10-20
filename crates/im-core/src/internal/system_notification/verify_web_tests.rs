@@ -35,7 +35,7 @@ impl crate::internal::transport::RpcTransport for Transport {
     fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         self.local(did)
     }
-    fn directory_get_json_url(
+    fn directory_get_did_document_json_url(
         &mut self,
         url: &str,
         _: BTreeMap<String, String>,
@@ -51,7 +51,7 @@ impl crate::internal::transport::AsyncRpcTransport for Transport {
     async fn directory_resolve_web_document(&mut self, did: &str) -> crate::ImResult<Value> {
         self.local(did)
     }
-    async fn directory_get_json_url(
+    async fn directory_get_did_document_json_url(
         &mut self,
         url: &str,
         _: BTreeMap<String, String>,

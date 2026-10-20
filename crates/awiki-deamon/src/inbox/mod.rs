@@ -11,6 +11,8 @@ pub mod user_delegated;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerTextMessage {
+    #[serde(default)]
+    pub security: crate::outbox::RuntimeMessageSecurity,
     pub message_id: String,
     pub conversation_id: Option<String>,
     pub sender_did: String,
@@ -31,6 +33,7 @@ impl ControllerTextMessage {
         text: impl Into<String>,
     ) -> Self {
         Self {
+            security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
             message_id: message_id.into(),
             conversation_id,
             sender_did: sender_did.into(),
@@ -179,6 +182,7 @@ fn route_text_task_for_profile(
         }
     };
     let task = RuntimeTask {
+        security: message.security,
         task_id: format!("task_{}", message.message_id),
         agent_did: profile.agent_did.clone(),
         agent_handle: profile.agent_handle.clone(),
@@ -240,6 +244,7 @@ mod tests {
         let task = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "did:example:group:9".to_string(),
                 conversation_id: Some("group:did:example:group".to_string()),
                 sender_did: "did:human:bob".to_string(),
@@ -270,6 +275,7 @@ mod tests {
         let task = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "did:example:group:controller".to_string(),
                 conversation_id: Some("group:did:example:group".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -303,6 +309,7 @@ mod tests {
         let error = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "did:example:group:not-controller".to_string(),
                 conversation_id: Some("group:did:example:group".to_string()),
                 sender_did: "did:human:bob".to_string(),
@@ -328,6 +335,7 @@ mod tests {
         let error = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "did:example:group:controller-as-requester".to_string(),
                 conversation_id: Some("group:did:example:group".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -353,6 +361,7 @@ mod tests {
         let task = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_direct".to_string(),
                 conversation_id: Some("direct:did:human:bob".to_string()),
                 sender_did: "did:human:alice".to_string(),
@@ -383,6 +392,7 @@ mod tests {
         let task = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_external".to_string(),
                 conversation_id: Some("direct:did:human:bob".to_string()),
                 sender_did: "did:human:bob".to_string(),
@@ -417,6 +427,7 @@ mod tests {
         let task = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_delegated".to_string(),
                 conversation_id: Some("direct:did:human:bob".to_string()),
                 sender_did: "did:human:bob".to_string(),
@@ -447,6 +458,7 @@ mod tests {
         let error = route_controller_text_task(
             &profile,
             ControllerTextMessage {
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
                 message_id: "msg_external_controller_authority".to_string(),
                 conversation_id: Some("direct:did:human:bob".to_string()),
                 sender_did: "did:human:bob".to_string(),

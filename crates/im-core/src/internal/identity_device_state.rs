@@ -375,3 +375,57 @@ mod tests {
         );
     }
 }
+
+/// Return the validated active endpoint for file-backed and trusted Host custody.
+/// Local aliases are always re-read so revocation cannot reuse a cached seed.
+pub(crate) fn active_authorization_for_client(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<DeviceAuthorizationProjection> {
+    let authorization = if let Some(alias) = client.current_identity().local_alias.as_deref() {
+        let index = crate::internal::identity_store::IdentityStore::new(
+            &client.core_inner().sdk_paths().identities,
+        )
+        .load_index()?;
+        let state = index
+            .credentials
+            .get(alias)
+            .and_then(|entry| entry.device_state.as_ref())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        state
+            .validate_for_did(client.did())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if state.mode != IdentityDeviceMode::VNext {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        state
+            .authorization
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?
+    } else {
+        // This seed is created only after HostBackedDeviceIdentitySigner validates
+        // the DID manifest, exact key material and active authorization.
+        let seed = client
+            .runtime()
+            .owner
+            .sync_account
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        DeviceAuthorizationProjection {
+            protocol_device_id: seed.protocol_device_id.clone(),
+            signing_key_id: seed.device_signing_key_id.clone(),
+            e2ee_key_id: seed.device_e2ee_key_id.clone(),
+            status: DeviceAuthorizationStatus::Active,
+            role: seed.role,
+            management_ready: seed.management_ready,
+            auth_generation: seed
+                .device_auth_generation
+                .parse()
+                .map_err(|_| crate::ImError::PermissionDenied)?,
+        }
+    };
+    validate_authorization(&authorization, client.did())?;
+    if authorization.status != DeviceAuthorizationStatus::Active {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(authorization)
+}

@@ -146,13 +146,12 @@ fn attachment_authorization_message_id(
     actual_message_id: &str,
     raw_message_id: &str,
 ) -> String {
-    if message_security_profile == "group-e2ee" && !view_id.trim().is_empty() {
-        return view_id.to_owned();
-    }
-    if raw_message_id.trim().is_empty() {
-        actual_message_id.to_owned()
-    } else {
+    if !raw_message_id.trim().is_empty() {
         raw_message_id.to_owned()
+    } else if message_security_profile == "group-e2ee" && !view_id.trim().is_empty() {
+        view_id.to_owned()
+    } else {
+        actual_message_id.to_owned()
     }
 }
 
@@ -327,32 +326,5 @@ fn attachment_message_invalid() -> crate::ImError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn group_e2ee_authorizes_with_canonical_timeline_message_id() {
-        assert_eq!(
-            attachment_authorization_message_id(
-                "group-e2ee",
-                "did:example:group:15",
-                "logical-message-15",
-                "logical-message-15",
-            ),
-            "did:example:group:15"
-        );
-    }
-
-    #[test]
-    fn direct_e2ee_authorizes_with_raw_wire_message_id() {
-        assert_eq!(
-            attachment_authorization_message_id(
-                "direct-e2ee",
-                "logical-direct-message",
-                "logical-direct-message",
-                "wire-direct-message",
-            ),
-            "wire-direct-message"
-        );
-    }
-}
+#[path = "selection_tests.rs"]
+mod tests;

@@ -20,6 +20,8 @@ async fn rejects_unsafe_initial_wba_urls_on_sync_and_async_paths() {
         let url = crate::internal::discovery::did_document::did_document_url(did).unwrap();
         assert!(get(&url, None).await.is_err(), "{did}");
         assert!(get_blocking(&url, None).is_err(), "{did}");
+        assert!(get_did_document(&url, None).await.is_err(), "{did}");
+        assert!(get_did_document_blocking(&url, None).is_err(), "{did}");
     }
 }
 
@@ -35,11 +37,13 @@ async fn rejects_empty_private_and_mixed_dns_without_connecting() {
             listener.local_addr().unwrap(),
         ],
     ] {
-        let result =
-            get_with_resolver("https://public-looking.test/did.json", None, |_, _| async {
-                Ok(addresses)
-            })
-            .await;
+        let result = get_with_resolver(
+            "https://public-looking.test/did.json",
+            None,
+            true,
+            |_, _| async { Ok(addresses) },
+        )
+        .await;
         assert!(result.is_err());
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -71,11 +75,40 @@ async fn rejects_empty_private_and_mixed_dns_without_connecting() {
     ] {
         assert!(!public_ip(ip.parse().unwrap()), "{ip}");
     }
-    assert!(check_addresses(&[
-        "8.8.8.8:443".parse().unwrap(),
-        "[2606:4700:4700::1111]:443".parse().unwrap()
-    ])
+    assert!(check_addresses(
+        &[
+            "8.8.8.8:443".parse().unwrap(),
+            "[2606:4700:4700::1111]:443".parse().unwrap()
+        ],
+        true
+    )
     .is_ok());
+}
+
+#[tokio::test]
+async fn did_document_allows_fake_ip_and_nonpublic_dns_but_rejects_empty_resolution() {
+    for addresses in [
+        vec!["198.18.2.36:443".parse().unwrap()],
+        vec!["198.19.255.254:443".parse().unwrap()],
+        vec!["127.0.0.1:443".parse().unwrap()],
+        vec!["[fc00::1]:443".parse().unwrap()],
+        vec![
+            "8.8.8.8:443".parse().unwrap(),
+            "198.18.2.36:443".parse().unwrap(),
+        ],
+    ] {
+        assert!(check_addresses(&addresses, false).is_ok(), "{addresses:?}");
+        assert!(check_addresses(&addresses, true).is_err(), "{addresses:?}");
+    }
+    let error = get_with_resolver(
+        "https://discovery-fixture.test/did.json",
+        None,
+        false,
+        |_, _| async { Ok(vec![]) },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("DNS returned no addresses"));
 }
 
 struct TlsFixture {
@@ -140,16 +173,25 @@ impl TlsFixture {
         }
     }
     async fn fetch(&self, trust: bool) -> crate::ImResult<Value> {
+        self.fetch_for_host(trust, "discovery-fixture.test").await
+    }
+
+    async fn fetch_for_host(&self, trust: bool, host: &str) -> crate::ImResult<Value> {
         let ca = format!(
             "{}/src/internal/test_fixtures/public_discovery/cert.pem",
             env!("CARGO_MANIFEST_DIR")
         );
-        // Only the private lower-level test fixture bypasses the public-IP gate.
+        // Exercise the production DID pipeline with a local TLS endpoint.
         // .test has no public DNS: a successful read also proves DNS pinning.
-        fetch_pinned(
-            &Url::parse("https://discovery-fixture.test/did.json").unwrap(),
-            &[self.address],
+        get_with_resolver(
+            &format!("https://{host}/did.json"),
             trust.then_some(ca.as_str()),
+            false,
+            |resolved_host, port| async move {
+                assert_eq!(resolved_host, host);
+                assert_eq!(port, 443);
+                Ok(vec![self.address])
+            },
         )
         .await
     }
@@ -170,6 +212,16 @@ async fn pinned_tls_reads_json_but_rejects_untrusted_certificate() {
     let untrusted = TlsFixture::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec());
     assert!(untrusted.fetch(false).await.is_err());
     assert_eq!(untrusted.reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn did_document_rejects_wrong_tls_domain_even_with_trusted_ca() {
+    let fixture = TlsFixture::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec());
+    assert!(fixture
+        .fetch_for_host(true, "wrong-domain.test")
+        .await
+        .is_err());
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

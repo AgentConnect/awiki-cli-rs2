@@ -38,6 +38,7 @@ pub struct DartDisplayProfile {
     pub display_name: Option<String>,
     pub avatar_uri: Option<String>,
     pub avatar_url: Option<String>,
+    pub avatar_thumbnail_uri: Option<String>,
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub cache_hit: bool,

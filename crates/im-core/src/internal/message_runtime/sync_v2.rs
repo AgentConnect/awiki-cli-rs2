@@ -1227,7 +1227,7 @@ async fn apply_p6_lane_delivery_projection_async(
 }
 
 #[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
-fn p6_projection_for_application(envelope: &Value) -> crate::ImResult<Value> {
+pub(super) fn p6_projection_for_application(envelope: &Value) -> crate::ImResult<Value> {
     let mut projected = envelope.clone();
     let object = projected
         .as_object_mut()
@@ -5252,6 +5252,10 @@ mod tests {
         }
 
         fn client(&self) -> crate::core::ImClient {
+            self.client_with_group_e2ee(false)
+        }
+
+        fn client_with_group_e2ee(&self, enabled: bool) -> crate::core::ImClient {
             crate::core::ImCore::new_with_options(
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
@@ -5267,7 +5271,7 @@ mod tests {
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 Self::paths(&self.root),
-                crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(enabled).with_identity_secret_vault(
                     crate::IdentitySecretStoragePolicy::VaultRequired,
                     crate::ImCoreSecretVaultOptions::new(
                         DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),

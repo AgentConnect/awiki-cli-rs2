@@ -223,6 +223,13 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "page.rename" => app.run_page_rename(command),
         "page.delete" => app.run_page_delete(command),
         "site.root.get" => app.run_site_root_get(command),
+        "site.registration.show"
+        | "site.registration.configure"
+        | "site.registration.operation"
+        | "site.registration.entries.list"
+        | "site.registration.entries.add"
+        | "site.registration.entries.remove"
+        | "site.registration.entries.export" => app.run_tenant_registration(command),
         "site.root.set" => app.run_site_root_set(command),
         "site.page.list" => app.run_site_page_list(command),
         "site.page.get" => app.run_site_page_get(command),
@@ -371,6 +378,13 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "page.rename" => app.run_page_rename_async(command).await,
         "page.delete" => app.run_page_delete_async(command).await,
         "site.root.get" => app.run_site_root_get_async(command).await,
+        "site.registration.show"
+        | "site.registration.configure"
+        | "site.registration.operation"
+        | "site.registration.entries.list"
+        | "site.registration.entries.add"
+        | "site.registration.entries.remove"
+        | "site.registration.entries.export" => app.run_tenant_registration_async(command).await,
         "site.root.set" => app.run_site_root_set_async(command).await,
         "site.page.list" => app.run_site_page_list_async(command).await,
         "site.page.get" => app.run_site_page_get_async(command).await,

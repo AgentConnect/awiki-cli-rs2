@@ -51,6 +51,39 @@ class InstallerComponentTests(unittest.TestCase):
                 tar.addfile(extra)
         return archive
 
+    def test_candidate_preflight_preserves_current_and_failed_first_install_can_retry(self):
+        # Exercise the actual shell cutover, with isolated synthetic packages.
+        start = TEMPLATE.index('INSTALL_DIR="${HOME}/.awiki-daemon/deamon/bin/${PKG_VERSION}"')
+        end = TEMPLATE.index('set -- "$CURRENT_DIR/awiki-deamon" install --token', start)
+        cutover = TEMPLATE[start:end].replace('${HOME}', '${FIXTURE_ROOT}')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary_root = root / '.awiki-daemon/deamon/bin'
+            old = binary_root / 'old'
+            old.mkdir(parents=True)
+            (old / 'awiki-deamon').write_text('old installation')
+            current = binary_root / 'current'
+            current.mkdir()
+            (current / 'awiki-deamon').symlink_to('../old/awiki-deamon')
+            original = (current / 'awiki-deamon').read_bytes()
+            for good in (False, True):
+                script = b'#!/bin/sh\n[ "$1" = __self-check ] || exit 7\nexit ' + (b'0' if good else b'9') + b'\n'
+                archive = root / 'candidate.tar.gz'
+                with tarfile.open(archive, 'w:gz') as tar:
+                    entry = tarfile.TarInfo('awiki-deamon')
+                    entry.size = len(script)
+                    tar.addfile(entry, io.BytesIO(script))
+                env = dict(__import__('os').environ, FIXTURE_ROOT=str(root), TMP_DIR=str(root / 'tmp'),
+                           ARCHIVE_PATH=str(archive), PKG_VERSION='0.1.108-singapore.20261012')
+                prefix = 'set -eu\ndie() { exit 1; }\nvalidate_extracted_package() { :; }\ncleanup_daemon_bin_root() { :; }\n'
+                run = subprocess.run(['sh', '-c', prefix + cutover], env=env, capture_output=True)
+                self.assertEqual(run.returncode == 0, good, run.stderr)
+                if not good:
+                    self.assertEqual((current / 'awiki-deamon').read_bytes(), original)
+                    self.assertFalse((binary_root / env['PKG_VERSION']).exists())
+                else:
+                    self.assertEqual((current / 'awiki-deamon').read_bytes(), script)
+
     def test_host_node_package_preserves_legacy_installer_validation(self):
         self.assertEqual(self.validate(host_node=True)[0], 0)
 

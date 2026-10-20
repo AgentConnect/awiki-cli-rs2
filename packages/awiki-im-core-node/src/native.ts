@@ -1,4 +1,6 @@
 import type {
+  SetAvatarInput,
+  ClearAvatarInput,
   AdminDeviceJoinProgress,
   AddGroupMemberInput,
   CreateGroupInput,
@@ -148,12 +150,15 @@ export interface NativeImCoreNodeClient {
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
+  setAvatar(input: SetAvatarInput): Promise<NodeProfile>
+  clearAvatar(input: ClearAvatarInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<NodeDisplayProfile[]>
   refreshDisplayProfiles(input: DisplayProfileBatchInput, force?: boolean): Promise<NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
+  repairGroupSecurity(input: GroupInput): Promise<NodeGroup>
   listGroups(input?: PageInput): Promise<Page<NodeGroup>>
   joinGroup(input: GroupInput): Promise<NodeGroup>
   leaveGroup(input: GroupInput): Promise<void>

@@ -6,6 +6,8 @@ use crate::dto::{
 #[test]
 fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
     let request = group_create_request(NodeCreateGroupInput {
+        operation_id: None,
+        encrypted: None,
         name: "  Release Crew  ".to_owned(),
         description: Some("  ships together  ".to_owned()),
     })
@@ -26,6 +28,8 @@ fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
 #[test]
 fn group_create_contract_rejects_blank_name() {
     let error = group_create_request(NodeCreateGroupInput {
+        operation_id: None,
+        encrypted: None,
         name: " \n ".to_owned(),
         description: None,
     })
@@ -57,6 +61,8 @@ fn created_group_uses_core_canonical_conversation_identity() {
         display_name: None,
         description: Some("ships together".to_owned()),
         avatar_uri: None,
+        avatar_members: None,
+        group_state_version: None,
         my_role: Some("owner".to_owned()),
         membership_status: Some("active".to_owned()),
         member_count: Some(1),

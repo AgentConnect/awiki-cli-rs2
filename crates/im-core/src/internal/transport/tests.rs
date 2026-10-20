@@ -55,50 +55,62 @@ async fn attachment_stream_uses_idle_timeout_instead_of_total_request_deadline()
 
 #[test]
 fn client_version_header_is_single_and_uses_configured_build_facts() {
-    let mut config = crate::ImCoreConfig::new(
-        crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
-        "awiki.info",
-    )
-    .unwrap();
-    config.client_version_info =
-        Some(crate::ClientVersionInfo::new("awiki-cli", "0714", "1.0.16", Some(42)).unwrap());
-    let mut headers = BTreeMap::from([(
-        "Content-Type".to_owned(),
-        crate::internal::json_rpc::CONTENT_TYPE_JSON.to_owned(),
-    )]);
-
-    append_client_version_header(
-        &mut headers,
-        &config,
-        "https://awiki.info/user-service/v1/content/rpc",
-    );
-    append_client_version_header(
-        &mut headers,
-        &config,
-        "https://awiki.info/user-service/v1/content/rpc",
-    );
-
-    assert_eq!(
-        headers
-            .iter()
-            .filter(|(name, _)| name.eq_ignore_ascii_case(crate::CLIENT_VERSION_HEADER))
-            .count(),
-        1
-    );
-    assert_eq!(
-        headers
-            .get(crate::CLIENT_VERSION_HEADER)
-            .map(String::as_str),
-        Some("awiki-cli/0714/1.0.16+42")
-    );
-
-    let mut peer_headers = BTreeMap::new();
-    append_client_version_header(
-        &mut peer_headers,
-        &config,
-        "https://peer.example/anp-im/rpc",
-    );
-    assert!(!peer_headers.contains_key(crate::CLIENT_VERSION_HEADER));
+    for product in [
+        "awiki-me",
+        "awiki-cli",
+        "awiki-daemon",
+        "awiki-dsh",
+        "awiki-gateway",
+    ] {
+        let mut config = crate::ImCoreConfig::new(
+            crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
+            "awiki.info",
+        )
+        .unwrap();
+        config.client_version_info =
+            Some(crate::ClientVersionInfo::new(product, "0815", "1.0.16", Some(42)).unwrap());
+        config.user_service_endpoint =
+            Some(crate::ServiceEndpoint::parse("https://users.example").unwrap());
+        config.message_service_endpoint =
+            Some(crate::ServiceEndpoint::parse("https://messages.example").unwrap());
+        config.mail_service_endpoint =
+            Some(crate::ServiceEndpoint::parse("https://mail.example").unwrap());
+        for url in [
+            "https://awiki.info/user-service/v1/content/rpc",
+            "https://awiki.info/im/rpc",
+            "https://awiki.info/mail/rpc",
+            "https://users.example/user-service/v1/did/rpc",
+            "https://messages.example/im/rpc",
+            "https://mail.example/mail/rpc",
+        ] {
+            let mut headers = BTreeMap::new();
+            append_client_version_header(&mut headers, &config, url);
+            append_client_version_header(&mut headers, &config, url);
+            assert_eq!(headers.len(), 1);
+            assert_eq!(
+                headers[crate::CLIENT_VERSION_HEADER],
+                format!("{product}/0815/1.0.16+42")
+            );
+        }
+        for url in [
+            "https://awiki.info/anp-im/rpc",
+            "https://awiki.info/.well-known/handle/alice",
+            "https://awiki.info/wba/user/alice/did.json",
+            "https://awiki.info/objects/attachment",
+            "https://peer.example/anp-im/rpc",
+            "https://peer.example/user-service/v1/did/rpc",
+            "https://awiki.info.attacker.example/im/rpc",
+            "https://awiki.info:9443/im/rpc",
+            "http://awiki.info/im/rpc",
+        ] {
+            let mut headers = BTreeMap::new();
+            append_client_version_header(&mut headers, &config, url);
+            assert!(
+                headers.is_empty(),
+                "{product}: unexpected product header for {url}"
+            );
+        }
+    }
 }
 
 struct FakeBearerProvider {
@@ -316,45 +328,92 @@ fn host_backed_core_with_client_version(
 
 #[tokio::test]
 async fn captured_user_service_request_has_exactly_one_client_version_header() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_request_headers(&mut stream);
-        write_rpc_success(&mut stream);
-        request
-    });
+    for (product, version) in [
+        ("awiki-cli", "1.0.58"),
+        ("awiki-dsh", "0.3.17"),
+        ("awiki-gateway", "0.1.0"),
+    ] {
+        for endpoint in ["/user-service/v1/did/rpc", "/im/rpc", "/mail/rpc"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request_headers(&mut stream);
+                write_rpc_success(&mut stream);
+                request
+            });
+            let root = tempfile::tempdir().unwrap();
+            let version_info =
+                crate::ClientVersionInfo::new(product, "0815", version, None).unwrap();
+            let core = host_backed_core_with_client_version(
+                root.path(),
+                &format!("http://{address}"),
+                Some(version_info),
+            );
+            let (client, _, _) = host_backed_client(&core);
+            let mut transport = CoreHttpTransport::new(&client);
+            AsyncAuthenticatedRpcTransport::authenticated_rpc(
+                &mut transport,
+                endpoint,
+                "get_me",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            let request = server.join().unwrap();
+            let headers = request
+                .lines()
+                .filter(|line| {
+                    line.split_once(':').is_some_and(|(name, _)| {
+                        name.eq_ignore_ascii_case(crate::CLIENT_VERSION_HEADER)
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                headers,
+                vec![format!("x-awiki-client-version: {product}/0815/{version}")]
+            );
+        }
+    }
+}
 
-    let root = tempfile::tempdir().unwrap();
-    let version = crate::ClientVersionInfo::new("awiki-cli", "0714", "1.0.16", Some(42)).unwrap();
-    let core = host_backed_core_with_client_version(
-        root.path(),
-        &format!("http://{address}"),
-        Some(version),
-    );
-    let (client, _, _) = host_backed_client(&core);
-    let mut transport = CoreHttpTransport::new(&client);
-    AsyncAuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        "/user-service/v1/did/rpc",
-        "get_me",
-        json!({}),
-    )
-    .await
-    .unwrap();
-
-    let request = server.join().unwrap();
-    let version_headers = request
-        .lines()
-        .filter(|line| {
-            line.split_once(':')
-                .is_some_and(|(name, _)| name.eq_ignore_ascii_case(crate::CLIENT_VERSION_HEADER))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        version_headers,
-        vec!["x-awiki-client-version: awiki-cli/0714/1.0.16+42"]
-    );
+#[tokio::test]
+async fn client_version_header_is_absent_from_public_anp_and_foreign_http_requests() {
+    for product in ["awiki-dsh", "awiki-gateway"] {
+        for (path, foreign_origin) in [("/anp-im/rpc", false), ("/user-service/v1/did/rpc", true)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let other_origin = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = listener.local_addr().unwrap();
+            let home = if foreign_origin {
+                other_origin.local_addr().unwrap()
+            } else {
+                target
+            };
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request_headers(&mut stream);
+                write_rpc_success(&mut stream);
+                request
+            });
+            let root = tempfile::tempdir().unwrap();
+            let core = host_backed_core_with_client_version(
+                root.path(),
+                &format!("http://{home}"),
+                Some(crate::ClientVersionInfo::new(product, "0815", "0.1.0", None).unwrap()),
+            );
+            let mut transport = CorePlainTransport::new(&core);
+            AsyncRpcTransport::rpc(
+                &mut transport,
+                &format!("http://{target}{path}"),
+                "anp.get_capabilities",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            let request = server.join().unwrap().to_ascii_lowercase();
+            assert!(!request.contains("x-awiki-client-version:"));
+        }
+    }
 }
 
 fn host_device_access_token(
@@ -1230,4 +1289,137 @@ async fn web_sync_resolution_inside_multi_thread_runtime_keeps_network_policy() 
         super::resolve_web_document_blocking("did:web:127.0.0.1"),
         Err(crate::ImError::TransportUnavailable { .. })
     ));
+}
+
+#[test]
+fn host_backed_device_reuses_validated_endpoint_for_direct_and_group_encryption() {
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), "https://example.test");
+    let (client, bootstrap, _) = host_backed_client(&core);
+    assert!(client.current_identity().local_alias.is_none());
+    let authorization =
+        crate::internal::identity_device_state::active_authorization_for_client(&client).unwrap();
+    assert_eq!(
+        authorization.protocol_device_id,
+        bootstrap.protocol_device_id
+    );
+    assert_eq!(authorization.e2ee_key_id, bootstrap.device_e2ee_key_id);
+    assert!(
+        crate::internal::secure_direct::v2_product::local_identity_uses_vnext(&client).unwrap()
+    );
+    crate::internal::secure_direct::v2_store::V2OwnerScope::from_client(&client).unwrap();
+    #[cfg(feature = "group-e2ee")]
+    {
+        let device = crate::internal::group_e2ee::v2_lifecycle::current_v2_device(&client).unwrap();
+        assert_eq!(device.device_id, bootstrap.protocol_device_id.as_str());
+        assert_eq!(device.signing_key_id, bootstrap.device_signing_key_id);
+    }
+}
+
+#[test]
+fn recovery_exchange_http_errors_preserve_only_closed_contract() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    for (status, suffix, retryable) in [
+        (400, "invalid_request", false),
+        (401, "factor_invalid", false),
+        (403, "capability_disabled", false),
+        (429, "rate_limited", true),
+        (503, "temporarily_unavailable", true),
+    ] {
+        let code = format!("handle_recovery_exchange.{suffix}");
+        let body = serde_json::to_vec(&json!({"code":code,"retryable":retryable})).unwrap();
+        let crate::ImError::Service {
+            status_code,
+            code: actual,
+            message,
+            data,
+        } = plain_rest_post_error(ENDPOINT, status, &body)
+        else {
+            panic!("expected typed service error")
+        };
+        assert_eq!(status_code, Some(status));
+        assert_eq!(actual.as_deref(), Some(code.as_str()));
+        assert_eq!(message, code);
+        assert!(data.is_none());
+    }
+}
+
+#[test]
+fn recovery_exchange_http_errors_reject_ambiguous_or_unrelated_bodies() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    let valid = r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true}"#;
+    for (endpoint, body) in [
+        ("/unrelated", valid),
+        (ENDPOINT, "not JSON"),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.unknown","retryable":true}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","retryable":false}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited"}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true,"extra":"untrusted"}"#,
+        ),
+        (
+            ENDPOINT,
+            r#"{"code":"handle_recovery_exchange.rate_limited","code":"handle_recovery_exchange.rate_limited","retryable":true}"#,
+        ),
+    ] {
+        assert!(matches!(
+            plain_rest_post_error(endpoint, 429, body.as_bytes()),
+            crate::ImError::Service {
+                status_code: Some(429),
+                code: None,
+                ..
+            }
+        ));
+    }
+}
+
+#[tokio::test]
+async fn recovery_exchange_http_errors_survive_real_sync_and_async_transport() {
+    use crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT as ENDPOINT;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for _ in 0..if cfg!(feature = "blocking") { 2 } else { 1 } {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request_headers(&mut stream);
+            assert!(request.starts_with(&format!("POST {ENDPOINT} ")));
+            let received_body = request.len() - request.find("\r\n\r\n").unwrap() - 4;
+            if received_body < 2 {
+                stream.read_exact(&mut vec![0; 2 - received_body]).unwrap();
+            }
+            let body = r#"{"code":"handle_recovery_exchange.rate_limited","retryable":true}"#;
+            write!(stream, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), &endpoint);
+    let mut transport = CorePlainTransport::new(&core);
+    let mut results = Vec::new();
+    #[cfg(feature = "blocking")]
+    results.push(RestTransport::rest_post(
+        &mut transport,
+        ENDPOINT,
+        "POST",
+        json!({}),
+    ));
+    let asynchronous =
+        AsyncRestTransport::rest_post(&mut transport, ENDPOINT, "POST", json!({})).await;
+    results.push(asynchronous);
+    for result in results {
+        assert!(
+            matches!(&result, Err(crate::ImError::Service { status_code: Some(429), code: Some(code), .. }) if code == "handle_recovery_exchange.rate_limited"),
+            "unexpected fixture result: {result:?}"
+        );
+    }
+    server.join().unwrap();
 }

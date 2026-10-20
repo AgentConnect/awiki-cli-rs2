@@ -691,6 +691,10 @@ async fn read_auth_token_async(path: std::path::PathBuf) -> crate::ImResult<Opti
 }
 
 #[cfg(test)]
+#[path = "client_version_tests.rs"]
+mod client_version_tests;
+
+#[cfg(test)]
 mod tests {
     use super::is_transient_sqlite_lock;
 

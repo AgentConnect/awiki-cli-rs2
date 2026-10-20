@@ -239,6 +239,11 @@ impl RuntimeRealtimeSupervisor {
 
     async fn start_agent_session(&mut self, snapshot: RealtimeAgentSnapshot) -> Result<()> {
         let client = snapshot.client;
+        client
+            .messages()
+            .prepare_encrypted_messaging_async()
+            .await
+            .context("prepare exact-device encrypted message reception")?;
         let mut session = client
             .realtime()
             .start_async(RealtimeOptions::default())

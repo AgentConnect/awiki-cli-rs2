@@ -12,10 +12,28 @@
 
 ## 状态
 
-- 当前版本：`0.1.1`。
+- 当前版本：`0.1.9`。
 - Rust 工具链：Rust `1.88.0` 或更高版本，与工作区 `rust-toolchain.toml` 保持一致。
 - Public API 仍在演进中，目标是把 Awiki 客户端栈拆分成稳定 Rust SDK、FFI facade 和 Flutter/Dart bindings。
 - 原生 Rust 宿主可以直接使用本 crate；Flutter/Dart 应用通常应使用 [`packages/awiki_im_core`](../../packages/awiki_im_core)。
+
+## 0.1.9 独立产品版本标识
+
+`ClientVersionInfo` 新增 `awiki-dsh` 和 `awiki-gateway`，DSH 与 Guest 分别使用自己产品的
+包版本和 `0815` release，不冒用 Daemon 的版本号。原三个产品、非法值拒绝及产品
+HTTP/WebSocket 请求头范围保持兼容；公共 ANP、发现和其他外部请求不携带产品头。
+本版本保留 0.1.8 的附件及注册相关修复。
+
+## 0.1.8 群附件票据修复
+
+本版本包含修复提交 `6b7eea16e098ab8d663dceb651aa8b26a6b10a3f`。
+群 E2EE 附件票据优先使用完整的原始协议消息 ID；缺失时退回完整本地投影 ID，
+不解析拼接 ID 推导协议 ID。本地消息主键、附件缓存主键、加密载荷及其他安全类型
+保持现有合同。
+
+发布边界复核与 0.1.7 的 Core 源码对比确认，仅附件 ID 选择和配套回归覆盖发生变化。
+群与对象的授权仍由服务端裁决，对象密钥和 nonce 保留在内部解密路径。
+本次发布执行构建、打包、来源和完整性校验，不重新运行先前实现阶段的测试。
 
 ## 与 ANP 的关系
 

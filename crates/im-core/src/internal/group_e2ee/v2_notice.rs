@@ -72,17 +72,14 @@ pub(crate) fn consume_for_client(
         }
         Err(error) => return Err(error),
     };
-    consume_with_runtime(
-        &context.runtime,
+    PreparedP6Notice {
+        client: client.clone(),
+        runtime: context.runtime,
         meta,
         notice,
         member_documents,
-        crate::internal::wire::common::now_rfc3339(),
-        format!(
-            "p6-v2-notice-{}",
-            crate::internal::wire::common::generate_operation_id()
-        ),
-    )
+    }
+    .apply(false)
 }
 
 pub(crate) async fn prepare_for_client_async(
@@ -107,6 +104,7 @@ pub(crate) async fn prepare_for_client_async(
         Err(error) => return Err(error),
     };
     Ok(PreparedP6Notice {
+        client: client.clone(),
         runtime: context.runtime,
         meta,
         notice,
@@ -115,6 +113,7 @@ pub(crate) async fn prepare_for_client_async(
 }
 
 pub(crate) struct PreparedP6Notice {
+    client: crate::core::ImClient,
     runtime: GroupE2eeV2Runtime,
     meta: V2GroupNoticeMetadata,
     notice: V2E2eeNotice,
@@ -123,12 +122,24 @@ pub(crate) struct PreparedP6Notice {
 
 impl PreparedP6Notice {
     pub(crate) fn apply(self, nonblocking: bool) -> crate::ImResult<V2ProcessNoticeOutput> {
+        self.apply_on(None, nonblocking)
+    }
+
+    pub(crate) fn apply_on(
+        self,
+        connection: Option<&rusqlite::Connection>,
+        nonblocking: bool,
+    ) -> crate::ImResult<V2ProcessNoticeOutput> {
+        let recipient_device_id = self.meta.recipient_device_id.clone();
         let runtime = if nonblocking {
             self.runtime.with_nonblocking_operations()
         } else {
             self.runtime
         };
-        consume_with_runtime(
+        let replacement = (self.notice.welcome_b64u.is_some()
+            && self.notice.subject_did == self.client.did().as_str())
+        .then(|| self.notice.notice_id.clone());
+        let result = consume_with_runtime(
             &runtime,
             self.meta,
             self.notice,
@@ -138,7 +149,28 @@ impl PreparedP6Notice {
                 "p6-v2-notice-{}",
                 crate::internal::wire::common::generate_operation_id()
             ),
-        )
+        )?;
+        if let Some(notice_id) = replacement {
+            // Reliable sync already holds an IM transaction. Opening a second
+            // writer here would deadlock until the input lease expires.
+            let owned_connection;
+            let connection = match connection {
+                Some(connection) => connection,
+                None => {
+                    owned_connection = crate::internal::local_state::open_writable(
+                        &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+                    )?;
+                    &owned_connection
+                }
+            };
+            crate::internal::group_runtime::journal::schedule_key_package_replenishment_on(
+                connection,
+                self.client.current_identity().id.as_str(),
+                &recipient_device_id,
+                &notice_id,
+            )?;
+        }
+        Ok(result)
     }
 }
 
@@ -206,24 +238,21 @@ fn resolve_member_documents(
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let group = crate::ids::GroupRef::parse(&notice.group_did)?;
+    // Preserve the local membership gate and its exact self-Remove signal;
+    // only the roster contents come from the authoritative Host.
+    crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get(group.clone())?;
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     )
-    .get_with_policy(group.clone())?;
-    let max_members = super::member_collector::product_max_members(
-        authoritative
-            .raw_response()
-            .ok_or(crate::ImError::InventoryIncomplete)?,
-    )?;
-    let roster = super::member_collector::collect_complete_group_members(
-        client,
-        group,
-        Some(&notice.group_state_ref.group_state_version),
-        max_members,
-    )?;
-    let mut dids = member_dids_from_complete_roster(owner_did, notice, roster.members)?;
+    .authoritative_members(group)?;
+    let mut dids = member_dids_from_authoritative_roster(owner_did, notice, &authoritative)?;
     include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
     dids.into_iter()
         .map(|did| {
@@ -242,26 +271,23 @@ async fn resolve_member_documents_async(
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let group = crate::ids::GroupRef::parse(&notice.group_did)?;
+    // Preserve the local membership gate and its exact self-Remove signal;
+    // only the roster contents come from the authoritative Host.
+    crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_async(group.clone())
+    .await?;
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     )
-    .get_with_policy_async(group.clone())
+    .authoritative_members_async(group)
     .await?;
-    let max_members = super::member_collector::product_max_members(
-        authoritative
-            .raw_response()
-            .ok_or(crate::ImError::InventoryIncomplete)?,
-    )?;
-    let roster = super::member_collector::collect_complete_group_members_async(
-        client,
-        group,
-        Some(&notice.group_state_ref.group_state_version),
-        max_members,
-    )
-    .await?;
-    let mut dids = member_dids_from_complete_roster(owner_did, notice, roster.members)?;
+    let mut dids = member_dids_from_authoritative_roster(owner_did, notice, &authoritative)?;
     include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
     let mut documents = Vec::with_capacity(dids.len());
     for did in dids {
@@ -438,6 +464,61 @@ fn is_local_not_active_member(error: &crate::ImError) -> bool {
             code: Some(code), ..
         } if code == "group.local_not_active_member"
     )
+}
+
+fn member_dids_from_authoritative_roster(
+    owner_did: &str,
+    notice: &V2E2eeNotice,
+    snapshot: &Value,
+) -> crate::ImResult<BTreeSet<String>> {
+    if snapshot.get("group_did").and_then(Value::as_str) != Some(&notice.group_did) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if snapshot.get("group_state_version").and_then(Value::as_str)
+        != Some(&notice.group_state_ref.group_state_version)
+    {
+        return Err(crate::ImError::CursorStale);
+    }
+    let max_members = super::member_collector::product_max_members(snapshot)?;
+    let rows = snapshot
+        .get("member_list")
+        .and_then(Value::as_array)
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    // Inactive P4 rows can remain in the Host snapshot. Bound the input as well
+    // as the active set and reject omissions/duplicates before any MLS mutation.
+    if rows.len() > 1_000 {
+        return Err(crate::ImError::InventoryTooLarge);
+    }
+    let mut seen = BTreeSet::new();
+    let mut active = Vec::new();
+    for row in rows {
+        let did = row
+            .get("agent_did")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::InventoryIncomplete)?;
+        crate::ids::Did::parse(did).map_err(|_| crate::ImError::InventoryIncomplete)?;
+        if !seen.insert(did) {
+            return Err(crate::ImError::InventoryIncomplete);
+        }
+        match row.get("status").and_then(Value::as_str) {
+            Some("active") => active.push(row.clone()),
+            Some("left" | "removed") => {}
+            _ => return Err(crate::ImError::InventoryIncomplete),
+        }
+    }
+    if active.len() > max_members {
+        return Err(crate::ImError::InventoryTooLarge);
+    }
+    if snapshot.get("member_count").and_then(Value::as_u64) != Some(active.len() as u64)
+        || !active
+            .iter()
+            .any(|row| row["agent_did"].as_str() == Some(owner_did))
+    {
+        return Err(crate::ImError::InventoryIncomplete);
+    }
+    let parsed =
+        crate::groups::GroupReadResult::from_raw_response(json!({"members": active}), vec![]);
+    member_dids_from_complete_roster(owner_did, notice, parsed.members)
 }
 
 fn member_dids_from_complete_roster(
@@ -993,7 +1074,7 @@ mod tests {
         (client, root, did_document)
     }
 
-    fn test_notice() -> V2E2eeNotice {
+    pub(super) fn test_notice() -> V2E2eeNotice {
         V2E2eeNotice {
             notice_id: "notice-1".to_owned(),
             notice_type: "commit-delivery".to_owned(),
@@ -1037,3 +1118,7 @@ mod tests {
         .unwrap()
     }
 }
+
+#[cfg(test)]
+#[path = "v2_notice_roster_tests.rs"]
+mod roster_tests;

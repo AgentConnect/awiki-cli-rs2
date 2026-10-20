@@ -505,6 +505,7 @@ fn controller_rebind_from_latest_status_fences_old_work_and_updates_live_binding
         .unwrap();
 
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: "task_before_controller_change".to_string(),
         agent_did: runtime.agent_did.clone(),
         agent_handle: runtime.handle.clone(),

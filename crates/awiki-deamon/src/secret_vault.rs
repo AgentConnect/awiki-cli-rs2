@@ -20,6 +20,7 @@ use crate::DaemonConfig;
 
 pub const DAEMON_VAULT_ROOT_KEY_ENV: &str = "AWIKI_DAEMON_VAULT_ROOT_KEY_B64";
 const DAEMON_LOCAL_ROOT_KEY_FILE_NAME: &str = "root-key.b64u";
+const IM_CORE_ROOT_KEY_INFO: &[u8] = b"awiki-daemon/im-core/encryption/root-key/v1";
 const ANP_IDENTITY_ROOT_KEY_INFO: &[u8] = b"awiki-daemon/anp-identity/root-key/v1";
 
 #[derive(Debug)]
@@ -101,6 +102,24 @@ impl DaemonSecretVault {
     pub fn list(&self) -> im_core::ImResult<Vec<SecretRef>> {
         self.inner.list()
     }
+}
+
+/// Core owns encryption records in a separate vault derived from the existing
+/// Daemon root. Agent and delegated identity custody remain with their owners.
+pub(crate) fn im_core_secret_vault_options(
+    config: &DaemonConfig,
+) -> Result<im_core::ImCoreSecretVaultOptions> {
+    let source = Zeroizing::new(load_or_create_root_key_bytes(config)?);
+    let mut derived = Zeroizing::new([0_u8; DEVICE_VAULT_ROOT_KEY_LEN]);
+    Hkdf::<Sha256>::new(None, source.as_ref())
+        .expand(IM_CORE_ROOT_KEY_INFO, derived.as_mut())
+        .expect("32-byte HKDF output is valid");
+    Ok(im_core::ImCoreSecretVaultOptions::new(
+        DeviceVaultRootKey::from_bytes(*derived),
+        config.secret_vault_dir.join("im-core-encryption"),
+        "awiki-daemon",
+        "im-core-encryption",
+    ))
 }
 
 pub fn parse_root_key(raw: Option<&str>) -> Result<DeviceVaultRootKey> {
@@ -357,6 +376,42 @@ mod tests {
             second.anp_identity_root_key()
         );
         assert_ne!(first.anp_identity_root_key(), source);
+    }
+
+    #[test]
+    fn core_encryption_vault_survives_reopen_and_rejects_daemon_root() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let options = im_core_secret_vault_options(&config).unwrap();
+        let vault = FileSecretVault::new(
+            options.root_key,
+            FileSecretVaultStore::new(&options.vault_dir),
+        );
+        let secret_ref = vault
+            .seal(SealSecretRequest {
+                metadata: test_metadata("p5-state"),
+                plaintext: SecretBytes::from_vec(b"encryption-state".to_vec()),
+            })
+            .unwrap();
+        drop(vault);
+        let reopened = im_core_secret_vault_options(&config).unwrap();
+        let vault = FileSecretVault::new(
+            reopened.root_key,
+            FileSecretVaultStore::new(&reopened.vault_dir),
+        );
+        assert_eq!(
+            vault.open(&secret_ref).unwrap().expose_secret(),
+            b"encryption-state"
+        );
+        let daemon_root =
+            DeviceVaultRootKey::from_bytes(load_or_create_root_key_bytes(&config).unwrap());
+        let wrong =
+            FileSecretVault::new(daemon_root, FileSecretVaultStore::new(&reopened.vault_dir));
+        assert!(wrong.open(&secret_ref).is_err());
+        assert_eq!(
+            reopened.vault_dir,
+            config.secret_vault_dir.join("im-core-encryption")
+        );
     }
 
     fn test_metadata(key_id: &str) -> SecretMetadata {

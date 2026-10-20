@@ -54,6 +54,7 @@ class DartDisplayProfile {
   final String? displayName;
   final String? avatarUri;
   final String? avatarUrl;
+  final String? avatarThumbnailUri;
   final String? profileUri;
   final String? subjectType;
   final bool cacheHit;
@@ -67,6 +68,7 @@ class DartDisplayProfile {
     this.displayName,
     this.avatarUri,
     this.avatarUrl,
+    this.avatarThumbnailUri,
     this.profileUri,
     this.subjectType,
     required this.cacheHit,
@@ -82,6 +84,7 @@ class DartDisplayProfile {
       displayName.hashCode ^
       avatarUri.hashCode ^
       avatarUrl.hashCode ^
+      avatarThumbnailUri.hashCode ^
       profileUri.hashCode ^
       subjectType.hashCode ^
       cacheHit.hashCode ^
@@ -99,6 +102,7 @@ class DartDisplayProfile {
           displayName == other.displayName &&
           avatarUri == other.avatarUri &&
           avatarUrl == other.avatarUrl &&
+          avatarThumbnailUri == other.avatarThumbnailUri &&
           profileUri == other.profileUri &&
           subjectType == other.subjectType &&
           cacheHit == other.cacheHit &&

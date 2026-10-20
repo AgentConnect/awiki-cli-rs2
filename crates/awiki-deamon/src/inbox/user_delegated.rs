@@ -1157,6 +1157,7 @@ fn runtime_task_from_envelope(
         .with_context(|| "delegated direct message is missing source_sender_full_handle")?;
     let task_key = format!("{}:{}", binding.user_did, envelope.source_message_id);
     let task = RuntimeTask {
+        security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
         task_id: format!("task_user_msg_{}", stable_id_suffix(&task_key)),
         agent_did: binding.runtime_agent_did.clone(),
         agent_handle: profile.agent_handle,

@@ -1,5 +1,7 @@
 #[cfg(feature = "sqlite")]
 pub(crate) mod direct_send_intent;
+#[cfg(feature = "sqlite")]
+pub(crate) mod mixed_read;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "sqlite")]
@@ -927,6 +929,24 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     Ok(touched)
 }
 
+// Same complete authenticated-cache predicate as authenticated_p5_v2_raw_message_id.
+#[cfg(feature = "sqlite")]
+const AUTHENTICATED_P5_READ_SQL: &str = r#"CASE WHEN json_valid(metadata) THEN COALESCE(
+  TRIM(json_extract(metadata, '$.p5_cache_profile')) = 'anp.direct.e2ee.v2'
+  AND json_type(metadata, '$.p5_cache_sender_did') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_sender_did')) <> ''
+  AND json_type(metadata, '$.p5_cache_sender_device_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_sender_device_id')) <> ''
+  AND json_type(metadata, '$.p5_cache_recipient_did') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_recipient_did')) <> ''
+  AND json_type(metadata, '$.p5_cache_recipient_device_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_recipient_device_id')) <> ''
+  AND json_type(metadata, '$.p5_cache_binding_digest') = 'text'
+  AND TRIM(json_extract(metadata, '$.p5_cache_binding_digest')) <> ''
+  AND json_type(metadata, '$.raw_message_id') = 'text'
+  AND TRIM(json_extract(metadata, '$.raw_message_id')) <> ''
+, 0) ELSE 0 END"#;
+
 #[cfg(feature = "sqlite")]
 fn inherit_committed_read_watermark(
     connection: &rusqlite::Connection,
@@ -938,13 +958,15 @@ fn inherit_committed_read_watermark(
     // sequence), and apply read truth before updating the conversation summary.
     connection
         .execute(
-            r#"
+            &format!(r#"
 UPDATE messages
 SET is_read = 1
 WHERE owner_identity_id = ?1 AND msg_id = ?2
   AND direction = 0 AND is_read = 0 AND hydration_state = 'hydrated'
   AND wire_identity_resolution_state = 'resolved'
   AND server_seq > 0
+  -- P5 device-inbox sequences are not ordinary thread read watermarks.
+  AND NOT ({AUTHENTICATED_P5_READ_SQL})
   AND EXISTS (
       SELECT 1 FROM thread_read_state AS state
       WHERE state.owner_identity_id = messages.owner_identity_id
@@ -952,7 +974,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2
         AND state.thread_id = messages.conversation_id
         AND state.read_watermark_seq IS NOT NULL
         AND messages.server_seq <= CAST(state.read_watermark_seq AS INTEGER)
-  )"#,
+  )"#),
             rusqlite::params![owner_identity_id, message_id],
         )
         .map_err(super::local_state_unavailable)?;
@@ -1796,9 +1818,16 @@ WHERE owner_identity_id = ?
   AND is_e2ee = 1
   AND CASE
         WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
-        THEN json_extract(COALESCE(NULLIF(metadata, ''), '{{}}'), '$.decryption_state')
-        ELSE NULL
-      END = 'decrypted'"#
+        THEN (
+          json_extract(metadata, '$.decryption_state') = 'decrypted'
+          OR (direction = 1 AND sender_did = owner_did
+            AND group_did <> '' AND server_seq > 0
+            AND msg_id = group_did || ':' || server_seq
+            AND json_extract(metadata, '$.security') = 'group-e2ee'
+            AND json_extract(metadata, '$.delivery_state') = 'accepted')
+        )
+        ELSE 0
+      END"#
     );
     let mut params: Vec<&dyn rusqlite::ToSql> =
         Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);
@@ -3335,6 +3364,7 @@ WHERE owner_identity_id = ?
   AND is_read = 0
   AND hydration_state = 'hydrated'
   AND server_seq IS NOT NULL
+  AND NOT ({AUTHENTICATED_P5_READ_SQL})
   AND server_seq <= CAST(? AS INTEGER)
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
     );
@@ -7565,7 +7595,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
     }
 
     #[test]
-    fn local_state_messages_summary_uses_server_seq_before_skewed_timestamps() {
+    fn local_state_messages_summary_does_not_compare_plain_and_p5_sequences() {
         let db = Connection::open_in_memory().unwrap();
         let owner_identity_id = "owner-id";
         let owner_did = "did:owner";
@@ -7580,7 +7610,8 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             "2026-06-27T19:58:59Z",
             true,
         );
-        outgoing.server_seq = Some(14233);
+        outgoing.server_seq = Some(39758);
+        outgoing.is_e2ee = true;
         upsert_message(&db, &outgoing).unwrap();
 
         let mut incoming = summary_test_message(
@@ -7593,12 +7624,12 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             "2026-06-27T19:58:58Z",
             false,
         );
-        incoming.server_seq = Some(14234);
+        incoming.server_seq = Some(40766);
         upsert_message(&db, &incoming).unwrap();
 
         let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
-        assert_eq!(summary.last_message_id, "msg-a-incoming");
-        assert_eq!(summary.last_content, "cli to app");
+        assert_eq!(summary.last_message_id, "msg-z-outgoing");
+        assert_eq!(summary.last_content, "app to cli");
         assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
     }
 
@@ -8286,6 +8317,60 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
 
         assert_eq!(read_by_msg_id(&db, "msg-control"), 1);
         assert!(!summary_exists(&db, owner_identity_id, conversation_id));
+        super::super::conversation_registry::ensure(
+            &db,
+            &super::super::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                thread_kind: "direct".to_owned(),
+                thread_id: conversation_id.to_owned(),
+                activity_at: "2026-06-30T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        let recents = || {
+            super::super::conversations::list_conversations_for_owner_identity(
+                &db,
+                owner_identity_id,
+                owner_did,
+                &crate::messages::ConversationQuery {
+                    limit: crate::ids::PageLimit(50),
+                    cursor: None,
+                    include_groups: true,
+                    include_direct: true,
+                    unread_only: false,
+                },
+            )
+            .unwrap()
+        };
+        assert!(
+            recents().is_empty(),
+            "control-only registry row must stay hidden"
+        );
+        db.execute(
+            "UPDATE conversation_registry SET explicitly_opened=1 WHERE conversation_id=?1",
+            [conversation_id],
+        )
+        .unwrap();
+        assert_eq!(
+            recents().len(),
+            1,
+            "an explicit user-created empty chat remains visible"
+        );
+        db.execute(
+            "UPDATE conversation_registry SET explicitly_opened=0 WHERE conversation_id=?1",
+            [conversation_id],
+        )
+        .unwrap();
+        let mut user_message = control.clone();
+        user_message.msg_id = "real-user-message".to_owned();
+        user_message.content_type = "text/plain".to_owned();
+        user_message.content = "?".to_owned();
+        upsert_message(&db, &user_message).unwrap();
+        assert_eq!(recents().len(), 1, "real user history must never be hidden");
+        db.execute("DELETE FROM messages WHERE msg_id='real-user-message'", [])
+            .unwrap();
         super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
         assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }

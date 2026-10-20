@@ -20,9 +20,8 @@ pub(crate) async fn reconcile_rejected(
     registry: &DeviceJoinRemoteRegistry,
     current: &Value,
 ) -> crate::ImResult<()> {
-    if !client.did().as_str().starts_with("did:web:")
-        || registry.checkpoint.document_version == base.document_version
-            && registry.checkpoint.registry_version == base.registry_version
+    if registry.checkpoint.document_version == base.document_version
+        && registry.checkpoint.registry_version == base.registry_version
         || validate_current(client, registry, current, candidate, Some(base))? != *authorizer
     {
         return Err(crate::ImError::PermissionDenied);
