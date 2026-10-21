@@ -863,9 +863,17 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     core: &crate::core::ImCore,
     domain: &str,
     local_part: &str,
+    previous_did: &str,
 ) -> crate::ImResult<crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef> {
     use crate::internal::identity_provider::{ProviderIdentityState, ProviderKeyPurpose};
 
+    let create = crate::internal::identity_generation::handle_recovery_anp_identity_create_spec(
+        domain,
+        local_part,
+        previous_did,
+        core.inner().sdk_config().anp_service_endpoint.as_ref(),
+        core.inner().sdk_config().anp_service_did.as_ref(),
+    )?;
     let paths = core.inner().sdk_paths().identities.clone();
     let projected = crate::internal::runtime::worker::run_blocking(move || {
         crate::internal::identity_store::IdentityStore::new(&paths)
@@ -907,7 +915,14 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     );
     let custody = controller_custody_provider(core).await?;
     let registration_identity = reserved_registration_identity(core, domain, local_part)?;
-    let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+    let origin = match create.spec.port {
+        Some(port) => format!("{}%3A{port}", create.spec.domain),
+        None => create.spec.domain.clone(),
+    };
+    let did_prefix = format!(
+        "did:wba:{origin}:{}:e1_",
+        create.spec.path_segments.join(":")
+    );
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
     for descriptor in custody
@@ -917,6 +932,7 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     {
         if descriptor.state != ProviderIdentityState::Active
             || projected.contains(&descriptor.reference.identity_id)
+            || descriptor.reference.did == previous_did
             || historical_predecessors.contains(&descriptor.reference.did)
             || registration_identity.as_deref() == Some(descriptor.reference.identity_id.as_str())
             || !descriptor.reference.did.starts_with(&did_prefix)
@@ -970,19 +986,10 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     }
     let identity = match matches.pop() {
         Some(identity) => identity,
-        None => {
-            let create =
-                crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
-                    domain,
-                    local_part,
-                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                    core.inner().sdk_config().anp_service_did.as_ref(),
-                )?;
-            custody
-                .create_identity(create.spec)
-                .await
-                .map_err(crate::internal::identity_provider::map_provider_error)?
-        }
+        None => custody
+            .create_identity(create.spec)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
     };
     let public = identity
         .public_identity()
@@ -5009,13 +5016,17 @@ mod tests {
         )
         .unwrap();
 
-        let first = provision_handle_recovery_identity_async(&core, "example.test", "recovered")
-            .await
-            .unwrap();
-        let recovered =
-            provision_handle_recovery_identity_async(&core, "example.test", "recovered")
-                .await
-                .unwrap();
+        let previous_did = "did:wba:example.test:legacy";
+        let first = provision_handle_recovery_identity_async(
+            &core, "example.test", "recovered", previous_did,
+        )
+        .await
+        .unwrap();
+        let recovered = provision_handle_recovery_identity_async(
+            &core, "example.test", "recovered", previous_did,
+        )
+        .await
+        .unwrap();
         assert_eq!(recovered, first);
 
         handle_recovery_identity_async(&core, &first)

@@ -184,6 +184,72 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
     )
 }
 
+/// Recovery rotates keys within the predecessor's stable subject. Registration's
+/// `user/<handle>` default is not authority for an existing E1 identity.
+pub(crate) fn handle_recovery_anp_identity_create_spec(
+    hostname: &str,
+    local_part: &str,
+    previous_did: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<VNextAnpIdentityCreateSpec> {
+    let mut create =
+        vnext_handle_anp_identity_create_spec(hostname, local_part, service_endpoint, service_did)?;
+    if let Some(previous) = recovery_e1_profile(previous_did)? {
+        // ANP encodes an explicit origin port as `%3A<port>`; custody accepts
+        // the hostname and port separately. Keep the Handle endpoint unchanged.
+        if let Some((domain, port)) = previous.origin.split_once("%3A") {
+            let parsed = port
+                .parse::<u16>()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            if parsed.to_string() != port {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            create.spec.domain = domain.to_owned();
+            create.spec.port = Some(parsed);
+        } else {
+            create.spec.domain = previous.origin;
+        }
+        create.spec.path_segments = previous
+            .stable_subject_path
+            .split(':')
+            .skip(1)
+            .map(str::to_owned)
+            .collect();
+    }
+    Ok(create)
+}
+
+pub(crate) fn handle_recovery_subject_matches(
+    previous_did: &str,
+    successor_did: &str,
+) -> crate::ImResult<bool> {
+    let Some(previous) = recovery_e1_profile(previous_did)? else {
+        // Preserve the existing non-E1 recovery contract; E1 transitions alone
+        // carry ANP's stable-subject-path invariant.
+        return Ok(true);
+    };
+    let successor = anp::authentication::parse_did_wba_e1(successor_did)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(
+        previous.stable_subject_path == successor.stable_subject_path
+            && previous_did != successor_did,
+    )
+}
+
+fn recovery_e1_profile(did: &str) -> crate::ImResult<Option<anp::authentication::DidWbaE1Profile>> {
+    if !did
+        .rsplit(':')
+        .next()
+        .is_some_and(|segment| segment.starts_with("e1_"))
+    {
+        return Ok(None);
+    }
+    anp::authentication::parse_did_wba_e1(did)
+        .map(Some)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
 pub(crate) fn handle_anp_identity_create_spec(
     hostname: &str,
     local_part: &str,

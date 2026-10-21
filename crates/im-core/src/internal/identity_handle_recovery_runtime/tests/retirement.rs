@@ -3,9 +3,11 @@ use super::*;
 #[tokio::test]
 async fn deleted_recovered_owner_does_not_block_a_fresh_recovery_operation() {
     let root = tempfile::tempdir().unwrap();
-    // An unreachable loopback endpoint keeps this test local. Reaching the OTP
-    // transport proves that provisioning and the new operation index succeeded.
-    let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [93_u8; 32]);
+    // WNS remains available, then OTP is unreachable. The fresh operation must
+    // be durable without resurrecting any deleted custody.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let core = recovery_test_core(root.path(), &endpoint, [93_u8; 32]);
     let owner = "owner-retired-recovery";
     let operation_id = "recover-v4-retired-owner";
     let mut pending = v4_awaiting_factor_pending(operation_id, owner);
@@ -142,6 +144,7 @@ async fn deleted_recovered_owner_does_not_block_a_fresh_recovery_operation() {
         Err(anp_identity::IdentityError::IdentityNotFound)
     ));
 
+    let server = serve_binding_once(listener, &pending.full_handle, pending.identity.did.as_str());
     let error = request_otp(
         &core,
         HandleRecoveryOtpRequest {
@@ -156,6 +159,7 @@ async fn deleted_recovered_owner_does_not_block_a_fresh_recovery_operation() {
         matches!(error, crate::ImError::TransportUnavailable { .. }),
         "{error:?}"
     );
+    server.join().unwrap();
     let operations = crate::internal::identity_handle_recovery_operation::list_handle(
         sqlite_path,
         &pending.full_handle,
@@ -332,7 +336,10 @@ async fn local_deletion_cleans_unfinished_recovery_keys_and_allows_a_new_operati
         // reaches transport without resurrecting the deleted operation/custody.
         drop(store);
         drop(core);
-        let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [94_u8; 32]);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = serve_binding_once(listener, &pending.full_handle, pending.identity.did.as_str());
+        let core = recovery_test_core(root.path(), &endpoint, [94_u8; 32]);
         let error = request_otp(
             &core,
             HandleRecoveryOtpRequest {
@@ -347,6 +354,7 @@ async fn local_deletion_cleans_unfinished_recovery_keys_and_allows_a_new_operati
             matches!(error, crate::ImError::TransportUnavailable { .. }),
             "{phase}: {error:?}"
         );
+        server.join().unwrap();
         let operations =
             operations::list_pending(&core.inner().sdk_paths().local_state.sqlite_path).unwrap();
         assert_eq!(operations.len(), 1);
@@ -510,4 +518,18 @@ async fn external_custody_open_resumes_deletion_and_preserves_other_identity() {
     deletion::complete_async(&reopened, &ticket.deletion_id, false)
         .await
         .unwrap();
+}
+
+// Closing the listener after discovery makes only the following OTP unavailable.
+fn serve_binding_once(
+    listener: std::net::TcpListener,
+    handle: &str,
+    did: &str,
+) -> std::thread::JoinHandle<()> {
+    let response = json!({"handle": handle, "did": did, "status": "active", "binding_generation": "8"});
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert!(read_http_request(&mut stream).starts_with("GET /.well-known/handle/alice "));
+        write_json_response(&mut stream, &response);
+    })
 }
