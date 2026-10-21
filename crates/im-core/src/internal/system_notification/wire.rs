@@ -286,6 +286,15 @@ pub(crate) fn parse_verified_notification(value: Value) -> crate::ImResult<JoinN
     }
     let payload = match kind {
         crate::system_notifications::SystemNotificationKind::JoinRequested => {
+            if common.notification_type.ends_with(".v1")
+                && common
+                    .payload
+                    .get("join_request")
+                    .and_then(|request| request.get("join_purpose"))
+                    .is_some()
+            {
+                return Err(invalid("v1 Join Request has an unknown field"));
+            }
             JoinPayload::Requested(strict_decode(common.payload, "payload")?)
         }
         crate::system_notifications::SystemNotificationKind::JoinClaimed => {
@@ -307,6 +316,18 @@ pub(crate) fn parse_verified_notification(value: Value) -> crate::ImResult<JoinN
             JoinPayload::Expired(strict_decode(common.payload, "payload")?)
         }
     };
+    if let JoinPayload::Requested(requested) = &payload {
+        let expected = if common.notification_type.ends_with(".v2") {
+            Some("messages_only")
+        } else {
+            None
+        };
+        if requested.join_request.join_purpose.as_deref() != expected {
+            return Err(invalid(
+                "Join purpose requires the negotiated v2 notification",
+            ));
+        }
+    }
     let initial_join_request = match &payload {
         JoinPayload::Requested(payload) => Some(payload.join_request.clone()),
         _ => None,

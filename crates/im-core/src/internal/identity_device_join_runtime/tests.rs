@@ -1743,3 +1743,37 @@ async fn orphan_terminal_notice_does_not_block_new_join_requests() {
         "historical terminal evidence remains stored"
     );
 }
+
+struct NotificationDeclarationTransport;
+impl AsyncAuthenticatedRpcTransport for NotificationDeclarationTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> crate::ImResult<serde_json::Value> {
+        assert_eq!(
+            endpoint,
+            crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT
+        );
+        assert_eq!(method, "device_notification_capabilities_set");
+        assert_eq!(
+            params,
+            json!({"version":2,"capabilities":["messages_only_join_v2"]})
+        );
+        Err(crate::ImError::Service {
+            status_code: None,
+            code: Some("-32601".into()),
+            message: "method not found".into(),
+            data: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn optional_notification_declaration_does_not_break_old_servers() {
+    let mut adapter = DeviceJoinAdminHttpAdapter {
+        authenticated: NotificationDeclarationTransport,
+    };
+    adapter.declare_notification_support().await;
+}

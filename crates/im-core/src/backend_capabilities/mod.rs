@@ -937,8 +937,9 @@ impl crate::ImClient {
                 let identity = crate::internal::wire::common::WireIdentity {
                     did: self.did().as_str().to_owned(),
                 };
-                let params =
+                let mut params =
                     crate::internal::wire::sync_v2::build_capability_discovery_params(&identity)?;
+                params["body"]["capabilities_version"] = serde_json::json!(1);
                 let raw = transport
                     .authenticated_rpc("/im/rpc", "anp.get_capabilities", params)
                     .await?;

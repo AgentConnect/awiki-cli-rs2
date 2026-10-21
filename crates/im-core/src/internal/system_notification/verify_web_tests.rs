@@ -184,6 +184,12 @@ fn messages_only_purpose_is_signed_and_unknown_purposes_fail_closed() {
     join["join_purpose"] = json!("messages_only");
     tests::resign_join_request(join);
     tests::resign_origin_proof(&mut incoming, &source);
+    assert!(
+        verify_with_transport(&mut transport, DID, &incoming, time).is_err(),
+        "v1 remains closed"
+    );
+    incoming["params"]["body"]["payload"]["type"] = json!("awiki.device.join-requested.v2");
+    tests::resign_origin_proof(&mut incoming, &source);
     let verified = verify_with_transport(&mut transport, DID, &incoming, time).unwrap();
     assert_eq!(
         verified

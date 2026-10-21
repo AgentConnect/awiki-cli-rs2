@@ -23,7 +23,7 @@ const EXPECTED_PROFILES: [&str; 6] = [
     "anp.identity.discovery.v1",
     "anp.direct.base.v1",
     "anp.direct.e2ee.v2",
-    "anp.group.base.v1",
+    "anp.group.base.v2",
     "anp.group.e2ee.v2",
 ];
 

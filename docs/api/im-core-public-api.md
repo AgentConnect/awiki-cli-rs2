@@ -2,7 +2,7 @@
 
 ## 消息用途 Join（2026-10-15）
 
-Join 请求可携带签名覆盖的 `join_purpose: "messages_only"`；缺省继续原 APP/CLI 管理设备流程。该用途不是设备名称推断；完整请求摘要已经绑定 challenge、SAS 与批准记录。未知用途拒绝。消息用途使 Core 在准备批准与执行自动管理任务前收敛为普通成员批准，即使调用管理设备便捷入口也不得授根。旧客户端的闭合请求解析拒绝此字段，应使用配套版本。
+Join 请求可携带签名覆盖的 `join_purpose: "messages_only"`；缺省继续原 APP/CLI 管理设备流程。该用途不是设备名称推断；完整请求摘要已经绑定 challenge、SAS 与批准记录。未知用途拒绝。消息用途使 Core 在准备批准与执行自动管理任务前收敛为普通成员批准，即使调用管理设备便捷入口也不得授根。该扩展只出现在协商后的 v2 Join 通知中；普通 v1 通知保持原闭合字段。Core 在设备管理 Registry/请求列表操作时，通过独立 RPC 声明 `messages_only_join_v2` 解码支持（900 秒租约）；老服务不支持声明或网络失败不阻断原管理操作。服务端只向声明有效的当前管理设备投递 v2，无合格设备时 Gateway 提示更新并打开设备请求。所有签名、SAS、明确批准和根授权检查保留，不强制提高普通消息功能的客户端最低版本。
 
 邮箱普通 Join 新增 `DeviceJoinService.send_email_code` 和 `begin_with_email`；五分钟数字验证码绑定 full Handle，Core 内部交换仅 Join 用途 grant，然后走已有持久化 Join。输入 Debug 隐藏邮箱和验证码，不返回 grant。网络结果不明时保留原 operation/workspace，通过已有 local sessions/poll 对账。
 
@@ -2371,7 +2371,7 @@ account 下 state_sync；agents 下 managed_agents/daemon 和既有 skill_onboar
 skill_group_membership；services 下 mail/model_proxy/guest_gateway；content 下
 pages/sites/hosting；client_updates 下 policy。注册与找回复用既有方法列表。
 
-消息真相只来自已认证本域 `/im/rpc` 的 `anp.get_capabilities.awiki_local`：
+消息真相只来自已认证本域 `/im/rpc`、显式请求 `body.capabilities_version=1` 后的 `anp.get_capabilities.awiki_local`：
 `{"capabilities_version":1,"capabilities":{...}}`。已知键为 direct、groups、
 attachments、history、read_state、sync、snapshot、p5_device、p6_group、direct_e2ee、
 group_e2ee、encrypted_attachments、group_open_join、group_admin_add、group_invite、

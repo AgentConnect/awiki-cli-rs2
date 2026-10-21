@@ -428,6 +428,8 @@ pub(crate) trait DeviceJoinNewDeviceRemote {
 /// Ready-admin RPC seam. This intentionally cannot send token-authenticated
 /// new-device calls, keeping the two server authorization views disjoint.
 pub(crate) trait DeviceJoinAdminRemote {
+    async fn declare_notification_support(&mut self) {}
+
     async fn registry(
         &mut self,
         did: &crate::ids::Did,
@@ -766,6 +768,19 @@ impl<A> DeviceJoinAdminRemote for DeviceJoinAdminHttpAdapter<A>
 where
     A: AsyncAuthenticatedRpcTransport,
 {
+    async fn declare_notification_support(&mut self) {
+        // Optional negotiation must never block legacy registry/management operations.
+        // A failed declaration cannot grant eligibility: the server fails closed.
+        let _ = self
+            .authenticated
+            .authenticated_rpc(
+                crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+                "device_notification_capabilities_set",
+                serde_json::json!({"version":2,"capabilities":["messages_only_join_v2"]}),
+            )
+            .await;
+    }
+
     async fn registry(
         &mut self,
         did: &crate::ids::Did,
@@ -1545,12 +1560,14 @@ where
             .await?
             .did()
             .clone();
+        self.remote.declare_notification_support().await;
         self.remote.registry(&did, false).await
     }
 
     pub(crate) async fn local_device_join_requests(
         &mut self,
     ) -> crate::ImResult<Vec<crate::identity::DeviceJoinRequestNotice>> {
+        self.remote.declare_notification_support().await;
         let client = self.core.client_async(self.admin_identity.clone()).await?;
         let current_device_id = client.exact_protocol_device_id()?;
         let notifications = client.list_verified_device_join_notifications(true).await?;
