@@ -550,7 +550,9 @@ fn validate_did_matches_handle_domain(handle: &str, did: &str) -> crate::ImResul
     let Some(did_domain) = did_wba_domain(did) else {
         return Err(crate::ImError::InvalidInput {
             field: Some("did".to_owned()),
-            message: format!("handle discovery DID {did} uses an unsupported DID method"),
+            message: format!(
+                "handle discovery DID {did} has an invalid or unsupported DID authority"
+            ),
         });
     };
     if did_domain == normalized.domain {
@@ -699,10 +701,25 @@ fn normalize_domain(raw: &str) -> String {
 }
 
 fn did_wba_domain(did: &str) -> Option<String> {
-    did.strip_prefix("did:wba:")
-        .and_then(|rest| rest.split(':').next())
-        .map(normalize_domain)
-        .filter(|domain| !domain.is_empty())
+    let authority = did
+        .strip_prefix("did:wba:")?
+        .split(':')
+        .next()?
+        .to_ascii_lowercase();
+    // ANP-04 compares the Handle domain to the DID hostname, not its port.
+    // Validate the encoded port before removing it; never decode an arbitrary
+    // authority suffix into a host that could pass this trust boundary.
+    let hostname = if let Some((hostname, port)) = authority.split_once("%3a") {
+        let parsed = port.parse::<u16>().ok()?;
+        if parsed.to_string() != port {
+            return None;
+        }
+        hostname
+    } else {
+        authority.as_str()
+    };
+    let hostname = normalize_domain(hostname);
+    (!hostname.is_empty()).then_some(hostname)
 }
 
 fn string_field(value: &Value, key: &str) -> crate::ImResult<String> {
@@ -824,21 +841,29 @@ mod tests {
 
     #[test]
     fn public_document_resolution_accepts_standard_four_field_document() {
-        let resolved = super::resolution_from_public_document(
-            "peer.awiki.info",
-            json!({
-                "status": "active",
-                "handle": "peer.awiki.info",
-                "did": "did:wba:awiki.info:user:peer:e1",
-                "binding_generation": "7",
-            }),
-        )
-        .unwrap();
+        for authority in [
+            "awiki.info",
+            "awiki.info%3A0",
+            "Awiki.Info%3A8443",
+            "awiki.info%3a65535",
+        ] {
+            let did = format!("did:wba:{authority}:user:peer:e1");
+            let resolved = super::resolution_from_public_document(
+                "peer.awiki.info",
+                json!({
+                    "status": "active",
+                    "handle": "peer.awiki.info",
+                    "did": did,
+                    "binding_generation": "7",
+                }),
+            )
+            .unwrap();
 
-        assert_eq!(resolved.full_handle, "peer.awiki.info");
-        assert_eq!(resolved.target_did, "did:wba:awiki.info:user:peer:e1");
-        assert_eq!(resolved.authority_subject_id, "peer.awiki.info");
-        assert_eq!(resolved.peer_scope().unwrap().user_id, "peer.awiki.info");
+            assert_eq!(resolved.full_handle, "peer.awiki.info");
+            assert_eq!(resolved.target_did, did);
+            assert_eq!(resolved.authority_subject_id, "peer.awiki.info");
+            assert_eq!(resolved.peer_scope().unwrap().user_id, "peer.awiki.info");
+        }
     }
 
     #[test]

@@ -195,6 +195,7 @@ async fn recovery_does_not_reuse_a_pending_registration_identity() {
         &core,
         "awiki.test",
         "alice",
+        reserved_did.as_str(),
     )
     .await
     .unwrap();
