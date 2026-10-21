@@ -46,6 +46,10 @@ impl<'a> DeviceRevokeService<'a> {
         &self,
         request: DeviceRevokeRequest,
     ) -> crate::ImResult<DeviceRevokeResult> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.device_revoke")?;
         if !self.core.inner().device_revoke_enabled() {
             return Err(crate::ImError::unsupported("awiki-device-revoke-disabled"));
         }

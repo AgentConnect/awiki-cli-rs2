@@ -403,7 +403,8 @@ pub(crate) fn complete(
         return Err(deletion_error("identity.local_data_deletion_pending"));
     }
     if record.phase == LocalIdentityDeletionPhase::Completed {
-        return Ok((record, Vec::new()));
+        let warnings = capability_cleanup_warnings(core, &record);
+        return Ok((record, warnings));
     }
     cleanup_recovery_material(core, &record)?;
     let retirement = retirement_input(&record);
@@ -412,7 +413,22 @@ pub(crate) fn complete(
         return Err(deletion_error("identity.local_data_deletion_pending"));
     }
     record = mark_completed(sqlite_path, deletion_id)?;
-    Ok((record, outcome.warnings))
+    let mut warnings = outcome.warnings;
+    warnings.extend(capability_cleanup_warnings(core, &record));
+    Ok((record, warnings))
+}
+
+fn capability_cleanup_warnings(
+    core: &crate::ImCore,
+    record: &LocalIdentityDeletionRecord,
+) -> Vec<String> {
+    if crate::backend_capabilities::persistence::remove_identity(core, &record.owner_identity_id)
+        .is_err()
+    {
+        vec!["backend_capabilities_cache_cleanup_failed".into()]
+    } else {
+        Vec::new()
+    }
 }
 
 // The current protocol seals the pending journal before inserting its SQLite

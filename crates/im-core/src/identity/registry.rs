@@ -580,6 +580,10 @@ impl<'a> IdentityRegistry<'a> {
         target_device_id: Option<String>,
         user_presence_confirmed: bool,
     ) -> crate::ImResult<super::DeviceCapabilityUpgradeStatus> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("identity.capability_upgrade")?;
         let local = self.device_summary_async(selector.clone()).await?;
         let local_id = local
             .protocol_device_id
@@ -782,6 +786,10 @@ impl<'a> IdentityRegistry<'a> {
         selector: super::IdentitySelector,
         proposal: super::DaemonSubkeyPublicProposal,
     ) -> crate::ImResult<super::DaemonSubkeyPublicPackage> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("agents.daemon")?;
         let registry = self.load_registry_async().await?;
         let entry = registry.find_entry(selector.clone())?.clone();
         let vnext_device_state = entry.device_state.clone().filter(|state| {
@@ -1748,6 +1756,14 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         request: super::RegisterHandleRequest,
     ) -> crate::ImResult<super::HandleRegistrationResult> {
+        if matches!(
+            request.verification,
+            super::VerificationInput::AlreadyVerified
+        ) {
+            self.core
+                .backend_capabilities(false)?
+                .require("registration.handle_only")?;
+        }
         crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new(
             self.core,
             crate::internal::transport::CorePlainTransport::new(self.core),
@@ -1760,6 +1776,15 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         request: super::RegisterHandleRequest,
     ) -> crate::ImResult<super::HandleRegistrationResult> {
+        if matches!(
+            request.verification,
+            super::VerificationInput::AlreadyVerified
+        ) {
+            self.core
+                .backend_capabilities_async(false)
+                .await?
+                .require("registration.handle_only")?;
+        }
         crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new(
             self.core,
             crate::internal::transport::CorePlainTransport::new(self.core),

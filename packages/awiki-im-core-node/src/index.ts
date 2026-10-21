@@ -9,6 +9,7 @@ import type {
 } from './native.js'
 import {
   ImCoreNodeError,
+  type BackendCapabilitySnapshot,
   type AdminDeviceJoinProgress,
   type AddGroupMemberInput,
   type CreateGroupInput,
@@ -125,6 +126,24 @@ async function call<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 class RustImCoreNodeClient implements ImCoreNodeClient {
+  public setBackendDiscoveryActive(active: boolean): Promise<void> { return call(() => this.native.setBackendDiscoveryActive(active)) }
+  public backendCapabilitiesSnapshot(authenticated = false): Promise<BackendCapabilitySnapshot> {
+    return call(async () => JSON.parse(await this.native.backendCapabilitiesSnapshot(authenticated)) as BackendCapabilitySnapshot)
+  }
+  public async subscribeBackendCapabilities(authenticated = false): Promise<import('./types.js').BackendCapabilitySubscription> {
+    const subscription = await call(() => this.native.subscribeBackendCapabilities(authenticated))
+    return {
+      nextUpdate: () => call(async () => {
+        const raw = await subscription.nextUpdate()
+        return raw === null ? null : JSON.parse(raw) as import('./types.js').BackendCapabilityState
+      }),
+      stop: () => subscription.stop(),
+    }
+  }
+  public backendCapabilities(authenticated = false, force = false): Promise<BackendCapabilitySnapshot> {
+    return call(async () => JSON.parse(await this.native.backendCapabilities(authenticated, force)) as BackendCapabilitySnapshot)
+  }
+
   public constructor(private readonly native: NativeImCoreNodeClient) {}
 
   public async prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt> {

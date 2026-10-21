@@ -188,11 +188,33 @@ impl<'a> RootKeyTransferService<'a> {
         Self { client }
     }
 
+    async fn require_backend(&self) -> RootKeyTransferResult<()> {
+        use crate::backend_capabilities::Support;
+        let snapshot = self
+            .client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await
+            .map_err(|_| {
+                RootKeyTransferError::new(RootKeyTransferErrorCode::TemporarilyUnavailable)
+            })?;
+        match snapshot.support("identity.root_transfer") {
+            Support::Supported => Ok(()),
+            Support::Unsupported => Err(RootKeyTransferError::new(
+                RootKeyTransferErrorCode::Unsupported,
+            )),
+            Support::Unknown => Err(RootKeyTransferError::new(
+                RootKeyTransferErrorCode::TemporarilyUnavailable,
+            )),
+        }
+    }
+
     #[cfg(feature = "sqlite")]
     pub async fn prepare(
         &self,
         request: RootKeyTransferPrepareRequest,
     ) -> RootKeyTransferResult<RootKeyTransferPreparation> {
+        self.require_backend().await?;
         crate::internal::identity_root_transfer_runtime::prepare_root_key_transfer(
             self.client,
             request,
@@ -205,6 +227,7 @@ impl<'a> RootKeyTransferService<'a> {
         &self,
         _request: RootKeyTransferPrepareRequest,
     ) -> RootKeyTransferResult<RootKeyTransferPreparation> {
+        self.require_backend().await?;
         Err(RootKeyTransferError::new(
             RootKeyTransferErrorCode::Unsupported,
         ))
@@ -215,6 +238,7 @@ impl<'a> RootKeyTransferService<'a> {
         &self,
         request: RootKeyTransferSendRequest,
     ) -> RootKeyTransferResult<RootKeyTransferSendResult> {
+        self.require_backend().await?;
         crate::internal::identity_root_transfer_runtime::confirm_and_send_root_key_transfer(
             self.client,
             request,
@@ -227,6 +251,7 @@ impl<'a> RootKeyTransferService<'a> {
         &self,
         _request: RootKeyTransferSendRequest,
     ) -> RootKeyTransferResult<RootKeyTransferSendResult> {
+        self.require_backend().await?;
         Err(RootKeyTransferError::new(
             RootKeyTransferErrorCode::Unsupported,
         ))

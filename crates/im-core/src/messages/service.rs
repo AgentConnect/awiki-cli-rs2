@@ -2433,6 +2433,9 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        self.client
+            .backend_capabilities(false)?
+            .require("encrypted_attachments")?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_secure_attachment_request(&request.body, &request.security)?;
@@ -2860,6 +2863,10 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        self.client
+            .backend_capabilities_async(false)
+            .await?
+            .require("encrypted_attachments")?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_secure_attachment_request(&request.body, &request.security)?;
@@ -2928,6 +2935,9 @@ impl<'a> MessageService<'a> {
         if !super::v2_product::direct_enabled_for_client(self.client)? {
             return Err(crate::ImError::unsupported("direct-e2ee-v2"));
         }
+        self.client
+            .backend_capabilities(false)?
+            .require("direct_e2ee")?;
         super::v2_product::send_direct(self.client, resolved)
     }
 
@@ -2939,6 +2949,10 @@ impl<'a> MessageService<'a> {
         if !super::v2_product::direct_enabled_for_client(self.client)? {
             return Err(crate::ImError::unsupported("direct-e2ee-v2"));
         }
+        self.client
+            .backend_capabilities_async(false)
+            .await?
+            .require("direct_e2ee")?;
         super::v2_product::send_direct_async(self.client, resolved).await
     }
 
@@ -2959,6 +2973,9 @@ impl<'a> MessageService<'a> {
         if !self.client.core_inner().group_e2ee_v2_enabled() {
             return Err(crate::ImError::unsupported("group-e2ee-v2"));
         }
+        self.client
+            .backend_capabilities(false)?
+            .require("group_e2ee")?;
         super::v2_product::send_group(self.client, request)
     }
 
@@ -2978,6 +2995,10 @@ impl<'a> MessageService<'a> {
         if !self.client.core_inner().group_e2ee_v2_enabled() {
             return Err(crate::ImError::unsupported("group-e2ee-v2"));
         }
+        self.client
+            .backend_capabilities_async(false)
+            .await?
+            .require("group_e2ee")?;
         super::v2_product::send_group_async(self.client, request).await
     }
 

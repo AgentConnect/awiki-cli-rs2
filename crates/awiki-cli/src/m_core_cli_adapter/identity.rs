@@ -135,6 +135,26 @@ pub fn register_handle_request(
         .flags
         .get("wait")
         .is_some_and(|value| value == "true");
+    let handle_only = command
+        .flags
+        .get("handle-only")
+        .is_some_and(|value| value == "true");
+    if handle_only
+        && (phone.is_some()
+            || email.is_some()
+            || otp.is_some()
+            || command
+                .flags
+                .get("verification-stdin")
+                .is_some_and(|v| v == "true"))
+    {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--handle-only cannot include contact verification",
+            "Use only --handle and --handle-only.",
+        ));
+    }
     let verification = match (phone, email, otp) {
         (Some(phone), None, otp) => VerificationInput::Phone { phone, otp },
         (None, Some(email), None) => VerificationInput::Email {
@@ -142,6 +162,7 @@ pub fn register_handle_request(
             wait_for_verification,
         },
         (None, None, Some(code)) => VerificationInput::Otp { code },
+        (None, None, None) if handle_only => VerificationInput::AlreadyVerified,
         (None, None, None) => {
             return Err(ExitError::new(
                 "invalid_argument",

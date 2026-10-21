@@ -883,3 +883,23 @@ fn notify_request_keeps_stable_message_identity_and_rejects_other_body_types() {
         );
     }
 }
+
+#[test]
+fn backend_capability_rejection_has_stable_actionable_output() {
+    for (reason, code) in [
+        ("backend.group_e2ee.not_supported", "not_supported"),
+        ("backend.direct_e2ee.unconfirmed", "capability_unconfirmed"),
+    ] {
+        let mapped = super::error::map_im_error(
+            im_core::ImError::UnsupportedCapability {
+                capability: reason.into(),
+            },
+            "operation",
+        );
+        assert_eq!(mapped.detail.code, code);
+        assert_eq!(mapped.detail.details["reason_code"], reason);
+        assert_ne!(mapped.exit_code, 0);
+        assert!(!mapped.detail.retryable);
+        assert!(!mapped.detail.hint.contains("legacy"));
+    }
+}

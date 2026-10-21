@@ -150,7 +150,7 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
             };
         }
     };
-    if metadata.installer_url.trim().is_empty() {
+    if metadata.installer_url.trim().is_empty() && metadata.source != "not_provided" {
         metadata.installer_url = decision.installer_url.clone();
     }
 
@@ -265,7 +265,7 @@ fn manifest_urls_for_origin(policy_origin: &str) -> Vec<String> {
     let configured = std::env::var("AWIKI_CLI_UPDATE_BASE_URL").unwrap_or_default();
     if configured.trim().is_empty() {
         return vec![format!(
-            "{}/user-service/v1/server-info?client_platform=cli",
+            "{}/user-service/v1/server-info?client_platform=cli&capabilities_version=1",
             policy_origin.trim_end_matches('/')
         )];
     }
@@ -323,6 +323,27 @@ mod tests {
     use std::sync::{MutexGuard, PoisonError};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn explicitly_absent_policy_is_normal_and_preserves_cached_minimum() {
+        for cached in [false, true] {
+            let server = TestServer::new(vec![TestResponse::ok(
+                r#"{"schema_version":1,"capabilities_version":1,"client_updates":{"policy":{"enabled":false,"protocol_version":1}}}"#,
+            )]);
+            let _urls = TestUrls::set(vec![server.url("/latest")]);
+            let temp = TempDir::new();
+            if cached {
+                seed_metadata(temp.path(), "1.0.9", "1.0.9", "", &server.url(""));
+            }
+            let outcome = super::check_fresh(&resolved(temp.path()));
+            assert_eq!(outcome.error, None);
+            if cached {
+                assert_eq!(outcome.decision.min_supported_version, "1.0.9");
+            } else {
+                assert!(outcome.decision.installer_url.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn compare_versions_handles_numeric_prerelease_segments() {

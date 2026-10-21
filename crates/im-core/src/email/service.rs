@@ -8,6 +8,10 @@ impl<'a> EmailService<'a> {
     }
 
     pub fn account(&self) -> crate::ImResult<super::EmailAccount> {
+        self.client
+            .core_handle()
+            .backend_capabilities(false)?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -17,6 +21,11 @@ impl<'a> EmailService<'a> {
     }
 
     pub async fn account_async(&self) -> crate::ImResult<super::EmailAccount> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -30,6 +39,10 @@ impl<'a> EmailService<'a> {
         &self,
         query: super::EmailInboxQuery,
     ) -> crate::ImResult<crate::ids::Page<super::EmailMessageSummary>> {
+        self.client
+            .core_handle()
+            .backend_capabilities(false)?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -42,6 +55,11 @@ impl<'a> EmailService<'a> {
         &self,
         query: super::EmailInboxQuery,
     ) -> crate::ImResult<crate::ids::Page<super::EmailMessageSummary>> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -52,6 +70,10 @@ impl<'a> EmailService<'a> {
     }
 
     pub fn read(&self, id: super::EmailMessageId) -> crate::ImResult<super::EmailMessage> {
+        self.client
+            .core_handle()
+            .backend_capabilities(false)?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -64,6 +86,11 @@ impl<'a> EmailService<'a> {
         &self,
         id: super::EmailMessageId,
     ) -> crate::ImResult<super::EmailMessage> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -77,6 +104,10 @@ impl<'a> EmailService<'a> {
         &self,
         request: super::EmailMarkReadRequest,
     ) -> crate::ImResult<super::EmailMarkReadResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities(false)?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -89,6 +120,11 @@ impl<'a> EmailService<'a> {
         &self,
         request: super::EmailMarkReadRequest,
     ) -> crate::ImResult<super::EmailMarkReadResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -102,6 +138,10 @@ impl<'a> EmailService<'a> {
         &self,
         request: super::SendEmailRequest,
     ) -> crate::ImResult<super::SendEmailResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities(false)?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -114,6 +154,11 @@ impl<'a> EmailService<'a> {
         &self,
         request: super::SendEmailRequest,
     ) -> crate::ImResult<super::SendEmailResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("services.mail")?;
         crate::internal::email_runtime::EmailRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),

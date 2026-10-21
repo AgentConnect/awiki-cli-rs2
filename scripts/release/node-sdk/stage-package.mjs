@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { candidateDependencies } from './candidate-dependencies.mjs'
 import { readSourceEvidence } from './source-evidence.mjs'
 import { exactDependencyVersion } from './registry-version.mjs'
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
@@ -118,19 +120,18 @@ async function writeCommonFiles(output, manifest, target, binary) {
   const development = process.env.AWIKI_NODE_SOURCE_INTEGRATION === '1'
     ? await readSourceEvidence(repositoryRoot, source.commit) : null
   const metadata = development?.metadata || JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']))
-  const localDependencies = localCandidate ? ['anp', 'anp-identity'].map(name => {
-    const packages = metadata.packages.filter(pkg => pkg.name === name)
-    if (packages.length !== 1 || packages[0].source !== null) {
-      fail(`local candidate must resolve one local ${name} dependency`)
-    }
-    const pkg = packages[0]
-    return {
-      name,
-      version: pkg.version,
-      commit: run('git', ['-C', dirname(pkg.manifest_path), 'rev-parse', 'HEAD']),
-      dirty: run('git', ['-C', dirname(pkg.manifest_path), 'status', '--short']).length > 0,
-    }
-  }) : undefined
+  const localDependencies = localCandidate ? candidateDependencies(metadata,
+    Object.fromEntries(['anp', 'anp-identity'].map(name => [name, workspaceDependencyVersion(name)])), pkg => {
+      if (pkg.source !== null) {
+        const commit = JSON.parse(readFileSync(join(dirname(pkg.manifest_path), '.cargo_vcs_info.json'), 'utf8')).git?.sha1
+        if (!/^[0-9a-f]{40}$/.test(commit ?? '')) fail(`registry source commit is missing for ${pkg.name}`)
+        return { commit, dirty: false }
+      }
+      return {
+        commit: run('git', ['-C', dirname(pkg.manifest_path), 'rev-parse', 'HEAD']),
+        dirty: run('git', ['-C', dirname(pkg.manifest_path), 'status', '--short']).length > 0,
+      }
+    }) : undefined
   const binaryDigest = binary ? await sha256(binary) : undefined
   const releaseConfig = await json(join(repositoryRoot, 'scripts/release/cli/release-config.json'))
   const imCoreVersion = packageVersion(join(repositoryRoot, 'crates/im-core/Cargo.toml'))

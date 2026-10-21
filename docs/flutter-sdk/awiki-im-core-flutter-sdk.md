@@ -1430,3 +1430,24 @@ APP 的邮箱验证码发送与账号验证沿用既有 Host 账号适配器；�
 2026-10-15：`DeviceJoinRequestNotice.join_purpose`（Dart/Node `joinPurpose`）从已验证签名请求
 投影，可供批准页展示用途；不含原 proof、SAS 或私钥。缺省为旧管理设备用途，
 最终确认仍以 Core 批准 prompt 的 `management_allowed` 为权威，不能由宿主文案改变权限。
+## 后端能力投影
+
+`AwikiImCore.backendCapabilities(force: ...)` 是登录前公开发现；
+`AwikiImClient.backendCapabilities(force: ...)` 是认证本域发现。返回 Core JSON 安全投影，
+包含 status、fetched_at、expired、capabilities（support、protocol_version、reason_code、limits）。
+Host 使用当前租户和身份运行代次消费结果，切换后忽略迟到结果；临时失败保留旧快照，
+不删除本地身份、历史、草稿或同步游标。公开和本域来源分别权威，不能混用字段。
+
+
+### 后端能力快照与状态通知（开发候选）
+
+`AwikiImCore` / `AwikiImClient.backendCapabilitiesSnapshot()` 只读 Core 当前快照，不发起
+网络；`watchBackendCapabilities()` 提供安全状态流（snapshot、refresh_error、
+persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立即返回并安排必要
+刷新；`force: true` 等待合并刷新。公开和消息来源分别订阅，认证错误不转为不支持。
+取消 Dart 订阅释放其原生读取会话；dispose Client 停止认证发现，dispose Core 停止全部
+发现工作。新 native bridge 与生成 Dart 文件必须一同构建，不能混用旧制品。
+
+同一 Dart Client 在 Root 导入或权限升级后更换授权上下文时，现有消息能力订阅跟随
+新的缓存并立即发出新上下文的初始状态，不要求 App 重建订阅；旧上下文的排队结果
+不得覆盖新状态。普通 Token 刷新保留原订阅。关闭 Client 会唤醒并结束等待中的订阅。

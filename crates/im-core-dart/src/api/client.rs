@@ -10,26 +10,33 @@ pub struct DartImClient {
 struct DartImClientState {
     core: Option<im_core::ImCore>,
     inner: Option<im_core::ImClient>,
+    capability_source: tokio::sync::watch::Sender<Option<super::capabilities::CapabilityUpdates>>,
+}
+
+impl DartImClientState {
+    fn new(core: Option<im_core::ImCore>, inner: im_core::ImClient) -> Self {
+        let (capability_source, _) =
+            tokio::sync::watch::channel(Some(inner.subscribe_backend_capabilities()));
+        Self {
+            core,
+            inner: Some(inner),
+            capability_source,
+        }
+    }
 }
 
 impl DartImClient {
     #[cfg(test)]
     pub(crate) fn new(inner: im_core::ImClient) -> Self {
         Self {
-            state: Arc::new(RwLock::new(DartImClientState {
-                core: None,
-                inner: Some(inner),
-            })),
+            state: Arc::new(RwLock::new(DartImClientState::new(None, inner))),
             runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
     pub(crate) fn new_with_core(core: im_core::ImCore, inner: im_core::ImClient) -> Self {
         Self {
-            state: Arc::new(RwLock::new(DartImClientState {
-                core: Some(core),
-                inner: Some(inner),
-            })),
+            state: Arc::new(RwLock::new(DartImClientState::new(Some(core), inner))),
             runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -96,6 +103,12 @@ impl DartImClient {
         let (refreshed, authorization_context_changed) = current
             .refresh_runtime_from(inner)
             .map_err(DartImError::from)?;
+        if authorization_context_changed {
+            current.stop_backend_capabilities();
+            guard
+                .capability_source
+                .send_replace(Some(refreshed.subscribe_backend_capabilities()));
+        }
         guard.inner = Some(refreshed);
         Ok(authorization_context_changed)
     }
@@ -104,12 +117,31 @@ impl DartImClient {
         self.runtime_refresh_lock.lock().await
     }
 
+    pub(crate) fn subscribe_capability_source(
+        &self,
+    ) -> Result<
+        tokio::sync::watch::Receiver<Option<super::capabilities::CapabilityUpdates>>,
+        DartImError,
+    > {
+        let guard = self
+            .state
+            .read()
+            .map_err(|_| DartImError::internal("client lock poisoned"))?;
+        if guard.inner.is_none() {
+            return Err(DartImError::object_closed("DartImClient"));
+        }
+        Ok(guard.capability_source.subscribe())
+    }
+
     pub(crate) fn close(&self) -> Result<(), DartImError> {
         let mut guard = self
             .state
             .write()
             .map_err(|_| DartImError::internal("client lock poisoned"))?;
-        guard.inner = None;
+        if let Some(client) = guard.inner.take() {
+            client.stop_backend_capabilities();
+        }
+        guard.capability_source.send_replace(None);
         Ok(())
     }
 }
@@ -135,4 +167,17 @@ pub async fn current_identity(
 ) -> Result<crate::dto::identity::DartIdentitySummary, DartImError> {
     let inner = client.clone_inner()?;
     Ok(inner.current_identity().clone().into())
+}
+
+/// Safe versioned capability projection; does not expose credentials or exception text.
+pub async fn local_backend_capabilities(
+    instance: &Arc<DartImClient>,
+    force: bool,
+) -> Result<String, DartImError> {
+    let snapshot = instance
+        .clone_inner()?
+        .backend_capabilities_async(force)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(snapshot).to_string())
 }

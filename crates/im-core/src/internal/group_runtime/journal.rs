@@ -106,8 +106,13 @@ pub(crate) fn schedule_key_package_replenishment_on(
         (owner, device, &key, serde_json::json!({"notice_id": notice_id, "completed": false}).to_string()),
     ).map_err(crate::internal::local_state::local_state_unavailable)?;
     if inserted != 0 {
-        save_on(connection, owner, device, "device-preparation-status",
-            serde_json::json!({"next_attempt_at": 0}))?;
+        save_on(
+            connection,
+            owner,
+            device,
+            "device-preparation-status",
+            serde_json::json!({"next_attempt_at": 0}),
+        )?;
     }
     Ok(())
 }

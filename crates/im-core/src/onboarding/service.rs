@@ -11,6 +11,10 @@ impl<'a> SkillOnboardingService<'a> {
         &self,
         request: super::SkillClaimRequest,
     ) -> crate::ImResult<super::SkillClaimResult> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("agents.skill_onboarding")?;
         let mut remote =
             crate::internal::skill_onboarding::ProductionSkillOnboardingRemote::new(self.core);
         crate::internal::skill_onboarding::claim_with_remote(self.core, request, &mut remote).await
@@ -20,6 +24,10 @@ impl<'a> SkillOnboardingService<'a> {
         &self,
         request: super::SkillResumeRequest,
     ) -> crate::ImResult<super::SkillClaimResult> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("agents.skill_onboarding")?;
         let mut remote =
             crate::internal::skill_onboarding::ProductionSkillOnboardingRemote::new(self.core);
         crate::internal::skill_onboarding::resume_with_remote(self.core, request, &mut remote).await
@@ -29,6 +37,10 @@ impl<'a> SkillOnboardingService<'a> {
         &self,
         request: super::SkillClaimRequest,
     ) -> crate::ImResult<super::SkillClaimResult> {
+        self.core
+            .backend_capabilities_async(false)
+            .await?
+            .require("agents.skill_onboarding")?;
         let mut remote =
             crate::internal::skill_onboarding::ProductionSkillOnboardingRemote::new(self.core);
         crate::internal::skill_onboarding::recover_legacy_claim_with_remote(

@@ -2342,7 +2342,10 @@ mod tests {
         ))
     }
 
-    pub(super) fn store<'a>(db: &'a Connection, dir: &std::path::Path) -> SqliteV2DirectStateStore<'a> {
+    pub(super) fn store<'a>(
+        db: &'a Connection,
+        dir: &std::path::Path,
+    ) -> SqliteV2DirectStateStore<'a> {
         SqliteV2DirectStateStore::new_with_secret_vault(db, vault(dir), owner_scope()).unwrap()
     }
 
