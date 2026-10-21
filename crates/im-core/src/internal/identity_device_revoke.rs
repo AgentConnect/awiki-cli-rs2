@@ -80,6 +80,7 @@ pub(crate) async fn recover_pending_for_client(
 ) -> crate::ImResult<usize> {
     let _guard = core.inner().device_revoke_lock.lock().await;
     let store = PendingDeviceRevokeStore::from_core(core)?;
+    require_pending_recovery_capability(core, client, &store).await?;
     let mut remote =
         DeviceRevokeHttpAdapter::new(crate::internal::transport::CoreHttpTransport::new(client));
     let mut resolver = DeviceRevokeDidResolver::new(
@@ -95,10 +96,26 @@ pub(crate) async fn recover_pending_with_registry(
 ) -> crate::ImResult<usize> {
     let _guard = core.inner().device_revoke_lock.lock().await;
     let store = PendingDeviceRevokeStore::from_core(core)?;
+    require_pending_recovery_capability(core, client, &store).await?;
     let mut resolver = DeviceRevokeDidResolver::new(
         crate::internal::transport::CoreHttpTransport::new_signature_only(client),
     );
     recover_pending_locked(core, client, &store, registry, &mut resolver).await
+}
+
+async fn require_pending_recovery_capability(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    store: &PendingDeviceRevokeStore,
+) -> crate::ImResult<()> {
+    // Opening an ordinary local identity must not discover a remote capability
+    // when there is no recovery work. A paused recovery retains its exact record.
+    if !store.list_for_identity(client.did())?.is_empty() {
+        core.backend_capabilities_async(false)
+            .await?
+            .require("identity.device_revoke")?;
+    }
+    Ok(())
 }
 
 async fn recover_pending_for_client_with_runtime<R, D>(

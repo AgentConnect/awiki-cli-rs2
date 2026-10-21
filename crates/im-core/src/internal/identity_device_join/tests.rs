@@ -264,11 +264,11 @@ fn open_external_provider_ready_admin_core_for_method(
         profile: anp_identity::CreateIdentityProfile::E1,
         domain: "awiki.test".to_owned(),
         port: None,
-        path_segments: vec!["users".to_owned(), "external-admin".to_owned()],
+        path_segments: vec!["user".to_owned(), "external-admin".to_owned()],
         capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
         managed_keys: vec![
             anp_identity::ManagedKeyInput {
-                fragment: "root".to_owned(),
+                fragment: "key-1".to_owned(),
                 role: anp_identity::ManagedKeyRole::RootControl,
             },
             anp_identity::ManagedKeyInput {
@@ -1856,7 +1856,18 @@ async fn web_external_provider_completes_admin_join_and_device_removal_without_r
 }
 
 #[tokio::test]
-async fn web_join_current_authorization_survives_expiry_and_crash_before_projection() {
+async fn join_current_authorization_survives_expiry_and_crash_before_projection() {
+    for method in [
+        crate::identity::DidMethod::Web,
+        crate::identity::DidMethod::Wba,
+    ] {
+        assert_join_current_authorization_survives_expiry_and_crash(method).await;
+    }
+}
+
+async fn assert_join_current_authorization_survives_expiry_and_crash(
+    method: crate::identity::DidMethod,
+) {
     use crate::internal::identity_device_join_runtime::*;
     use crate::internal::identity_provider::*;
     let admin_root = tempfile::tempdir().unwrap();
@@ -1864,7 +1875,7 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
     let fixture = prepare_external_provider_admin_join_for_method(
         admin_root.path(),
         candidate_root.path(),
-        crate::identity::DidMethod::Web,
+        method,
     )
     .await;
     let candidate = open_empty_vault_core(candidate_root.path());
@@ -1874,6 +1885,10 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
         .load(id, DeviceJoinSide::NewDevice)
         .unwrap()
         .unwrap();
+    assert_eq!(
+        web_activation::requires_current_confirmation(&candidate, id).unwrap(),
+        matches!(method, crate::identity::DidMethod::Web),
+    );
     stored.challenge.as_mut().unwrap().challenge_expires_at = "2000-01-01T00:00:00Z".to_owned();
     state_store.save(&stored).unwrap();
     assert!(matches!(
@@ -1881,12 +1896,27 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
         Err(crate::ImError::SessionExpired)
     ));
 
+    assert!(web_activation::requires_current_confirmation(&candidate, id).unwrap());
     let did = fixture.started.session.did.clone();
+    let (handle, full_handle, handle_endpoint) = if method == crate::identity::DidMethod::Web {
+        (
+            "alice",
+            "alice.names.test",
+            "https://names.test/.well-known/handle/alice",
+        )
+    } else {
+        (
+            "external-admin",
+            "external-admin.awiki.test",
+            "https://awiki.test/.well-known/handle/external-admin",
+        )
+    };
     let mut document = fixture.prepared.new_document.clone();
     document["service"] = json!([{
         "id": format!("{}#handle", did.as_str()), "type": "ANPHandleService",
-        "serviceEndpoint": "https://names.test/.well-known/handle/alice",
+        "serviceEndpoint": handle_endpoint,
     }]);
+    document = sign_join_recovery_test_document(&fixture.admin, method, document).await;
     // A later service update must not invalidate the historical Join receipt.
     let mut registry = DeviceJoinRemoteRegistry {
         did: did.clone(),
@@ -1912,7 +1942,7 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
             &fixture.authorization.device.signing_key_id,
         ),
         handle_binding: Some(DeviceJoinHandleBinding {
-            full_handle: "alice.names.test".to_owned(),
+            full_handle: full_handle.to_owned(),
             binding_generation: "3".to_owned(),
         }),
     };
@@ -2038,9 +2068,17 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
         .is_none());
 
     web_activation::FAIL_AFTER_CUSTODY_ADOPTION.store(true, std::sync::atomic::Ordering::SeqCst);
+    let crash_result = web_activation::prepare(
+        &candidate,
+        id,
+        observation(status.clone(), registry.clone(), document.clone()),
+    )
+    .await;
     assert!(
-        matches!(web_activation::prepare(&candidate, id, observation(status.clone(), registry.clone(), document.clone())).await,
-        Err(crate::ImError::Internal { message }) if message == "injected crash after Web Join custody adoption")
+        matches!(&crash_result,
+        Err(crate::ImError::Internal { message }) if message == "injected crash after Web Join custody adoption"),
+        "method={method:?}, result={:?}",
+        crash_result.err()
     );
     assert_eq!(
         provider
@@ -2113,6 +2151,7 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
         Err(crate::ImError::SessionExpired)
     ));
     document["alsoKnownAs"] = json!(["https://example.test/profile"]);
+    document = sign_join_recovery_test_document(&fixture.admin, method, document).await;
     registry.checkpoint.document_version += 1;
     registry.checkpoint.registry_version += 1;
     registry.checkpoint.document_hash = canonical_hash(&document).unwrap();
@@ -2142,13 +2181,66 @@ async fn web_join_current_authorization_survives_expiry_and_crash_before_project
     )
     .load_index()
     .unwrap();
-    let entry = index.credentials.get("alice").unwrap();
+    let entry = index.credentials.get(handle).unwrap();
     assert_eq!(entry.did, did.as_str());
-    assert_eq!(entry.full_handle, "alice.names.test");
+    assert_eq!(entry.full_handle, full_handle);
     assert_eq!(entry.binding_generation.as_deref(), Some("3"));
     assert!(load_pending_new_device_activation(&candidate, id)
         .unwrap()
         .is_none());
+}
+
+async fn sign_join_recovery_test_document(
+    core: &crate::ImCore,
+    method: crate::identity::DidMethod,
+    mut document: Value,
+) -> Value {
+    if method == crate::identity::DidMethod::Web {
+        return document;
+    }
+    use crate::internal::identity_provider::*;
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let public = client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .public_identity()
+        .await
+        .unwrap();
+    let root = public
+        .active_keys
+        .iter()
+        .find(|key| key.purposes.contains(&ProviderKeyPurpose::RootControl))
+        .unwrap();
+    document.as_object_mut().unwrap().remove("proof");
+    crate::internal::identity_custody::controller_custody_provider(core)
+        .await
+        .unwrap()
+        .sign_document_proof(
+            &public.reference,
+            ProviderDocumentProofRequest {
+                key: ProviderKeySelector::Kid(root.kid.clone()),
+                document,
+                options: ProviderDocumentProofOptions {
+                    proof_purpose: Some("assertionMethod".to_owned()),
+                    proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                    cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                    created: Some(
+                        time::OffsetDateTime::now_utc()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap(),
+                    ),
+                    domain: Some("awiki.test".to_owned()),
+                    challenge: Some("consumed-join-recovery-test".to_owned()),
+                },
+            },
+        )
+        .await
+        .unwrap()
 }
 
 async fn assert_provider_completes_admin_join_for_method(method: crate::identity::DidMethod) {
@@ -4428,4 +4520,30 @@ async fn management_budget_is_signed_and_legacy_authorization_survives_upgrade()
         .unwrap()
         .max_attempts = 4;
     assert!(management::validate_authority(&restored).is_err());
+}
+
+#[test]
+fn joined_identity_projection_supports_gateway_and_legacy_wba_paths() {
+    let index = crate::internal::identity_store::IndexPayload::default();
+    for path in ["alice:e1_root", "user:alice:e1_root"] {
+        let did = crate::ids::Did::parse(format!("did:wba:example.test:{path}")).unwrap();
+        let projected = join_local_identity_projection(&did, "dev-joined", &index, None).unwrap();
+        assert_eq!(
+            projected,
+            (
+                "alice".into(),
+                "alice".into(),
+                "alice.example.test".into(),
+                true
+            )
+        );
+    }
+    for path in [
+        "team:alice:e1_root",
+        "user:alice:extra:e1_root",
+        "alice:other_root",
+    ] {
+        let did = crate::ids::Did::parse(format!("did:wba:example.test:{path}")).unwrap();
+        assert!(join_local_identity_projection(&did, "dev-joined", &index, None).is_err());
+    }
 }

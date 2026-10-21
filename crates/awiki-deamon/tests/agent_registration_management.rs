@@ -316,7 +316,7 @@ impl TenantPolicyServer {
                         let mut request = [0; 4096];
                         let n = stream.read(&mut request).unwrap();
                         assert!(String::from_utf8_lossy(&request[..n]).starts_with(
-                            "GET /user-service/v1/server-info?client_platform=daemon "
+                            "GET /user-service/v1/server-info?client_platform=daemon&capabilities_version=1 "
                         ));
                         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
                         stream.write_all(&body).unwrap();

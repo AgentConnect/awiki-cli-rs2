@@ -620,3 +620,14 @@ fn receive_budget_boundary_keeps_the_public_resumable_error() {
     let message = error.to_string();
     assert!(message.contains("(sync.budget_exhausted)"), "{message}");
 }
+
+#[test]
+fn backend_capability_reason_survives_message_adapter() {
+    let reason = "backend.direct_e2ee.not_supported";
+    assert_eq!(
+        im_error_to_message_error(im_core::ImError::UnsupportedCapability {
+            capability: reason.into(),
+        }),
+        MessageAdapterError::BackendCapability(reason.into())
+    );
+}

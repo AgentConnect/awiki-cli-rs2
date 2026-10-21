@@ -16,6 +16,16 @@ impl super::MessageService<'_> {
         {
             return Ok(());
         }
+        let capabilities = self.client.backend_capabilities_async(false).await?;
+        let direct_enabled =
+            capabilities.support("direct_e2ee") == crate::backend_capabilities::Support::Supported;
+        let group_enabled =
+            capabilities.support("group_e2ee") == crate::backend_capabilities::Support::Supported;
+        if !direct_enabled && !group_enabled {
+            return Err(crate::ImError::unsupported(
+                "backend.encrypted_messaging.unavailable",
+            ));
+        }
         #[cfg(feature = "sqlite")]
         let lock = self.client.core_inner().group_lifecycle_lock(
             self.client.current_identity().id.as_str(),
@@ -27,7 +37,7 @@ impl super::MessageService<'_> {
         preparation_stage(self.client, "authorization")?;
         let (client, _) = self.client.reload_local_authorization_async().await?;
         let core = client.core_handle();
-        if core.inner().direct_e2ee_v2_enabled() {
+        if core.inner().direct_e2ee_v2_enabled() && direct_enabled {
             #[cfg(feature = "sqlite")]
             preparation_stage(&client, "direct_prekey")?;
             crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(
@@ -35,7 +45,7 @@ impl super::MessageService<'_> {
             )
             .await?;
         }
-        if core.inner().group_e2ee_v2_enabled() {
+        if core.inner().group_e2ee_v2_enabled() && group_enabled {
             #[cfg(feature = "group-e2ee")]
             {
                 let device_id = client.exact_protocol_device_id()?;
@@ -90,6 +100,14 @@ impl super::MessageService<'_> {
 #[cfg(feature = "sqlite")]
 pub(crate) async fn maintain(client: &crate::core::ImClient) {
     if !client.core_inner().direct_e2ee_v2_enabled() && !client.core_inner().group_e2ee_v2_enabled()
+    {
+        return;
+    }
+    let Ok(capabilities) = client.backend_capabilities_async(false).await else {
+        return;
+    };
+    if capabilities.support("direct_e2ee") != crate::backend_capabilities::Support::Supported
+        && capabilities.support("group_e2ee") != crate::backend_capabilities::Support::Supported
     {
         return;
     }

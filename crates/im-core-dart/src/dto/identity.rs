@@ -347,6 +347,7 @@ pub struct DartDeviceRegistryAuthorizedDeviceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRequestNotice {
+    pub join_purpose: Option<String>,
     pub event_id: String,
     pub join_session_id: String,
     pub did: String,
@@ -454,6 +455,8 @@ impl std::fmt::Debug for DartDeviceJoinProgress {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinApprovalPrompt {
+    /// False for a signed messages-only enrollment.
+    pub management_allowed: bool,
     pub approval_handle: String,
     pub join_session_id: String,
     pub sas: String,

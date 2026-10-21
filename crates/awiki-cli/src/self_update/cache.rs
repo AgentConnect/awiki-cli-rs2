@@ -83,6 +83,14 @@ pub fn load_metadata(
 
     match fetch_from_registry(registry_urls, expected_policy_origin) {
         Ok(network) => {
+            if network.source == "not_provided" {
+                if let Some(cache) = cached {
+                    let mut metadata = cache.metadata;
+                    metadata.source = "not_provided_cached_minimum".into();
+                    return Ok(metadata);
+                }
+                return Ok(network);
+            }
             if cached.as_ref().is_some_and(|cached| {
                 cached.metadata.policy_origin == network.policy_origin
                     && cached.metadata.policy_revision > network.policy_revision
@@ -157,6 +165,23 @@ fn fetch_from_registry_url(url: &str, expected_policy_origin: &str) -> Result<Me
 
     let value: serde_json::Value =
         serde_json::from_slice(&response.body).map_err(|err| err.to_string())?;
+    if value.get("schema_version").and_then(|v| v.as_u64()) == Some(1)
+        && value.get("capabilities_version").and_then(|v| v.as_u64()) == Some(1)
+        && value
+            .pointer("/client_updates/policy/protocol_version")
+            .and_then(|v| v.as_u64())
+            == Some(1)
+        && value
+            .pointer("/client_updates/policy/enabled")
+            .and_then(|v| v.as_bool())
+            == Some(false)
+    {
+        return Ok(Metadata {
+            policy_origin: expected_policy_origin.into(),
+            source: "not_provided".into(),
+            ..Metadata::default()
+        });
+    }
     if value.get("client_versions").is_some() {
         return metadata_from_server_info(value, expected_policy_origin);
     }

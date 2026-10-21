@@ -509,6 +509,7 @@ impl From<im_core::identity::DeviceRegistryAuthorizedDeviceSummary>
 impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
     fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
         Self {
+            join_purpose: value.join_purpose,
             event_id: value.event_id,
             join_session_id: value.join_session_id,
             did: value.did.as_str().to_owned(),
@@ -547,6 +548,7 @@ impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
 impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprovalPrompt {
     fn from(value: im_core::identity::DeviceJoinApprovalPrompt) -> Self {
         Self {
+            management_allowed: value.management_allowed,
             approval_handle: value.approval_handle,
             join_session_id: value.join_session_id,
             sas: value.sas,
@@ -2743,9 +2745,13 @@ mod tests {
             name: Some("Group".to_owned()),
             display_name: None,
             avatar_uri: None,
+            avatar_members: None,
+            group_state_version: None,
             my_role: Some("member".to_owned()),
             membership_status: Some("active".to_owned()),
             member_count: Some(1),
+            avatar_members: None,
+            group_state_version: None,
             last_message_at: None,
         });
 

@@ -96,7 +96,9 @@ pub fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {
         .state
         .write()
         .map_err(|_| DartImError::internal("core lock poisoned"))?;
-    guard.inner = None;
+    if let Some(core) = guard.inner.take() {
+        core.stop_backend_discovery();
+    }
     Ok(())
 }
 
@@ -131,4 +133,17 @@ pub async fn validate_paths(core: &Arc<DartImCore>) -> Result<Vec<String>, DartI
             .map(|warning| format!("warning:{warning}")),
     );
     Ok(lines)
+}
+
+/// Safe versioned capability projection; does not expose credentials or exception text.
+pub async fn public_backend_capabilities(
+    instance: &Arc<DartImCore>,
+    force: bool,
+) -> Result<String, DartImError> {
+    let snapshot = instance
+        .clone_inner()?
+        .backend_capabilities_async(force)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(serde_json::json!(snapshot).to_string())
 }

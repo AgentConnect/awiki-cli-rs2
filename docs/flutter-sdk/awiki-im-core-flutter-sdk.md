@@ -1420,3 +1420,34 @@ Native App 明确调用 `confirmDeviceJoinWithManagement`，选择 Core `confirm
 ### 设备群能力升级
 
 Dart 暴露 `identityDeviceCapabilityStatus` 与 `identityUpgradeDeviceCapabilities`，参数为身份选择器、可选目标设备与明确的用户确认。返回 typed `DeviceCapabilityUpgradeStatus`。APP 在登录后独立检查，当前 ready admin 自动完成兼容增量，其他设备由管理设备确认，不阻塞会话或 Handle 恢复。网络失败呈现局部重试，不能在初始化时自动弹全局错误。
+
+### 托管 Gateway 的消息用途与邮箱加入
+
+设备批准进度新增 `managementAllowed`，由签名 Join 请求用途决定。APP 显示 `false` 时只能走普通成员批准，不得调用自动根密钥授予。未知用途或被篡改的用途由 Core 拒绝；不能根据设备名称判断。
+
+APP 的邮箱验证码发送与账号验证沿用既有 Host 账号适配器；获得仅 Join 用途的 grant 后，身份加入、持久化 operation、配对与通信继续由 Core 完成。Rust `DeviceJoinService.begin_with_email` / `send_email_code` 为 CLI 提供相同验证入口。邮箱加入不提供网页或 APP 邮箱 Recovery 捷径。
+
+2026-10-15：`DeviceJoinRequestNotice.join_purpose`（Dart/Node `joinPurpose`）从已验证签名请求
+投影，可供批准页展示用途；不含原 proof、SAS 或私钥。缺省为旧管理设备用途，
+最终确认仍以 Core 批准 prompt 的 `management_allowed` 为权威，不能由宿主文案改变权限。
+## 后端能力投影
+
+`AwikiImCore.backendCapabilities(force: ...)` 是登录前公开发现；
+`AwikiImClient.backendCapabilities(force: ...)` 是认证本域发现。返回 Core JSON 安全投影，
+包含 status、fetched_at、expired、capabilities（support、protocol_version、reason_code、limits）。
+Host 使用当前租户和身份运行代次消费结果，切换后忽略迟到结果；临时失败保留旧快照，
+不删除本地身份、历史、草稿或同步游标。公开和本域来源分别权威，不能混用字段。
+
+
+### 后端能力快照与状态通知（开发候选）
+
+`AwikiImCore` / `AwikiImClient.backendCapabilitiesSnapshot()` 只读 Core 当前快照，不发起
+网络；`watchBackendCapabilities()` 提供安全状态流（snapshot、refresh_error、
+persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立即返回并安排必要
+刷新；`force: true` 等待合并刷新。公开和消息来源分别订阅，认证错误不转为不支持。
+取消 Dart 订阅释放其原生读取会话；dispose Client 停止认证发现，dispose Core 停止全部
+发现工作。新 native bridge 与生成 Dart 文件必须一同构建，不能混用旧制品。
+
+同一 Dart Client 在 Root 导入或权限升级后更换授权上下文时，现有消息能力订阅跟随
+新的缓存并立即发出新上下文的初始状态，不要求 App 重建订阅；旧上下文的排队结果
+不得覆盖新状态。普通 Token 刷新保留原订阅。关闭 Client 会唤醒并结束等待中的订阅。

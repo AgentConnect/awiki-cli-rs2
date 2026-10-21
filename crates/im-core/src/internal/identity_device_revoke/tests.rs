@@ -1452,3 +1452,81 @@ async fn web_revoke_checkpoint_conflict_reconciles_after_reopen_and_allows_new_i
     assert_eq!(next.expected_checkpoint, remote.registry.checkpoint);
     assert!(!next.rejected);
 }
+
+#[tokio::test]
+async fn backend_revoke_shutdown_preserves_pending_recovery_before_remote_access() {
+    for declaration in [
+        json!({"enabled": false, "protocol_version": 1}),
+        Value::Null,
+    ] {
+        let scenario = scenario(
+            DeviceAuthorizationRole::Admin,
+            DeviceAuthorizationRole::Member,
+            false,
+        );
+        let core = scenario.open_core(true);
+        let client = core
+            .client(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+        let pending = prepare_initial_intent(
+            &client,
+            &scenario.target.device_id,
+            &scenario.authorizing.device_id,
+            &scenario.authorizing.signing_key_id,
+            scenario.registry.clone(),
+            scenario.document.clone(),
+        )
+        .await
+        .unwrap();
+        store.save(&pending).unwrap();
+        let before = serde_json::to_value(&pending).unwrap();
+        let mut raw = json!({"schema_version": 1, "capabilities_version": 1, "identity": {}});
+        if !declaration.is_null() {
+            raw["identity"]["device_revoke"] = declaration;
+        }
+        core.inner()
+            .backend_capabilities
+            .discover(true, || async {
+                crate::backend_capabilities::CapabilitySnapshot::from_server_info(&raw)
+            })
+            .await
+            .unwrap();
+        // Both production recovery entrypoints stop before constructing their
+        // real remote workflow. Exact unsupported/unconfirmed errors prove the
+        // cached capability guard won rather than an incidental network error.
+        for result in [
+            recover_pending_for_client(&core, &client).await,
+            recover_pending_with_registry(&core, &client, &scenario.registry).await,
+        ] {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("backend.identity.device_revoke."), "{error}");
+        }
+        let (_, after) = store
+            .load(&scenario.did, TARGET_DEVICE_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::to_value(after).unwrap(), before);
+        assert_eq!(scenario.local_document(), scenario.document);
+    }
+}
+
+#[tokio::test]
+async fn empty_pending_recovery_does_not_require_backend_discovery() {
+    let scenario = scenario(
+        DeviceAuthorizationRole::Admin,
+        DeviceAuthorizationRole::Member,
+        false,
+    );
+    let core = scenario.open_core(true);
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(recover_pending_for_client(&core, &client).await.unwrap(), 0);
+    assert_eq!(
+        recover_pending_with_registry(&core, &client, &scenario.registry)
+            .await
+            .unwrap(),
+        0
+    );
+}

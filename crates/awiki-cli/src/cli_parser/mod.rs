@@ -130,6 +130,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "tenant.setup" => app.run_tenant_setup(command),
         "tenant.use" => app.run_tenant_use(command),
         "tenant.reconfigure" => app.run_tenant_reconfigure(command),
+        "doctor.capabilities" => app.run_backend_capabilities(command),
         "doctor" => app.run_doctor(),
         "docs" => app.run_docs(&command.args),
         "schema" => app.run_schema(command),
@@ -298,6 +299,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
     enforce_command_policy(command)?;
 
     match command.name.as_str() {
+        "doctor.capabilities" => app.run_backend_capabilities_async(command).await,
         "http.request" => app.run_http_request_async(command).await,
         "init" => app.run_init_async().await,
         "onboarding.claim" => app.run_onboarding_claim_async(command).await,

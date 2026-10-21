@@ -126,12 +126,33 @@ fn check_with_client_version(
 }
 
 pub(super) fn run(resolved: &Resolved, command: &ParsedCommand) -> Result<(), ExitError> {
+    if command
+        .flags
+        .get("handle-only")
+        .is_some_and(|value| value == "true")
+    {
+        let core = discovery_core(resolved)?;
+        core.backend_capabilities(false)
+            .and_then(|caps| caps.require("registration.handle_only"))
+            .map_err(|error| crate::m_core_cli_adapter::map_im_error(error, "id register"))?;
+    }
     check(input(resolved, command)?)
 }
 pub(super) async fn run_async(
     resolved: &Resolved,
     command: &ParsedCommand,
 ) -> Result<(), ExitError> {
+    if command
+        .flags
+        .get("handle-only")
+        .is_some_and(|value| value == "true")
+    {
+        discovery_core(resolved)?
+            .backend_capabilities_async(false)
+            .await
+            .and_then(|caps| caps.require("registration.handle_only"))
+            .map_err(|error| crate::m_core_cli_adapter::map_im_error(error, "id register"))?;
+    }
     let input = input(resolved, command)?;
     tokio::task::spawn_blocking(move || check(input))
         .await
@@ -141,3 +162,11 @@ pub(super) async fn run_async(
 #[cfg(test)]
 #[path = "registration_precheck_tests.rs"]
 mod tests;
+
+fn discovery_core(resolved: &Resolved) -> Result<im_core::ImCore, ExitError> {
+    im_core::ImCore::new(
+        crate::m_core_cli_adapter::build_im_core_config(resolved)?,
+        crate::m_core_cli_adapter::paths::build_im_core_paths(resolved)?,
+    )
+    .map_err(|error| crate::m_core_cli_adapter::map_im_error(error, "id register"))
+}

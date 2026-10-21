@@ -2163,6 +2163,11 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::UnsupportedCapability { capability } if capability == "secure-direct" => {
             MessageAdapterError::SecureNotSupported
         }
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability.starts_with("backend.") =>
+        {
+            MessageAdapterError::BackendCapability(capability)
+        }
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => {
             MessageAdapterError::IdentityRequired("authentication is required".to_string())
         }

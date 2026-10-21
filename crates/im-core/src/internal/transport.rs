@@ -1608,8 +1608,9 @@ impl AsyncAuthenticatedRpcTransport for CoreHttpTransport<'_> {
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value> {
+        let capability_generation = self.client.backend_capabilities.generation();
         self.last_auth_retry_consumed = false;
-        match self
+        let result = match self
             .authenticated_rpc_inner_async(endpoint, method, params.clone())
             .await
         {
@@ -1624,7 +1625,12 @@ impl AsyncAuthenticatedRpcTransport for CoreHttpTransport<'_> {
                     .await
             }
             result => result,
-        }
+        };
+        self.client
+            .backend_capabilities
+            .observe_rpc_result(capability_generation, method, &result)
+            .await;
+        result
     }
 
     fn reload_authentication_state(&mut self) -> crate::ImResult<()> {

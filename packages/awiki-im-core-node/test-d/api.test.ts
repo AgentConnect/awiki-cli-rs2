@@ -110,6 +110,9 @@ void opened.then(async client => {
         joinSessionId: localVerification.joinSessionId,
         sasConfirmed: true,
       })
+      prompt.managementAllowed satisfies boolean
+      // @ts-expect-error The signed enrollment's management authority is read-only.
+      prompt.managementAllowed = true
       await client.confirmDeviceJoinApproval({
         approvalHandle: prompt.approvalHandle,
         userPresenceConfirmed: true,

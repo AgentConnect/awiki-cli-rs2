@@ -87,7 +87,19 @@ fn device_join_schema_exposes_only_safe_inputs() {
         .iter()
         .filter_map(|flag| flag["name"].as_str())
         .collect();
-    assert_eq!(names, vec!["did", "operation-id", "ttl-seconds"]);
+    assert_eq!(
+        names,
+        vec![
+            "email-verification-stdin",
+            "send-code",
+            "handle",
+            "did",
+            "operation-id",
+            "ttl-seconds"
+        ]
+    );
+    assert!(!names.contains(&"email"));
+    assert!(!names.contains(&"code"));
     let output_text = String::from_utf8_lossy(&output.stdout);
     assert!(!output_text.contains("join_session_token"));
     assert!(!output_text.contains("pairing_secret"));

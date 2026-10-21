@@ -11,6 +11,13 @@ impl<'a> ContentService<'a> {
     }
 
     pub fn create_page(&self, draft: super::PageDraft) -> crate::ImResult<super::PageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -22,6 +29,11 @@ impl<'a> ContentService<'a> {
         &self,
         draft: super::PageDraft,
     ) -> crate::ImResult<super::PageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -34,6 +46,13 @@ impl<'a> ContentService<'a> {
         &self,
         query: super::ContentPageQuery,
     ) -> crate::ImResult<crate::ids::Page<super::PageDocument>> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -45,6 +64,11 @@ impl<'a> ContentService<'a> {
         &self,
         query: super::ContentPageQuery,
     ) -> crate::ImResult<crate::ids::Page<super::PageDocument>> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -54,6 +78,13 @@ impl<'a> ContentService<'a> {
     }
 
     pub fn get_page(&self, page: super::PageRef) -> crate::ImResult<super::PageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -65,6 +96,11 @@ impl<'a> ContentService<'a> {
         &self,
         page: super::PageRef,
     ) -> crate::ImResult<super::PageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -78,6 +114,13 @@ impl<'a> ContentService<'a> {
         page: super::PageRef,
         patch: super::PageUpdate,
     ) -> crate::ImResult<super::PageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -90,6 +133,11 @@ impl<'a> ContentService<'a> {
         page: super::PageRef,
         patch: super::PageUpdate,
     ) -> crate::ImResult<super::PageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -103,6 +151,13 @@ impl<'a> ContentService<'a> {
         page: super::PageRef,
         target: super::PageSlug,
     ) -> crate::ImResult<super::PageDocument> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -115,6 +170,11 @@ impl<'a> ContentService<'a> {
         page: super::PageRef,
         target: super::PageSlug,
     ) -> crate::ImResult<super::PageDocument> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -124,6 +184,13 @@ impl<'a> ContentService<'a> {
     }
 
     pub fn delete_page(&self, page: super::PageRef) -> crate::ImResult<super::PageDeleteResult> {
+        #[cfg(feature = "blocking")]
+        {
+            self.client
+                .core_handle()
+                .backend_capabilities(false)?
+                .require("content.pages")?;
+        }
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -135,6 +202,11 @@ impl<'a> ContentService<'a> {
         &self,
         page: super::PageRef,
     ) -> crate::ImResult<super::PageDeleteResult> {
+        self.client
+            .core_handle()
+            .backend_capabilities_async(false)
+            .await?
+            .require("content.pages")?;
         ContentRuntime::new(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),

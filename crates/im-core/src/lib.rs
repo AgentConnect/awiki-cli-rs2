@@ -5,6 +5,7 @@
 
 pub mod attachments;
 pub mod auth;
+pub mod backend_capabilities;
 pub mod config;
 pub mod content;
 pub mod core;

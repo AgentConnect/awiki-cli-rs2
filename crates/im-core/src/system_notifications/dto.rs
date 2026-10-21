@@ -77,6 +77,13 @@ impl SystemNotificationKind {
     }
 
     pub(crate) fn parse(value: &str) -> crate::ImResult<Self> {
+        let normalized;
+        let value = if let Some(stem) = value.strip_suffix(".v2") {
+            normalized = format!("{stem}.v1");
+            normalized.as_str()
+        } else {
+            value
+        };
         match value {
             "awiki.device.join-requested.v1" => Ok(Self::JoinRequested),
             "awiki.device.join-claimed.v1" => Ok(Self::JoinClaimed),

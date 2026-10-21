@@ -481,6 +481,7 @@ pub(crate) async fn start(
         pairing_public_key,
         profiles: join_device_profiles(request.did.as_str()),
         requested_role: "member".to_owned(),
+        join_purpose: None,
         issued_at: format_time(now)?,
         expires_at: format_time(expires_at)?,
         join_request_proof: DeviceJoinRequestProof {
@@ -1595,6 +1596,7 @@ pub(crate) async fn prepare_admin_approval_with_management_async(
     sas_confirmed: bool,
     configure_management: bool,
 ) -> crate::ImResult<PreparedAdminApproval> {
+    let configure_management = configure_management && allows_management(core, join_session_id)?;
     let operation_id = required("operation_id", operation_id)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let user_presence_at = required("user_presence_at", user_presence_at)?;
@@ -2856,20 +2858,18 @@ fn promote_join_identity_local(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    if pending.did.as_str().starts_with("did:web:") {
-        crate::internal::access_token::validate_device_access_token(
-            &access.access_token,
-            &crate::internal::access_token::ExpectedDeviceAccess {
-                did: pending.did.as_str(),
-                user_id: &access.user_id,
-                device_id: &pending.authorization.device.device_id,
-                key_id: &pending.authorization.device.signing_key_id,
-                auth_generation: pending.authorization.device.auth_generation,
-                role: pending.authorization.device.role,
-                management_ready: false,
-            },
-        )?;
-    }
+    crate::internal::access_token::validate_device_access_token(
+        &access.access_token,
+        &crate::internal::access_token::ExpectedDeviceAccess {
+            did: pending.did.as_str(),
+            user_id: &access.user_id,
+            device_id: &pending.authorization.device.device_id,
+            key_id: &pending.authorization.device.signing_key_id,
+            auth_generation: pending.authorization.device.auth_generation,
+            role: pending.authorization.device.role,
+            management_ready: false,
+        },
+    )?;
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
         IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
@@ -3407,14 +3407,14 @@ fn join_local_identity_projection(
             .strip_prefix(&format!("did:wba:{domain}:"))
             .ok_or(crate::ImError::PermissionDenied)?;
         let components = rest.split(':').collect::<Vec<_>>();
-        if components.len() != 3
-            || components[0] != "user"
-            || components[1].trim().is_empty()
-            || !components[2].starts_with("e1_")
-        {
+        let (handle, fingerprint) = match components.as_slice() {
+            [handle, fingerprint] | ["user", handle, fingerprint] => (*handle, *fingerprint),
+            _ => return Err(crate::ImError::PermissionDenied),
+        };
+        if handle.trim().is_empty() || !fingerprint.starts_with("e1_") {
             return Err(crate::ImError::PermissionDenied);
         }
-        let handle = components[1].to_ascii_lowercase();
+        let handle = handle.to_ascii_lowercase();
         let full_handle = format!("{handle}.{domain}");
         (handle, full_handle)
     };
@@ -4403,6 +4403,16 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
     let did = crate::ids::Did::parse(&request.did)?;
     crate::ids::ProtocolDeviceId::parse(&request.device_id)?;
     required("join_request.join_session_id", &request.join_session_id)?;
+    if request
+        .join_purpose
+        .as_deref()
+        .is_some_and(|purpose| purpose != "messages_only")
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("join_request.join_purpose".into()),
+            "unsupported Join purpose",
+        ));
+    }
     if request.requested_role != "member" {
         return Err(crate::ImError::invalid_input(
             Some("join_request.requested_role".to_owned()),
@@ -5948,3 +5958,19 @@ fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// The signed Join request, never the caller's device display name, owns this decision.
+pub(crate) fn allows_management(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<bool> {
+    let _guard = lock_join_state(core)?;
+    let stored = JoinStateStore::new(core)
+        .load(join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| invalid_state("Join request unavailable"))?;
+    match stored.join_request.join_purpose.as_deref() {
+        None => Ok(true),
+        Some("messages_only") => Ok(false),
+        Some(_) => Err(crate::ImError::PermissionDenied),
+    }
+}
