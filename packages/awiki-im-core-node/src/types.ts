@@ -510,6 +510,8 @@ export interface AdminDeviceJoinProgress {
 }
 
 export interface DeviceJoinApprovalPrompt {
+  /** Signed enrollment authority; false for a messaging-only device. */
+  readonly managementAllowed: boolean
   readonly approvalHandle: string
   readonly joinSessionId: string
   readonly sas: string
