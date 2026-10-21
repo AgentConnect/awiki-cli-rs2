@@ -375,3 +375,5 @@ python3 scripts/test_daemon_release_contract.py
 curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-token>
 awiki-deamon --version
 ```
+
+CLI 自托管版本必须同时交付显式租户渲染的文档；准备、不可变安装、活动指针、政策校验与恢复合同见 [CLI 发布流程](../scripts/release/cli/README.md)。

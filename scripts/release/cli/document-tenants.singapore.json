@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "tenants": [
+    {
+      "origin": "https://anpclaw.com",
+      "backend_origin": "https://anpclaw.com",
+      "did_host": "anpclaw.com",
+      "name": "anpclaw-com",
+      "mode": "setup",
+      "download_origin": "https://anpclaw.com"
+    },
+    {
+      "origin": "https://test-fix.anpclaw.com",
+      "backend_origin": "https://test-fix.anpclaw.com",
+      "did_host": "test-fix.anpclaw.com",
+      "name": "test-fix-anpclaw-com",
+      "mode": "setup",
+      "download_origin": "https://anpclaw.com"
+    },
+    {
+      "origin": "https://test-fix-phone.anpclaw.com",
+      "backend_origin": "https://test-fix-phone.anpclaw.com",
+      "did_host": "test-fix-phone.anpclaw.com",
+      "name": "test-fix-phone-anpclaw-com",
+      "mode": "setup",
+      "download_origin": "https://anpclaw.com"
+    },
+    {
+      "origin": "https://test-fix-email.anpclaw.com",
+      "backend_origin": "https://test-fix-email.anpclaw.com",
+      "did_host": "test-fix-email.anpclaw.com",
+      "name": "test-fix-email-anpclaw-com",
+      "mode": "setup",
+      "download_origin": "https://anpclaw.com"
+    }
+  ]
+}

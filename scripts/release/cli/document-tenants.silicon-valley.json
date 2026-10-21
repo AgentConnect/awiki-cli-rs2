@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "tenants": [
+    {
+      "origin": "https://awiki.ai",
+      "backend_origin": "https://awiki.ai",
+      "did_host": "awiki.ai",
+      "name": "awiki-ai",
+      "mode": "setup",
+      "download_origin": "https://awiki.ai"
+    }
+  ]
+}
