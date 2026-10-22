@@ -2,8 +2,8 @@
   "schema_version": 1,
   "registry": "crates-io",
   "packages": {
-    "anp": "1.0.6",
-    "anp-identity": "0.2.5",
-    "awiki-im-core": "0.1.9"
+    "anp": "1.0.7",
+    "anp-identity": "0.2.6",
+    "awiki-im-core": "0.1.10"
   }
 }

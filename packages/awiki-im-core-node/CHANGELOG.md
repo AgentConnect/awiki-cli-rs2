@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.13
+
+- Build all five native packages and the wrapper against published IM Core
+  0.1.10, ANP 1.0.7 and Identity 0.2.6 with native API v21.
+- Expose versioned backend capability discovery and verified Join management
+  authority without treating capability declarations as authorization.
+- Preserve predecessor origin, port and stable subject paths during E1 Handle
+  Recovery, and retain immutable state after an attempted Commit.
+- Manual release builds and package checks do not execute test or install suites.
+
 ## 0.2.12
 
 - Accept `awiki-dsh` and `awiki-gateway` client product identities through the
