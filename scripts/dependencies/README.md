@@ -71,9 +71,10 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 registry 依赖使用已发布的 ANP `1.0.6`、Identity `0.2.5`、Core `0.1.9`。
-Core `0.1.9` 保留附件／注册修复并增加 DSH 与 Guest 独立产品标识；Core Node `0.2.12`
-的实际原生构建固定消费这一组合，native API 为 `20`。临时源码联调清单已撤销，正式消费者必须使用对应
+当前正式 registry 依赖使用已发布的 ANP `1.0.7`、Identity `0.2.6`、Core `0.1.10`。
+Core `0.1.10` 保留附件／注册修复及 DSH 与 Guest 独立产品标识，并包含版本化后端能力、
+受签名用途限制的 Join 和保留 E1 前驱主体路径的 Handle Recovery。Core Node `0.2.13`
+的实际原生构建固定消费这一组合，native API 为 `21`。临时源码联调清单已撤销，正式消费者必须使用对应
 registry lock 和实际解析来源。包已发布不表示后续源码改动已进入同版本 SDK。
 2026-09-17 用户授权的两平台 Daemon 临时验证包曾使用显式 `--local-core` 入口，
 其独立锁文件不改变 SDK 的公开发布状态。
@@ -186,3 +187,10 @@ registry pin/lock 并撤销临时 source 清单；本轮不发布或部署。
 ## 2026-10-13 合并依赖收敛
 
 本批 PR 评审后协调发布 ANP `1.0.6`、Identity Rust `0.2.5`、Core Rust `0.1.7` 与 Core Node `0.2.10`。正式消费者以 `registry-dependencies.json` 和 `registry-Cargo.lock` 为准；本批临时 source manifest/lock 已撤销。测试没有因发布而自动运行，发布阶段只保留构建、打包、来源与完整性检查；产品 E2E、安装包和人工验收另行执行。
+
+### 2026-10-22 SDK 协调发布
+
+本次通过 Harness 统一发布入口递增并发布 SDK，原生 Node 制品构建使用
+`build_only=true`、`dependency_source=registry`，五个平台与主包固定同一版本。
+版本、构建、打包、源码来源、平台基线与 registry 完整性检查保留；单元、集成、
+系统、E2E 和安装测试未获本次授权，未执行，构建成功不表示业务验收通过。
