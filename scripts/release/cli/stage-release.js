@@ -93,7 +93,11 @@ function main() {
   const serverConfig = readServerConfig(arg('--server-config'));
   const artifactsDir = path.resolve(arg('--artifacts'));
   const outputDir = path.resolve(arg('--output'));
-  const sourceTag = arg('--source-tag');
+  const hasSourceTag = process.argv.includes('--source-tag');
+  const hasSourceRef = process.argv.includes('--source-ref');
+  if (hasSourceTag === hasSourceRef) die('provide exactly one of --source-tag or --source-ref');
+  const sourceTag = hasSourceTag ? arg('--source-tag') : null;
+  const sourceRef = hasSourceRef ? arg('--source-ref') : null;
   const sourceCommit = arg('--source-commit');
   if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) die('source commit must be a full commit SHA');
   const entry = releaseConfig.channels[channel];
@@ -103,7 +107,8 @@ function main() {
     ? `${channelBaseUrl}/releases/${version}/awiki-cli.tgz`
     : `${channelBaseUrl}/awiki-cli.tgz`;
   const templateValues = { AWIKI_CLI_CHANNEL_BASE_URL: channelBaseUrl, AWIKI_CLI_INSTALLER_URL: installerUrl };
-  if (sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
+  if (sourceTag && sourceTag !== `cli-v${version}`) die(`source tag ${sourceTag} does not match cli-v${version}`);
+  if (sourceRef && sourceRef !== sourceCommit) die('source ref must equal the full source commit SHA');
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
 
@@ -148,7 +153,7 @@ function main() {
     fs.writeFileSync(path.join(packageStage, 'SOURCE.md'), `# AWiki CLI S2 Corresponding Source
 
 Version: ${version}
-Tag: ${sourceTag}
+${sourceTag ? `Tag: ${sourceTag}` : `Source ref: ${sourceRef}`}
 Commit: ${sourceCommit}
 Source: https://github.com/${serverConfig.github_repo}/tree/${sourceCommit}
 Source archive: https://github.com/${serverConfig.github_repo}/archive/${sourceCommit}.tar.gz
@@ -220,7 +225,7 @@ the accompanying LICENSE file.
     latest: version,
     min_supported_version: entry.min_supported_version,
     published_at: new Date().toISOString(),
-    source: { tag: sourceTag, commit: sourceCommit },
+    source: sourceTag ? { tag: sourceTag, commit: sourceCommit } : { ref: sourceRef, commit: sourceCommit },
     builtin_tenants_sha256: crypto.createHash('sha256').update(tenantConfigRaw).digest('hex'),
     installer: {
       url: installerUrl,

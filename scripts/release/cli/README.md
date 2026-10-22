@@ -37,6 +37,8 @@ Beta 和 Stable 是相互独立的发布通道，按实际需要选择其中一�
 
 测试批次可显式向 `build-cli-release.yml` 传完整 40 位 `source_ref` SHA 和已提交的 `tenant_config` 路径，复用相同平台矩阵、registry 来源和制品检查。默认租户文件与正式 tag 入口不变；此方式只产生 Actions 制品，不创建正式 tag、GitHub Release 或激活下载渠道。正式发布器的 tag 合同仍保留，测试批次由独立目录交付。
 
+此类制品可用 `stage-release.js --source-ref FULL_SHA --source-commit FULL_SHA` 离线组装；与 `--source-tag` 互斥，两个 SHA 必须完全一致。清单记录真实 `source.ref`，不生成不存在的 tag；平台完整性和租户一致性检查仍然执行。组装不发布或激活任何渠道。
+
 需要并行构建、随后统一上线时，可先对不可变 CLI tag 调度原有 Actions，再使用
 `publish-cli-release.sh --run-id <ID> stable` 复用该次构建。入口检查 workflow、事件、
 tag commit 与通道名称，随后执行原有下载、产物校验和发布流程，不重复构建。

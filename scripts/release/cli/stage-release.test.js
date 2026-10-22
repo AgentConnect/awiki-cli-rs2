@@ -304,3 +304,38 @@ for (const host of ['awiki.me', 'awiki.ai', 'anpclaw.com']) {
     assert.equal(JSON.parse(fs.readFileSync(transaction.journalPath(fixture.config,'stable'))).status,'complete');
   });
 }
+
+test('stages an exact commit without inventing a tag and rejects ambiguous or moving sources', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-stage-sha-'));
+  try {
+    const artifacts = path.join(temp, 'artifacts');
+    const output = path.join(temp, 'output');
+    const serverConfig = path.join(temp, 'server.toml');
+    fs.mkdirSync(artifacts);
+    writeServerConfig(serverConfig, temp);
+    writeArtifacts(artifacts, '1.0.20-beta.1');
+    const commit = 'a'.repeat(40);
+    const args = [path.join(scriptDir, 'stage-release.js'), '--channel', 'beta',
+      '--release-config', releaseConfig, '--server-config', serverConfig,
+      '--artifacts', artifacts, '--output', output, '--source-commit', commit];
+    for (const sourceArgs of [[], ['--source-ref', 'release/1014'],
+      ['--source-ref', 'b'.repeat(40)],
+      ['--source-ref', commit, '--source-tag', 'cli-v1.0.20-beta.1']]) {
+      const rejected = run(process.execPath, [...args, ...sourceArgs], { cwd: rootDir });
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /exactly one|source ref must equal/);
+      assert.equal(fs.existsSync(output), false);
+    }
+    const result = run(process.execPath, [...args, '--source-ref', commit], { cwd: rootDir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json')));
+    assert.deepEqual(manifest.source, { ref: commit, commit });
+    assert.equal(Object.keys(manifest.packages).length, 4);
+    const source = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/SOURCE.md']);
+    assert.equal(source.status, 0, source.stderr);
+    assert.match(source.stdout, new RegExp(`Source ref: ${commit}`));
+    assert.doesNotMatch(source.stdout, /^Tag:/m);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
