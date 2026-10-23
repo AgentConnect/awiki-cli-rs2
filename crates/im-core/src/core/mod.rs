@@ -16,6 +16,7 @@ pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
+    pub(crate) network: Arc<crate::network::NetworkRuntime>,
     pub(crate) identity_capability_sessions: std::sync::Mutex<
         std::collections::HashMap<
             String,
@@ -64,6 +65,11 @@ pub struct ImCore {
 }
 
 impl ImCore {
+    /// Shared transport capability; authentication remains request-owned.
+    pub fn network(&self) -> Arc<crate::network::NetworkRuntime> {
+        self.inner.network.clone()
+    }
+
     /// Stops the local-state actor and waits until its database handle is closed.
     ///
     /// Hosts must call this before deleting or replacing the state directory. The
@@ -144,6 +150,16 @@ impl ImCore {
                 backend_capabilities: Arc::new(
                     crate::backend_capabilities::CapabilityCache::public(&sdk_config, &sdk_paths),
                 ),
+                network: options
+                    .network_runtime
+                    .map(|runtime| {
+                        Arc::new(runtime.with_trust(sdk_config.ca_bundle_path().map(str::to_owned)))
+                    })
+                    .unwrap_or_else(|| {
+                        Arc::new(crate::network::NetworkRuntime::new(
+                            sdk_config.ca_bundle_path().map(str::to_owned),
+                        ))
+                    }),
                 sdk_config,
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,

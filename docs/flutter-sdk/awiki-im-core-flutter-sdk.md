@@ -1451,3 +1451,16 @@ persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立�
 同一 Dart Client 在 Root 导入或权限升级后更换授权上下文时，现有消息能力订阅跟随
 新的缓存并立即发出新上下文的初始状态，不要求 App 重建订阅；旧上下文的排队结果
 不得覆盖新状态。普通 Token 刷新保留原订阅。关闭 Client 会唤醒并结束等待中的订阅。
+
+### 桌面系统代理共享能力
+
+宿主在首次打开 native Core 前显式调用 `AwikiDesktopNetwork.configure`，传入
+`AwikiNetworkPolicy.systemPreferred` 或 `direct`，可携带原有 CA bundle 路径。
+此后 Dart binding 打开的 Core 与原始 `AwikiDesktopNetwork.send` 共用本进程运行时。
+`status()` 返回系统代理、直连或代理回退；`diagnostics()` 返回类型化有界脱敏分段记录。
+其他 SDK 宿主不调用 configure 时保留原行为。Web stub 不提供原生传输，移动 App 不调用桌面设置。
+
+原始 send 只负责传输；调用者逐请求注入既有认证，保留业务错误和幂等职责。返回 response head
+与分块 body；取消、关闭或流结束释放响应，不把附件变成整体内存缓冲。
+Dart App 的 http.BaseClient、头像下载借此复用 Rust 网络路径；Windows 沿用校验 SHA256 的 Mozilla
+CA bundle。用户设置切换影响新请求，已提交请求继续完成；WS 受控重连由既有宿主协调器立即补拉。

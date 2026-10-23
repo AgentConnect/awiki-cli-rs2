@@ -269,6 +269,7 @@ async fn connect_async_websocket_session_with_token(
             require_sync_changed_v2,
             client_version.as_deref(),
             p6_client_instance_id,
+            Some(client.core_inner().network.clone()),
         )
         .await
         {
@@ -310,6 +311,7 @@ async fn connect_async_websocket_session_with_token(
         require_sync_changed_v2,
         client_version.as_deref(),
         p6_client_instance_id,
+        Some(client.core_inner().network.clone()),
     )
     .await
     .map_err(|err| crate::ImError::TransportUnavailable {

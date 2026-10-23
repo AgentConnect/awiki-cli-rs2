@@ -43,8 +43,9 @@ x25519-dalek.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 idna.workspace = true
+ipnet = "2"
 rand.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["socks"] }
 futures-util.workspace = true
 redb.workspace = true
 serde.workspace = true
@@ -57,6 +58,8 @@ uuid = { workspace = true, features = ["v4"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-socks = "0.5"
 rustls.workspace = true
 webpki-roots.workspace = true
 rusqlite = { workspace = true, optional = true }
@@ -73,3 +76,9 @@ windows-sys = { version = "0.52", features = [
 
 [dev-dependencies]
 tempfile = "=3.3.0"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+proxyres = "=1.5.5"
+netwatch = "=0.12.0"
+n0-watcher = "=0.5.0"
+if-addrs = "0.13"

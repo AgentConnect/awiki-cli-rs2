@@ -2426,3 +2426,15 @@ CLI 在 workspace upgrade、Vault 打开及读取一次性 Token 之前执行同
 存在未完成记录且能力关闭或未确认时，保留原 operation、候选文档和所有 Vault
 恢复记录，不发起设备 Registry、DID 解析或撤销请求，不伪造恢复完成。没有待恢复
 记录时不因打开本地身份额外发起能力发现；支持重新确认后可继续原精确恢复。
+
+### 桌面网络策略与诊断
+
+`network::NetworkRuntime` 提供 `NetworkPolicy::{Legacy,SystemPreferred,Direct}`、
+`update_policy`、`network_changed`、`diagnostics` 和无账号默认头的原始 `send`。
+`ImCoreOpenOptions.network_runtime` 可传入共享运行时；不传入保持 SDK 原路径选择行为。
+Core 的显式 CA 配置仍独立于其他租户客户端；共享开关、路径状态与有界诊断不共享认证头。
+`NetworkDiagnostics` 包含策略、最近成功路径、配置代次与最多 128 条记录；记录仅含不透明操作摘要、
+固定 stage、UTC 时间和 elapsed_ms，无正文、验证码、认证头、代理地址或密码。
+
+失败回退发生在业务提交前，或 GET/HEAD/WS Upgrade 的一次受限只读换路；未知提交结果的写请求
+必须交回业务恢复。401/403 与协议失败不触发换路。匿名固定 DNS/IP 发现不进入此代理运行时。

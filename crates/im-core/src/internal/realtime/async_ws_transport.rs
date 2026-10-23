@@ -28,10 +28,32 @@ impl std::fmt::Display for AsyncWsConnectError {
 
 impl std::error::Error for AsyncWsConnectError {}
 
+enum WsStream {
+    Legacy(
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ),
+    Runtime(tokio_tungstenite::WebSocketStream<crate::network::NetworkStream>),
+}
+impl WsStream {
+    async fn next(&mut self) -> Option<Result<Message, TungsteniteError>> {
+        match self {
+            Self::Legacy(s) => s.next().await,
+            Self::Runtime(s) => s.next().await,
+        }
+    }
+    async fn send(&mut self, message: Message) -> Result<(), TungsteniteError> {
+        match self {
+            Self::Legacy(s) => s.send(message).await,
+            Self::Runtime(s) => s.send(message).await,
+        }
+    }
+}
 pub(crate) struct AsyncWsTransport {
-    stream: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    stream: WsStream,
+    network: Option<Arc<crate::network::NetworkRuntime>>,
+    generation: u64,
     ping_counter: i32,
     sync_subprotocol: super::SyncNotificationSubprotocol,
 }
@@ -44,6 +66,7 @@ impl AsyncWsTransport {
         require_sync_changed_v2: bool,
         client_version: Option<&str>,
         p6_client_instance_id: Option<&str>,
+        network: Option<Arc<crate::network::NetworkRuntime>>,
     ) -> Result<Self, AsyncWsConnectError> {
         let connector = async_ws_rustls_connector(ca_bundle).await?;
         let request = build_async_ws_request(
@@ -53,11 +76,7 @@ impl AsyncWsTransport {
             client_version,
             p6_client_instance_id,
         )?;
-        let connected = if let Some(connector) = connector.clone() {
-            connect_async_tls_with_config(request, None, false, Some(connector)).await
-        } else {
-            tokio_tungstenite::connect_async(request).await
-        };
+        let connected = connect_stream(request, connector.clone(), network.as_ref()).await;
         let (stream, response) = match connected {
             Ok(connected) => connected,
             Err(error) if is_missing_async_ws_subprotocol(&error) && !require_sync_changed_v2 => {
@@ -68,12 +87,9 @@ impl AsyncWsTransport {
                     client_version,
                     None,
                 )?;
-                if let Some(connector) = connector {
-                    connect_async_tls_with_config(request, None, false, Some(connector)).await
-                } else {
-                    tokio_tungstenite::connect_async(request).await
-                }
-                .map_err(async_ws_connect_error)?
+                connect_stream(request, connector, network.as_ref())
+                    .await
+                    .map_err(async_ws_connect_error)?
             }
             Err(error) => return Err(async_ws_connect_error(error)),
         };
@@ -81,6 +97,8 @@ impl AsyncWsTransport {
             validate_async_ws_subprotocol(response.headers(), require_sync_changed_v2)?;
         Ok(Self {
             stream,
+            generation: network.as_ref().map_or(0, |network| network.generation()),
+            network,
             ping_counter: 0,
             sync_subprotocol,
         })
@@ -90,7 +108,21 @@ impl AsyncWsTransport {
         &mut self,
     ) -> crate::ImResult<Option<Map<String, Value>>> {
         loop {
-            let Some(message) = self.stream.next().await else {
+            let message = if let Some(network) = &self.network {
+                loop {
+                    tokio::select! {
+                        message = self.stream.next() => break message,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                            if network.generation() != self.generation {
+                                return Err(crate::ImError::TransportUnavailable { detail: "network_policy_changed".into() });
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.stream.next().await
+            };
+            let Some(message) = message else {
                 return Ok(None);
             };
             match message.map_err(async_ws_error)? {
@@ -130,6 +162,90 @@ impl AsyncWsTransport {
             .send(Message::Ping(self.ping_counter.to_string().into()))
             .await
             .map_err(async_ws_error)
+    }
+}
+
+async fn connect_stream(
+    request: Request<()>,
+    connector: Option<Connector>,
+    network: Option<&Arc<crate::network::NetworkRuntime>>,
+) -> Result<
+    (
+        WsStream,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    TungsteniteError,
+> {
+    if let Some(network) = network
+        .filter(|network| network.diagnostics().policy != crate::network::NetworkPolicy::Legacy)
+    {
+        let url = request.uri().to_string();
+        let connection_started = std::time::Instant::now();
+        let route = network.route(&url).await.map_err(network_dial_error)?;
+        let stream = network
+            .connect_route_after(&url, &route, connection_started)
+            .await
+            .map_err(network_dial_error)?;
+        let connected = upgrade(request.clone(), stream).await;
+        let (stream, response) = match connected {
+            Ok(connected) => connected,
+            Err(error) if retryable_upgrade_transport(&error) => {
+                // Upgrade is a read-only handshake. Authentication and negotiated
+                // protocol errors retain their meaning and never trigger this.
+                let connection_started = std::time::Instant::now();
+                let alternate = network
+                    .alternate(&url, &route)
+                    .await
+                    .map_err(network_dial_error)?;
+                let stream = network
+                    .connect_route_after(&url, &alternate, connection_started)
+                    .await
+                    .map_err(network_dial_error)?;
+                upgrade(request, stream).await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok((WsStream::Runtime(stream), response))
+    } else {
+        let (stream, response) =
+            connect_async_tls_with_config(request, None, false, connector).await?;
+        Ok((WsStream::Legacy(stream), response))
+    }
+}
+
+async fn upgrade(
+    request: Request<()>,
+    stream: crate::network::NetworkStream,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<crate::network::NetworkStream>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    TungsteniteError,
+> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio_tungstenite::client_async(request, stream),
+    )
+    .await
+    .map_err(|_| {
+        TungsteniteError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "websocket_upgrade_timeout",
+        ))
+    })?
+}
+
+fn network_dial_error(_: crate::ImError) -> TungsteniteError {
+    TungsteniteError::Io(std::io::Error::other("network_connect_failed"))
+}
+fn retryable_upgrade_transport(error: &TungsteniteError) -> bool {
+    match error {
+        TungsteniteError::Io(_) | TungsteniteError::Tls(_) | TungsteniteError::ConnectionClosed => {
+            true
+        }
+        TungsteniteError::Http(response) => response.status().is_server_error(),
+        _ => false,
     }
 }
 
@@ -439,6 +555,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -474,6 +591,7 @@ mod tests {
             true,
             None,
             Some("client-installation-1"),
+            None,
         )
         .await;
 

@@ -58,6 +58,8 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
 
 #[derive(Debug)]
 pub struct ImCoreOpenOptions {
+    /// Optional host transport runtime; absent preserves SDK behavior.
+    pub network_runtime: Option<std::sync::Arc<crate::network::NetworkRuntime>>,
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
     /// Enables AWiki-local permanent device revocation.
@@ -101,6 +103,7 @@ pub struct ImCoreOpenOptions {
 impl Default for ImCoreOpenOptions {
     fn default() -> Self {
         Self {
+            network_runtime: None,
             identity_secret_storage_policy: IdentitySecretStoragePolicy::default(),
             identity_secret_vault: None,
             multi_device_device_revoke_enabled: false,

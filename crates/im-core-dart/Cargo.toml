@@ -34,6 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 flutter_rust_bridge = "=2.12.0"
 tokio.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # anp-identity's keyring v1 enables the macOS-only legacy keychain feature.
@@ -43,3 +44,6 @@ apple-native-keyring-store = { version = "=1.0.2", features = ["protected"] }
 [dev-dependencies]
 base64.workspace = true
 tempfile = "=3.3.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
