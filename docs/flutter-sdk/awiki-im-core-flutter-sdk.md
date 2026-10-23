@@ -1399,6 +1399,7 @@ The file is copied from `target/<target>/release/libawiki_im_core.so` and is ign
 - Linux `libawiki_im_core.so` missing from the app bundle or native smoke fails to load it: run `scripts/flutter/build-sdk-native.sh --linux-only` before testing a Flutter Linux app that calls `AwikiImCore.open`.
 - Linux dynamic library load error: verify the app bundle contains `lib/libawiki_im_core.so` and that the Flutter Linux runner preserves `$ORIGIN/lib` in `CMAKE_INSTALL_RPATH`.
 - iOS symbols not found: verify the podspec vendored XCFramework path and `-force_load` slice path.
+- macOS `SCDynamicStore*`, `SCNetwork*`, or `DHCPInfoGetOptionData` symbols not found: the macOS Podspec must link `SystemConfiguration` for Core system proxy resolution; Rust static archives do not propagate framework link flags into the consuming Flutter runner. Run `pod install` after updating the Podspec.
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.
 
 Recovery context inspection also repairs the existing committed/applied SQLite lifecycle projection from the exact encrypted result and completed marker, without sending OTP/Commit or finalizing local custody. The journal's known committed fact must not be displayed as outcome unknown after a partial index write. `local_transition_superseded` is non-retryable for that old operation; its committed journal and audit remain available.
