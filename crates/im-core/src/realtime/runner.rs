@@ -743,6 +743,17 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let operation = notification
+            .pointer("/sync/event/event_id")
+            .or_else(|| notification.pointer("/params/meta/message_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("sync-hint");
+        self.client.core_inner().network.trace(
+            operation,
+            "notification.received",
+            std::time::Instant::now(),
+        );
+
         match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3_async(
             &self.client,
             &notification,
@@ -1513,6 +1524,14 @@ async fn project_p5_v2_realtime_notification(
         {
             return Err(crate::ImError::PermissionDenied);
         }
+        client.core_inner().network.trace(
+            notification
+                .pointer("/params/meta/message_id")
+                .and_then(Value::as_str)
+                .unwrap_or("p5-legacy-hint"),
+            "notification.received",
+            std::time::Instant::now(),
+        );
         return Ok(DirectRealtimeProjectionResult::Projected {
             notification: Some(serde_json::json!({
                 "method": "sync.changed",

@@ -565,6 +565,13 @@ pub(crate) fn validate_cached_inbound_endpoint_for_client(
 }
 
 pub(crate) trait V2DirectProductHost {
+    fn fork(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
     async fn resolve_did_document(&mut self, did: &str) -> crate::ImResult<Value>;
 
     async fn ensure_local_prekey_published(&mut self) -> crate::ImResult<()>;
@@ -589,24 +596,43 @@ pub(crate) trait V2DirectProductHost {
     ) -> crate::ImResult<V2DirectSendResult>;
 }
 
+#[derive(Clone)]
 struct CoreV2DirectProductHost<'a> {
+    documents: BTreeMap<String, Value>,
+    started: std::time::Instant,
     core: &'a crate::core::ImCore,
     client: &'a crate::core::ImClient,
 }
 
 impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
+    fn fork(&self) -> Option<Self> {
+        Some(self.clone())
+    }
     async fn resolve_did_document(&mut self, did: &str) -> crate::ImResult<Value> {
-        crate::internal::discovery::did_document::resolve_did_document_async(
+        if let Some(document) = self.documents.get(did) {
+            return Ok(document.clone());
+        }
+        let document = crate::internal::discovery::did_document::resolve_did_document_async(
             &mut crate::internal::transport::CoreHttpTransport::new(self.client),
             did,
         )
-        .await
+        .await?;
+        self.documents.insert(did.to_owned(), document.clone());
+        Ok(document)
     }
 
     async fn ensure_local_prekey_published(&mut self) -> crate::ImResult<()> {
-        super::v2_prekey_runtime::ensure_local_prekey_published(self.core, self.client)
-            .await
-            .map(|_| ())
+        let document = self
+            .resolve_did_document(self.client.did().as_str())
+            .await?;
+        super::v2_prekey_runtime::ensure_local_prekey_published_with_document(
+            self.core,
+            self.client,
+            &document,
+            &mut crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn fetch_prekey(
@@ -616,21 +642,46 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
         target_did_document: &Value,
         operation_seed: &str,
     ) -> crate::ImResult<V2GetPrekeyBundleResult> {
-        super::v2_prekey_runtime::fetch_verified_prekey(
+        let started = std::time::Instant::now();
+        let result = super::v2_prekey_runtime::fetch_verified_prekey(
             self.client,
             target_did,
             target_device_id,
             target_did_document,
             operation_seed,
         )
-        .await
+        .await;
+        self.core
+            .network()
+            .trace(operation_seed, "send.prepare", started);
+        result
     }
 
     async fn post_direct(
         &mut self,
         prepared: &PreparedV2Outbound,
     ) -> crate::ImResult<V2DirectSendResult> {
-        super::v2_prekey_runtime::post_standard_direct(self.client, prepared).await
+        self.core
+            .network()
+            .trace(&prepared.metadata.message_id, "send.prepare", self.started);
+        let started = std::time::Instant::now();
+        let result = super::v2_prekey_runtime::post_standard_direct(self.client, prepared).await;
+        self.core.network().trace(
+            &prepared.metadata.message_id,
+            "send.device_delivery",
+            started,
+        );
+        if matches!(
+            result,
+            Err(crate::ImError::PermissionDenied
+                | crate::ImError::Service {
+                    status_code: Some(401 | 403),
+                    ..
+                })
+        ) {
+            self.core.inner().prekey_publications.lock().await.clear();
+        }
+        result
     }
 
     async fn post_direct_attachment(
@@ -638,6 +689,9 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
         prepared: &PreparedV2Outbound,
         attachment_grant_ref: &Value,
     ) -> crate::ImResult<V2DirectSendResult> {
+        self.core
+            .network()
+            .trace(&prepared.metadata.message_id, "send.prepare", self.started);
         super::v2_prekey_runtime::post_standard_direct_attachment(
             self.client,
             prepared,
@@ -676,8 +730,17 @@ pub(crate) async fn send_for_client(
         ));
     }
     let context = V2DirectProductContext::from_client(core, client)?;
-    let mut host = CoreV2DirectProductHost { core, client };
-    send_with_host(&context, &mut host, input).await
+    let mut host = CoreV2DirectProductHost {
+        core,
+        client,
+        documents: BTreeMap::new(),
+        started: std::time::Instant::now(),
+    };
+    let operation = input.logical_message_id.clone();
+    let started = std::time::Instant::now();
+    let result = send_with_host(&context, &mut host, input).await;
+    core.network().trace(&operation, "send.complete", started);
+    result
 }
 
 pub(crate) async fn send_attachment_for_client(
@@ -692,7 +755,12 @@ pub(crate) async fn send_attachment_for_client(
         ));
     }
     let context = V2DirectProductContext::from_client(core, client)?;
-    let mut direct_host = CoreV2DirectProductHost { core, client };
+    let mut direct_host = CoreV2DirectProductHost {
+        core,
+        client,
+        documents: BTreeMap::new(),
+        started: std::time::Instant::now(),
+    };
     let source_digest = attachment_source_digest(&input.object_target, &input.request)?;
     let fanout_input = V2AttachmentFanoutInput {
         logical_message_id: input.logical_message_id,
@@ -913,6 +981,10 @@ async fn send_with_host_with_attachment_grant<H>(
 where
     H: V2DirectProductHost,
 {
+    // Serialize preparation/admission only. Completion of a slow sibling must
+    // not hold later peer deliveries; per-device tickets preserve their order.
+    let operation_lock = preparation_lock(context, &input.target_did);
+    let _operation_guard = operation_lock.lock().await;
     required("logical_message_id", &input.logical_message_id)?;
     required("target_did", &input.target_did)?;
     let plaintext = input
@@ -925,7 +997,6 @@ where
     host.ensure_local_prekey_published().await?;
     let local_document = host.resolve_did_document(&context.local_did).await?;
     validate_local_endpoint(context, &local_document)?;
-    let _ = retry_session_replies_with_host(context, host).await?;
     let target_document = if input.target_did == context.local_did {
         local_document.clone()
     } else {
@@ -960,128 +1031,80 @@ where
 
     let own_sync_plaintext = own_sync_plaintext(context, &input.target_did, &plaintext)?;
 
-    let mut accepted_at = None;
-    let mut accepted = 0_usize;
-    let mut attempted = 0_usize;
-    let mut previously_accepted = 0_usize;
-    let mut newly_accepted = 0_usize;
-    let mut failed = 0_usize;
-    for target in &targets {
-        let operation_id = delivery_operation_id(
-            &context.local_did,
-            &context.local_device_id,
-            &input.target_did,
-            target.class,
-            &target.recipient_did,
-            &target.device.device_id,
-            &input.logical_message_id,
-        );
-        let mut record = context.with_ledger(|ledger| {
-            ledger.ensure_delivery(
-                &input.logical_message_id,
-                &input.target_did,
-                target,
-                &operation_id,
-                &source_digest,
-                &now,
-            )
-        })?;
-        if record.phase == DeliveryPhase::Accepted {
-            cleanup_accepted_pending(context, &record)?;
-            accepted += 1;
-            previously_accepted += 1;
-            accepted_at = max_timestamp(accepted_at, record.accepted_at.clone());
-            continue;
-        }
-        if record.phase == DeliveryPhase::Ineligible {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        attempted += 1;
-
-        let binding = binding_for(context, &target.device, &target.recipient_did)?;
-        let recipient_document = if target.recipient_did == context.local_did {
-            &local_document
-        } else {
-            &target_document
-        };
-        let delivery_plaintext = match target.class {
-            DeliveryClass::Recipient => &plaintext,
-            DeliveryClass::OwnSync => &own_sync_plaintext,
-        };
-        let prepared = match prepare_delivery(
-            context,
-            host,
-            &binding,
-            &target.device,
-            recipient_document,
-            &record,
-            delivery_plaintext,
-            &now,
-        )
-        .await
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                context.with_ledger(|ledger| {
-                    ledger.mark_failed(&record, failure_code(&error), &now)
-                })?;
-                if target.class == DeliveryClass::Recipient
-                    && crate::internal::service_error::stale_target_binding_from_error(
-                        &error,
-                        &context.local_did,
-                    )
-                    .is_some()
-                {
-                    return Err(error);
+    let permits = targets
+        .iter()
+        .map(|target| {
+            reserve_device_delivery(context, &target.recipient_did, &target.device.device_id)
+        })
+        .collect::<Vec<_>>();
+    drop(_operation_guard);
+    let mut progress = DeliveryProgress::default();
+    let forks = targets
+        .iter()
+        .map(|target| host.fork().map(|host| (target.clone(), host)))
+        .collect::<Option<Vec<_>>>();
+    if let Some(forks) = forks {
+        use futures_util::{stream, StreamExt};
+        let input = &input;
+        let source_digest = &source_digest;
+        let now = &now;
+        let local_document = &local_document;
+        let target_document = &target_document;
+        let plaintext = &plaintext;
+        let own_sync_plaintext = &own_sync_plaintext;
+        let mut attempts = stream::iter(forks.into_iter().zip(permits))
+            .map(|((target, mut host), permit)| async move {
+                send_one_target(
+                    context,
+                    permit,
+                    &mut host,
+                    input,
+                    &target,
+                    source_digest,
+                    now,
+                    local_document,
+                    target_document,
+                    plaintext,
+                    own_sync_plaintext,
+                    attachment_grant_ref,
+                )
+                .await
+            })
+            .buffer_unordered(4);
+        let mut failure = None;
+        while let Some(result) = attempts.next().await {
+            match result {
+                Ok(result) => progress.merge(result),
+                Err(error) => {
+                    if failure.is_none() {
+                        failure = Some(error);
+                    }
                 }
-                failed += 1;
-                continue;
             }
-        };
-        context.with_ledger(|ledger| ledger.mark_prepared(&record, &now))?;
-        record.wire_prepared = true;
-
-        let posted = match attachment_grant_ref {
-            Some(grant_ref) => host.post_direct_attachment(&prepared, grant_ref).await,
-            None => host.post_direct(&prepared).await,
-        };
-        let result = match posted {
-            Ok(result) => result,
-            Err(error) => {
-                context.with_ledger(|ledger| {
-                    ledger.mark_failed(&record, failure_code(&error), &now_text())
-                })?;
-                if target.class == DeliveryClass::Recipient
-                    && crate::internal::service_error::stale_target_binding_from_error(
-                        &error,
-                        &context.local_did,
-                    )
-                    .is_some()
-                {
-                    return Err(error);
-                }
-                failed += 1;
-                continue;
-            }
-        };
-        if validate_send_result(&result, &prepared).is_err() {
-            context.with_ledger(|ledger| {
-                ledger.mark_failed(&record, "invalid_response", &now_text())
-            })?;
-            failed += 1;
-            continue;
         }
-
-        // The validated server acceptance is recorded before deleting the
-        // exact retry ciphertext. A crash can therefore leak no duplicate:
-        // restart skips accepted delivery and only finishes pending cleanup.
-        context.with_ledger(|ledger| {
-            ledger.mark_accepted(&record, &result.accepted_at, &now_text())
-        })?;
-        let _ = context.with_direct(|direct| direct.mark_outbound_accepted(&prepared))?;
-        accepted += 1;
-        newly_accepted += 1;
-        accepted_at = max_timestamp(accepted_at, Some(result.accepted_at));
+        if let Some(error) = failure {
+            return Err(error);
+        }
+    } else {
+        for (target, permit) in targets.iter().zip(permits) {
+            progress.merge(
+                send_one_target(
+                    context,
+                    permit,
+                    host,
+                    &input,
+                    target,
+                    &source_digest,
+                    &now,
+                    &local_document,
+                    &target_document,
+                    &plaintext,
+                    &own_sync_plaintext,
+                    attachment_grant_ref,
+                )
+                .await?,
+            );
+        }
     }
 
     Ok(V2DirectProductSendSummary {
@@ -1095,13 +1118,291 @@ where
             .iter()
             .filter(|target| target.class == DeliveryClass::OwnSync)
             .count(),
-        attempted_device_count: attempted,
-        previously_accepted_device_count: previously_accepted,
-        newly_accepted_device_count: newly_accepted,
-        accepted_device_count: accepted,
-        failed_device_count: failed,
-        accepted_at,
+        attempted_device_count: progress.attempted,
+        previously_accepted_device_count: progress.previously_accepted,
+        newly_accepted_device_count: progress.newly_accepted,
+        accepted_device_count: progress.accepted,
+        failed_device_count: progress.failed,
+        accepted_at: progress.accepted_at,
     })
+}
+
+#[derive(Default)]
+struct DeliveryProgress {
+    accepted: usize,
+    attempted: usize,
+    previously_accepted: usize,
+    newly_accepted: usize,
+    failed: usize,
+    accepted_at: Option<String>,
+}
+impl DeliveryProgress {
+    fn merge(&mut self, other: Self) {
+        self.accepted += other.accepted;
+        self.attempted += other.attempted;
+        self.previously_accepted += other.previously_accepted;
+        self.newly_accepted += other.newly_accepted;
+        self.failed += other.failed;
+        self.accepted_at = max_timestamp(self.accepted_at.take(), other.accepted_at);
+    }
+}
+#[allow(clippy::too_many_arguments)]
+async fn send_one_target<H: V2DirectProductHost>(
+    context: &V2DirectProductContext,
+    mut permit: DeviceDeliveryPermit,
+    host: &mut H,
+    input: &V2DirectProductSendInput,
+    target: &DeliveryTarget,
+    source_digest: &str,
+    now: &str,
+    local_document: &Value,
+    target_document: &Value,
+    plaintext: &V2ApplicationPlaintext,
+    own_sync_plaintext: &V2ApplicationPlaintext,
+    attachment_grant_ref: Option<&Value>,
+) -> crate::ImResult<DeliveryProgress> {
+    permit.enter().await;
+    let lock = endpoint_delivery_lock(context, &target.recipient_did, &target.device.device_id);
+    let _guard = lock.lock().await;
+    let mut progress = DeliveryProgress::default();
+
+    let operation_id = delivery_operation_id(
+        &context.local_did,
+        &context.local_device_id,
+        &input.target_did,
+        target.class,
+        &target.recipient_did,
+        &target.device.device_id,
+        &input.logical_message_id,
+    );
+    let mut record = context.with_ledger(|ledger| {
+        ledger.ensure_delivery(
+            &input.logical_message_id,
+            &input.target_did,
+            target,
+            &operation_id,
+            &source_digest,
+            &now,
+        )
+    })?;
+    if record.phase == DeliveryPhase::Accepted {
+        cleanup_accepted_pending(context, &record)?;
+        progress.accepted += 1;
+        progress.previously_accepted += 1;
+        progress.accepted_at = max_timestamp(progress.accepted_at, record.accepted_at.clone());
+        return Ok(progress);
+    }
+    if record.phase == DeliveryPhase::Ineligible {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    progress.attempted += 1;
+
+    let binding = binding_for(context, &target.device, &target.recipient_did)?;
+    let recipient_document = if target.recipient_did == context.local_did {
+        &local_document
+    } else {
+        &target_document
+    };
+    let delivery_plaintext = match target.class {
+        DeliveryClass::Recipient => &plaintext,
+        DeliveryClass::OwnSync => &own_sync_plaintext,
+    };
+    let prepared = match prepare_delivery(
+        context,
+        host,
+        &binding,
+        &target.device,
+        recipient_document,
+        &record,
+        delivery_plaintext,
+        &now,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            context
+                .with_ledger(|ledger| ledger.mark_failed(&record, failure_code(&error), &now))?;
+            if target.class == DeliveryClass::Recipient
+                && crate::internal::service_error::stale_target_binding_from_error(
+                    &error,
+                    &context.local_did,
+                )
+                .is_some()
+            {
+                return Err(error);
+            }
+            progress.failed += 1;
+            return Ok(progress);
+        }
+    };
+    context.with_ledger(|ledger| ledger.mark_prepared(&record, &now))?;
+    record.wire_prepared = true;
+
+    let posted = match attachment_grant_ref {
+        Some(grant_ref) => host.post_direct_attachment(&prepared, grant_ref).await,
+        None => host.post_direct(&prepared).await,
+    };
+    let result = match posted {
+        Ok(result) => result,
+        Err(error) => {
+            context.with_ledger(|ledger| {
+                ledger.mark_failed(&record, failure_code(&error), &now_text())
+            })?;
+            if target.class == DeliveryClass::Recipient
+                && crate::internal::service_error::stale_target_binding_from_error(
+                    &error,
+                    &context.local_did,
+                )
+                .is_some()
+            {
+                return Err(error);
+            }
+            progress.failed += 1;
+            return Ok(progress);
+        }
+    };
+    if validate_send_result(&result, &prepared).is_err() {
+        context
+            .with_ledger(|ledger| ledger.mark_failed(&record, "invalid_response", &now_text()))?;
+        progress.failed += 1;
+        return Ok(progress);
+    }
+
+    // The validated server acceptance is recorded before deleting the
+    // exact retry ciphertext. A crash can therefore leak no duplicate:
+    // restart skips accepted delivery and only finishes pending cleanup.
+    context
+        .with_ledger(|ledger| ledger.mark_accepted(&record, &result.accepted_at, &now_text()))?;
+    let _ = context.with_direct(|direct| direct.mark_outbound_accepted(&prepared))?;
+    progress.accepted += 1;
+    progress.newly_accepted += 1;
+    progress.accepted_at = max_timestamp(progress.accepted_at, Some(result.accepted_at));
+
+    Ok(progress)
+}
+
+type DeliveryCompletion =
+    futures_util::future::Shared<futures_util::future::BoxFuture<'static, ()>>;
+#[derive(Default)]
+struct DeviceDeliveryQueue {
+    tail: Mutex<Option<DeliveryCompletion>>,
+}
+struct DeviceDeliveryPermit {
+    _queue: Arc<DeviceDeliveryQueue>,
+    previous: Option<DeliveryCompletion>,
+    done: Option<tokio::sync::oneshot::Sender<()>>,
+}
+impl DeviceDeliveryPermit {
+    async fn enter(&mut self) {
+        if let Some(previous) = self.previous.as_mut() {
+            previous.await;
+        }
+        self.previous = None;
+    }
+}
+impl Drop for DeviceDeliveryPermit {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            let _ = done.send(());
+        }
+    }
+}
+static DEVICE_DELIVERY_QUEUES: OnceLock<Mutex<BTreeMap<String, Weak<DeviceDeliveryQueue>>>> =
+    OnceLock::new();
+fn reserve_delivery_key(key: String) -> DeviceDeliveryPermit {
+    use futures_util::FutureExt;
+    let mut queues = DEVICE_DELIVERY_QUEUES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    queues.retain(|_, queue| queue.strong_count() > 0);
+    let queue = queues.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
+        let queue = Arc::new(DeviceDeliveryQueue::default());
+        queues.insert(key, Arc::downgrade(&queue));
+        queue
+    });
+    let (done, completion) = tokio::sync::oneshot::channel();
+    let mut tail = queue
+        .tail
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous = tail.clone();
+    let predecessor = previous.clone();
+    *tail = Some(
+        async move {
+            if let Some(predecessor) = predecessor {
+                predecessor.await;
+            }
+            let _ = completion.await;
+        }
+        .boxed()
+        .shared(),
+    );
+    drop(tail);
+    DeviceDeliveryPermit {
+        _queue: queue,
+        previous,
+        done: Some(done),
+    }
+}
+fn reserve_device_delivery(
+    context: &V2DirectProductContext,
+    did: &str,
+    device: &str,
+) -> DeviceDeliveryPermit {
+    reserve_delivery_key(format!(
+        "{:?}",
+        (
+            &context.sqlite_path,
+            &context.owner_identity_id,
+            &context.local_device_id,
+            did,
+            device
+        )
+    ))
+}
+
+fn endpoint_delivery_lock(
+    context: &V2DirectProductContext,
+    did: &str,
+    device: &str,
+) -> Arc<AttachmentIntentLock> {
+    let key = format!(
+        "delivery:{:?}",
+        (
+            &context.sqlite_path,
+            &context.owner_identity_id,
+            &context.local_device_id,
+            did,
+            device
+        )
+    );
+    process_delivery_lock(key)
+}
+fn preparation_lock(context: &V2DirectProductContext, did: &str) -> Arc<AttachmentIntentLock> {
+    process_delivery_lock(format!(
+        "preparation:{:?}",
+        (
+            &context.sqlite_path,
+            &context.owner_identity_id,
+            &context.local_device_id,
+            did
+        )
+    ))
+}
+fn process_delivery_lock(key: String) -> Arc<AttachmentIntentLock> {
+    let mut locks = ATTACHMENT_INTENT_LOCKS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(AttachmentIntentLock::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
 }
 
 async fn prepare_delivery<H>(
@@ -1299,9 +1600,8 @@ fn delivery_targets(
         );
     }
     targets.sort_by(|left, right| {
-        left.class
-            .as_str()
-            .cmp(right.class.as_str())
+        (left.class == DeliveryClass::OwnSync)
+            .cmp(&(right.class == DeliveryClass::OwnSync))
             .then_with(|| left.recipient_did.cmp(&right.recipient_did))
             .then_with(|| left.device.device_id.cmp(&right.device.device_id))
     });
@@ -2347,8 +2647,13 @@ where
     {
         return outcome;
     }
-    let mut host = CoreV2DirectProductHost { core, client };
-    receive_with_host_scoped_with_commit(
+    let mut host = CoreV2DirectProductHost {
+        core,
+        client,
+        documents: BTreeMap::new(),
+        started: std::time::Instant::now(),
+    };
+    let outcome = receive_with_host_scoped_with_commit(
         &context,
         &mut host,
         metadata,
@@ -2356,7 +2661,11 @@ where
         expected_peer_did,
         commit,
     )
-    .await
+    .await;
+    if outcome.is_ok() {
+        crate::internal::message_runtime::sync_dispatcher::wake_p5_replies(client);
+    }
+    outcome
 }
 
 pub(crate) async fn receive_with_host<H>(
@@ -2481,20 +2790,7 @@ where
                     },
                 )
             })?;
-            let session_id = match &decrypted {
-                V2ValidatedInboundOutcome::Decrypted { session, .. }
-                | V2ValidatedInboundOutcome::Replay { session } => session.session_id.clone(),
-            };
-            let reply_pending = send_session_reply(
-                context,
-                host,
-                &binding,
-                &metadata.message_id,
-                &session_id,
-                &now,
-            )
-            .await
-            .is_err();
+            let reply_pending = true;
             match decrypted {
                 V2ValidatedInboundOutcome::Decrypted {
                     validated: ValidatedInboundPlaintext::Business(mut projection),
@@ -2588,28 +2884,6 @@ where
     }
 }
 
-async fn send_session_reply<H>(
-    context: &V2DirectProductContext,
-    host: &mut H,
-    binding: &V2SessionBinding,
-    init_message_id: &str,
-    expected_session_id: &str,
-    now: &str,
-) -> crate::ImResult<()>
-where
-    H: V2DirectProductHost,
-{
-    // Register the intent before preparing or posting the reply. A crash or
-    // transport failure therefore leaves a discoverable, exact retry path.
-    let record = context.with_ledger(|ledger| {
-        ledger.register_session_reply(binding, init_message_id, expected_session_id, now)
-    })?;
-    if record.accepted {
-        return Ok(());
-    }
-    deliver_session_reply(context, host, &record, now).await
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct V2SessionReplyRetrySummary {
     pub(crate) attempted: usize,
@@ -2636,8 +2910,13 @@ pub(crate) async fn retry_one_session_reply_for_client(
     let mut host = CoreV2DirectProductHost {
         core: &core,
         client,
+        documents: BTreeMap::new(),
+        started: std::time::Instant::now(),
     };
-    retry_session_replies_with_host_limit(&context, &mut host, 1).await?;
+    let result = retry_session_replies_with_host_limit(&context, &mut host, 1).await?;
+    if result.accepted > 0 {
+        crate::internal::message_runtime::sync_dispatcher::wake_p5_replies(client);
+    }
     Ok(())
 }
 
@@ -2713,6 +2992,12 @@ async fn deliver_session_reply<H>(
 where
     H: V2DirectProductHost,
 {
+    let lock = endpoint_delivery_lock(
+        context,
+        &record.binding.peer_did,
+        &record.binding.peer_device_id,
+    );
+    let _guard = lock.lock().await;
     let prepared = match context
         .with_direct(|direct| direct.resume_outbound(&record.binding, &record.operation_id))?
     {

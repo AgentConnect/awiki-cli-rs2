@@ -27,8 +27,22 @@ struct DispatchState {
     run_epoch: u64,
     wake_generation: u64,
     next_owner: usize,
+    p5_replies_due: BTreeMap<String, u64>,
+    p5_reply_generation: u64,
     clients: BTreeMap<String, crate::core::ImClient>,
     active_by_owner: BTreeMap<String, usize>,
+}
+
+impl DispatchState {
+    fn mark_p5_reply_due(&mut self, owner: String) {
+        self.p5_reply_generation = self.p5_reply_generation.wrapping_add(1);
+        self.p5_replies_due.insert(owner, self.p5_reply_generation);
+    }
+    fn consume_p5_reply_wake(&mut self, owner: &str, observed: Option<&u64>) {
+        if self.p5_replies_due.get(owner) == observed {
+            self.p5_replies_due.remove(owner);
+        }
+    }
 }
 
 pub(crate) struct SyncDispatcher {
@@ -96,6 +110,18 @@ pub(crate) fn for_client(client: &crate::core::ImClient) -> Arc<SyncDispatcher> 
     });
     registry.insert(key, Arc::downgrade(&dispatcher));
     dispatcher
+}
+
+pub(crate) fn wake_p5_replies(client: &crate::core::ImClient) {
+    let dispatcher = for_client(client);
+    {
+        let mut state = dispatcher
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.mark_p5_reply_due(client.current_identity().id.as_str().to_owned());
+    }
+    dispatcher.wake_client(client.clone());
 }
 
 pub(crate) fn wake_client(client: &crate::core::ImClient) {
@@ -230,7 +256,7 @@ impl SyncDispatcher {
         let mut maintenance = tokio::time::interval(MAINTENANCE_INTERVAL);
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            let (clients, generation) = {
+            let (clients, generation, p5_replies_due) = {
                 let mut state = self
                     .state
                     .lock()
@@ -241,7 +267,7 @@ impl SyncDispatcher {
                     clients.rotate_left(offset);
                     state.next_owner = state.next_owner.wrapping_add(1);
                 }
-                (clients, state.wake_generation)
+                (clients, state.wake_generation, state.p5_replies_due.clone())
             };
             let mut retained = false;
             for client in &clients {
@@ -283,7 +309,9 @@ impl SyncDispatcher {
                     .await
                     .unwrap_or([false; 4]);
                 retained |= pending.into_iter().any(|pending| pending);
-                if maintenance_due {
+                if maintenance_due
+                    || p5_replies_due.contains_key(client.current_identity().id.as_str())
+                {
                     for (index, kind) in [
                         super::sync_processing::MaintenanceKind::PeerResolution,
                         super::sync_processing::MaintenanceKind::ReadOutbox,
@@ -293,6 +321,9 @@ impl SyncDispatcher {
                     .into_iter()
                     .enumerate()
                     {
+                        if !maintenance_due && index != 2 {
+                            continue;
+                        }
                         let token = format!(
                             "maintenance:{index}:{}",
                             client.current_identity().id.as_str()
@@ -315,6 +346,14 @@ impl SyncDispatcher {
                             Ok(Some(lease)) => lease,
                             _ => continue,
                         };
+                        if index == 2 {
+                            let mut state = self
+                                .state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let owner = client.current_identity().id.as_str();
+                            state.consume_p5_reply_wake(owner, p5_replies_due.get(owner));
+                        }
                         maintenance_active.insert(token.clone(), lease.clone());
                         let worker_token = token.clone();
                         let client = client.clone();
@@ -373,6 +412,11 @@ impl SyncDispatcher {
                     Err(_) => continue,
                 };
                 for claim in claims {
+                    client.core_inner().network.trace(
+                        &claim.event_id,
+                        "sync.local_claim",
+                        std::time::Instant::now(),
+                    );
                     *self
                         .state
                         .lock()
@@ -452,6 +496,7 @@ impl SyncDispatcher {
     }
 
     async fn run_claim(&self, client: crate::core::ImClient, claim: InputClaim) {
+        let started = std::time::Instant::now();
         let owner = claim.owner_identity_id.clone();
         let Ok(db) = client.core_inner().local_state_db().await else {
             return;
@@ -536,8 +581,19 @@ impl SyncDispatcher {
                 }
             }
         };
+        client
+            .core_inner()
+            .network
+            .trace(&claim.event_id, "sync.processing_complete", started);
         match result {
-            Ok(update) => self.publish(owner, update),
+            Ok(update) => {
+                client.core_inner().network.trace(
+                    &claim.event_id,
+                    "sync.ui_notification",
+                    std::time::Instant::now(),
+                );
+                self.publish(owner, update)
+            }
             Err(error) => {
                 let code = super::sync_processing::failure_code(&error);
                 let retry_at = super::sync_processing::retry_at(&error, claim.attempt_count);
@@ -603,3 +659,7 @@ impl SyncDispatcher {
             .await;
     }
 }
+
+#[cfg(test)]
+#[path = "sync_dispatcher_wakeup_tests.rs"]
+mod wakeup_tests;

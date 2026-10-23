@@ -17,6 +17,10 @@ pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSe
 
 pub(crate) struct ImCoreInner {
     pub(crate) network: Arc<crate::network::NetworkRuntime>,
+    #[cfg(feature = "sqlite")]
+    pub(crate) prekey_publications: tokio::sync::Mutex<
+        crate::internal::secure_direct::v2_prekey_runtime::PublicationConfirmations,
+    >,
     pub(crate) identity_capability_sessions: std::sync::Mutex<
         std::collections::HashMap<
             String,
@@ -160,6 +164,8 @@ impl ImCore {
                             sdk_config.ca_bundle_path().map(str::to_owned),
                         ))
                     }),
+                #[cfg(feature = "sqlite")]
+                prekey_publications: Default::default(),
                 sdk_config,
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
