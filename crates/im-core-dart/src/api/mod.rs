@@ -1,7 +1,7 @@
 pub mod attachments;
 pub mod auth;
-pub mod client;
 pub mod capabilities;
+pub mod client;
 pub mod core;
 pub mod directory;
 pub mod email;
