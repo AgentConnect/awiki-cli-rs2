@@ -9,6 +9,7 @@ pub(crate) mod provider;
 pub(crate) mod state_ref;
 pub(crate) mod storage;
 pub(crate) mod summary;
+pub(crate) mod transition;
 pub(crate) mod v2_application;
 pub(crate) mod v2_lifecycle;
 pub(crate) mod v2_notice;

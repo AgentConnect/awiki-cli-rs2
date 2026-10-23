@@ -1698,6 +1698,9 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if crate::internal::group_e2ee::transition::consume_hint(client, &notification, warnings) {
+        return None;
+    }
     if is_explicit_group_e2ee_notice_control(&notification)
         && notification
             .pointer("/params/meta/profile")
@@ -1784,6 +1787,9 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if crate::internal::group_e2ee::transition::consume_hint(client, &notification, warnings) {
+        return None;
+    }
     if is_explicit_group_e2ee_notice_control(&notification)
         && notification
             .pointer("/params/meta/profile")
@@ -1841,8 +1847,15 @@ async fn normalize_group_e2ee_realtime_notification_async(
 }
 
 fn is_explicit_group_e2ee_notice_control(notification: &Value) -> bool {
-    notification.get("method").and_then(Value::as_str)
-        == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+    notification
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| {
+            matches!(
+                method,
+                "group.e2ee.notice" | "group_e2ee_reconcile_required"
+            )
+        })
 }
 
 fn is_p6_v2_realtime_candidate(notification: &Value) -> bool {

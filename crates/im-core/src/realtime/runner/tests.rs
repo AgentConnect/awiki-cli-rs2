@@ -1283,6 +1283,10 @@ impl TestClientFixture {
     }
 
     fn core(&self) -> crate::core::ImCore {
+        self.core_with_group_e2ee(false)
+    }
+
+    fn core_with_group_e2ee(&self, enabled: bool) -> crate::core::ImCore {
         crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -1310,7 +1314,7 @@ impl TestClientFixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
-            crate::ImCoreOpenOptions::default(),
+            crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(enabled),
         )
         .unwrap()
     }
@@ -1684,4 +1688,77 @@ fn direct_message_event_with_sync(
         }),
         warnings: Vec::new(),
     }
+}
+
+#[tokio::test]
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
+async fn realtime_transition_hint_schedules_one_restart_safe_repair_without_chat_projection() {
+    let fixture = TestClientFixture::new("transition-reconcile-hint");
+    let client = fixture
+        .core_with_group_e2ee(true)
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".into(),
+        ))
+        .unwrap();
+    let group = "did:example:group";
+    let hint = json!({"method":"group_e2ee_reconcile_required", "params": {
+        "recipient_did":client.did().as_str(), "group_did":group
+    }});
+    let mut warnings = Vec::new();
+    assert!(
+        normalize_group_e2ee_realtime_notification_async(&client, hint.clone(), &mut warnings)
+            .await
+            .is_none()
+    );
+    assert!(normalize_group_e2ee_realtime_notification_async_first(
+        &client,
+        None,
+        hint,
+        &mut warnings
+    )
+    .is_none());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let pending = crate::internal::group_runtime::journal::pending(&client).unwrap();
+    assert_eq!(
+        pending
+            .iter()
+            .filter(|(key, _)| key == "recovery:repair:did:example:group")
+            .count(),
+        1
+    );
+    let value =
+        crate::internal::group_runtime::journal::load(&client, "recovery:repair:did:example:group")
+            .unwrap()
+            .unwrap();
+    assert_eq!(value["group_did"], group);
+    assert_eq!(value["status"]["encryption_ready"], false);
+    assert!(value["request"].is_null());
+    let key = "recovery:repair:did:example:group";
+    let mut retry = value;
+    retry["phase"] = json!("retry");
+    retry["attempts"] = json!(3);
+    retry["next_attempt_at"] = json!(4102444800i64);
+    crate::internal::group_runtime::journal::save(&client, key, retry).unwrap();
+    drop(client);
+    let reopened = fixture
+        .core_with_group_e2ee(true)
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".into(),
+        ))
+        .unwrap();
+    let hint = json!({"method":"group_e2ee_reconcile_required", "params": {
+        "recipient_did":reopened.did().as_str(), "group_did":group
+    }});
+    assert!(
+        normalize_group_e2ee_realtime_notification_async(&reopened, hint, &mut warnings)
+            .await
+            .is_none()
+    );
+    let persisted = crate::internal::group_runtime::journal::load(&reopened, key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted["phase"], "retry");
+    assert_eq!(persisted["attempts"], 3);
+    assert_eq!(persisted["next_attempt_at"], 4102444800i64);
+    assert!(warnings.is_empty());
 }

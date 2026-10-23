@@ -836,6 +836,18 @@ is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
 
+Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
+`group_e2ee_reconcile_required(recipient_did, group_did)` 提示，只为当前身份持久化
+既有 group repair 任务。提示不投影为聊天消息、不作为 ANP P6 notice，不提供设备授权；
+重复通知保留任务退避，重建客户端后继续读取同一 journal。
+修复只由 active owner 在重新读取权威 `group.get`、完整同版本成员列表及新鲜 DID Manifest
+后执行。Host 的 `e2ee_maintenance.did_transition` 冻结接续设备集合，Core 先 Add 这些
+successor 设备，再 Remove predecessor；后来 Join 的设备和无关差异留待接续完成后处理。
+冻结设备撤销、P4 成员不匹配、计划/版本变化时停止或重新读取，不猜配设备、不绕过 Host fence。
+这一自动恢复合同需要配套的新 Message Service 与 Core，详细本地字段见 Message Service
+`docs/api/message-service-internal-api.md` 的 Recovery 接续章节；标准 P6 验签与 exact-device
+校验保持不变。
+
 本 workspace 对 OpenMLS 0.8 单独设置 dev/test `debug-assertions = false`：该依赖在
 合法检测到 AEAD tag 错误后含无条件 debug assertion，开启时会先 panic，无法返回原有
 `AeadError`。此设置保留实际解密、签名和 AAD 校验，让恶意密文正常拒绝；其他依赖及
