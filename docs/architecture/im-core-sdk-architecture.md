@@ -2014,3 +2014,7 @@ Sync v2 只请求实现、可消费和服务声明的交集。未知发现不重
 
 Dart/Node 暴露相同 JSON 安全投影；APP 管理导航和自身任务，DSH Browser 只消费 Host
 投影。缓存不作为服务端授权依据，也不清除已生效的最低版本政策。
+
+### P5 旧式实时提示衔接
+
+已认证 Home 连接上的 `direct.incoming` P5 v2 提示，在可靠 lane 已启用或仍待协商时，仅当目标 DID 与当前 DID、recipient device 与当前账号设备均精确匹配，才转换为 sync-only `sync.changed`。不解析或消费密文、不提前 ACK、不推进 ratchet，消息仍由持久接收队列处理。无 lane binding 的冻结旧路径继续原验证。App 合并重复提示，同步中到达的提示必须在当前轮结束后触发补拉；重连、回前台和周期补拉保持恢复职责。

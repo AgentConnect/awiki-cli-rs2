@@ -37,7 +37,8 @@ async fn p5_realtime_cannot_consume_crypto_owned_by_pending_or_negotiated_lane()
     .unwrap();
     // An invalid envelope makes any accidental crypto/parser entry observable.
     let notification = json!({"method": "direct.incoming", "params": {
-        "meta": {"profile": "anp.direct.e2ee.v2"}, "body": {"ciphertext_b64u": "AQ"}
+        "meta": {"profile": "anp.direct.e2ee.v2", "target": {"did": client.did().as_str()},
+            "recipient_device_id": "device-1"}, "body": {"ciphertext_b64u": "AQ"}
     }});
     for negotiated in [false, true] {
         if negotiated {
@@ -84,8 +85,20 @@ async fn p5_realtime_cannot_consume_crypto_owned_by_pending_or_negotiated_lane()
             .await
             .unwrap();
         assert!(
-            matches!(outcome, DirectRealtimeProjectionResult::Projected { notification: None, additional_notifications, warnings } if additional_notifications.is_empty() && warnings.is_empty())
+            matches!(outcome, DirectRealtimeProjectionResult::Projected { notification: Some(ref hint), additional_notifications, warnings }
+                if hint["method"] == "sync.changed" && hint.get("body").is_none()
+                    && additional_notifications.is_empty() && warnings.is_empty())
         );
+    }
+    for (pointer, value) in [
+        ("/params/meta/recipient_device_id", "other-device"),
+        ("/params/meta/target/did", "did:example:other"),
+    ] {
+        let mut wrong = notification.clone();
+        *wrong.pointer_mut(pointer).unwrap() = json!(value);
+        assert!(project_p5_v2_realtime_notification(&client, wrong)
+            .await
+            .is_err());
     }
     db.shutdown().await.unwrap();
     let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();

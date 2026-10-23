@@ -1491,7 +1491,37 @@ async fn project_p5_v2_realtime_notification(
     )
     .await?
     {
-        return Ok(dropped_v2_session_control_projection());
+        // This projector is reached only through the authenticated Home
+        // transport. A legacy hint may wake durable receive, but never consume
+        // its ciphertext, advance a ratchet or ACK the delivery.
+        let binding = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .load_identity_account_binding(client.current_identity().id.as_str().to_owned())
+            .await?
+            .filter(|binding| binding.current_did == client.did().as_str())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if notification
+            .pointer("/params/meta/target/did")
+            .and_then(Value::as_str)
+            != Some(client.did().as_str())
+            || notification
+                .pointer("/params/meta/recipient_device_id")
+                .and_then(Value::as_str)
+                != Some(binding.protocol_device_id.as_str())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        return Ok(DirectRealtimeProjectionResult::Projected {
+            notification: Some(serde_json::json!({
+                "method": "sync.changed",
+                "params": {"domains": ["message"], "reason": "message_available"},
+                "sync": {"schema_version": 2, "domain_versions": {}}
+            })),
+            additional_notifications: Vec::new(),
+            warnings: Vec::new(),
+        });
     }
     let params = notification
         .get("params")
