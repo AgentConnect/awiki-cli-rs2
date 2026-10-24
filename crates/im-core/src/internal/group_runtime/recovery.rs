@@ -53,9 +53,7 @@ pub(crate) async fn maintain(client: &crate::core::ImClient) {
     let lock = client
         .core_inner()
         .group_lifecycle_lock(client.current_identity().id.as_str(), "group-recovery");
-    let Ok(_guard) = lock.try_lock() else {
-        return;
-    };
+    let _guard = lock.lock().await;
     let Ok(pending) = super::journal::pending(client) else {
         return;
     };

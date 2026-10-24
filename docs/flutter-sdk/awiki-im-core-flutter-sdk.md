@@ -1465,3 +1465,6 @@ persistence_failed）。`backendCapabilities(force: false)` 在有缓存时立�
 与分块 body；取消、关闭或流结束释放响应，不把附件变成整体内存缓冲。
 Dart App 的 http.BaseClient、头像下载借此复用 Rust 网络路径；Windows 沿用校验 SHA256 的 Mozilla
 CA bundle。用户设置切换影响新请求，已提交请求继续完成；WS 受控重连由既有宿主协调器立即补拉。
+直连策略也覆盖 WS 握手失败；Core 内部禁止换路重新启用代理。WS 的策略检测截止时间不随
+宿主的短轮询读取重建，空闲、持续消息和 Ping/Pong 场景均检查代次。群恢复控制提示在 Core
+提交 journal 后直接唤醒后台维护，Flutter 宿主无需靠前台周期同步启动修复；现有权限和退避保留。

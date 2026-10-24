@@ -155,6 +155,10 @@ pub(crate) fn consume_hint(
     });
     if result.is_err() {
         warnings.push("Group reconciliation hint could not be scheduled".to_owned());
+    } else if tokio::runtime::Handle::try_current().is_ok() {
+        crate::internal::message_runtime::sync_dispatcher::wake_group_recovery(client);
+    } else {
+        warnings.push("Group reconciliation executor runtime was unavailable".to_owned());
     }
     // Never project control input as chat or treat it as a P6 Commit/ACK.
     true

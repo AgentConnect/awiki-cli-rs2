@@ -385,7 +385,8 @@ impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
     fn new(client: &'a crate::core::ImClient) -> Self {
         Self {
             client,
-            runtime: tokio::runtime::Builder::new_current_thread()
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
                 .enable_io()
                 .enable_time()
                 .build()
@@ -1747,6 +1748,9 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    // The blocking runner owns this runtime for its entire lifetime, including
+    // idle WS reads. A queued recovery must progress after projection returns.
+    let _runtime_context = runtime.map(|runtime| runtime.enter());
     if crate::internal::group_e2ee::transition::consume_hint(client, &notification, warnings) {
         return None;
     }
@@ -2432,6 +2436,7 @@ pub(crate) async fn spawn_default_async(
 
 #[cfg(feature = "sqlite")]
 async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
+    crate::internal::message_runtime::sync_dispatcher::wake_client(client);
     crate::internal::identity_join_management::start_worker(client);
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)

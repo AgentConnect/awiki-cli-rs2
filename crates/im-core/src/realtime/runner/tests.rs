@@ -1775,3 +1775,6 @@ async fn realtime_transition_hint_schedules_one_restart_safe_repair_without_chat
     assert_eq!(persisted["next_attempt_at"], 4102444800i64);
     assert!(warnings.is_empty());
 }
+#[cfg(feature = "group-e2ee")]
+#[path = "recovery_wakeup_tests.rs"]
+mod recovery_wakeup_tests;

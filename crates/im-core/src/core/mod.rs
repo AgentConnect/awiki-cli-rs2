@@ -450,7 +450,7 @@ impl ImCore {
         let runtime = self.identities().load_runtime_async(selector).await?;
         let client = ImClient::new(self.inner.clone(), runtime);
         #[cfg(feature = "sqlite")]
-        if client.runtime().owner.sync_account.is_some() {
+        if client.runtime().owner.sync_account.is_some() || self.inner.group_e2ee_v2_enabled() {
             crate::internal::message_runtime::sync_dispatcher::wake_client(&client);
         }
         if self.inner().device_revoke_enabled() {

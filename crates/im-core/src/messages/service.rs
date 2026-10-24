@@ -4068,13 +4068,7 @@ impl<'a> MessageService<'a> {
         #[cfg(not(feature = "sqlite"))]
         let received = coordinator.execute(request, kind, executor).await;
         #[cfg(feature = "group-e2ee")]
-        {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                crate::internal::group_runtime::recovery::maintain(self.client),
-            )
-            .await;
-        }
+        crate::internal::message_runtime::sync_dispatcher::wake_group_recovery(self.client);
         received
     }
 

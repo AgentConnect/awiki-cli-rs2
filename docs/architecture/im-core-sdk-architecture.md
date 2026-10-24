@@ -838,7 +838,12 @@ state; the one-ciphertext rule does not imply shared Leaf secrets.
 
 Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
 `group_e2ee_reconcile_required(recipient_did, group_did)` 提示，只为当前身份持久化
-既有 group repair 任务。提示不投影为聊天消息、不作为 ANP P6 notice，不提供设备授权；
+既有 group repair 任务，并在提交后唤醒 Core 的有界 receive dispatcher 执行该任务。
+任务使用原有处理租约及身份/设备 journal；处理中到达的提示保留后续唤醒，退避由 Core
+维护时钟推进，异步客户端重开或 realtime 重启扫描未完成任务，不依赖宿主周期补拉。
+每个数据库 dispatcher 内群恢复同时最多占一个维护槽，保留其余接收和 P5 确认预算；普通接收仅唤醒，
+不等待群修复 HTTP。阻塞 realtime 的自有单工作线程运行时在空闲读期间也驱动后台任务。
+提示不投影为聊天消息、不作为 ANP P6 notice，不提供设备授权；
 重复通知保留任务退避，重建客户端后继续读取同一 journal。
 修复只由 active owner 在重新读取权威 `group.get`、完整同版本成员列表及新鲜 DID Manifest
 后执行。Host 的 `e2ee_maintenance.did_transition` 冻结接续设备集合，Core 先 Add 这些

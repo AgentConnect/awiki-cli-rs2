@@ -29,11 +29,25 @@ struct DispatchState {
     next_owner: usize,
     p5_replies_due: BTreeMap<String, u64>,
     p5_reply_generation: u64,
+    group_repairs_due: BTreeMap<String, u64>,
+    #[cfg(feature = "group-e2ee")]
+    group_repair_generation: u64,
     clients: BTreeMap<String, crate::core::ImClient>,
     active_by_owner: BTreeMap<String, usize>,
 }
 
 impl DispatchState {
+    #[cfg(feature = "group-e2ee")]
+    fn mark_group_repair_due(&mut self, owner: String) {
+        self.group_repair_generation = self.group_repair_generation.wrapping_add(1);
+        self.group_repairs_due
+            .insert(owner, self.group_repair_generation);
+    }
+    fn consume_group_repair_wake(&mut self, owner: &str, observed: Option<&u64>) {
+        if self.group_repairs_due.get(owner) == observed {
+            self.group_repairs_due.remove(owner);
+        }
+    }
     fn mark_p5_reply_due(&mut self, owner: String) {
         self.p5_reply_generation = self.p5_reply_generation.wrapping_add(1);
         self.p5_replies_due.insert(owner, self.p5_reply_generation);
@@ -126,6 +140,17 @@ pub(crate) fn wake_p5_replies(client: &crate::core::ImClient) {
 
 pub(crate) fn wake_client(client: &crate::core::ImClient) {
     for_client(client).wake_client(client.clone());
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn wake_group_recovery(client: &crate::core::ImClient) {
+    let dispatcher = for_client(client);
+    dispatcher
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .mark_group_repair_due(client.current_identity().id.as_str().to_owned());
+    dispatcher.wake_client(client.clone());
 }
 
 pub(crate) fn publish_removed(client: &crate::core::ImClient, removed: &[RemovedInput]) {
@@ -256,7 +281,7 @@ impl SyncDispatcher {
         let mut maintenance = tokio::time::interval(MAINTENANCE_INTERVAL);
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            let (clients, generation, p5_replies_due) = {
+            let (clients, generation, p5_replies_due, group_repairs_due) = {
                 let mut state = self
                     .state
                     .lock()
@@ -267,7 +292,12 @@ impl SyncDispatcher {
                     clients.rotate_left(offset);
                     state.next_owner = state.next_owner.wrapping_add(1);
                 }
-                (clients, state.wake_generation, state.p5_replies_due.clone())
+                (
+                    clients,
+                    state.wake_generation,
+                    state.p5_replies_due.clone(),
+                    state.group_repairs_due.clone(),
+                )
             };
             let mut retained = false;
             for client in &clients {
@@ -302,26 +332,58 @@ impl SyncDispatcher {
                     retained |= summary.pending > 0;
                 }
                 let owner = client.current_identity().id.as_str().to_owned();
-                let pending = db
+                let pending = match db
                     .run_local(move |connection| {
                         super::sync_processing::maintenance_pending(connection, &owner)
                     })
                     .await
-                    .unwrap_or([false; 4]);
+                {
+                    Ok(pending) => pending,
+                    // A reset/closed actor must not be reopened by a direct
+                    // journal read from a retained maintenance client.
+                    Err(_) => continue,
+                };
                 retained |= pending.into_iter().any(|pending| pending);
+                #[cfg_attr(not(feature = "group-e2ee"), allow(unused_mut))]
+                let mut pending = pending.to_vec();
+                #[cfg(feature = "group-e2ee")]
+                {
+                    // Journal lookup retains exact owner/device scope. Pending
+                    // backoff keeps the existing worker alive without remote IO.
+                    let work = crate::internal::group_runtime::journal::pending(client)
+                        .unwrap_or_default();
+                    retained |= !work.is_empty();
+                    if work.is_empty() {
+                        let owner = client.current_identity().id.as_str();
+                        self.state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .consume_group_repair_wake(owner, group_repairs_due.get(owner));
+                    }
+                    pending.push(work.iter().any(|(_, value)| {
+                        value["next_attempt_at"].as_i64().unwrap_or(0)
+                            <= chrono::Utc::now().timestamp()
+                    }));
+                }
                 if maintenance_due
                     || p5_replies_due.contains_key(client.current_identity().id.as_str())
+                    || group_repairs_due.contains_key(client.current_identity().id.as_str())
                 {
-                    for (index, kind) in [
+                    #[cfg_attr(not(feature = "group-e2ee"), allow(unused_mut))]
+                    let mut kinds = vec![
                         super::sync_processing::MaintenanceKind::PeerResolution,
                         super::sync_processing::MaintenanceKind::ReadOutbox,
                         super::sync_processing::MaintenanceKind::P5Replies,
                         super::sync_processing::MaintenanceKind::RootCompletion,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        if !maintenance_due && index != 2 {
+                    ];
+                    #[cfg(feature = "group-e2ee")]
+                    kinds.push(super::sync_processing::MaintenanceKind::GroupRecovery);
+                    for (index, kind) in kinds.into_iter().enumerate() {
+                        let owner = client.current_identity().id.as_str();
+                        if !maintenance_due
+                            && !((index == 2 && p5_replies_due.contains_key(owner))
+                                || (index == 4 && group_repairs_due.contains_key(owner)))
+                        {
                             continue;
                         }
                         let token = format!(
@@ -330,6 +392,9 @@ impl SyncDispatcher {
                         );
                         if !pending[index]
                             || maintenance_active.contains_key(&token)
+                            // Group repair can wait on several remote members.
+                            // Keep the other receive/confirmation slots available.
+                            || (index == 4 && maintenance_active.keys().any(|key| key.starts_with("maintenance:4:")))
                             || jobs.len() >= sync_inbox::MAX_ACTIVE_INPUTS
                         {
                             continue;
@@ -353,6 +418,12 @@ impl SyncDispatcher {
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let owner = client.current_identity().id.as_str();
                             state.consume_p5_reply_wake(owner, p5_replies_due.get(owner));
+                        }
+                        if index == 4 {
+                            self.state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .consume_group_repair_wake(owner, group_repairs_due.get(owner));
                         }
                         maintenance_active.insert(token.clone(), lease.clone());
                         let worker_token = token.clone();
