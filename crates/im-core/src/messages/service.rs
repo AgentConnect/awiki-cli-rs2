@@ -30,6 +30,7 @@ async fn execute_message_receive_once(
     client: crate::core::ImClient,
     request: crate::messages::MessageSyncRequest,
 ) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
+    let started = std::time::Instant::now();
     let (client, _) = client.reload_local_authorization_async().await?;
     let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
         &client,
@@ -40,6 +41,11 @@ async fn execute_message_receive_once(
     .with_processing_wakeup(crate::internal::message_runtime::sync_dispatcher::wake_client)
     .receive_now(request)
     .await;
+    client.core_inner().network.trace(
+        client.current_identity().id.as_str(),
+        "sync.http_receive",
+        started,
+    );
     match result {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
@@ -4062,13 +4068,7 @@ impl<'a> MessageService<'a> {
         #[cfg(not(feature = "sqlite"))]
         let received = coordinator.execute(request, kind, executor).await;
         #[cfg(feature = "group-e2ee")]
-        {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                crate::internal::group_runtime::recovery::maintain(self.client),
-            )
-            .await;
-        }
+        crate::internal::message_runtime::sync_dispatcher::wake_group_recovery(self.client);
         received
     }
 

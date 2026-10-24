@@ -64,15 +64,14 @@ async fn open_core_inner(
 ) -> Result<Arc<DartImCore>, DartImError> {
     let config = config.try_into()?;
     let paths = paths.try_into()?;
-    let inner = if let Some(options) = options {
-        im_core::ImCore::open_with_options(config, paths, options.try_into()?)
-            .await
-            .map_err(DartImError::from)?
-    } else {
-        im_core::ImCore::open(config, paths)
-            .await
-            .map_err(DartImError::from)?
-    };
+    let mut options: im_core::ImCoreOpenOptions = options
+        .map(TryInto::try_into)
+        .transpose()?
+        .unwrap_or_default();
+    options.network_runtime = crate::api::network::configured_runtime();
+    let inner = im_core::ImCore::open_with_options(config, paths, options)
+        .await
+        .map_err(DartImError::from)?;
     inner
         .identities()
         .migrate_identity_custody_async()

@@ -385,7 +385,8 @@ impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
     fn new(client: &'a crate::core::ImClient) -> Self {
         Self {
             client,
-            runtime: tokio::runtime::Builder::new_current_thread()
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
                 .enable_io()
                 .enable_time()
                 .build()
@@ -743,6 +744,17 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let operation = notification
+            .pointer("/sync/event/event_id")
+            .or_else(|| notification.pointer("/params/meta/message_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("sync-hint");
+        self.client.core_inner().network.trace(
+            operation,
+            "notification.received",
+            std::time::Instant::now(),
+        );
+
         match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3_async(
             &self.client,
             &notification,
@@ -1491,7 +1503,45 @@ async fn project_p5_v2_realtime_notification(
     )
     .await?
     {
-        return Ok(dropped_v2_session_control_projection());
+        // This projector is reached only through the authenticated Home
+        // transport. A legacy hint may wake durable receive, but never consume
+        // its ciphertext, advance a ratchet or ACK the delivery.
+        let binding = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .load_identity_account_binding(client.current_identity().id.as_str().to_owned())
+            .await?
+            .filter(|binding| binding.current_did == client.did().as_str())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if notification
+            .pointer("/params/meta/target/did")
+            .and_then(Value::as_str)
+            != Some(client.did().as_str())
+            || notification
+                .pointer("/params/meta/recipient_device_id")
+                .and_then(Value::as_str)
+                != Some(binding.protocol_device_id.as_str())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        client.core_inner().network.trace(
+            notification
+                .pointer("/params/meta/message_id")
+                .and_then(Value::as_str)
+                .unwrap_or("p5-legacy-hint"),
+            "notification.received",
+            std::time::Instant::now(),
+        );
+        return Ok(DirectRealtimeProjectionResult::Projected {
+            notification: Some(serde_json::json!({
+                "method": "sync.changed",
+                "params": {"domains": ["message"], "reason": "message_available"},
+                "sync": {"schema_version": 2, "domain_versions": {}}
+            })),
+            additional_notifications: Vec::new(),
+            warnings: Vec::new(),
+        });
     }
     let params = notification
         .get("params")
@@ -1698,6 +1748,12 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    // The blocking runner owns this runtime for its entire lifetime, including
+    // idle WS reads. A queued recovery must progress after projection returns.
+    let _runtime_context = runtime.map(|runtime| runtime.enter());
+    if crate::internal::group_e2ee::transition::consume_hint(client, &notification, warnings) {
+        return None;
+    }
     if is_explicit_group_e2ee_notice_control(&notification)
         && notification
             .pointer("/params/meta/profile")
@@ -1784,6 +1840,9 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if crate::internal::group_e2ee::transition::consume_hint(client, &notification, warnings) {
+        return None;
+    }
     if is_explicit_group_e2ee_notice_control(&notification)
         && notification
             .pointer("/params/meta/profile")
@@ -1841,8 +1900,15 @@ async fn normalize_group_e2ee_realtime_notification_async(
 }
 
 fn is_explicit_group_e2ee_notice_control(notification: &Value) -> bool {
-    notification.get("method").and_then(Value::as_str)
-        == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+    notification
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| {
+            matches!(
+                method,
+                "group.e2ee.notice" | "group_e2ee_reconcile_required"
+            )
+        })
 }
 
 fn is_p6_v2_realtime_candidate(notification: &Value) -> bool {
@@ -2370,6 +2436,7 @@ pub(crate) async fn spawn_default_async(
 
 #[cfg(feature = "sqlite")]
 async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
+    crate::internal::message_runtime::sync_dispatcher::wake_client(client);
     crate::internal::identity_join_management::start_worker(client);
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)

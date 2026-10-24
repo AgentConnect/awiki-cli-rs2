@@ -24,6 +24,51 @@ const DEFAULT_OPK_BATCH_SIZE: usize = 16;
 const SIGNED_PREKEY_LIFETIME_DAYS: i64 = 30;
 const DIRECT_E2EE_ATTACHMENT_ENDPOINT: &str = "/im/private/direct-e2ee-attachment";
 
+/// Process-local successful publications only. The owner slot includes the
+/// device; fingerprint includes authorization generation and immutable bundle.
+#[derive(Default)]
+pub(crate) struct PublicationConfirmations {
+    entries: std::collections::BTreeMap<String, (String, DateTime<Utc>, std::time::Instant)>,
+}
+impl PublicationConfirmations {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+    fn confirmed(&mut self, owner: &str, fingerprint: &str, now: DateTime<Utc>) -> bool {
+        self.entries.retain(|_, (_, expires, confirmed_at)| {
+            *expires > now && confirmed_at.elapsed() < std::time::Duration::from_secs(300)
+        });
+        if self
+            .entries
+            .get(owner)
+            .is_some_and(|(saved, _, _)| saved == fingerprint)
+        {
+            return true;
+        }
+        self.entries.remove(owner);
+        false
+    }
+    fn confirm(
+        &mut self,
+        owner: String,
+        fingerprint: String,
+        key_expiry: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) {
+        if self.entries.len() >= 128 {
+            self.entries.clear();
+        }
+        self.entries.insert(
+            owner,
+            (
+                fingerprint,
+                key_expiry.min(now + Duration::minutes(5)),
+                std::time::Instant::now(),
+            ),
+        );
+    }
+}
+
 pub(crate) struct V2LocalPrekeyIdentity<'a> {
     pub(crate) did: &'a str,
     pub(crate) device_id: &'a str,
@@ -324,7 +369,30 @@ where
     ensure_local_prekey_published_with_document(core, client, &did_document, publisher).await
 }
 
-async fn ensure_local_prekey_published_with_document<T>(
+pub(crate) async fn ensure_local_prekey_published_with_document<T>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    did_document: &serde_json::Value,
+    publisher: &mut T,
+) -> crate::ImResult<V2LocalPrekeyPublication>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
+    let result = ensure_local_prekey_published_checked(core, client, did_document, publisher).await;
+    if matches!(
+        &result,
+        Err(crate::ImError::PermissionDenied
+            | crate::ImError::Service {
+                status_code: Some(401 | 403),
+                ..
+            })
+    ) {
+        core.inner().prekey_publications.lock().await.clear();
+    }
+    result
+}
+
+async fn ensure_local_prekey_published_checked<T>(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     did_document: &serde_json::Value,
@@ -406,12 +474,47 @@ where
         authorization.protocol_device_id.as_str(),
         publication.bundle.bundle_id
     );
+    let slot = format!(
+        "{:?}",
+        (
+            client.current_identity().id.as_str(),
+            authorization.protocol_device_id.as_str()
+        )
+    );
+    let fingerprint = format!(
+        "{}:{}",
+        authorization.auth_generation,
+        URL_SAFE_NO_PAD.encode(Sha256::digest(
+            serde_json::to_vec(&publish_request(&publication, &service_did, &operation_id)?)
+                .map_err(|_| crate::ImError::PermissionDenied)?
+        ))
+    );
+    let key_expiry = DateTime::parse_from_rfc3339(&publication.bundle.signed_prekey.expires_at)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .with_timezone(&Utc);
+    // Keep the cache lock local: authentication convergence may itself publish
+    // keys, so no network or identity-provider call may run under this lock.
+    if core
+        .inner()
+        .prekey_publications
+        .lock()
+        .await
+        .confirmed(&slot, &fingerprint, Utc::now())
+    {
+        return Ok(publication);
+    }
     let request = publish_request(&publication, &service_did, &operation_id)?;
     let (method, params) = split_rpc_request(request)?;
     let response = publisher
         .authenticated_rpc("/im/rpc", &method, params)
         .await?;
     validate_publish_result(&response, &publication)?;
+    core.inner().prekey_publications.lock().await.confirm(
+        slot,
+        fingerprint,
+        key_expiry,
+        Utc::now(),
+    );
     Ok(publication)
 }
 
@@ -692,6 +795,59 @@ fn v2_error(_: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn confirmation_cache_is_generation_bundle_and_expiry_bound() {
+        use super::*;
+        let now = Utc::now();
+        let mut cache = PublicationConfirmations::default();
+        cache.confirm(
+            "owner-device".into(),
+            "generation-1-bundle-a".into(),
+            now + Duration::hours(1),
+            now,
+        );
+        assert!(cache.confirmed(
+            "owner-device",
+            "generation-1-bundle-a",
+            now + Duration::minutes(4)
+        ));
+        assert!(!cache.confirmed(
+            "owner-device",
+            "generation-1-bundle-a",
+            now + Duration::minutes(5)
+        ));
+        cache.confirm(
+            "owner-device".into(),
+            "generation-1-bundle-a".into(),
+            now + Duration::hours(1),
+            now,
+        );
+        assert!(!cache.confirmed("owner-device", "generation-2-bundle-a", now));
+        assert!(cache.entries.is_empty());
+        cache.confirm(
+            "owner-device".into(),
+            "monotonic".into(),
+            now + Duration::hours(1),
+            now,
+        );
+        cache.entries.get_mut("owner-device").unwrap().2 =
+            std::time::Instant::now() - std::time::Duration::from_secs(301);
+        assert!(!cache.confirmed("owner-device", "monotonic", now - Duration::hours(1)));
+
+        cache.confirm(
+            "owner-device".into(),
+            "generation-2-bundle-b".into(),
+            now + Duration::seconds(1),
+            now,
+        );
+        assert!(!cache.confirmed("other-owner", "generation-2-bundle-b", now));
+        assert!(!cache.confirmed(
+            "owner-device",
+            "generation-2-bundle-b",
+            now + Duration::seconds(1)
+        ));
+    }
+
     use super::*;
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,

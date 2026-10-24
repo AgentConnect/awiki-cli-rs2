@@ -4666,6 +4666,7 @@ mod tests {
             test_config(),
             test_paths(root.path()),
             crate::ImCoreOpenOptions {
+                network_runtime: None,
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
                 multi_device_device_revoke_enabled: false,
@@ -5606,6 +5607,7 @@ mod tests {
             test_config(),
             test_paths(root.path()),
             crate::ImCoreOpenOptions {
+                network_runtime: None,
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
                 multi_device_device_revoke_enabled: false,

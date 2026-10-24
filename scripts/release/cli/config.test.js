@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { parse: parseYaml } = require('yaml');
+const { spawnSync } = require('node:child_process');
 const {
   parseFlatToml, readAnpCandidateLock, readReleaseConfig, readServerConfig,
 } = require('./config.js');
@@ -14,6 +15,23 @@ const FIXTURE_ENV =
   '${{ github.workspace }}/awiki-cli-rs2/crates/im-core/tests/fixtures/release_0714_core';
 const FORBIDDEN_FIXTURE_REPOSITORY = 'agentconnect/awiki-system-test';
 const FORBIDDEN_FIXTURE_CREDENTIAL = 'AWIKI_CI_READ_TOKEN';
+
+test('CLI test packaging accepts exact commits and keeps moving references closed', () => {
+  const workflow = parseYaml(fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/build-cli-release.yml'), 'utf8'));
+  const steps = workflow.jobs.build.steps;
+  const validation = steps.find(step => step.name === 'Validate immutable source reference');
+  for (const source of ['a'.repeat(40), 'cli-v1.0.59', 'release/1014', 'a'.repeat(39), 'main']) {
+    const result = spawnSync('bash', ['-eu', '-c', validation.run], {
+      env: { ...process.env, SOURCE_REF: source, EXPECTED_VERSION: '1.0.59' },
+    });
+    assert.equal(result.status === 0, source === 'a'.repeat(40) || source === 'cli-v1.0.59', source);
+  }
+  assert.equal(workflow.on.workflow_dispatch.inputs.tenant_config.default,
+    'config/builtin-tenants.default.json');
+  assert.match(steps.find(step => step.name === 'Build archive').run,
+    /--tenant-config "\$TENANT_CONFIG"/);
+});
 
 function readImCoreNodeCiWorkflow() {
   const source = fs.readFileSync(

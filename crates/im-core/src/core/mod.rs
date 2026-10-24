@@ -16,6 +16,11 @@ pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
+    pub(crate) network: Arc<crate::network::NetworkRuntime>,
+    #[cfg(feature = "sqlite")]
+    pub(crate) prekey_publications: tokio::sync::Mutex<
+        crate::internal::secure_direct::v2_prekey_runtime::PublicationConfirmations,
+    >,
     pub(crate) identity_capability_sessions: std::sync::Mutex<
         std::collections::HashMap<
             String,
@@ -64,6 +69,11 @@ pub struct ImCore {
 }
 
 impl ImCore {
+    /// Shared transport capability; authentication remains request-owned.
+    pub fn network(&self) -> Arc<crate::network::NetworkRuntime> {
+        self.inner.network.clone()
+    }
+
     /// Stops the local-state actor and waits until its database handle is closed.
     ///
     /// Hosts must call this before deleting or replacing the state directory. The
@@ -144,6 +154,18 @@ impl ImCore {
                 backend_capabilities: Arc::new(
                     crate::backend_capabilities::CapabilityCache::public(&sdk_config, &sdk_paths),
                 ),
+                network: options
+                    .network_runtime
+                    .map(|runtime| {
+                        Arc::new(runtime.with_trust(sdk_config.ca_bundle_path().map(str::to_owned)))
+                    })
+                    .unwrap_or_else(|| {
+                        Arc::new(crate::network::NetworkRuntime::new(
+                            sdk_config.ca_bundle_path().map(str::to_owned),
+                        ))
+                    }),
+                #[cfg(feature = "sqlite")]
+                prekey_publications: Default::default(),
                 sdk_config,
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
@@ -428,7 +450,7 @@ impl ImCore {
         let runtime = self.identities().load_runtime_async(selector).await?;
         let client = ImClient::new(self.inner.clone(), runtime);
         #[cfg(feature = "sqlite")]
-        if client.runtime().owner.sync_account.is_some() {
+        if client.runtime().owner.sync_account.is_some() || self.inner.group_e2ee_v2_enabled() {
             crate::internal::message_runtime::sync_dispatcher::wake_client(&client);
         }
         if self.inner().device_revoke_enabled() {

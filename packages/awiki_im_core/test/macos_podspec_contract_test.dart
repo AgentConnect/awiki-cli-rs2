@@ -20,6 +20,9 @@ void main() {
       hasLength(1),
     );
     expect(podspec, contains('-Wl,-export_dynamic'));
+    // Rust static archives do not propagate their system framework link flags.
+    // System proxy resolution must also link in the consuming Flutter runner.
+    expect(podspec, contains("s.frameworks = 'SystemConfiguration'"));
     expect(podspec, isNot(contains(r'$(PODS_XCFRAMEWORKS_BUILD_DIR)')));
   });
 }

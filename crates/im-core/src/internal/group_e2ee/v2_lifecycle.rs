@@ -1335,7 +1335,8 @@ pub(crate) fn reconcile_group_device_roster(
             if authority != RosterReconcileAuthority::Owner {
                 return Ok(summary);
             }
-            let (group_state_ref, desired) = fresh_desired_group_roster(client, group.clone())?;
+            let (group_state_ref, desired, _transition) =
+                fresh_desired_group_roster(client, group.clone())?;
             let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
                 member
                     .device_ids
@@ -1372,7 +1373,8 @@ pub(crate) fn reconcile_group_device_roster(
         // The fresh P4 reference and desired member/device set are read after
         // WAL repair, so each subsequent P6 step starts from the latest
         // authoritative business state.
-        let (group_state_ref, desired) = fresh_desired_group_roster(client, group.clone())?;
+        let (group_state_ref, desired, transition) =
+            fresh_desired_group_roster(client, group.clone())?;
         let endpoints =
             context
                 .product
@@ -1403,6 +1405,8 @@ pub(crate) fn reconcile_group_device_roster(
             })
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
+        let (extra, missing) =
+            super::transition::restrict_delta(transition.as_ref(), extra, missing)?;
         summary.remaining_devices =
             reconcile_remaining_devices(client.did().as_str(), authority, &extra, &missing);
         let (extra, missing) =
@@ -1496,7 +1500,7 @@ pub(crate) async fn reconcile_group_device_roster_async(
             if authority != RosterReconcileAuthority::Owner {
                 return Ok(summary);
             }
-            let (group_state_ref, desired) =
+            let (group_state_ref, desired, _transition) =
                 fresh_desired_group_roster_async(client, group.clone()).await?;
             let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
                 member
@@ -1528,7 +1532,7 @@ pub(crate) async fn reconcile_group_device_roster_async(
         if !local_group_can_reconcile_roster(&inspected.readiness) {
             return Ok(summary);
         }
-        let (group_state_ref, desired) =
+        let (group_state_ref, desired, transition) =
             fresh_desired_group_roster_async(client, group.clone()).await?;
         let endpoints =
             context
@@ -1560,6 +1564,8 @@ pub(crate) async fn reconcile_group_device_roster_async(
             })
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
+        let (extra, missing) =
+            super::transition::restrict_delta(transition.as_ref(), extra, missing)?;
         summary.remaining_devices =
             reconcile_remaining_devices(client.did().as_str(), authority, &extra, &missing);
         let (extra, missing) =
@@ -1677,7 +1683,11 @@ struct DesiredP6Member {
 fn fresh_desired_group_roster(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+) -> crate::ImResult<(
+    V2GroupStateRef,
+    BTreeMap<String, DesiredP6Member>,
+    Option<super::transition::TransitionPlan>,
+)> {
     for attempt in 0..4 {
         match fresh_desired_group_roster_attempt(client, group.clone()) {
             Err(crate::ImError::CursorStale) if attempt < 3 => continue,
@@ -1690,7 +1700,11 @@ fn fresh_desired_group_roster(
 async fn fresh_desired_group_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+) -> crate::ImResult<(
+    V2GroupStateRef,
+    BTreeMap<String, DesiredP6Member>,
+    Option<super::transition::TransitionPlan>,
+)> {
     for attempt in 0..4 {
         match fresh_desired_group_roster_attempt_async(client, group.clone()).await {
             Err(crate::ImError::CursorStale) if attempt < 3 => continue,
@@ -1703,7 +1717,11 @@ async fn fresh_desired_group_roster_async(
 async fn fresh_desired_group_roster_attempt_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+) -> crate::ImResult<(
+    V2GroupStateRef,
+    BTreeMap<String, DesiredP6Member>,
+    Option<super::transition::TransitionPlan>,
+)> {
     let group_did = group.as_str().to_owned();
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
@@ -1741,6 +1759,7 @@ async fn fresh_desired_group_roster_attempt_async(
     .ok_or_else(|| crate::ImError::LocalStateUnavailable {
         detail: "authoritative group.get omitted group_state_version".to_owned(),
     })?;
+    let transition = super::transition::TransitionPlan::from_group_response(raw, &state_ref)?;
     let max_members = super::member_collector::product_max_members(raw)?;
     let members = super::member_collector::collect_complete_group_members_async(
         client,
@@ -1769,10 +1788,18 @@ async fn fresh_desired_group_roster_attempt_async(
             did.as_str().to_owned(),
             DesiredP6Member {
                 document,
-                device_ids: eligible_device_ids(&manifest),
+                device_ids: super::transition::desired_devices(
+                    transition.as_ref(),
+                    did.as_str(),
+                    eligible_device_ids(&manifest),
+                )?,
             },
         );
     }
+    super::transition::validate_roster_members(
+        transition.as_ref(),
+        &desired.keys().cloned().collect(),
+    )?;
     let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
@@ -1786,13 +1813,24 @@ async fn fresh_desired_group_roster_attempt_async(
     ) {
         return Err(crate::ImError::CursorStale);
     }
-    Ok((state_ref, desired))
+    let refreshed_transition = refreshed
+        .raw_response()
+        .ok_or(crate::ImError::CursorStale)
+        .and_then(|raw| super::transition::TransitionPlan::from_group_response(raw, &state_ref))?;
+    if transition != refreshed_transition {
+        return Err(crate::ImError::CursorStale);
+    }
+    Ok((state_ref, desired, transition))
 }
 
 fn fresh_desired_group_roster_attempt(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+) -> crate::ImResult<(
+    V2GroupStateRef,
+    BTreeMap<String, DesiredP6Member>,
+    Option<super::transition::TransitionPlan>,
+)> {
     let group_did = group.as_str().to_owned();
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
@@ -1829,6 +1867,7 @@ fn fresh_desired_group_roster_attempt(
     .ok_or_else(|| crate::ImError::LocalStateUnavailable {
         detail: "authoritative group.get omitted group_state_version".to_owned(),
     })?;
+    let transition = super::transition::TransitionPlan::from_group_response(raw, &state_ref)?;
     let max_members =
         super::member_collector::product_max_members(authoritative.raw_response().unwrap_or(raw))?;
     let members = super::member_collector::collect_complete_group_members(
@@ -1857,10 +1896,18 @@ fn fresh_desired_group_roster_attempt(
             did.as_str().to_owned(),
             DesiredP6Member {
                 document,
-                device_ids: eligible_device_ids(&manifest),
+                device_ids: super::transition::desired_devices(
+                    transition.as_ref(),
+                    did.as_str(),
+                    eligible_device_ids(&manifest),
+                )?,
             },
         );
     }
+    super::transition::validate_roster_members(
+        transition.as_ref(),
+        &desired.keys().cloned().collect(),
+    )?;
     let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
@@ -1873,7 +1920,14 @@ fn fresh_desired_group_roster_attempt(
     ) {
         return Err(crate::ImError::CursorStale);
     }
-    Ok((state_ref, desired))
+    let refreshed_transition = refreshed
+        .raw_response()
+        .ok_or(crate::ImError::CursorStale)
+        .and_then(|raw| super::transition::TransitionPlan::from_group_response(raw, &state_ref))?;
+    if transition != refreshed_transition {
+        return Err(crate::ImError::CursorStale);
+    }
+    Ok((state_ref, desired, transition))
 }
 
 fn group_state_version_matches(raw: Option<&Value>, expected: &str) -> bool {

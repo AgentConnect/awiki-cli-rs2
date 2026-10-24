@@ -420,6 +420,8 @@ pub(crate) fn retry_at(error: &crate::ImError, attempts: i64) -> Option<i64> {
 /// process task budget. A slow Directory lookup cannot own read outbox progress.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum MaintenanceKind {
+    #[cfg(feature = "group-e2ee")]
+    GroupRecovery,
     PeerResolution,
     ReadOutbox,
     P5Replies,
@@ -462,6 +464,11 @@ pub(super) async fn run_maintenance(
     kind: MaintenanceKind,
 ) -> crate::ImResult<Vec<String>> {
     match kind {
+        #[cfg(feature = "group-e2ee")]
+        MaintenanceKind::GroupRecovery => {
+            crate::internal::group_runtime::recovery::maintain(client).await;
+            Ok(vec![])
+        }
         MaintenanceKind::P5Replies => {
             crate::internal::secure_direct::v2_product::retry_one_session_reply_for_client(client)
                 .await?;

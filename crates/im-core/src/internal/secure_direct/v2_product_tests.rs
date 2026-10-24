@@ -307,7 +307,7 @@ fn install_bundle(context: &V2DirectProductContext, did: &str, device: DeviceSpe
         .unwrap();
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct FakeHost {
     documents: BTreeMap<String, Value>,
     fetched: BTreeMap<(String, String), V2GetPrekeyBundleResult>,
@@ -942,11 +942,14 @@ async fn exact_device_fanout(alice_did: &str, bob_did: &str) {
             }
             (_, other) => panic!("unexpected product outcome: {other:?}"),
         }
-        assert_eq!(
-            receiver_host.post_attempts.len(),
-            1,
-            "only hidden session reply is added"
+        assert!(
+            receiver_host.post_attempts.is_empty(),
+            "UI delivery must precede reply transport"
         );
+        retry_session_replies_with_host(&recipient, &mut receiver_host)
+            .await
+            .unwrap();
+        assert_eq!(receiver_host.post_attempts.len(), 1);
     }
 
     let db_bytes = std::fs::read(&alice.sqlite_path).unwrap();
@@ -1047,6 +1050,10 @@ pub(crate) async fn fresh_scoped_business_receive_for_projection_test(
     };
     assert_eq!(projection.sender_did, mallory_did);
     assert_eq!(projection.recipient_did, alice_did);
+    assert!(recipient_host.post_attempts.is_empty());
+    retry_session_replies_with_host(&recipient, &mut recipient_host)
+        .await
+        .unwrap();
     assert_eq!(recipient_host.post_attempts.len(), 1);
 
     let replay = receive_with_host_scoped(
@@ -1474,6 +1481,14 @@ async fn reply_failure_is_durable_and_drain_reuses_exact_ciphertext() {
         panic!("Init business must still be delivered");
     };
     assert!(projection.session_reply_pending);
+    assert!(
+        failing_receiver.post_attempts.is_empty(),
+        "first plaintext must not wait for reply network"
+    );
+    let failed = retry_session_replies_with_host(&bob, &mut failing_receiver)
+        .await
+        .unwrap();
+    assert_eq!(failed.failed, 1);
     assert_eq!(failing_receiver.post_attempts.len(), 1);
     let failed_request = failing_receiver.post_attempts[0].direct_request().unwrap();
     let connection = bob.open_connection().unwrap();
@@ -1567,6 +1582,10 @@ async fn established_pair_uses_cipher_after_reply_and_controls_never_project_as_
         first_outcome,
         V2InboundProductOutcome::Business(_)
     ));
+    assert!(bob_host.post_attempts.is_empty());
+    retry_session_replies_with_host(&bob, &mut bob_host)
+        .await
+        .unwrap();
     let reply = bob_host.post_attempts[0].clone();
     let reply_outcome = receive_with_host(&alice, &mut alice_host, reply.metadata, reply.body)
         .await
@@ -2091,4 +2110,212 @@ FROM direct_e2ee_v2_attachment_intents"#,
     assert!(!redacted_json.contains("nonce_b64u"));
     assert!(!grant_json.contains("object_key_b64u"));
     assert!(!grant_json.contains("nonce_b64u"));
+}
+
+#[derive(Default)]
+struct ParallelState {
+    active: usize,
+    maximum: usize,
+    started: Vec<String>,
+    completed: Vec<String>,
+    attempts: Vec<PreparedV2Outbound>,
+}
+#[derive(Clone)]
+struct ParallelHost {
+    inner: FakeHost,
+    state: Arc<Mutex<ParallelState>>,
+    slow_device: &'static str,
+}
+impl V2DirectProductHost for ParallelHost {
+    fn fork(&self) -> Option<Self> {
+        Some(self.clone())
+    }
+    async fn resolve_did_document(&mut self, did: &str) -> crate::ImResult<Value> {
+        self.inner.resolve_did_document(did).await
+    }
+    async fn ensure_local_prekey_published(&mut self) -> crate::ImResult<()> {
+        self.inner.ensure_local_prekey_published().await
+    }
+    async fn fetch_prekey(
+        &mut self,
+        did: &str,
+        device: &str,
+        document: &Value,
+        operation: &str,
+    ) -> crate::ImResult<V2GetPrekeyBundleResult> {
+        self.inner
+            .fetch_prekey(did, device, document, operation)
+            .await
+    }
+    async fn post_direct(
+        &mut self,
+        prepared: &PreparedV2Outbound,
+    ) -> crate::ImResult<V2DirectSendResult> {
+        let device = prepared.metadata.recipient_device_id.clone();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.active += 1;
+            state.maximum = state.maximum.max(state.active);
+            state.started.push(device.clone());
+            state.attempts.push(prepared.clone());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            if device == self.slow_device { 150 } else { 10 },
+        ))
+        .await;
+        let result = self.inner.post_direct(prepared).await;
+        {
+            let mut state = self.state.lock().unwrap();
+            state.active -= 1;
+            state.completed.push(device);
+        }
+        result
+    }
+    async fn post_direct_attachment(
+        &mut self,
+        prepared: &PreparedV2Outbound,
+        _grant: &Value,
+    ) -> crate::ImResult<V2DirectSendResult> {
+        self.post_direct(prepared).await
+    }
+}
+#[tokio::test]
+async fn parallel_fanout_prioritizes_peers_bounds_concurrency_and_retries_exact_failed_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob";
+    let a = DeviceSpec {
+        id: "local",
+        signing_seed: 1,
+        static_seed: 2,
+        signed_prekey_seed: 3,
+        one_time_prekey_seed: 4,
+    };
+    let sibling = DeviceSpec {
+        id: "slow-sibling",
+        signing_seed: 5,
+        static_seed: 6,
+        signed_prekey_seed: 7,
+        one_time_prekey_seed: 8,
+    };
+    let peers = ["peer-1", "peer-2", "peer-3", "peer-4", "peer-5"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| DeviceSpec {
+            id,
+            signing_seed: 20 + i as u8 * 4,
+            static_seed: 21 + i as u8 * 4,
+            signed_prekey_seed: 22 + i as u8 * 4,
+            one_time_prekey_seed: 23 + i as u8 * 4,
+        })
+        .collect::<Vec<_>>();
+    let context = context(root.path(), "alice-local", alice_did, a, 91);
+    let mut inner = FakeHost::default();
+    inner.add_document(alice_did, did_document(alice_did, &[a, sibling]));
+    inner.add_document(bob_did, did_document(bob_did, &peers));
+    inner.add_bundle(alice_did, sibling);
+    for peer in &peers {
+        inner.add_bundle(bob_did, *peer);
+    }
+    inner
+        .fail_post_once
+        .insert((alice_did.into(), sibling.id.into()));
+    let state = Arc::new(Mutex::new(ParallelState::default()));
+    let mut host = ParallelHost {
+        inner,
+        state: state.clone(),
+        slow_device: sibling.id,
+    };
+    let input = text_input("parallel-one", bob_did, "parallel delivery");
+    let first = send_with_host(
+        &context,
+        &mut host,
+        text_input("parallel-one", bob_did, "parallel delivery"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.accepted_device_count, 5);
+    assert_eq!(first.failed_device_count, 1);
+    assert!(!first.fully_accepted());
+    let failed_request = {
+        let state = state.lock().unwrap();
+        assert_eq!(state.maximum, 4);
+        assert!(state.started[..4].iter().all(|id| id.starts_with("peer-")));
+        assert!(state.completed[..4]
+            .iter()
+            .all(|id| id.starts_with("peer-")));
+        state
+            .attempts
+            .iter()
+            .find(|p| p.metadata.recipient_device_id == sibling.id)
+            .unwrap()
+            .direct_request()
+            .unwrap()
+    };
+    host.inner.fail_post_once.clear();
+    let retried = send_with_host(&context, &mut host, input).await.unwrap();
+    assert!(retried.fully_accepted());
+    assert_eq!(retried.previously_accepted_device_count, 5);
+    assert_eq!(retried.attempted_device_count, 1);
+    let state = state.lock().unwrap();
+    assert_eq!(state.attempts.len(), 7);
+    assert_eq!(
+        state.attempts.last().unwrap().direct_request().unwrap(),
+        failed_request
+    );
+}
+
+#[tokio::test]
+async fn slow_sibling_completion_never_holds_later_peer_tickets() {
+    let run = uuid::Uuid::new_v4().to_string();
+    let mut peer_first = reserve_delivery_key(format!("{run}:peer"));
+    let mut sibling_first = reserve_delivery_key(format!("{run}:sibling"));
+    let mut peer_second = reserve_delivery_key(format!("{run}:peer"));
+    let mut sibling_second = reserve_delivery_key(format!("{run}:sibling"));
+    peer_first.enter().await;
+    sibling_first.enter().await;
+    let peer_wait = async {
+        peer_second.enter().await;
+    };
+    let release_peer = async {
+        tokio::task::yield_now().await;
+        drop(peer_first);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(peer_wait, release_peer);
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), sibling_second.enter())
+            .await
+            .is_err()
+    );
+    drop(sibling_first);
+    tokio::time::timeout(std::time::Duration::from_secs(1), sibling_second.enter())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_middle_device_ticket_does_not_overtake_its_predecessor() {
+    let key = uuid::Uuid::new_v4().to_string();
+    let first = reserve_delivery_key(key.clone());
+    let middle = reserve_delivery_key(key.clone());
+    let mut last = reserve_delivery_key(key);
+    drop(middle);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), last.enter())
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), last.enter())
+            .await
+            .is_err()
+    );
+    drop(first);
+    tokio::time::timeout(std::time::Duration::from_secs(1), last.enter())
+        .await
+        .unwrap();
 }
