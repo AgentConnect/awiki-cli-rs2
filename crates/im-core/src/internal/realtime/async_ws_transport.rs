@@ -14,6 +14,10 @@ use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async_tls_with_config, Connector};
 
+#[cfg(test)]
+#[path = "async_ws_network_tests.rs"]
+mod network_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AsyncWsConnectError {
     pub(crate) status_code: Option<u16>,
@@ -54,6 +58,7 @@ pub(crate) struct AsyncWsTransport {
     stream: WsStream,
     network: Option<Arc<crate::network::NetworkRuntime>>,
     generation: u64,
+    next_network_check: tokio::time::Instant,
     ping_counter: i32,
     sync_subprotocol: super::SyncNotificationSubprotocol,
 }
@@ -76,6 +81,9 @@ impl AsyncWsTransport {
             client_version,
             p6_client_instance_id,
         )?;
+        // Bind the connection to the policy that admitted it, never to a newer
+        // generation observed only after an old-route handshake has completed.
+        let generation = network.as_ref().map_or(0, |network| network.generation());
         let connected = connect_stream(request, connector.clone(), network.as_ref()).await;
         let (stream, response) = match connected {
             Ok(connected) => connected,
@@ -95,9 +103,16 @@ impl AsyncWsTransport {
         };
         let sync_subprotocol =
             validate_async_ws_subprotocol(response.headers(), require_sync_changed_v2)?;
+        if network
+            .as_ref()
+            .is_some_and(|network| network.cached_generation() != generation)
+        {
+            return Err(async_ws_connect_message("network_policy_changed"));
+        }
         Ok(Self {
             stream,
-            generation: network.as_ref().map_or(0, |network| network.generation()),
+            generation,
+            next_network_check: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
             network,
             ping_counter: 0,
             sync_subprotocol,
@@ -110,18 +125,40 @@ impl AsyncWsTransport {
         loop {
             let message = if let Some(network) = &self.network {
                 loop {
-                    tokio::select! {
-                        message = self.stream.next() => break message,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                            if network.generation() != self.generation {
-                                return Err(crate::ImError::TransportUnavailable { detail: "network_policy_changed".into() });
-                            }
+                    if network.cached_generation() != self.generation {
+                        return Err(crate::ImError::TransportUnavailable {
+                            detail: "network_policy_changed".into(),
+                        });
+                    }
+                    // The deadline lives on the transport: the runner cancels
+                    // reads every 250ms, and busy frames must not postpone it.
+                    if tokio::time::Instant::now() >= self.next_network_check {
+                        self.next_network_check =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+                        if network.generation() != self.generation {
+                            return Err(crate::ImError::TransportUnavailable {
+                                detail: "network_policy_changed".into(),
+                            });
                         }
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = tokio::time::sleep_until(self.next_network_check) => {},
+                        message = self.stream.next() => break message,
                     }
                 }
             } else {
                 self.stream.next().await
             };
+            if self
+                .network
+                .as_ref()
+                .is_some_and(|network| network.cached_generation() != self.generation)
+            {
+                return Err(crate::ImError::TransportUnavailable {
+                    detail: "network_policy_changed".into(),
+                });
+            }
             let Some(message) = message else {
                 return Ok(None);
             };
@@ -189,7 +226,11 @@ async fn connect_stream(
         let connected = upgrade(request.clone(), stream).await;
         let (stream, response) = match connected {
             Ok(connected) => connected,
-            Err(error) if retryable_upgrade_transport(&error) => {
+            Err(error)
+                if retryable_upgrade_transport(&error)
+                    && network.diagnostics().policy
+                        == crate::network::NetworkPolicy::SystemPreferred =>
+            {
                 // Upgrade is a read-only handshake. Authentication and negotiated
                 // protocol errors retain their meaning and never trigger this.
                 let connection_started = std::time::Instant::now();

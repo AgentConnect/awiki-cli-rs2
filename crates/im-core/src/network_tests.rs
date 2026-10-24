@@ -92,6 +92,62 @@ fn runtime(proxies: Vec<String>) -> NetworkRuntime {
 }
 
 #[tokio::test]
+async fn direct_policy_rejects_alternate_before_proxy_resolution_or_dial() {
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runtime = runtime(vec![format!("http://{}", proxy.local_addr().unwrap())]);
+    runtime.update_policy(NetworkPolicy::Direct);
+    assert!(runtime
+        .alternate("http://example.test/rpc", &Route::Direct)
+        .await
+        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), proxy.accept())
+            .await
+            .is_err()
+    );
+    assert!(runtime.state().routes.is_empty());
+}
+
+#[tokio::test]
+async fn disabling_proxy_during_alternate_probe_cannot_restore_a_stale_route() {
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let network = Arc::new(runtime(vec![format!(
+        "http://{}",
+        proxy.local_addr().unwrap()
+    )]));
+    let (arrived, waiting) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = proxy.accept().await.unwrap();
+        let headers = head(&mut stream).await.unwrap();
+        assert!(headers.starts_with("CONNECT "));
+        assert!(!headers.to_ascii_lowercase().contains("authorization"));
+        arrived.send(()).unwrap();
+        resumed.await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let current = network.clone();
+    let probe = tokio::spawn(async move {
+        current
+            .alternate("http://example.test/rpc", &Route::Direct)
+            .await
+    });
+    waiting.await.unwrap();
+    network.update_policy(NetworkPolicy::Direct);
+    resume.send(()).unwrap();
+    assert!(probe.await.unwrap().is_err());
+    assert!(network.state().routes.is_empty());
+    assert_eq!(network.diagnostics().status, NetworkStatus::Direct);
+    assert!(network
+        .client_for(&Route::Proxy("http://127.0.0.1:9".into()), false, false)
+        .is_err());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn direct_pool_reuses_connections_without_sharing_authentication() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let (url, requests, connections, task) =

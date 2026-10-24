@@ -129,6 +129,16 @@ pub(crate) trait NetworkIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> NetworkIo for T {}
 pub(crate) type NetworkStream = Box<dyn NetworkIo>;
 impl NetworkRuntime {
+    #[cfg(test)]
+    pub(crate) fn with_test_proxies(proxies: Vec<String>) -> Self {
+        let mut runtime = Self::new(None);
+        runtime.resolver_override = Some(proxies);
+        runtime
+    }
+    #[cfg(test)]
+    pub(crate) fn simulate_unobserved_configuration_change(&self) {
+        self.state().fingerprint = system_fingerprint().wrapping_add(1);
+    }
     pub fn new(ca_bundle: Option<String>) -> Self {
         Self {
             ca_bundle,
@@ -233,6 +243,12 @@ impl NetworkRuntime {
         }
     }
     pub(crate) fn generation(&self) -> u64 {
+        {
+            let s = self.state();
+            if s.policy != NetworkPolicy::SystemPreferred {
+                return s.generation;
+            }
+        }
         let fingerprint = system_fingerprint();
         let mut s = self.state();
         if s.policy == NetworkPolicy::SystemPreferred && s.fingerprint != fingerprint {
@@ -240,6 +256,19 @@ impl NetworkRuntime {
             invalidate(&mut s);
         }
         s.generation
+    }
+    /// Cheap read for frame boundaries; native configuration polling is timed.
+    pub(crate) fn cached_generation(&self) -> u64 {
+        self.state().generation
+    }
+    pub(crate) fn ensure_route_policy(&self, route: &Route) -> crate::ImResult<()> {
+        let policy = self.state().policy;
+        if (matches!(route, Route::Proxy(_)) && policy != NetworkPolicy::SystemPreferred)
+            || (matches!(route, Route::Legacy) && policy != NetworkPolicy::Legacy)
+        {
+            return Err(unavailable("network_policy_changed"));
+        }
+        Ok(())
     }
     pub(crate) fn trace(&self, operation: &str, stage: &str, started: Instant) {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -407,6 +436,14 @@ impl NetworkRuntime {
         resolve_system(url).await
     }
     pub(crate) async fn alternate(&self, url: &str, previous: &Route) -> crate::ImResult<Route> {
+        self.generation();
+        let generation = {
+            let s = self.state();
+            if s.policy != NetworkPolicy::SystemPreferred {
+                return Err(unavailable("network_no_alternate_route"));
+            }
+            s.generation
+        };
         let parsed = parse_url(url)?;
         let started = Instant::now();
         let route = tokio::time::timeout(CONNECT_BUDGET, async {
@@ -427,6 +464,10 @@ impl NetworkRuntime {
                         continue;
                     }
                     let route = Route::Proxy(proxy);
+                    self.ensure_route_policy(&route)?;
+                    if self.cached_generation() != generation {
+                        return Err(unavailable("network_policy_changed"));
+                    }
                     if self.open_route(&parsed, &route).await.is_ok() {
                         return Ok(route);
                     }
@@ -436,7 +477,11 @@ impl NetworkRuntime {
         })
         .await
         .map_err(|_| unavailable("network_connect_timeout"))??;
+        self.generation();
         let mut s = self.state();
+        if s.policy != NetworkPolicy::SystemPreferred || s.generation != generation {
+            return Err(unavailable("network_policy_changed"));
+        }
         let fingerprint = s.fingerprint;
         if let Route::Proxy(proxy) = previous {
             s.bad_proxies
@@ -533,6 +578,7 @@ impl NetworkRuntime {
         attachment: bool,
         started: Instant,
     ) -> crate::ImResult<reqwest::Client> {
+        self.ensure_route_policy(route)?;
         if matches!(route, Route::Legacy) {
             return self.client_for(route, redirects, attachment);
         }
@@ -566,6 +612,11 @@ impl NetworkRuntime {
             }
         );
         let mut s = self.state();
+        if (matches!(route, Route::Proxy(_)) && s.policy != NetworkPolicy::SystemPreferred)
+            || (matches!(route, Route::Legacy) && s.policy != NetworkPolicy::Legacy)
+        {
+            return Err(unavailable("network_policy_changed"));
+        }
         if let Some(client) = s.clients.get(&key) {
             return Ok(client.clone());
         }
@@ -611,20 +662,21 @@ impl NetworkRuntime {
         route: &Route,
         started: Instant,
     ) -> crate::ImResult<NetworkStream> {
+        self.ensure_route_policy(route)?;
         let parsed = parse_url(url)?;
-        tokio::time::timeout(connect_budget(started)?, self.open_route(&parsed, route))
-            .await
-            .map_err(|_| unavailable("network_connect_timeout"))?
+        let stream =
+            tokio::time::timeout(connect_budget(started)?, self.open_route(&parsed, route))
+                .await
+                .map_err(|_| unavailable("network_connect_timeout"))??;
+        self.ensure_route_policy(route)?;
+        Ok(stream)
     }
     pub(crate) async fn connect_route(
         &self,
         url: &str,
         route: &Route,
     ) -> crate::ImResult<NetworkStream> {
-        let parsed = parse_url(url)?;
-        tokio::time::timeout(CONNECT_BUDGET, self.open_route(&parsed, route))
-            .await
-            .map_err(|_| unavailable("network_connect_timeout"))?
+        self.connect_route_after(url, route, Instant::now()).await
     }
     async fn open_route(
         &self,
