@@ -38,6 +38,10 @@ pub(crate) struct ImCoreInner {
     pub(crate) direct_e2ee_v2_enabled: bool,
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
     pub(crate) group_e2ee_v2_enabled: bool,
+    #[cfg(feature = "group-e2ee")]
+    pub(crate) group_roster_readiness: std::sync::Mutex<
+        crate::internal::group_e2ee::roster_readiness::RosterReadinessCache,
+    >,
     pub(crate) handle_recovery_enabled: bool,
     pub(crate) did_transition_vnext_hidden_rollout_enabled: bool,
     pub(crate) multi_device_audience: Option<String>,
@@ -175,6 +179,8 @@ impl ImCore {
                 direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
                 device_revoke_lock: tokio::sync::Mutex::new(()),
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
+                #[cfg(feature = "group-e2ee")]
+                group_roster_readiness: Default::default(),
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 did_transition_vnext_hidden_rollout_enabled: options
                     .did_transition_vnext_hidden_rollout_enabled,

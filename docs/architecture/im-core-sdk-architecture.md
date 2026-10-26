@@ -1030,15 +1030,29 @@ readiness. `device_revocation_pending + send_paused=false` is a non-blocking war
 the local readiness/send result. `group_membership_change_pending + send_paused=true` remains a
 hard gate; the old `device_revocation_pending + true` shape is accepted only as a conservative
 rolling-upgrade input. A missing or malformed authoritative response fails closed and cannot be
-reported as `Ready`. Status is read-only: it does not enumerate the roster, resolve Manifests,
-write the MLS WAL, or build a Commit. The low-sensitivity maintenance object accepts exactly
+reported as `Ready`. Status does not mutate MLS, resolve device Manifests, or build a Commit.
+It retains the complete P4 business-member/MLS-member-set comparison: a current authoritative
+group version plus an equal local MLS member DID set may reuse a bounded process-local proof.
+That proof is scoped to Core/tenant, owner identity and DID, exact device, authorization generation,
+group and opaque P4 version. On a cache miss, the read-only collector still completes all pages
+and rechecks the group version; a missing/unprepared business member cannot become `Ready`.
+Changing the group version, local member set or owner/device generation, or reopening Core,
+requires a new proof. This is not a device authorization or DID Document cache. Existing recovery
+journal scheduling remains available when the local MLS state needs repair. The low-sensitivity maintenance object accepts exactly
 `reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
 silently projected.
 
 发送前只有活跃群主执行既有 P4 roster 收敛；普通成员的身份设备管理权限不能触发
-全群枚举或阻止其正常加密发送。成员退出引发的暂停允许群主先完成收敛，随后必须
+全群变更或修复。普通成员的只读完整成员检查在缺少同版本有效证据时仍保留，不能把
+“本地 MLS 已存在”误作全部业务成员准备完成。成员退出引发的暂停允许群主先完成收敛，随后必须
 重新读取权威群状态并通过暂停检查才能加密。设备撤销仍不在发送入口自动修复，旧版
 `device_revocation_pending + true` 与未知维护状态继续 fail closed。
+
+一次发送在群生命周期锁内获取并传递经过验证的权威快照。群主复用该次权限判断和自己
+已解析的当前 DID 文档；完整成员遍历之后仍复核 P4 版本和 transition。只有该次无待处理
+成员差异时，最终快照才供 readiness 和 `group_state_ref` 复用；WAL 修复或 Add/Remove
+使旧快照失效。公共安全策略选择与最终提交前的必要权威读取仍保留；没有将整个远端
+维护状态变为跨消息缓存，也没有改变 Host 的最终接受校验。
 
 ## 9.1 Key Material Boundary
 

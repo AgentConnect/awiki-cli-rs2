@@ -1459,14 +1459,31 @@ pub(crate) fn reconcile_group_device_roster(
 pub(crate) async fn reconcile_group_roster_before_send_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<V2RosterReconcileSummary> {
-    // Sending is not an identity device-management request. Only the active
-    // group owner may enumerate and converge the whole P4 roster inline.
-    let authority = current_actor_reconcile_authority_async(client, group.clone()).await?;
+    authoritative: crate::groups::GroupReadResult,
+) -> crate::ImResult<crate::groups::GroupReadResult> {
+    // This snapshot was fetched inside the caller's group lifecycle lock.
+    // Membership management still belongs only to the current active owner.
+    let authority = reconcile_authority_from_snapshot(client, group.as_str(), &authoritative)?;
     if !can_reconcile_roster_before_send(authority) {
-        return Ok(V2RosterReconcileSummary::default());
+        return super::roster_readiness::validate_async(client, group, &authoritative)
+            .await?
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "group_membership_change_pending".to_owned(),
+            });
     }
-    reconcile_group_device_roster_async(client, group).await
+    let mut verified = None;
+    reconcile_group_device_roster_with_snapshot_async(
+        client,
+        group.clone(),
+        RosterReconcileAuthority::Owner,
+        Some(authoritative),
+        &mut verified,
+    )
+    .await?;
+    match verified {
+        Some(snapshot) => Ok(snapshot),
+        None => read_authoritative_group_async(client, group).await,
+    }
 }
 
 fn can_reconcile_roster_before_send(authority: Option<RosterReconcileAuthority>) -> bool {
@@ -1477,17 +1494,41 @@ pub(crate) async fn reconcile_group_device_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
 ) -> crate::ImResult<V2RosterReconcileSummary> {
-    let Some(authority) = current_actor_reconcile_authority_async(client, group.clone()).await?
+    let snapshot = read_authoritative_group_async(client, group.clone()).await?;
+    let Some(authority) = reconcile_authority_from_snapshot(client, group.as_str(), &snapshot)?
     else {
         return Ok(V2RosterReconcileSummary::default());
     };
+    let mut verified = None;
+    reconcile_group_device_roster_with_snapshot_async(
+        client,
+        group,
+        authority,
+        Some(snapshot),
+        &mut verified,
+    )
+    .await
+}
+
+async fn reconcile_group_device_roster_with_snapshot_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+    authority: RosterReconcileAuthority,
+    mut initial_snapshot: Option<crate::groups::GroupReadResult>,
+    verified_snapshot: &mut Option<crate::groups::GroupReadResult>,
+) -> crate::ImResult<V2RosterReconcileSummary> {
     let group_did = group.as_str().to_owned();
     let mut summary = V2RosterReconcileSummary::default();
     for _ in 0..256 {
+        *verified_snapshot = None;
         let mut context = production_context_async(client).await?;
-        summary.repaired_wal_entries = summary.repaired_wal_entries.saturating_add(
-            resume_pending_membership_commits_async(client, &mut context, &group_did).await?,
-        );
+        let repaired =
+            resume_pending_membership_commits_async(client, &mut context, &group_did).await?;
+        summary.repaired_wal_entries = summary.repaired_wal_entries.saturating_add(repaired);
+        if repaired > 0 {
+            initial_snapshot = None;
+        }
+        let local_document = (repaired == 0).then(|| context.did_document.clone());
         let inspected = context
             .product
             .inspect_local_group(endpoint_inventory_input(
@@ -1500,8 +1541,13 @@ pub(crate) async fn reconcile_group_device_roster_async(
             if authority != RosterReconcileAuthority::Owner {
                 return Ok(summary);
             }
-            let (group_state_ref, desired, _transition) =
-                fresh_desired_group_roster_async(client, group.clone()).await?;
+            let (group_state_ref, desired, _transition, _) = fresh_desired_group_roster_async(
+                client,
+                group.clone(),
+                initial_snapshot.take(),
+                local_document.clone(),
+            )
+            .await?;
             let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
                 member
                     .device_ids
@@ -1532,8 +1578,13 @@ pub(crate) async fn reconcile_group_device_roster_async(
         if !local_group_can_reconcile_roster(&inspected.readiness) {
             return Ok(summary);
         }
-        let (group_state_ref, desired, transition) =
-            fresh_desired_group_roster_async(client, group.clone()).await?;
+        let (group_state_ref, desired, transition, refreshed) = fresh_desired_group_roster_async(
+            client,
+            group.clone(),
+            initial_snapshot.take(),
+            local_document,
+        )
+        .await?;
         let endpoints =
             context
                 .product
@@ -1571,6 +1622,13 @@ pub(crate) async fn reconcile_group_device_roster_async(
         let (extra, missing) =
             next_roster_change_for_authority(client.did().as_str(), authority, extra, missing);
         if extra.is_none() && missing.is_none() {
+            super::roster_readiness::confirm_members(
+                client,
+                &group,
+                &refreshed,
+                desired.keys().cloned().collect(),
+            )?;
+            *verified_snapshot = Some(refreshed);
             return Ok(summary);
         }
         require_reconcile_controller_endpoint(
@@ -1645,19 +1703,25 @@ fn current_actor_reconcile_authority(
         .then_some(RosterReconcileAuthority::SelfDidDeviceManager))
 }
 
-async fn current_actor_reconcile_authority_async(
+pub(crate) async fn read_authoritative_group_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<Option<RosterReconcileAuthority>> {
-    let group_did = group.as_str().to_owned();
-    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
+) -> crate::ImResult<crate::groups::GroupReadResult> {
+    crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     )
     .get_with_policy_async(group)
-    .await?;
-    if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
+    .await
+}
+
+fn reconcile_authority_from_snapshot(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<Option<RosterReconcileAuthority>> {
+    if !crate::groups::authoritative_group_e2ee_classification(group_did, authoritative)? {
         return Ok(None);
     }
     let Some(snapshot) = authoritative.group.as_ref().filter(|snapshot| {
@@ -1700,13 +1764,23 @@ fn fresh_desired_group_roster(
 async fn fresh_desired_group_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
+    mut initial_snapshot: Option<crate::groups::GroupReadResult>,
+    mut local_document: Option<Value>,
 ) -> crate::ImResult<(
     V2GroupStateRef,
     BTreeMap<String, DesiredP6Member>,
     Option<super::transition::TransitionPlan>,
+    crate::groups::GroupReadResult,
 )> {
     for attempt in 0..4 {
-        match fresh_desired_group_roster_attempt_async(client, group.clone()).await {
+        match fresh_desired_group_roster_attempt_async(
+            client,
+            group.clone(),
+            initial_snapshot.take(),
+            local_document.take(),
+        )
+        .await
+        {
             Err(crate::ImError::CursorStale) if attempt < 3 => continue,
             result => return result,
         }
@@ -1717,19 +1791,19 @@ async fn fresh_desired_group_roster_async(
 async fn fresh_desired_group_roster_attempt_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
+    initial_snapshot: Option<crate::groups::GroupReadResult>,
+    local_document: Option<Value>,
 ) -> crate::ImResult<(
     V2GroupStateRef,
     BTreeMap<String, DesiredP6Member>,
     Option<super::transition::TransitionPlan>,
+    crate::groups::GroupReadResult,
 )> {
     let group_did = group.as_str().to_owned();
-    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
-        client,
-        crate::internal::auth::session::FileSessionProvider::new(client),
-        crate::internal::transport::CoreHttpTransport::new(client),
-    )
-    .get_with_policy_async(group.clone())
-    .await?;
+    let authoritative = match initial_snapshot {
+        Some(snapshot) => snapshot,
+        None => read_authoritative_group_async(client, group.clone()).await?,
+    };
     if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1782,7 +1856,13 @@ async fn fresh_desired_group_roster_attempt_async(
             .ok_or_else(|| crate::ImError::LocalStateUnavailable {
                 detail: "active P4 member omitted its current DID".to_owned(),
             })?;
-        let document = resolve_member_document_fresh_async(client, did.as_str()).await?;
+        let document = match local_document.as_ref().filter(|document| {
+            did.as_str() == client.did().as_str()
+                && document.get("id").and_then(Value::as_str) == Some(did.as_str())
+        }) {
+            Some(document) => document.clone(),
+            None => resolve_member_document_fresh_async(client, did.as_str()).await?,
+        };
         let manifest = validated_p6_manifest(did.as_str(), &document)?;
         desired.insert(
             did.as_str().to_owned(),
@@ -1820,7 +1900,7 @@ async fn fresh_desired_group_roster_attempt_async(
     if transition != refreshed_transition {
         return Err(crate::ImError::CursorStale);
     }
-    Ok((state_ref, desired, transition))
+    Ok((state_ref, desired, transition, refreshed))
 }
 
 fn fresh_desired_group_roster_attempt(
@@ -2397,114 +2477,6 @@ async fn lease_member_package_async(
     Ok(package)
 }
 
-/// Read-only readiness uses a complete, version-bound P4 roster. P2 device
-/// authorization and exact-device reconciliation remain in the mutation path.
-fn roster_inputs(
-    client: &crate::core::ImClient,
-    group: &crate::ids::GroupRef,
-    authoritative: &crate::groups::GroupReadResult,
-) -> crate::ImResult<(String, usize)> {
-    let snapshot = authoritative
-        .group
-        .as_ref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if snapshot.did.as_str() != group.as_str()
-        || snapshot.membership_status.as_deref() != Some("active")
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let raw = authoritative
-        .raw_response()
-        .ok_or(crate::ImError::InventoryIncomplete)?;
-    let state = super::state_ref::group_state_ref_from_group_response(group.as_str(), raw)
-        .ok_or(crate::ImError::InventoryIncomplete)?;
-    let _ = current_v2_device(client)?;
-    Ok((
-        state.group_state_version,
-        super::member_collector::product_max_members(raw)?,
-    ))
-}
-
-fn roster_matches(
-    client: &crate::core::ImClient,
-    group: &crate::ids::GroupRef,
-    members: super::member_collector::CompleteGroupMembers,
-) -> crate::ImResult<bool> {
-    let runtime = super::v2_runtime::runtime_for_client(client)?;
-    let device = current_v2_device(client)?;
-    let endpoints = runtime.list_local_group_member_endpoints(endpoint_inventory_input(
-        client,
-        &device,
-        group.as_str(),
-        "readiness",
-    ))?;
-    let expected = members
-        .members
-        .into_iter()
-        .map(|m| {
-            m.did
-                .map(|did| did.as_str().to_owned())
-                .ok_or(crate::ImError::InventoryIncomplete)
-        })
-        .collect::<crate::ImResult<BTreeSet<_>>>()?;
-    let actual = endpoints
-        .member_endpoints
-        .into_iter()
-        .map(|e| e.member_did)
-        .collect::<BTreeSet<_>>();
-    Ok(expected == actual)
-}
-
-pub(crate) fn roster_consistent(
-    client: &crate::core::ImClient,
-    group: crate::ids::GroupRef,
-    authoritative: &crate::groups::GroupReadResult,
-) -> crate::ImResult<bool> {
-    let (version, max) = roster_inputs(client, &group, authoritative)?;
-    let members = super::member_collector::collect_complete_group_members(
-        client,
-        group.clone(),
-        Some(&version),
-        max,
-    )?;
-    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
-        client,
-        crate::internal::auth::session::FileSessionProvider::new(client),
-        crate::internal::transport::CoreHttpTransport::new(client),
-    )
-    .get_with_policy(group.clone())?;
-    Ok(
-        group_state_version_matches(refreshed.raw_response(), &version)
-            && roster_matches(client, &group, members)?,
-    )
-}
-
-pub(crate) async fn roster_consistent_async(
-    client: &crate::core::ImClient,
-    group: crate::ids::GroupRef,
-    authoritative: &crate::groups::GroupReadResult,
-) -> crate::ImResult<bool> {
-    let (version, max) = roster_inputs(client, &group, authoritative)?;
-    let members = super::member_collector::collect_complete_group_members_async(
-        client,
-        group.clone(),
-        Some(&version),
-        max,
-    )
-    .await?;
-    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
-        client,
-        crate::internal::auth::session::FileSessionProvider::new(client),
-        crate::internal::transport::CoreHttpTransport::new(client),
-    )
-    .get_with_policy_async(group.clone())
-    .await?;
-    Ok(
-        group_state_version_matches(refreshed.raw_response(), &version)
-            && roster_matches(client, &group, members)?,
-    )
-}
-
 fn submit_exact_add(
     client: &crate::core::ImClient,
     context: &mut ProductionV2Context<'_>,
@@ -3030,7 +3002,7 @@ fn require_reconcile_controller_endpoint(
     require_current_controller_endpoint(endpoints, &marker.previous_did, current_device_id)
 }
 
-fn endpoint_inventory_input(
+pub(super) fn endpoint_inventory_input(
     client: &crate::core::ImClient,
     device: &CurrentV2Device,
     group_did: &str,

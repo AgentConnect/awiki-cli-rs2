@@ -109,11 +109,12 @@ impl GroupSecureConversation<'_> {
             {
                 Ok(mut status) => {
                     if status.can_send_secure
-                        && !crate::internal::group_e2ee::v2_lifecycle::roster_consistent(
+                        && !crate::internal::group_e2ee::roster_readiness::validate(
                             self.client,
                             self.group.clone(),
                             &authoritative,
                         )
+                        .map(|snapshot| snapshot.is_some())
                         .unwrap_or(false)
                     {
                         status.can_send_secure = false;
@@ -220,76 +221,7 @@ impl GroupSecureConversation<'_> {
                     return Ok(group_status_unavailable(self.group.clone(), err));
                 }
             };
-            let runtime =
-                match crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client) {
-                    Ok(runtime) => runtime,
-                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
-                };
-            let group = self.group.clone();
-            let status = crate::internal::runtime::worker::run_blocking(move || {
-                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                    .status(group)
-            })
-            .await
-            .map_err(|err| crate::ImError::Internal {
-                message: format!("P6 v2 status worker failed: {err}"),
-            })?;
-            match status.and_then(|status| overlay_group_maintenance_status(status, &authoritative))
-            {
-                Ok(mut status) => {
-                    if status.can_send_secure
-                        && !crate::internal::group_e2ee::v2_lifecycle::roster_consistent_async(
-                            self.client,
-                            self.group.clone(),
-                            &authoritative,
-                        )
-                        .await
-                        .unwrap_or(false)
-                    {
-                        status.can_send_secure = false;
-                        status.state = super::GroupSecureState::WaitingForMembershipUpdate;
-                        status.problem = Some(super::SecureProblem {
-                            code: super::SecureProblemCode::GroupStateUnavailable,
-                            message: "等待成员完成加密准备".to_owned(),
-                            retryable: false,
-                        });
-                    }
-                    if !status.can_send_secure {
-                        if let Some(problem) =
-                            crate::internal::group_runtime::recovery::problem_for_group(
-                                self.client,
-                                self.group.as_str(),
-                            )?
-                        {
-                            status.problem = Some(problem);
-                        }
-                    }
-                    if !status.can_send_secure
-                        && authoritative.group.as_ref().is_some_and(|g| {
-                            g.my_role.as_deref() == Some("owner")
-                                && g.membership_status.as_deref() == Some("active")
-                        })
-                    {
-                        let key = format!("recovery:repair:{}", self.group.as_str());
-                        if crate::internal::group_runtime::journal::load(self.client, &key)?
-                            .is_none_or(|v| v["phase"] == "completed")
-                        {
-                            let _ = crate::internal::group_runtime::recovery::record(
-                                self.client,
-                                &key,
-                                self.group.as_str(),
-                                None,
-                                false,
-                            );
-                        }
-                    }
-                    Ok(status)
-                }
-                Err(err) if group_status_can_downgrade_error(&err) => {
-                    Ok(group_status_unavailable(self.group.clone(), err))
-                }
-                Err(err) => Err(err),
-            }
+            self.status_with_authoritative_async(&authoritative).await
         }
         #[cfg(not(feature = "group-e2ee"))]
         {
@@ -310,6 +242,85 @@ impl GroupSecureConversation<'_> {
                 }),
                 warnings: Vec::new(),
             })
+        }
+    }
+
+    /// Uses only the current operation's verified snapshot; it is not an
+    /// authorization cache or a substitute for the Host submission fence.
+    #[cfg(feature = "group-e2ee")]
+    pub(crate) async fn status_with_authoritative_async(
+        &self,
+        authoritative: &crate::groups::GroupReadResult,
+    ) -> crate::ImResult<super::GroupSecureStatus> {
+        let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)
+        {
+            Ok(runtime) => runtime,
+            Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+        };
+        let group = self.group.clone();
+        let status = crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                .status(group)
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: format!("P6 v2 status worker failed: {err}"),
+        })?;
+        match status.and_then(|status| overlay_group_maintenance_status(status, authoritative)) {
+            Ok(mut status) => {
+                if status.can_send_secure
+                    && !crate::internal::group_e2ee::roster_readiness::validate_async(
+                        self.client,
+                        self.group.clone(),
+                        &authoritative,
+                    )
+                    .await
+                    .map(|snapshot| snapshot.is_some())
+                    .unwrap_or(false)
+                {
+                    status.can_send_secure = false;
+                    status.state = super::GroupSecureState::WaitingForMembershipUpdate;
+                    status.problem = Some(super::SecureProblem {
+                        code: super::SecureProblemCode::GroupStateUnavailable,
+                        message: "等待成员完成加密准备".to_owned(),
+                        retryable: false,
+                    });
+                }
+                if !status.can_send_secure {
+                    if let Some(problem) =
+                        crate::internal::group_runtime::recovery::problem_for_group(
+                            self.client,
+                            self.group.as_str(),
+                        )?
+                    {
+                        status.problem = Some(problem);
+                    }
+                }
+                if !status.can_send_secure
+                    && authoritative.group.as_ref().is_some_and(|g| {
+                        g.my_role.as_deref() == Some("owner")
+                            && g.membership_status.as_deref() == Some("active")
+                    })
+                {
+                    let key = format!("recovery:repair:{}", self.group.as_str());
+                    if crate::internal::group_runtime::journal::load(self.client, &key)?
+                        .is_none_or(|v| v["phase"] == "completed")
+                    {
+                        let _ = crate::internal::group_runtime::recovery::record(
+                            self.client,
+                            &key,
+                            self.group.as_str(),
+                            None,
+                            false,
+                        );
+                    }
+                }
+                Ok(status)
+            }
+            Err(err) if group_status_can_downgrade_error(&err) => {
+                Ok(group_status_unavailable(self.group.clone(), err))
+            }
+            Err(err) => Err(err),
         }
     }
 
@@ -462,6 +473,25 @@ fn overlay_group_maintenance_status(
         return Err(crate::ImError::LocalStateUnavailable {
             detail: "authoritative group.get returned a conflicting group".to_owned(),
         });
+    }
+    let membership = authoritative
+        .group
+        .as_ref()
+        .filter(|group| group.did.as_str() == status.group.as_str())
+        .and_then(|group| group.membership_status.as_deref())
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group response omitted current membership".to_owned(),
+        })?;
+    if membership != "active" {
+        status.can_send_secure = false;
+        status.local_readiness.has_active_membership = false;
+        status.state = super::GroupSecureState::WaitingForMembershipUpdate;
+        status.problem = Some(super::SecureProblem {
+            code: super::SecureProblemCode::GroupStateUnavailable,
+            message: "current identity is not an active group member".to_owned(),
+            retryable: false,
+        });
+        return Ok(status);
     }
     let Some(maintenance) = raw.get("e2ee_maintenance") else {
         return Ok(status);
@@ -762,10 +792,14 @@ fn outbox_result_from_record(
 }
 
 #[cfg(all(test, feature = "group-e2ee"))]
+#[path = "group_status_membership_tests.rs"]
+mod group_status_membership_tests;
+
+#[cfg(all(test, feature = "group-e2ee"))]
 mod step4_tests {
     use super::*;
 
-    fn local_status(
+    pub(super) fn local_status(
         has_active_membership: bool,
         has_local_state: bool,
     ) -> crate::secure::GroupSecureStatus {

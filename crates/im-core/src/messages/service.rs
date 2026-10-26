@@ -5583,6 +5583,23 @@ mod group_e2ee_public_send_tests {
 
     #[cfg(feature = "blocking")]
     fn verify_public_group_send(pending_member: bool) {
+        verify_public_group_send_sequence(pending_member, None);
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn public_group_hot_send_reuses_only_version_bound_roster_evidence() {
+        verify_public_group_send_sequence(false, Some(false));
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn public_group_hot_send_revalidates_changed_version_before_encrypting() {
+        verify_public_group_send_sequence(false, Some(true));
+    }
+
+    #[cfg(feature = "blocking")]
+    fn verify_public_group_send_sequence(pending_member: bool, repeat: Option<bool>) {
         let fixture = Fixture::vnext();
         let identity_core = crate::core::ImCore::new_with_options(
             fixture.config("http://127.0.0.1:9".to_owned()),
@@ -5599,82 +5616,62 @@ mod group_e2ee_public_send_tests {
             .as_str()
             .to_owned();
         drop(identity_core);
+        let view = json!({"group_snapshot": {"group_did": fixture.group_did,
+            "my_role": "member", "membership_status": "active",
+            "required_security_profile": "transport-protected"}});
+        let info = json!({"group_did": fixture.group_did, "group_state_version": "1",
+            "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}});
+        let members = json!({"group_did": fixture.group_did, "group_state_version": "1",
+            "members": [{"agent_did": own_did, "status": "active", "role": "member"}],
+            "total": 1, "has_more": false});
+        let accepted = json!({
+            "accepted": true, "group_did": fixture.group_did,
+            "message_id": "msg-public-group-e2ee", "operation_id": "op-public-group-e2ee",
+            "group_event_seq": "91", "group_state_version": "1",
+            "accepted_at": "2026-05-21T00:00:00Z", "epoch": "0", "group_receipt": {"test": true}
+        });
         let mut responses = vec![
-            // Public security resolution checks authoritative policy before send preflight.
-            json!({"group_snapshot": {"group_did": fixture.group_did,
-                "my_role": "member", "membership_status": "active",
-                "required_security_profile": "transport-protected"}}),
-            json!({"group_did": fixture.group_did, "group_state_version": "1",
-                "group_profile": {"display_name": "Public E2EE group"},
-                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
-            // Device-revocation preflight reads the local group before the policy checks.
-            json!({
-                "group_snapshot": {
-                    "group_did": fixture.group_did,
-                    "my_role": "member",
-                    "membership_status": "active",
-                    "required_security_profile": "transport-protected"
-                }
-            }),
-            json!({
-                "group_snapshot": {
-                    "group_did": fixture.group_did,
-                    "my_role": "member",
-                    "membership_status": "active",
-                    "required_security_profile": "transport-protected"
-                }
-            }),
-            json!({
-                "group_did": fixture.group_did,
-                "group_state_version": "1",
-                "group_profile": {"display_name": "Public E2EE group"},
-                "group_policy": {"message_security_profile": "group-e2ee"}
-            }),
-            json!({
-                "group_snapshot": {
-                    "group_did": fixture.group_did,
-                    "my_role": "member",
-                    "membership_status": "active",
-                    "required_security_profile": "transport-protected"
-                }
-            }),
-            json!({
-                "group_did": fixture.group_did,
-                "group_state_version": "1",
-                "group_profile": {"display_name": "Public E2EE group"},
-                "group_policy": {"message_security_profile": "group-e2ee"}
-            }),
-            // Readiness checks the complete roster for ordinary members.
-            json!({"group_did": fixture.group_did, "group_state_version": "1",
-                "members": [{"agent_did": own_did,
-                    "status": "active", "role": "member"}], "total": 1, "has_more": false}),
-            json!({"group_snapshot": {"group_did": fixture.group_did,
-                "my_role": "member", "membership_status": "active"}}),
-            json!({"group_did": fixture.group_did, "group_state_version": "1",
-                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
-            // Send obtains the version used by its exact encrypted wire operation.
-            json!({"group_snapshot": {"group_did": fixture.group_did,
-                "my_role": "member", "membership_status": "active"}}),
-            json!({"group_did": fixture.group_did, "group_state_version": "1",
-                "group_profile": {}, "group_policy": {"message_security_profile": "group-e2ee"}}),
-            json!({
-                "accepted": true,
-                "group_did": fixture.group_did,
-                "message_id": "msg-public-group-e2ee",
-                "operation_id": "op-public-group-e2ee",
-                "group_event_seq": "91",
-                "group_state_version": "1",
-                "accepted_at": "2026-05-21T00:00:00Z",
-                "epoch": "0",
-                "group_receipt": {"test": true}
-            }),
+            view.clone(),
+            info.clone(),
+            view.clone(),
+            info.clone(),
+            members.clone(),
+            view.clone(),
+            info.clone(),
+            accepted.clone(),
         ];
         if pending_member {
-            responses[7]["members"].as_array_mut().unwrap().push(
+            responses[4]["members"].as_array_mut().unwrap().push(
                 json!({"agent_did":"did:example:unprepared", "status":"active", "role":"member"}),
             );
-            responses[7]["total"] = json!(2);
-            responses.truncate(10);
+            responses[4]["total"] = json!(2);
+            responses.truncate(7);
+        }
+        if let Some(changed) = repeat {
+            if changed {
+                let mut updated_info = info.clone();
+                updated_info["group_state_version"] = json!("2");
+                let mut updated_members = members.clone();
+                updated_members["group_state_version"] = json!("2");
+                updated_members["total"] = json!(2);
+                updated_members["members"].as_array_mut().unwrap().push(
+                    json!({"agent_did":"did:example:unprepared", "status":"active", "role":"member"}));
+                responses.extend([
+                    view.clone(),
+                    updated_info.clone(),
+                    view.clone(),
+                    updated_info.clone(),
+                    updated_members,
+                    view.clone(),
+                    updated_info,
+                ]);
+            } else {
+                let mut next = accepted.clone();
+                next["message_id"] = json!("msg-public-group-next");
+                next["operation_id"] = json!("op-public-group-next");
+                next["group_event_seq"] = json!("92");
+                responses.extend([view.clone(), info.clone(), view.clone(), info.clone(), next]);
+            }
         }
         let server = RpcTestServer::spawn(responses);
         let core = crate::core::ImCore::new_with_options(
@@ -5736,39 +5733,79 @@ mod group_e2ee_public_send_tests {
             result.delivery,
             crate::messages::DeliveryState::Accepted
         ));
-        let requests = server.requests();
-        assert_eq!(requests.len(), 13);
+        let requests: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.rpc_method != "anp.get_capabilities")
+            .collect();
+        assert_eq!(requests.len(), 8);
         assert!(requests
             .iter()
             .any(|r| r.rpc_method == "group.list_members"));
-        let requests = &requests[requests.len() - 6..];
-        assert_eq!(requests[5].rpc_method, "group.e2ee.send");
+        let requests = &requests[requests.len() - 1..];
+        assert_eq!(requests[0].rpc_method, "group.e2ee.send");
         assert_eq!(
-            requests[5].params["meta"]["security_profile"],
+            requests[0].params["meta"]["security_profile"],
             anp::group_e2ee::SECURITY_PROFILE
         );
         assert_eq!(
-            requests[5].params["meta"]["content_type"],
+            requests[0].params["meta"]["content_type"],
             anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(
-            requests[5].params["body"]["group_state_ref"]["group_state_version"],
+            requests[0].params["body"]["group_state_ref"]["group_state_version"],
             "1"
         );
         assert!(
-            requests[5].params["body"]["private_message_b64u"]
+            requests[0].params["body"]["private_message_b64u"]
                 .as_str()
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
             "group.e2ee.send must carry an MLS private message"
         );
-        let encoded_send = serde_json::to_string(&requests[5].params).unwrap();
+        let encoded_send = serde_json::to_string(&requests[0].params).unwrap();
         assert!(!encoded_send.contains("public group secret"));
         assert!(!encoded_send.contains("application_plaintext"));
         assert!(!encoded_send.contains("provider"));
         assert!(!encoded_send.contains("StorageProvider"));
         assert!(!encoded_send.contains("mls_state.sqlite"));
         assert!(!encoded_send.contains("openmls_group_id_b64u"));
+        if let Some(changed) = repeat {
+            let before = server.requests().len();
+            let second = client.messages().send(crate::messages::SendMessageRequest {
+                target: crate::messages::MessageTarget::Group(
+                    crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
+                ),
+                body: crate::messages::MessageBody::Text {
+                    text: "second private text".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                },
+                security: crate::messages::MessageSecurityPolicy::E2eeRequired,
+                client_message_id: Some(
+                    crate::ids::MessageId::parse("msg-public-group-next").unwrap(),
+                ),
+                delivery: crate::messages::MessageDeliveryOptions {
+                    idempotency_key: Some("op-public-group-next".to_owned()),
+                    wait_for_final_acceptance: true,
+                },
+                delegated_signing: None,
+            });
+            let all = server.requests();
+            let later = &all[before..];
+            if changed {
+                assert!(matches!(
+                    second,
+                    Err(crate::ImError::LocalStateUnavailable { .. })
+                ));
+                assert!(later.iter().any(|r| r.rpc_method == "group.list_members"));
+                assert!(!later.iter().any(|r| r.rpc_method == "group.e2ee.send"));
+            } else {
+                second.expect("same-version warm send");
+                assert_eq!(later.len(), 5);
+                assert!(!later.iter().any(|r| r.rpc_method == "group.list_members"));
+                assert_eq!(later.last().unwrap().rpc_method, "group.e2ee.send");
+            }
+        }
     }
 
     #[cfg(not(feature = "blocking"))]
@@ -6229,14 +6266,30 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND msg_id = ?3
             let join = thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(10);
                 for response in responses {
-                    let mut stream = accept_before_deadline(&listener, deadline);
-                    let request = read_rpc_request(&mut stream);
-                    let id = request.id.clone();
-                    server_requests.lock().unwrap().push(CapturedRpc {
-                        rpc_method: request.rpc_method,
-                        params: request.params,
-                    });
-                    write_rpc_response(&mut stream, id, response);
+                    loop {
+                        let mut stream = accept_before_deadline(&listener, deadline);
+                        let request = read_rpc_request(&mut stream);
+                        let id = request.id.clone();
+                        let discovery = request.rpc_method == "anp.get_capabilities";
+                        server_requests.lock().unwrap().push(CapturedRpc {
+                            rpc_method: request.rpc_method,
+                            params: request.params,
+                        });
+                        if discovery {
+                            write_rpc_response(
+                                &mut stream,
+                                id,
+                                json!({"awiki_local": {
+                                    "capabilities_version": 1, "capabilities": {
+                                        "group_e2ee": {"enabled":true,"protocol_version":1}
+                                    }
+                                }}),
+                            );
+                            continue;
+                        }
+                        write_rpc_response(&mut stream, id, response);
+                        break;
+                    }
                 }
             });
             Self {

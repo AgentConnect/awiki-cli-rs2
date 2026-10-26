@@ -9,6 +9,10 @@ use serde_json::Value;
 
 use super::service::ResolvedSendRequest;
 
+#[cfg(all(test, feature = "group-e2ee"))]
+#[path = "v2_send_snapshot_tests.rs"]
+mod send_snapshot_tests;
+
 #[cfg(feature = "sqlite")]
 pub(super) fn direct_enabled_for_client(client: &crate::core::ImClient) -> crate::ImResult<bool> {
     Ok(client.core_inner().direct_e2ee_v2_enabled()
@@ -392,24 +396,36 @@ async fn send_group_async_impl(
         .group_lifecycle_lock(client.current_identity().id.as_str(), group_did);
     let _group_guard = group_lock.lock().await;
     let device = current_vnext_device(client)?;
+    let mut authoritative =
+        crate::internal::group_e2ee::v2_lifecycle::read_authoritative_group_async(
+            client,
+            group.clone(),
+        )
+        .await?;
     let device_revocation_pending =
-        group_device_revocation_pending_for_send_async(client, group_did).await?;
+        group_device_revocation_pending_for_send(authoritative.raw_response().ok_or_else(
+            || crate::ImError::LocalStateUnavailable {
+                detail: "group send snapshot is missing".to_owned(),
+            },
+        )?)?;
     // P4 membership may have advanced independently (for example, a member
     // called group.leave). Before encrypting at the current MLS epoch, let the
     // active owner converge its accepted local tree to the authoritative P4/P2
     // roster. Non-owners and already-converged owners are no-ops.
     if !device_revocation_pending {
-        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
-            client,
-            group.clone(),
-        )
-        .await?;
+        authoritative =
+            crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
+                client,
+                group.clone(),
+                authoritative,
+            )
+            .await?;
     }
     if !device_revocation_pending
         && !client
             .secure()
             .group(group.clone())
-            .status_async()
+            .status_with_authoritative_async(&authoritative)
             .await?
             .can_send_secure
     {
@@ -434,8 +450,7 @@ async fn send_group_async_impl(
         .ok_or_else(|| crate::ImError::LocalStateUnavailable {
             detail: "P6 v2 requires the current DID Document".to_owned(),
         })?;
-    let group_state_ref =
-        fetch_current_group_state_ref_async(client, group_did, &operation_id).await?;
+    let group_state_ref = group_state_ref_from_send_snapshot(group_did, &authoritative)?;
 
     let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
     let signer = client
@@ -623,59 +638,36 @@ fn current_vnext_device(client: &crate::core::ImClient) -> crate::ImResult<Curre
 }
 
 #[cfg(feature = "group-e2ee")]
-async fn fetch_current_group_state_ref_async(
-    client: &crate::core::ImClient,
+fn group_state_ref_from_send_snapshot(
     group_did: &str,
-    operation_id: &str,
+    authoritative: &crate::groups::GroupReadResult,
 ) -> crate::ImResult<anp::group_e2ee::V2GroupStateRef> {
-    let snapshot_params =
-        crate::internal::wire::group::build_group_get_rpc_params(client.did().as_str(), group_did)?;
-    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let snapshot = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
-        "group.get",
-        snapshot_params,
-    )
-    .await?;
-    ensure_group_e2ee_v2_send_not_paused(&snapshot)?;
-
-    let params = crate::internal::wire::group::build_group_get_info_rpc_params(
-        client.did().as_str(),
-        group_did,
-        operation_id,
-        false,
-    )?;
-    let raw = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
-        "group.get_info",
-        params,
-    )
-    .await?;
-    let returned_group = raw
-        .get("group_did")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| crate::ImError::Serialization {
-            detail: "P4 group.get_info result is missing group_did".to_owned(),
-        })?;
-    if returned_group != group_did {
+    // Only a get_with_policy result or its version-fenced roster refresh is
+    // admitted here. No cross-send local cache is used for this state reference.
+    if !crate::groups::authoritative_group_e2ee_classification(group_did, authoritative)? {
         return Err(crate::ImError::PermissionDenied);
     }
-    if !raw.get("group_profile").is_some_and(Value::is_object) {
-        return Err(crate::ImError::Serialization {
-            detail: "P4 group.get_info result is missing group_profile".to_owned(),
-        });
-    }
+    authoritative
+        .group
+        .as_ref()
+        .filter(|snapshot| {
+            snapshot.did.as_str() == group_did
+                && snapshot.membership_status.as_deref() == Some("active")
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let raw =
+        authoritative
+            .raw_response()
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "verified group send snapshot is missing".to_owned(),
+            })?;
+    ensure_group_e2ee_v2_send_not_paused(raw)?;
     let version = raw
         .get("group_state_version")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| crate::ImError::Serialization {
-            detail: "P4 group.get_info result is missing group_state_version".to_owned(),
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "verified group send snapshot has no state version".to_owned(),
         })?;
     Ok(anp::group_e2ee::V2GroupStateRef {
         group_did: group_did.to_owned(),
@@ -683,24 +675,6 @@ async fn fetch_current_group_state_ref_async(
         policy_hash: None,
         roster_hash: None,
     })
-}
-
-#[cfg(feature = "group-e2ee")]
-async fn group_device_revocation_pending_for_send_async(
-    client: &crate::core::ImClient,
-    group_did: &str,
-) -> crate::ImResult<bool> {
-    let params =
-        crate::internal::wire::group::build_group_get_rpc_params(client.did().as_str(), group_did)?;
-    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let snapshot = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
-        "group.get",
-        params,
-    )
-    .await?;
-    group_device_revocation_pending_for_send(&snapshot)
 }
 
 #[cfg(feature = "group-e2ee")]
