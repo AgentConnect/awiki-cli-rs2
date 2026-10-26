@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anp",
  "anp-identity",
