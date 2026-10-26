@@ -17,6 +17,8 @@ pub(crate) struct PreparedSend {
 
 pub(crate) struct SendJournal {
     key: String,
+    legacy_key: String,
+    operation: String,
     binding: String,
     scope: String,
 }
@@ -74,7 +76,14 @@ impl SendJournal {
             )
         );
         Ok(Self {
-            key: format!("p6-application-send:{operation}"),
+            // The fixed hexadecimal component cannot contain the receipt suffix.
+            // Raw operation IDs may legally contain ':accepted'.
+            key: format!(
+                "p6-application-send-v2:{:x}",
+                Sha256::digest(operation.as_bytes())
+            ),
+            legacy_key: format!("p6-application-send:{operation}"),
+            operation: operation.to_owned(),
             binding,
             scope,
         })
@@ -105,9 +114,42 @@ impl SendJournal {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<Option<PreparedSend>> {
         self.check_scope(client)?;
-        journal::load(client, &self.key)?
-            .map(|v| self.decode(v))
-            .transpose()
+        if let Some(value) = journal::load(client, &self.key)? {
+            return self.decode(value).map(Some);
+        }
+        match journal::load(client, &self.legacy_key)? {
+            // A legacy receipt for `x` occupies the raw prepared key for the
+            // distinct operation `x:accepted`. Leave that receipt untouched.
+            Some(value) if self.is_legacy_receipt_for_other_operation(&value) => Ok(None),
+            Some(value) => self.decode(value).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn is_legacy_receipt_for_other_operation(&self, value: &Value) -> bool {
+        let Some(other_operation) = self.operation.strip_suffix(":accepted") else {
+            return false;
+        };
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if object.len() != 2 || !valid_binding_digest(value.get("request_binding")) {
+            return false;
+        }
+        serde_json::from_value::<V2GroupSendResult>(value["result"].clone())
+            .is_ok_and(|result| result.operation_id == other_operation && result.validate().is_ok())
+    }
+
+    fn is_legacy_prepared_for_other_operation(&self, value: &Value) -> bool {
+        let Ok(other) = serde_json::from_value::<PreparedSend>(value.clone()) else {
+            return false;
+        };
+        other.schema_version == 1
+            && valid_binding_digest(value.get("request_binding"))
+            && other.encrypted.meta.operation_id == format!("{}:accepted", self.operation)
+            && other.encrypted.meta.validate().is_ok()
+            && other.encrypted.cipher.validate().is_ok()
+            && other.encrypted.meta.target.did == other.encrypted.cipher.group_state_ref.group_did
     }
 
     /// The synchronous producer may encrypt, but must never perform network IO.
@@ -138,7 +180,17 @@ impl SendJournal {
         prepared: &PreparedSend,
     ) -> crate::ImResult<Option<V2GroupSendResult>> {
         self.check_scope(client)?;
-        journal::load(client, &format!("{}:accepted", self.key))?
+        let current = journal::load(client, &format!("{}:accepted", self.key))?;
+        let value = match current {
+            Some(value) => Some(value),
+            None => match journal::load(client, &format!("{}:accepted", self.legacy_key))? {
+                // An older, distinct prepared operation may occupy this raw
+                // receipt key. Resubmit our own frozen ciphertext, never theirs.
+                Some(value) if self.is_legacy_prepared_for_other_operation(&value) => None,
+                value => value,
+            },
+        };
+        value
             .map(|value| {
                 let binding = value.get("request_binding").and_then(Value::as_str);
                 if binding != Some(self.binding.as_str()) {
@@ -168,6 +220,15 @@ impl SendJournal {
         )?;
         Ok(())
     }
+}
+
+fn valid_binding_digest(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_str).is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 fn validate_receipt(

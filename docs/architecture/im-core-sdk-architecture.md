@@ -848,6 +848,13 @@ exact device 和 operation ID 冻结原始 metadata/cipher/client context；请�
 自动发送或 IPC 失败回退。旧 Core 能读取原数据库结构，但不能据此承诺它能续跑新增
 应用发送记录；带未决操作回退旧二进制不属于已验证的恢复路径。
 
+应用发送 journal 的新键使用独立内部命名空间与规范化 operation ID 的 SHA-256，
+再区分 Prepared 和 accepted；原 operation ID 仍原样进入公开 wire。不能把原始操作
+字符串直接拼接回执后缀，否则合法的 `x`／`x:accepted` 会互相占用记录。读取保留旧
+布局兼容：正确绑定的旧 Prepared／回执继续使用；可验证属于另一个操作的旧布局占位
+不冒充本操作结果，也不覆盖或删除。缺接受回执时仍只重发本操作已冻结的密文；损坏、
+不支持或绑定冲突的本操作记录拒绝。未增加表、迁移或并行恢复队列。
+
 群创建也必须区别首次 prepare 与未知结果恢复。SDK 的 create prepare 在已有本地绑定时
 明确拒绝，不能把它当成幂等重入入口。Core 用 SDK 的类型化 reconcile 结果恢复同一
 pending_commit_id／operation_id／群版本／creator KeyPackage 的 Prepared body，保留
