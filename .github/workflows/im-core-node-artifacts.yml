@@ -140,7 +140,10 @@ jobs:
         if: env.AWIKI_NODE_SOURCE_INTEGRATION != '1'
         working-directory: awiki-cli-rs2
         shell: bash
-        run: python3 scripts/release/registry-build.py --prepare ../awiki-cli-registry
+        run: |
+          mkdir -p dist/node-sdk/tarballs
+          python3 scripts/release/registry-build.py --prepare ../awiki-cli-registry \
+            --metadata-output "dist/node-sdk/tarballs/registry-resolution-${{ matrix.target_name }}.json"
 
       - name: Build release addon on non-Linux targets
         if: matrix.linux_gnu == false && env.AWIKI_NODE_SOURCE_INTEGRATION != '1'
