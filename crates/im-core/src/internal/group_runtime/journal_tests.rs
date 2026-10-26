@@ -1,4 +1,86 @@
 use super::*;
+
+#[test]
+fn lazy_group_intent_produces_once_across_connections_and_reopen() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("send.sqlite");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(SCHEMA)
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let (path, calls, barrier) = (path.clone(), calls.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let mut db = Connection::open(path).unwrap();
+                db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                barrier.wait();
+                freeze_on_with(&mut db, "owner", "device", "send:op", "binding", || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    Ok(serde_json::json!({"cipher":"fixed","created_at":"original"}))
+                })
+                .unwrap()
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(results[0], results[1]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let mut db = Connection::open(path).unwrap();
+    let resumed = freeze_on_with(&mut db, "owner", "device", "send:op", "binding", || {
+        panic!("must not encrypt again")
+    })
+    .unwrap();
+    assert_eq!(resumed, results[0]);
+    assert!(
+        freeze_on_with(&mut db, "owner", "device", "send:op", "changed", || panic!(
+            "conflict must precede encryption"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn lazy_group_intent_never_exposes_ciphertext_before_persistence() {
+    let mut db = Connection::open_in_memory().unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_send BEFORE INSERT ON group_operation_journal BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
+    let mut encrypted = 0;
+    assert!(
+        freeze_on_with(&mut db, "owner", "device", "send:op", "binding", || {
+            encrypted += 1;
+            Ok(serde_json::json!({"cipher":"never submitted"}))
+        })
+        .is_err()
+    );
+    assert_eq!(encrypted, 1);
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM group_operation_journal", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0);
+    db.execute_batch("DROP TRIGGER fail_send;").unwrap();
+    assert!(
+        freeze_on_with(&mut db, "owner", "device", "send:op", "binding", || Err(
+            crate::ImError::PermissionDenied
+        ))
+        .is_err()
+    );
+    let result = freeze_on_with(&mut db, "owner", "device", "send:op", "binding", || {
+        Ok(serde_json::json!({"cipher":"first eligible submission"}))
+    })
+    .unwrap();
+    assert_eq!(result["cipher"], "first eligible submission");
+}
+
 #[test]
 fn retries_reuse_exact_intent_and_cannot_change_security_or_cross_owner_device() {
     let root = tempfile::tempdir().unwrap();

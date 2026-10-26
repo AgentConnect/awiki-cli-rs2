@@ -836,6 +836,18 @@ is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
 
+P6 应用发送的 Prepared 恢复复用 `group_operation_journal`，按 owner identity、
+exact device 和 operation ID 冻结原始 metadata/cipher/client context；请求摘要同时
+绑定当前 DID、授权代次和完整发送意图。重试不能修改消息 ID、正文或目标，也不能
+用新群版本改写旧密文的 AAD。journal 只保留密文和脱敏附件投影，不保存附件密钥。
+同一 journal 写事务内检查已有意图后才允许调用加密；只有密文提交持久化成功才允许
+网络发送。MLS 使用独立设备数据库，不与 journal 事务假装原子：如果加密后 journal
+提交失败，这份密文没有发送资格，下一次可重新准备尚未提交的操作，不能倒回 MLS。
+网络结果未知后必须读取既有密文；服务端明确接受的回执另存进度，先存再写普通消息
+投影，重开可补投影而不重新加密。仍保留当前身份、成员与群状态检查，不增加后台
+自动发送或 IPC 失败回退。旧 Core 能读取原数据库结构，但不能据此承诺它能续跑新增
+应用发送记录；带未决操作回退旧二进制不属于已验证的恢复路径。
+
 Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
 `group_e2ee_reconcile_required(recipient_did, group_did)` 提示，只为当前身份持久化
 既有 group repair 任务，并在提交后唤醒 Core 的有界 receive dispatcher 执行该任务。

@@ -400,7 +400,7 @@ pub(crate) struct V2Committed<R> {
     pub(crate) finalized: V2FinalizeOutput,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct V2PreparedApplicationSend {
     pub(crate) meta: V2GroupSendMetadata,
     pub(crate) cipher: V2GroupCipherObject,

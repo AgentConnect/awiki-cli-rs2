@@ -499,74 +499,87 @@ async fn send_group_async_impl(
         content_type: anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2.to_owned(),
         created_at: Some(created_at.clone()),
     };
-    let (application, attachment_projection) = match &request.body {
-        crate::messages::MessageBody::NotifyText { .. } => {
-            return Err(crate::ImError::unsupported("notify-requires-plain-direct"))
-        }
-        crate::messages::MessageBody::Text { text, kind } => (
-            crate::internal::group_e2ee::v2_application::V2ProductApplication::text(
-                group_did,
-                match kind {
-                    crate::messages::MessageKind::Text => "text/plain",
-                    crate::messages::MessageKind::Markdown => "text/markdown",
-                },
-                text.clone(),
-            )?,
-            None,
-        ),
-        crate::messages::MessageBody::Payload { payload } => (
-            crate::internal::group_e2ee::v2_application::V2ProductApplication::json(
-                group_did,
-                payload.clone(),
-            )?,
-            None,
-        ),
-        crate::messages::MessageBody::Attachment { .. } => {
-            let attachment =
-                super::service::attachment_request_from_message_request(request.clone())?;
-            let committed =
-                crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
-                    client,
-                    crate::internal::auth::session::FileSessionProvider::new(client),
-                    crate::internal::transport::CoreHttpTransport::new(client),
-                )
-                .prepare_and_commit_object_async(
-                    crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
-                        target: request.target.clone(),
-                        request: attachment,
-                        resolved_target_did: None,
-                        message_security_profile: "group-e2ee",
-                    },
-                )
-                .await?;
-            let redacted = committed.redacted_manifest.clone();
-            (
-                crate::internal::group_e2ee::v2_application::V2ProductApplication::committed_attachment(
+    let send_journal = crate::internal::group_e2ee::send_journal::SendJournal::new(client, &request)?;
+    let prepared = if let Some(saved) = send_journal.load(client)? {
+        saved
+    } else {
+        let (application, attachment_projection) = match &request.body {
+            crate::messages::MessageBody::NotifyText { .. } => {
+                return Err(crate::ImError::unsupported("notify-requires-plain-direct"))
+            }
+            crate::messages::MessageBody::Text { text, kind } => (
+                crate::internal::group_e2ee::v2_application::V2ProductApplication::text(
                     group_did,
-                    &committed,
+                    match kind {
+                        crate::messages::MessageKind::Text => "text/plain",
+                        crate::messages::MessageKind::Markdown => "text/markdown",
+                    },
+                    text.clone(),
                 )?,
-                Some(redacted),
-            )
-        }
+                None,
+            ),
+            crate::messages::MessageBody::Payload { payload } => (
+                crate::internal::group_e2ee::v2_application::V2ProductApplication::json(
+                    group_did,
+                    payload.clone(),
+                )?,
+                None,
+            ),
+            crate::messages::MessageBody::Attachment { .. } => {
+                let attachment =
+                    super::service::attachment_request_from_message_request(request.clone())?;
+                let committed =
+                    crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+                        client,
+                        crate::internal::auth::session::FileSessionProvider::new(client),
+                        crate::internal::transport::CoreHttpTransport::new(client),
+                    )
+                    .prepare_and_commit_object_async(
+                        crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                            target: request.target.clone(),
+                            request: attachment,
+                            resolved_target_did: None,
+                            message_security_profile: "group-e2ee",
+                        },
+                    )
+                    .await?;
+                let redacted = committed.redacted_manifest.clone();
+                (
+                    crate::internal::group_e2ee::v2_application::V2ProductApplication::committed_attachment(
+                        group_did,
+                        &committed,
+                    )?,
+                    Some(redacted),
+                )
+            }
+        };
+        send_journal.prepare(client, || {
+            let prepared = product.prepare_product_application_send(
+                meta,
+                group_state_ref,
+                application,
+                did_document,
+                created_at.clone(),
+                true,
+                format!("p6-v2-encrypt-{operation_id}"),
+            )?;
+            Ok((prepared.encrypted, attachment_projection))
+        })?
     };
-    let prepared = product.prepare_product_application_send(
-        meta,
-        group_state_ref,
-        application,
-        did_document,
-        created_at.clone(),
-        true,
-        format!("p6-v2-encrypt-{operation_id}"),
-    )?;
-    let accepted = product
-        .submit_product_application_send_async(&prepared)
-        .await?;
-    let mut result = group_result(client, &request, &accepted, attachment_projection.as_ref())?;
+    let accepted = if let Some(accepted) = send_journal.accepted(client, &prepared)? {
+        accepted
+    } else {
+        let accepted = product.submit_application_send_async(&prepared.encrypted).await?;
+        send_journal.record_accepted(client, &prepared, &accepted)?;
+        accepted
+    };
+    let attachment_projection = prepared.attachment_projection.as_ref();
+    let mut result = group_result(client, &request, &accepted, attachment_projection)?;
     match persist_group_projection_async(
         client,
         group_did,
         &request,
-        attachment_projection.as_ref(),
+        attachment_projection,
         &result,
     )
     .await

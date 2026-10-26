@@ -22,6 +22,17 @@ pub(crate) fn freeze(
     binding: &str,
     candidate: Value,
 ) -> crate::ImResult<Value> {
+    freeze_with(client, key, binding, || Ok(candidate))
+}
+
+/// Prepare only after excluding another process's durable intent. The producer
+/// must not submit anything remotely: the journal commit precedes submission.
+pub(crate) fn freeze_with(
+    client: &crate::core::ImClient,
+    key: &str,
+    binding: &str,
+    candidate: impl FnOnce() -> crate::ImResult<Value>,
+) -> crate::ImResult<Value> {
     let device =
         match crate::internal::identity_device_state::active_authorization_for_client(client) {
             Ok(device) => Some(device),
@@ -31,7 +42,7 @@ pub(crate) fn freeze(
     let mut connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    freeze_on(
+    freeze_on_with(
         &mut connection,
         client.current_identity().id.as_str(),
         device
@@ -162,6 +173,17 @@ fn freeze_on(
     binding: &str,
     candidate: Value,
 ) -> crate::ImResult<Value> {
+    freeze_on_with(connection, owner, device, key, binding, || Ok(candidate))
+}
+
+fn freeze_on_with(
+    connection: &mut Connection,
+    owner: &str,
+    device: &str,
+    key: &str,
+    binding: &str,
+    candidate: impl FnOnce() -> crate::ImResult<Value>,
+) -> crate::ImResult<Value> {
     let error = crate::internal::local_state::local_state_unavailable;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -180,6 +202,7 @@ fn freeze_on(
             detail: "invalid group operation journal".to_owned(),
         })?
     } else {
+        let candidate = candidate()?;
         tx.execute(
             "INSERT INTO group_operation_journal VALUES (?1,?2,?3,?4,?5)",
             (owner, device, key, binding, candidate.to_string()),

@@ -7,6 +7,7 @@ pub(crate) mod native_provider;
 pub(crate) mod notices;
 pub(crate) mod provider;
 pub(crate) mod roster_readiness;
+pub(crate) mod send_journal;
 pub(crate) mod state_ref;
 pub(crate) mod storage;
 pub(crate) mod summary;

@@ -5552,6 +5552,8 @@ fn message_page_from_read_result(
 
 #[cfg(all(test, feature = "group-e2ee"))]
 mod group_e2ee_public_send_tests {
+    #[cfg(feature = "blocking")]
+    mod recovery_tests;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -6287,7 +6289,9 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND msg_id = ?3
                             );
                             continue;
                         }
-                        write_rpc_response(&mut stream, id, response);
+                        if response.get("_test_drop_response") != Some(&Value::Bool(true)) {
+                            write_rpc_response(&mut stream, id, response);
+                        }
                         break;
                     }
                 }
