@@ -13,7 +13,7 @@ fn http_timing_labels_do_not_expose_arbitrary_input() {
             "https://example.invalid/private-token",
             Some(&json!({"method":"secret-identifier"}))
         ),
-        None
+        Some("http.other")
     );
     assert_eq!(
         http_timing_stage(
@@ -22,4 +22,31 @@ fn http_timing_labels_do_not_expose_arbitrary_input() {
         ),
         Some("http.group.get_info")
     );
+}
+
+#[tokio::test]
+async fn http_timing_records_failed_attempt_without_sensitive_input() {
+    use super::*;
+    let runtime = std::sync::Arc::new(crate::network::NetworkRuntime::new(None));
+    runtime.update_policy(crate::network::NetworkPolicy::Direct);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/private-path", listener.local_addr().unwrap());
+    drop(listener);
+    let client = HttpClient::with_runtime(None, false, Some(runtime.clone()));
+    let result = client.execute_async(HttpRequest {
+        method: "POST".into(), url, headers: BTreeMap::new(),
+        body: serde_json::to_vec(&json!({"method":"group.get", "id":"private-operation", "params":{"token":"private-token"}})).unwrap(),
+    }).await;
+    assert!(result.is_err());
+    let diagnostics = runtime.diagnostics();
+    assert_eq!(
+        diagnostics
+            .records
+            .iter()
+            .filter(|r| r.stage == "http.group.get")
+            .count(),
+        1
+    );
+    let serialized = serde_json::to_string(&diagnostics).unwrap();
+    assert!(!serialized.contains("private-"));
 }

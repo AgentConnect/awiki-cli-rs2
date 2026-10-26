@@ -74,6 +74,19 @@ pub(crate) struct HttpResponse {
     pub(crate) body: Vec<u8>,
 }
 
+struct HttpTimingGuard<'a> {
+    runtime: &'a crate::network::NetworkRuntime,
+    operation: String,
+    stage: &'static str,
+    started: std::time::Instant,
+}
+
+impl Drop for HttpTimingGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.trace(&self.operation, self.stage, self.started);
+    }
+}
+
 impl HttpClient {
     pub(crate) fn for_core(core: &crate::core::ImCoreInner, follow_redirects: bool) -> Self {
         Self::with_runtime(
@@ -198,6 +211,27 @@ impl HttpClient {
         let trace_started = std::time::Instant::now();
         let trace_request = serde_json::from_slice::<serde_json::Value>(&request.body).ok();
         let http_stage = http_timing_stage(&request.url, trace_request.as_ref());
+        let _http_timing = self
+            .runtime
+            .as_deref()
+            .zip(http_stage)
+            .map(|(runtime, stage)| {
+                let operation = trace_request
+                    .as_ref()
+                    .and_then(|rpc| {
+                        rpc.pointer("/params/meta/message_id")
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| rpc.get("id").and_then(serde_json::Value::as_str))
+                    })
+                    .unwrap_or(stage)
+                    .to_owned();
+                HttpTimingGuard {
+                    runtime,
+                    operation,
+                    stage,
+                    started: trace_started,
+                }
+            });
         let trace = trace_request.as_ref().and_then(|rpc| {
             let stage = match rpc.get("method").and_then(serde_json::Value::as_str)? {
                 "direct.send" => "send.http_delivery",
@@ -308,17 +342,6 @@ impl HttpClient {
                 .map_err(reqwest_transport_unavailable)?
                 .to_vec()
         };
-        if let (Some(runtime), Some(stage)) = (&self.runtime, http_stage) {
-            let operation = trace_request
-                .as_ref()
-                .and_then(|rpc| {
-                    rpc.pointer("/params/meta/message_id")
-                        .and_then(serde_json::Value::as_str)
-                        .or_else(|| rpc.get("id").and_then(serde_json::Value::as_str))
-                })
-                .unwrap_or(stage);
-            runtime.trace(operation, stage, trace_started);
-        }
         if let (Some(runtime), Some((operation, stage))) = (&self.runtime, trace) {
             runtime.trace(&operation, stage, trace_started);
         }
@@ -358,6 +381,8 @@ fn http_timing_stage(url: &str, rpc: Option<&serde_json::Value>) -> Option<&'sta
         Some("group.get_info") => Some("http.group.get_info"),
         Some("group.list_members") => Some("http.group.list_members"),
         Some("group.e2ee.send") => Some("http.group.e2ee.send"),
+        Some("group.e2ee.publish_key_package") => Some("http.group.e2ee.publish_key_package"),
+        Some("group.e2ee.get_key_package") => Some("http.group.e2ee.get_key_package"),
         Some("group.e2ee.create") => Some("http.group.e2ee.create"),
         Some("group.e2ee.add") => Some("http.group.e2ee.add"),
         Some("group.e2ee.remove") => Some("http.group.e2ee.remove"),
@@ -371,7 +396,7 @@ fn http_timing_stage(url: &str, rpc: Option<&serde_json::Value>) -> Option<&'sta
         {
             Some("http.did.resolve")
         }
-        _ => None,
+        _ => Some("http.other"),
     }
 }
 

@@ -242,6 +242,12 @@ impl NetworkRuntime {
             records: s.diagnostics.iter().cloned().collect(),
         }
     }
+    /// Test-only measurement window; leaves routing, connections and policy intact.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "internal-test-helpers"))]
+    pub fn clear_diagnostics_for_test(&self) {
+        self.state().diagnostics.clear();
+    }
     pub(crate) fn generation(&self) -> u64 {
         {
             let s = self.state();

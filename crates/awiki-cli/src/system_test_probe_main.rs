@@ -58,6 +58,9 @@ use tokio_tungstenite::{
 use zeroize::Zeroizing;
 
 const MAX_REQUEST_LINE_BYTES: usize = 64 * 1024;
+
+#[path = "system_test_probe_send.rs"]
+mod encrypted_send_probe;
 const MAX_RPC_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TIMEOUT_MS: u64 = 300_000;
@@ -129,6 +132,7 @@ enum Action {
     PrepareDaemonContinuityFixture(PrepareDaemonContinuityFixtureParams),
     DaemonFixtureResources,
     SendPlainMarker(SendPlainMarkerParams),
+    SendEncryptedMarker(encrypted_send_probe::Params),
     DaemonMarkerProcessed { message_id: String },
     HumanDaemonSubkeyState,
     OpenWs,
@@ -1597,6 +1601,9 @@ impl Probe {
             Action::SendPlainMarker(params) => {
                 let result = self.send_plain_marker(&params).await?;
                 Ok((result, false))
+            }
+            Action::SendEncryptedMarker(params) => {
+                Ok((self.send_encrypted_marker(&params).await?, false))
             }
             Action::DaemonMarkerProcessed { message_id } => {
                 Ok((self.daemon_marker_processed(&message_id)?, false))
@@ -3618,6 +3625,9 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
                 message_id: required_string(params, "message_id", 512)?,
                 marker: Zeroizing::new(required_opaque_string(params, "marker", 16 * 1024)?),
             })
+        }
+        "send_encrypted_marker" => {
+            Action::SendEncryptedMarker(encrypted_send_probe::parse(params)?)
         }
         "daemon_marker_processed" => {
             require_exact_keys(params, &["message_id"])?;

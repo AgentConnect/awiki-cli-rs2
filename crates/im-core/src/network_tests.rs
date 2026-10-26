@@ -334,6 +334,10 @@ fn diagnostics_are_bounded_and_policy_changes_invalidate() {
     }
     let before = runtime.diagnostics();
     assert_eq!(before.records.len(), CAPACITY);
+    runtime.clear_diagnostics_for_test();
+    assert!(runtime.diagnostics().records.is_empty());
+    assert_eq!(runtime.diagnostics().generation, before.generation);
+    assert_eq!(runtime.diagnostics().policy, before.policy);
     runtime.update_policy(NetworkPolicy::Direct);
     assert!(runtime.diagnostics().generation > before.generation);
     assert_eq!(runtime.diagnostics().policy, NetworkPolicy::Direct);
