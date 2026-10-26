@@ -1,2 +1,2 @@
 # The embedded catalog digest must be identical on every release platform.
-config/builtin-tenants.default.json text eol=lf
+config/builtin-tenants*.json text eol=lf

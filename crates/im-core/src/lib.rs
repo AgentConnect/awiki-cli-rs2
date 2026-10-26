@@ -19,6 +19,7 @@ pub mod ids;
 #[cfg(feature = "sqlite")]
 pub mod local_state_upgrade;
 pub mod messages;
+pub mod network;
 pub mod onboarding;
 pub mod paths;
 pub mod prelude;

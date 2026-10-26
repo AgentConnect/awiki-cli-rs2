@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Immutable cli-v* tag to build
+        description: Immutable cli-v* tag or exact 40-character commit SHA to build
         required: true
         type: string
       channel:
@@ -16,6 +16,11 @@ on:
       expected_version:
         description: Version expected from release-config.json
         required: true
+        type: string
+      tenant_config:
+        description: Committed two-slot tenant config path
+        required: false
+        default: config/builtin-tenants.default.json
         type: string
 
 permissions:
@@ -51,10 +56,13 @@ jobs:
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Validate immutable source tag
+      - name: Validate immutable source reference
         shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
-          test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
+          [[ "$SOURCE_REF" = "cli-v$EXPECTED_VERSION" || "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Checkout awiki-cli-rs2
         uses: actions/checkout@v6
@@ -113,12 +121,15 @@ jobs:
       - name: Build archive
         shell: bash
         working-directory: awiki-cli-rs2
+        env:
+          TENANT_CONFIG: ${{ inputs.tenant_config || 'config/builtin-tenants.default.json' }}
         run: |
           scripts/release/build-release-artifact.sh \
             --version "${{ inputs.expected_version }}" \
             --os "${{ matrix.os_name }}" \
             --arch "${{ matrix.arch }}" \
-            --target "${{ matrix.target }}"
+            --target "${{ matrix.target }}" \
+            --tenant-config "$TENANT_CONFIG"
 
       - name: Validate built binary version
         shell: bash

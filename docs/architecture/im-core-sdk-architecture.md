@@ -836,6 +836,23 @@ is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
 
+Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
+`group_e2ee_reconcile_required(recipient_did, group_did)` 提示，只为当前身份持久化
+既有 group repair 任务，并在提交后唤醒 Core 的有界 receive dispatcher 执行该任务。
+任务使用原有处理租约及身份/设备 journal；处理中到达的提示保留后续唤醒，退避由 Core
+维护时钟推进，异步客户端重开或 realtime 重启扫描未完成任务，不依赖宿主周期补拉。
+每个数据库 dispatcher 内群恢复同时最多占一个维护槽，保留其余接收和 P5 确认预算；普通接收仅唤醒，
+不等待群修复 HTTP。阻塞 realtime 的自有单工作线程运行时在空闲读期间也驱动后台任务。
+提示不投影为聊天消息、不作为 ANP P6 notice，不提供设备授权；
+重复通知保留任务退避，重建客户端后继续读取同一 journal。
+修复只由 active owner 在重新读取权威 `group.get`、完整同版本成员列表及新鲜 DID Manifest
+后执行。Host 的 `e2ee_maintenance.did_transition` 冻结接续设备集合，Core 先 Add 这些
+successor 设备，再 Remove predecessor；后来 Join 的设备和无关差异留待接续完成后处理。
+冻结设备撤销、P4 成员不匹配、计划/版本变化时停止或重新读取，不猜配设备、不绕过 Host fence。
+这一自动恢复合同需要配套的新 Message Service 与 Core，详细本地字段见 Message Service
+`docs/api/message-service-internal-api.md` 的 Recovery 接续章节；标准 P6 验签与 exact-device
+校验保持不变。
+
 本 workspace 对 OpenMLS 0.8 单独设置 dev/test `debug-assertions = false`：该依赖在
 合法检测到 AEAD tag 错误后含无条件 debug assertion，开启时会先 panic，无法返回原有
 `AeadError`。此设置保留实际解密、签名和 AAD 校验，让恶意密文正常拒绝；其他依赖及
@@ -2002,3 +2019,23 @@ Sync v2 只请求实现、可消费和服务声明的交集。未知发现不重
 
 Dart/Node 暴露相同 JSON 安全投影；APP 管理导航和自身任务，DSH Browser 只消费 Host
 投影。缓存不作为服务端授权依据，也不清除已生效的最低版本政策。
+
+### P5 旧式实时提示衔接
+
+已认证 Home 连接上的 `direct.incoming` P5 v2 提示，在可靠 lane 已启用或仍待协商时，仅当目标 DID 与当前 DID、recipient device 与当前账号设备均精确匹配，才转换为 sync-only `sync.changed`。不解析或消费密文、不提前 ACK、不推进 ratchet，消息仍由持久接收队列处理。无 lane binding 的冻结旧路径继续原验证。App 合并重复提示，同步中到达的提示必须在当前轮结束后触发补拉；重连、回前台和周期补拉保持恢复职责。
+
+### 桌面统一网络运行时
+
+`NetworkRuntime` 是 Core 级、无账号默认认证头的传输能力，负责路径解析、连接池、无业务探测、回退和有界脱敏诊断。`ImCoreOpenOptions.network_runtime` 未传时保留 SDK 原行为；App 在登录前配置并共享同一运行时，业务认证仍由原 adapter/transport 逐请求注入。macOS/Windows 从当前用户系统配置解析静态代理、PAC、例外和已启用的自动配置，不主动启用发现。关闭开关使用 `.no_proxy()` 禁用环境变量代理，保留 VPN/TUN 路由。
+
+新路径先探测代理连接、CONNECT/SOCKS 隧道和目标 TLS；750ms 后探测直连，单轮连接预算 10 秒。探测不携带业务头或正文。成功路径缓存最多 5 分钟；代理不可用而直连成功时缓存直连 30 秒。相同源探测合并，系统配置/接口地址变化清除路径及连接池，WebSocket 检查变化后受控重连，宿主随后补拉。配置切换不取消已经提交的业务请求。
+
+业务请求选择路径后仅提交一次。只有 `is_connect()` 确认的提交前连接失败或 GET/HEAD 只读传输失败允许一次受限换路；POST 等提交结果未知时返回原调用者，不透明重发注册、OTP、恢复或重新加密。HTTP 401/403、业务拒绝和协议错误不触发换路。附件共用路径和池但保持无整体响应超时的流式合同。固定 DNS/IP 的匿名发现继续专用 `.no_proxy()` 安全路径，不放宽地址约束。
+
+### 私聊发送与确认关键路径
+
+P5 v2 一次操作内只解析并验证每份 DID Document 一次，预密钥发布、fan-out 和确认复用该操作快照，不建立跨操作 DID 长期缓存。先排对方设备，再排自己其他设备；不同目标最多四路并发。每个副本维持独立 ledger、固定 operation_id 和已准备密文，部分失败继续按原 summary 报告，重试跳过已接受副本。同一 peer 的准备与投递准入按 FIFO 排队，准入后立即释放该队列；逐设备完成票据保证后续操作有序，自己的慢设备不会阻挡下一条消息的对方副本。同一设备的 prepare/post 仍使用同一设备锁。
+
+发布确认只在 Core 运行时内缓存成功结果，键绑定本 Core 租户、owner、device、授权代次与完整 immutable publication；不超过五分钟或 signed-prekey 有效期，轮换/代次不匹配立即移除。所有本地授权和当前 DID endpoint 检查仍在命中缓存之前，失败不写缓存，进程重启重新确认。
+
+首次 Init 在解密、ratchet 和业务投影与 session-reply ledger 一起提交后即可返回处理结果。生产接收 wrapper 立即唤醒既有持久处理 dispatcher，由 P5Replies 维护任务发送确认；界面不等待确认 HTTP。业务发送不再遍历清空全部历史确认。重启由同一 ledger 恢复并复用固定确认密文，不改变加密协议或消息格式。

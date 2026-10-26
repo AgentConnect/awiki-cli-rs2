@@ -21,6 +21,7 @@ Pod::Spec.new do |s|
   s.platform         = :osx, '10.14'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
+  s.frameworks = 'SystemConfiguration'
   # FRB resolves native symbols from the process. Keep one Runner-side
   # force-load so the static archive is not dead-stripped.
   s.user_target_xcconfig = {

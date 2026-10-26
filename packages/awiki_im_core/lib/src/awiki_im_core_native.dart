@@ -1,3 +1,5 @@
+import 'generated/api/network.dart' as gen_network;
+import 'models/network.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -4987,4 +4989,105 @@ Stream<Map<String, dynamic>> _watchCapabilityStates(
     },
   );
   return controller.stream;
+}
+
+/// App-level, explicit desktop opt-in shared with native Core instances.
+class AwikiDesktopNetwork {
+  static Future<List<AwikiNetworkDiagnostic>> diagnostics() async =>
+      (await gen_network.desktopNetworkDiagnostics())
+          .map(
+            (record) => AwikiNetworkDiagnostic(
+              at: record.at,
+              operation: record.operation,
+              stage: record.stage,
+              elapsedMs: record.elapsedMs,
+            ),
+          )
+          .toList(growable: false);
+  static Future<void> configure(
+    AwikiNetworkPolicy policy, {
+    String? caBundle,
+  }) async {
+    await _ensureRustLibInitialized();
+    await _mapNativeErrors(
+      () => gen_network.configureDesktopNetwork(
+        policy: policy == AwikiNetworkPolicy.systemPreferred
+            ? gen_network.DartNetworkPolicy.systemPreferred
+            : gen_network.DartNetworkPolicy.direct,
+        caBundle: caBundle,
+      ),
+    );
+  }
+
+  static Future<AwikiNetworkStatus> status() async {
+    final status = await gen_network.desktopNetworkStatus();
+    return AwikiNetworkStatus.values[status.index];
+  }
+
+  static Future<AwikiNetworkResponse> send({
+    required String method,
+    required String url,
+    required Map<String, String> headers,
+    required List<int> body,
+    bool followRedirects = true,
+    Future<void>? abortTrigger,
+  }) async {
+    await _ensureRustLibInitialized();
+    final request = await gen_network.createNetworkRequest();
+    if (abortTrigger != null) {
+      unawaited(
+        abortTrigger.then(
+          (_) => gen_network.cancelNetworkRequest(request: request),
+        ),
+      );
+    }
+    final response = await _mapNativeErrors(
+      () => gen_network.sendNetworkRequest(
+        request: request,
+        method: method,
+        url: url,
+        headers: headers.entries
+            .map(
+              (entry) => gen_network.DartNetworkHeader(
+                name: entry.key,
+                value: entry.value,
+              ),
+            )
+            .toList(),
+        body: Uint8List.fromList(body),
+        followRedirects: followRedirects,
+      ),
+    );
+    final head = await gen_network.networkResponseHead(response: response);
+    Future<void> close() =>
+        gen_network.closeNetworkResponse(response: response);
+    Stream<List<int>> chunks() async* {
+      try {
+        while (true) {
+          final chunk = await _mapNativeErrors(
+            () => gen_network.networkResponseChunk(response: response),
+          );
+          if (chunk.isEmpty) break;
+          yield chunk;
+        }
+      } finally {
+        await close();
+      }
+    }
+
+    final responseHeaders = <String, String>{};
+    for (final header in head.headers) {
+      responseHeaders.update(
+        header.name,
+        (previous) => '$previous,${header.value}',
+        ifAbsent: () => header.value,
+      );
+    }
+    return AwikiNetworkResponse(
+      statusCode: head.statusCode,
+      headers: responseHeaders,
+      body: chunks(),
+      close: close,
+    );
+  }
 }

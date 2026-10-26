@@ -550,7 +550,7 @@ impl<'a> CoreHttpTransport<'a> {
         }
         let mut transport = Self {
             client,
-            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
+            http: crate::internal::http::HttpClient::for_core(client.core_inner(), true),
             auth,
             jwt_token,
             deferred_auth_state_error,
@@ -571,7 +571,7 @@ impl<'a> CoreHttpTransport<'a> {
         let expected_device_access = expected_device_access_for_client(client);
         Self {
             client,
-            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
+            http: crate::internal::http::HttpClient::for_core(client.core_inner(), true),
             auth: crate::internal::key_provider::ProviderBackedDidAuth::new(
                 runtime.key_provider.clone(),
                 anp::authentication::AuthMode::HttpSignatures,
@@ -593,9 +593,7 @@ impl<'a> CoreHttpTransport<'a> {
     ) -> Self {
         Self {
             client,
-            http: crate::internal::http::HttpClient::from_config_no_redirect(
-                client.core_inner().sdk_config(),
-            ),
+            http: crate::internal::http::HttpClient::for_core(client.core_inner(), false),
             auth: crate::internal::key_provider::ProviderBackedDidAuth::new(
                 provider,
                 anp::authentication::AuthMode::HttpSignatures,
@@ -1409,7 +1407,7 @@ impl<'a> CorePlainTransport<'a> {
     pub(crate) fn new(core: &'a crate::core::ImCore) -> Self {
         Self {
             core,
-            http: crate::internal::http::HttpClient::from_config(core.inner().sdk_config()),
+            http: crate::internal::http::HttpClient::for_core(core.inner(), true),
             register_authorization: None,
         }
     }
@@ -1417,9 +1415,7 @@ impl<'a> CorePlainTransport<'a> {
     pub(crate) fn new_no_redirect(core: &'a crate::core::ImCore) -> Self {
         Self {
             core,
-            http: crate::internal::http::HttpClient::from_config_no_redirect(
-                core.inner().sdk_config(),
-            ),
+            http: crate::internal::http::HttpClient::for_core(core.inner(), false),
             register_authorization: None,
         }
     }
@@ -1732,7 +1728,7 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
         headers: BTreeMap<String, String>,
         body: AsyncAttachmentObjectBody,
     ) -> crate::ImResult<()> {
-        let client = self.http.attachment_async_client()?;
+        let client = self.http.attachment_async_client(upload_uri.trim()).await?;
         let mut builder = client.request(reqwest::Method::PUT, upload_uri.trim());
         for (key, value) in headers {
             builder = builder.header(key.trim(), value.trim());
@@ -1795,7 +1791,7 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
         download_ticket: &str,
         offset: u64,
     ) -> crate::ImResult<AsyncAttachmentObjectResponse> {
-        let client = self.http.attachment_async_client()?;
+        let client = self.http.attachment_async_client(object_uri.trim()).await?;
         let mut request = client
             .request(reqwest::Method::GET, object_uri.trim())
             .header(

@@ -1,7 +1,9 @@
 #[cfg(feature = "blocking")]
-use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
+use rustls::pki_types::ServerName;
+use rustls::pki_types::{pem::PemObject, CertificateDer};
+use rustls::{ClientConfig, RootCertStore};
 #[cfg(feature = "blocking")]
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls::{ClientConnection, StreamOwned};
 use std::collections::BTreeMap;
 use std::fs;
 #[cfg(feature = "blocking")]
@@ -18,6 +20,8 @@ pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct HttpClient {
+    runtime: Option<std::sync::Arc<crate::network::NetworkRuntime>>,
+    follow_redirects: bool,
     #[cfg(feature = "blocking")]
     tls_config: Arc<ClientConfig>,
     async_client: Result<reqwest::Client, crate::ImError>,
@@ -71,6 +75,13 @@ pub(crate) struct HttpResponse {
 }
 
 impl HttpClient {
+    pub(crate) fn for_core(core: &crate::core::ImCoreInner, follow_redirects: bool) -> Self {
+        Self::with_runtime(
+            core.sdk_config().ca_bundle_path(),
+            follow_redirects,
+            Some(core.network.clone()),
+        )
+    }
     pub(crate) fn from_config(config: &crate::ImCoreConfig) -> Self {
         Self::with_ca_bundle(config.ca_bundle_path(), true)
     }
@@ -80,6 +91,13 @@ impl HttpClient {
     }
 
     fn with_ca_bundle(ca_bundle: Option<&str>, follow_redirects: bool) -> Self {
+        Self::with_runtime(ca_bundle, follow_redirects, None)
+    }
+    fn with_runtime(
+        ca_bundle: Option<&str>,
+        follow_redirects: bool,
+        runtime: Option<std::sync::Arc<crate::network::NetworkRuntime>>,
+    ) -> Self {
         #[cfg(feature = "blocking")]
         let (roots, init_error) = match root_store(ca_bundle) {
             Ok(roots) => (roots, None),
@@ -91,14 +109,24 @@ impl HttpClient {
             ),
         };
         Self {
+            async_client: if let Some(runtime) = &runtime {
+                runtime.client_for(&crate::network::Route::Legacy, follow_redirects, false)
+            } else {
+                async_client(ca_bundle, follow_redirects)
+            },
+            attachment_async_client: if let Some(runtime) = &runtime {
+                runtime.client_for(&crate::network::Route::Legacy, follow_redirects, true)
+            } else {
+                build_async_client(ca_bundle, follow_redirects, None)
+            },
+            runtime,
+            follow_redirects,
             #[cfg(feature = "blocking")]
             tls_config: Arc::new(
                 ClientConfig::builder()
                     .with_root_certificates(roots)
                     .with_no_client_auth(),
             ),
-            async_client: async_client(ca_bundle, follow_redirects),
-            attachment_async_client: build_async_client(ca_bundle, follow_redirects, None),
             #[cfg(feature = "blocking")]
             init_error,
         }
@@ -167,6 +195,21 @@ impl HttpClient {
         if let Some(err) = &self.init_error {
             return Err(err.clone());
         }
+        let trace_started = std::time::Instant::now();
+        let trace_request = serde_json::from_slice::<serde_json::Value>(&request.body).ok();
+        let trace = trace_request.as_ref().and_then(|rpc| {
+            let stage = match rpc.get("method").and_then(serde_json::Value::as_str)? {
+                "direct.send" => "send.http_delivery",
+                "sync.delta" | "inbox.get" => "sync.http_receive",
+                _ => return None,
+            };
+            let operation = rpc
+                .pointer("/params/meta/message_id")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| rpc.get("id").and_then(serde_json::Value::as_str))
+                .unwrap_or(stage);
+            Some((operation.to_owned(), stage))
+        });
         let discovery = request
             .url
             .split('?')
@@ -175,24 +218,69 @@ impl HttpClient {
             || serde_json::from_slice::<serde_json::Value>(&request.body)
                 .ok()
                 .is_some_and(|body| body["method"] == "anp.get_capabilities");
-        let client = self.async_client.as_ref().map_err(Clone::clone)?;
-        let mut builder = client
-            .request(parse_method(&request.method)?, request.url.trim())
-            .timeout(if discovery {
-                Duration::from_secs(10)
-            } else {
-                RESPONSE_TIMEOUT
-            });
-        for (key, value) in request.headers {
-            builder = builder.header(key.trim(), value.trim());
-        }
-        if !request.body.is_empty() {
-            builder = builder.body(request.body);
-        }
-        let mut response = builder
-            .send()
-            .await
-            .map_err(reqwest_transport_unavailable)?;
+        let connection_started = std::time::Instant::now();
+        let route = if let Some(runtime) = &self.runtime {
+            Some(runtime.route(&request.url).await?)
+        } else {
+            None
+        };
+        let client = if let (Some(runtime), Some(route)) = (&self.runtime, &route) {
+            runtime.client_for_after(route, self.follow_redirects, false, connection_started)?
+        } else {
+            self.async_client.clone()?
+        };
+        let build = |client: &reqwest::Client| -> crate::ImResult<reqwest::RequestBuilder> {
+            let mut builder = client
+                .request(parse_method(&request.method)?, request.url.trim())
+                .timeout(if discovery {
+                    Duration::from_secs(10)
+                } else {
+                    RESPONSE_TIMEOUT
+                });
+            for (key, value) in &request.headers {
+                builder = builder.header(key.trim(), value.trim());
+            }
+            if !request.body.is_empty() {
+                builder = builder.body(request.body.clone());
+            }
+            Ok(builder)
+        };
+        let mut response = match build(&client)?.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                if error.is_builder() {
+                    return Err(reqwest_transport_unavailable(error));
+                }
+                if let Some(runtime) = &self.runtime {
+                    runtime.failed(&request.url);
+                    // Only pre-submit connection failures, or explicitly read-only
+                    // HTTP methods, can transparently try the other path once.
+                    if runtime.diagnostics().policy
+                        == crate::network::NetworkPolicy::SystemPreferred
+                        && (error.is_connect() || matches!(request.method.as_str(), "GET" | "HEAD"))
+                    {
+                        let connection_started = std::time::Instant::now();
+                        let alternate = runtime
+                            .alternate(&request.url, route.as_ref().expect("runtime route"))
+                            .await?;
+                        let client = runtime.client_for_after(
+                            &alternate,
+                            self.follow_redirects,
+                            false,
+                            connection_started,
+                        )?;
+                        build(&client)?
+                            .send()
+                            .await
+                            .map_err(reqwest_transport_unavailable)?
+                    } else {
+                        return Err(reqwest_transport_unavailable(error));
+                    }
+                } else {
+                    return Err(reqwest_transport_unavailable(error));
+                }
+            }
+        };
         let status_code = response.status().as_u16();
         let headers = response_headers(response.headers());
         let body = if discovery {
@@ -219,6 +307,9 @@ impl HttpClient {
                 .map_err(reqwest_transport_unavailable)?
                 .to_vec()
         };
+        if let (Some(runtime), Some((operation, stage))) = (&self.runtime, trace) {
+            runtime.trace(&operation, stage, trace_started);
+        }
         Ok(HttpResponse {
             status_code,
             headers,
@@ -230,8 +321,15 @@ impl HttpClient {
         self.async_client.clone()
     }
 
-    pub(crate) fn attachment_async_client(&self) -> crate::ImResult<reqwest::Client> {
-        self.attachment_async_client.clone()
+    pub(crate) async fn attachment_async_client(
+        &self,
+        url: &str,
+    ) -> crate::ImResult<reqwest::Client> {
+        if let Some(runtime) = &self.runtime {
+            runtime.client(url, self.follow_redirects, true).await
+        } else {
+            self.attachment_async_client.clone()
+        }
     }
 }
 
@@ -247,6 +345,16 @@ fn build_async_client(
     follow_redirects: bool,
     request_timeout: Option<Duration>,
 ) -> Result<reqwest::Client, crate::ImError> {
+    async_client_builder(ca_bundle, follow_redirects, request_timeout)?
+        .build()
+        .map_err(reqwest_transport_unavailable)
+}
+
+pub(crate) fn async_client_builder(
+    ca_bundle: Option<&str>,
+    follow_redirects: bool,
+    request_timeout: Option<Duration>,
+) -> crate::ImResult<reqwest::ClientBuilder> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -277,7 +385,7 @@ fn build_async_client(
             builder = builder.add_root_certificate(cert);
         }
     }
-    builder.build().map_err(reqwest_transport_unavailable)
+    Ok(builder)
 }
 
 fn parse_method(method: &str) -> crate::ImResult<reqwest::Method> {
@@ -307,7 +415,6 @@ fn reqwest_transport_unavailable(err: reqwest::Error) -> crate::ImError {
     }
 }
 
-#[cfg(feature = "blocking")]
 fn root_store(ca_bundle: Option<&str>) -> crate::ImResult<RootCertStore> {
     let mut root_store = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -723,4 +830,14 @@ mod tests {
         source.join().unwrap();
         target.join().unwrap();
     }
+}
+
+pub(crate) fn network_tls_config(
+    ca_bundle: Option<&str>,
+) -> crate::ImResult<std::sync::Arc<ClientConfig>> {
+    Ok(std::sync::Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(root_store(ca_bundle)?)
+            .with_no_client_auth(),
+    ))
 }

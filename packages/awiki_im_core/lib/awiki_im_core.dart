@@ -17,3 +17,4 @@ export 'src/models/message_payload.dart';
 export 'src/models/profile.dart';
 export 'src/models/realtime.dart';
 export 'src/models/secure.dart';
+export 'src/models/network.dart';

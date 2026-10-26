@@ -1,3 +1,4 @@
+import 'models/network.dart';
 import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/identity.dart';
@@ -646,4 +647,21 @@ class GroupSecureConversation {
   Future<GroupSecureRepairResult> repair() async {
     throw _unsupported();
   }
+}
+
+class AwikiDesktopNetwork {
+  static Future<List<AwikiNetworkDiagnostic>> diagnostics() async => const [];
+  static Future<void> configure(
+    AwikiNetworkPolicy policy, {
+    String? caBundle,
+  }) async {}
+  static Future<AwikiNetworkStatus> status() async => AwikiNetworkStatus.direct;
+  static Future<AwikiNetworkResponse> send({
+    required String method,
+    required String url,
+    required Map<String, String> headers,
+    required List<int> body,
+    bool followRedirects = true,
+    Future<void>? abortTrigger,
+  }) => throw UnsupportedError('desktop network requires native runtime');
 }
