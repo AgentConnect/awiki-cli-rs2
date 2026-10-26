@@ -67,7 +67,9 @@ pub fn emit_http_timings(diagnostics: &im_core::network::NetworkDiagnostics) {
         eprintln!(
             "awiki_http_timing {}",
             serde_json::json!({
-                "schema_version": 1, "bounded": true, "records": records,
+                "schema_version": 1, "bounded": true,
+                "window_saturated": diagnostics.records.len() >= 128,
+                "records": records,
             })
         );
     }
