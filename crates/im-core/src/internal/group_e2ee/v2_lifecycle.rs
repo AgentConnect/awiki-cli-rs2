@@ -380,6 +380,9 @@ pub(crate) fn initialize_created_group(
 ) -> crate::ImResult<()> {
     let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context(client)?;
+    if created_group_is_active(client, &context, &intent.group_state_ref.group_did)? {
+        return Ok(());
+    }
     let service_did = service_did(client)?;
     let CreateIntent {
         now_text,
@@ -416,7 +419,7 @@ pub(crate) fn initialize_created_group(
         .product
         .publish_current_key_package(&prepared_package)?;
 
-    let submission = context.product.prepare_create(V2CreateGroupInput {
+    let submission = context.product.prepare_or_resume_create(V2CreateGroupInput {
         meta: service_meta(
             client,
             &context.device,
@@ -433,6 +436,7 @@ pub(crate) fn initialize_created_group(
         pending_commit_id: format!("pending-{create_operation}"),
         request_id: format!("{create_operation}-prepare"),
     })?;
+    let Some(submission) = submission else { return Ok(()); };
     context
         .product
         .submit_create(&submission, format!("{create_operation}-finalize"))?;
@@ -456,7 +460,8 @@ pub(crate) async fn resume_created_group_async(
         serde_json::from_value(value).map_err(|_| crate::ImError::LocalStateUnavailable {
             detail: "invalid group creation intent".to_owned(),
         })?;
-    // The protocol WAL makes submission of an accepted operation a no-op.
+    // Reuse the typed SDK Prepared body, or leave an already active binding
+    // untouched. SDK create preparation itself is not an idempotent operation.
     initialize_created_group_async(client, intent.group_state_ref).await
 }
 
@@ -466,6 +471,9 @@ pub(crate) async fn initialize_created_group_async(
 ) -> crate::ImResult<()> {
     let intent = frozen_create_intent(client, group_state_ref)?;
     let mut context = production_context_async(client).await?;
+    if created_group_is_active(client, &context, &intent.group_state_ref.group_did)? {
+        return Ok(());
+    }
     let service_did = service_did(client)?;
     let CreateIntent {
         now_text,
@@ -507,7 +515,7 @@ pub(crate) async fn initialize_created_group_async(
         .publish_current_key_package_async(&mut transport, &prepared_package)
         .await?;
 
-    let submission = context.product.prepare_create(V2CreateGroupInput {
+    let submission = context.product.prepare_or_resume_create(V2CreateGroupInput {
         meta: service_meta(
             client,
             &context.device,
@@ -524,11 +532,30 @@ pub(crate) async fn initialize_created_group_async(
         pending_commit_id: format!("pending-{create_operation}"),
         request_id: format!("{create_operation}-prepare"),
     })?;
+    let Some(submission) = submission else { return Ok(()); };
     context
         .product
         .submit_create_async(&submission, format!("{create_operation}-finalize"))
         .await?;
     Ok(())
+}
+
+fn created_group_is_active(
+    client: &crate::ImClient,
+    context: &ProductionV2Context<'_>,
+    group_did: &str,
+) -> crate::ImResult<bool> {
+    let inspected = context
+        .product
+        .inspect_local_group(endpoint_inventory_input(
+            client,
+            &context.device,
+            group_did,
+            "create-readiness",
+        ))?;
+    // Pending membership work is still handled by the regular repair path;
+    // an accepted MLS group must never be initialized a second time.
+    Ok(inspected.readiness == V2LocalGroupReadiness::Active)
 }
 
 /// Verifies that the selected current device owns an active local leaf before

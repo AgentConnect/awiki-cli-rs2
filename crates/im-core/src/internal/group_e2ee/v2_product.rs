@@ -662,10 +662,113 @@ where
         &self,
         input: anp::group_e2ee::operations::v2::V2CreateGroupInput,
     ) -> crate::ImResult<V2PreparedCreateSubmission> {
+        self.prepare_or_resume_create(input)?
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "P6 group is already initialized".to_owned(),
+            })
+    }
+
+    pub(crate) fn prepare_or_resume_create(
+        &self,
+        input: anp::group_e2ee::operations::v2::V2CreateGroupInput,
+    ) -> crate::ImResult<Option<V2PreparedCreateSubmission>> {
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
+        input
+            .meta
+            .validate(GROUP_E2EE_SECURITY_PROFILE_V2)
+            .map_err(map_v2_wire_error)?;
+        input
+            .group_state_ref
+            .validate()
+            .map_err(map_v2_wire_error)?;
+        if input.creator_key_package.owner_did != input.meta.sender_did
+            || input.creator_key_package.owner_device_id != input.meta.sender_device_id
+            || input.creator_did_document.get("id").and_then(Value::as_str)
+                != Some(input.meta.sender_did.as_str())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let eligible = anp::authentication::find_eligible_device(
+            &input.creator_did_document,
+            &input.meta.sender_device_id,
+            anp::authentication::PROFILE_GROUP_E2EE_V2,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+        if eligible.signing_key_id
+            != input
+                .creator_key_package
+                .did_wba_binding
+                .verification_method
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        // Fresh document binding remains required even for an exact retry;
+        // the stored MLS body is not a cached authorization decision.
+        anp::proof::verify_object_proof(
+            &serde_json::to_value(&input.creator_key_package.did_wba_binding)
+                .map_err(|_| serialization_error("create binding serialization failed"))?,
+            &input.meta.sender_did,
+            &input.creator_did_document,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+        let reconciled = self.reconcile_pending(format!("{}-resume", input.request_id))?;
+        for entry in reconciled.entries {
+            let pending = entry.pending;
+            if pending.pending_commit_id != input.pending_commit_id
+                && pending.operation_id != input.meta.operation_id
+            {
+                continue;
+            }
+            // SDK prepare is intentionally not idempotent: an existing binding
+            // must use its durable prepared response instead of creating MLS again.
+            if pending.pending_commit_id != input.pending_commit_id
+                || pending.operation_id != input.meta.operation_id
+                || pending.group_did != input.group_state_ref.group_did
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if pending.status == "finalized" {
+                continue;
+            }
+            if pending.status != "prepared" {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let body: V2GroupCreateBody =
+                serde_json::from_value(pending.prepared_response.ok_or_else(|| {
+                    serialization_error("SDK prepared create omitted its durable body")
+                })?)
+                .map_err(|_| serialization_error("SDK prepared create body is invalid"))?;
+            body.validate().map_err(map_v2_wire_error)?;
+            if body.group_state_ref != input.group_state_ref
+                || body.creator_key_package != input.creator_key_package
+                || body.creator_key_package.owner_did != input.meta.sender_did
+                || body.creator_key_package.owner_device_id != input.meta.sender_device_id
+                || input.creator_did_document.get("id").and_then(Value::as_str)
+                    != Some(input.meta.sender_did.as_str())
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return Ok(Some(V2PreparedCreateSubmission {
+                meta: input.meta,
+                prepared: V2PreparedCreate {
+                    pending_commit_id: pending.pending_commit_id,
+                    body,
+                },
+            }));
+        }
+        let inspection = self.inspect_local_group(V2InspectLocalGroupInput {
+            owner_did: input.meta.sender_did.clone(),
+            owner_device_id: input.meta.sender_device_id.clone(),
+            group_did: input.group_state_ref.group_did.clone(),
+            request_id: format!("{}-active", input.request_id),
+        })?;
+        if inspection.readiness == anp::group_e2ee::operations::v2::V2LocalGroupReadiness::Active {
+            return Ok(None);
+        }
         let meta = input.meta.clone();
         let prepared = self.runtime.create_group_prepare(input)?;
-        Ok(V2PreparedCreateSubmission { meta, prepared })
+        Ok(Some(V2PreparedCreateSubmission { meta, prepared }))
     }
 
     pub(crate) fn submit_create(

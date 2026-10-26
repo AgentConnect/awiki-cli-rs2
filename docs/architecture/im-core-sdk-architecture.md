@@ -848,6 +848,13 @@ exact device 和 operation ID 冻结原始 metadata/cipher/client context；请�
 自动发送或 IPC 失败回退。旧 Core 能读取原数据库结构，但不能据此承诺它能续跑新增
 应用发送记录；带未决操作回退旧二进制不属于已验证的恢复路径。
 
+群创建也必须区别首次 prepare 与未知结果恢复。SDK 的 create prepare 在已有本地绑定时
+明确拒绝，不能把它当成幂等重入入口。Core 用 SDK 的类型化 reconcile 结果恢复同一
+pending_commit_id／operation_id／群版本／creator KeyPackage 的 Prepared body，保留
+原群标识及创建 metadata，重验当前设备与 binding proof 后提交。已激活的本地群不再
+初始化；待处理 Add/Remove 继续由原恢复路径负责。没有原 Prepared body、绑定冲突或
+权限变化时拒绝，不读取 SDK 私有表、不生成替代 MLS 群、不跳过 Host 接受检查。
+
 Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
 `group_e2ee_reconcile_required(recipient_did, group_did)` 提示，只为当前身份持久化
 既有 group repair 任务，并在提交后唤醒 Core 的有界 receive dispatcher 执行该任务。

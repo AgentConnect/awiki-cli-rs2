@@ -194,6 +194,90 @@ async fn v1b_p6_product_orchestrates_application_welcome_commit_and_replay() {
 }
 
 #[tokio::test]
+async fn prepared_group_creation_resumes_exact_wal_after_unknown_host_result() {
+    let directory = TestDirectory::new("p6-create-recovery");
+    let fixture = make_did_fixture("create-recovery", &["creator"]);
+    let device = &fixture.devices[0];
+    let transport = LoopbackTransport::default();
+    let mut first = product(&directory, &fixture, device, transport.clone());
+    let publication = first
+        .prepare_current_key_package(
+            key_service_meta(&fixture.did, &device.device_id, "publish-create-recovery"),
+            key_package_input(
+                &fixture,
+                device,
+                "kp-create-recovery",
+                "key-create-recovery",
+            ),
+            &fixture.document,
+            &signing_key(device),
+        )
+        .unwrap();
+    first.publish_current_key_package(&publication).unwrap();
+    let input = V2CreateGroupInput {
+        meta: control_service_meta(&fixture.did, &device.device_id, "create-recovery"),
+        group_state_ref: state_ref(1),
+        creator_key_package: publication.body.group_key_package,
+        creator_did_document: fixture.document.clone(),
+        now: NOW.into(),
+        draft_extension_negotiated: true,
+        pending_commit_id: "pending-create-recovery".into(),
+        request_id: "prepare-create-recovery".into(),
+    };
+    let prepared = first.prepare_create(input.clone()).unwrap();
+    transport.set_next(NextResponse::TransportFailure);
+    assert!(first
+        .submit_create_async(&prepared, "first-finalize")
+        .await
+        .is_err());
+    drop(first);
+    let status = status_runtime(&directory, &fixture, device)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .unwrap();
+    assert!(!status.can_send_secure);
+    assert_eq!(status.pending_work.pending_commits, 1);
+
+    let mut resumed = product(&directory, &fixture, device, transport.clone());
+    let mut changed = input.clone();
+    changed.group_state_ref = state_ref(2);
+    assert!(resumed.prepare_create(changed).is_err());
+    let mut changed = input.clone();
+    changed.meta.operation_id = "different-operation".into();
+    assert!(resumed.prepare_create(changed).is_err());
+    let mut changed = input.clone();
+    changed.creator_did_document["id"] = json!("did:example:other");
+    assert!(resumed.prepare_create(changed).is_err());
+    let mut changed = input.clone();
+    changed.creator_did_document["deviceManifest"]["devices"] = json!([]);
+    assert!(resumed.prepare_create(changed).is_err());
+    let mut changed = input.clone();
+    changed.creator_key_package.key_package_id = "replacement-key-package".into();
+    assert!(resumed.prepare_create(changed).is_err());
+    let retried = resumed
+        .prepare_create(input.clone())
+        .expect("resume original prepared create, not recreate MLS");
+    assert_eq!(retried, prepared);
+    resumed
+        .submit_create_async(&retried, "retry-finalize")
+        .await
+        .unwrap();
+    let ready = status_runtime(&directory, &fixture, device)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .unwrap();
+    assert!(ready.can_send_secure);
+    assert_eq!(ready.pending_work.pending_commits, 0);
+    assert!(resumed.prepare_or_resume_create(input).unwrap().is_none());
+    let calls: Vec<_> = transport
+        .calls()
+        .into_iter()
+        .filter(|v| v.method == "group.e2ee.create")
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].params["meta"], calls[1].params["meta"]);
+    assert_eq!(calls[0].params["body"], calls[1].params["body"]);
+}
+
+#[tokio::test]
 async fn web_p6_product_keeps_welcome_attachment_replay_and_exact_device_removal() {
     let mut fixture = make_did_fixture("alice-web-product", &["alice-a1", "alice-a2"]);
     let did = "did:web:p6-core.example:alice-product";
