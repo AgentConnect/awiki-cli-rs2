@@ -197,6 +197,7 @@ impl HttpClient {
         }
         let trace_started = std::time::Instant::now();
         let trace_request = serde_json::from_slice::<serde_json::Value>(&request.body).ok();
+        let http_stage = http_timing_stage(&request.url, trace_request.as_ref());
         let trace = trace_request.as_ref().and_then(|rpc| {
             let stage = match rpc.get("method").and_then(serde_json::Value::as_str)? {
                 "direct.send" => "send.http_delivery",
@@ -307,6 +308,17 @@ impl HttpClient {
                 .map_err(reqwest_transport_unavailable)?
                 .to_vec()
         };
+        if let (Some(runtime), Some(stage)) = (&self.runtime, http_stage) {
+            let operation = trace_request
+                .as_ref()
+                .and_then(|rpc| {
+                    rpc.pointer("/params/meta/message_id")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| rpc.get("id").and_then(serde_json::Value::as_str))
+                })
+                .unwrap_or(stage);
+            runtime.trace(operation, stage, trace_started);
+        }
         if let (Some(runtime), Some((operation, stage))) = (&self.runtime, trace) {
             runtime.trace(&operation, stage, trace_started);
         }
@@ -332,6 +344,40 @@ impl HttpClient {
         }
     }
 }
+
+/// Closed diagnostic labels: never copy URLs, headers or arbitrary RPC names.
+fn http_timing_stage(url: &str, rpc: Option<&serde_json::Value>) -> Option<&'static str> {
+    let method = rpc
+        .and_then(|value| value.get("method"))
+        .and_then(serde_json::Value::as_str);
+    match method {
+        Some("direct.send") => Some("http.direct.send"),
+        Some("direct.e2ee.publish_prekey_bundle") => Some("http.direct.e2ee.publish_prekey_bundle"),
+        Some("direct.e2ee.get_prekey_bundle") => Some("http.direct.e2ee.get_prekey_bundle"),
+        Some("group.get") => Some("http.group.get"),
+        Some("group.get_info") => Some("http.group.get_info"),
+        Some("group.list_members") => Some("http.group.list_members"),
+        Some("group.e2ee.send") => Some("http.group.e2ee.send"),
+        Some("group.e2ee.create") => Some("http.group.e2ee.create"),
+        Some("group.e2ee.add") => Some("http.group.e2ee.add"),
+        Some("group.e2ee.remove") => Some("http.group.e2ee.remove"),
+        Some("sync.delta") => Some("http.sync.delta"),
+        Some("inbox.get") => Some("http.inbox.get"),
+        Some("anp.get_capabilities") => Some("http.anp.get_capabilities"),
+        _ if url
+            .split('?')
+            .next()
+            .is_some_and(|value| value.ends_with("/did.json")) =>
+        {
+            Some("http.did.resolve")
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "http_timing_tests.rs"]
+mod timing_tests;
 
 fn async_client(
     ca_bundle: Option<&str>,

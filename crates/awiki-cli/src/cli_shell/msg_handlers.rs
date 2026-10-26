@@ -407,16 +407,21 @@ impl App {
             );
         }
 
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
+        let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
+        let client = core
+            .client_async(crate::m_core_cli_adapter::cli_identity_selector(
+                &self.globals.identity,
+            ))
+            .await
+            .map_err(|err| {
+                crate::m_core_cli_adapter::error::map_im_error(err, "build im-client")
+            })?;
+        let outcome = crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
             &resolved, &client, request,
         )
-        .await
-        .map_err(|err| {
+        .await;
+        crate::cli_trace::emit_http_timings(&core.network().diagnostics());
+        let mut result = outcome.map_err(|err| {
             message_exit(
                 err,
                 "Ensure the active identity is ready and the message service is reachable.",

@@ -53,6 +53,26 @@ pub fn enabled() -> bool {
     )
 }
 
+/// Opt-in, bounded per-Core HTTP timings. These overlap the coarse send phase.
+pub fn emit_http_timings(diagnostics: &im_core::network::NetworkDiagnostics) {
+    if !enabled() {
+        return;
+    }
+    let records: Vec<_> = diagnostics
+        .records
+        .iter()
+        .filter(|record| record.stage.starts_with("http."))
+        .collect();
+    if !records.is_empty() {
+        eprintln!(
+            "awiki_http_timing {}",
+            serde_json::json!({
+                "schema_version": 1, "bounded": true, "records": records,
+            })
+        );
+    }
+}
+
 pub fn set_current(run: Option<Run>) {
     CURRENT_RUN.with(|current| {
         *current.borrow_mut() = run;
