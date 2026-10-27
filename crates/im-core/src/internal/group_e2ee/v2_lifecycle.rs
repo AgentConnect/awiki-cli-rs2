@@ -2734,7 +2734,8 @@ fn submit_prepared_remove(
         .submit_remove(submission, finalize_request_id)
     {
         Ok(_) => Ok(()),
-        Err(error) if p6_host_rejection_is_deterministic(&error) => {
+        Err(error) if p6_host_rejection_is_deterministic(&error)
+            || super::v2_remove_recovery::proven_competing_remove(&error, submission) => {
             context.product.abort_pending(
                 pending_commit_id,
                 format!("{}-abort", operation_id("remove-rejected")),
@@ -2757,7 +2758,8 @@ async fn submit_prepared_remove_async(
         .await
     {
         Ok(_) => Ok(()),
-        Err(error) if p6_host_rejection_is_deterministic(&error) => {
+        Err(error) if p6_host_rejection_is_deterministic(&error)
+            || super::v2_remove_recovery::proven_competing_remove(&error, submission) => {
             context.product.abort_pending(
                 pending_commit_id,
                 format!("{}-abort", operation_id("remove-rejected")),

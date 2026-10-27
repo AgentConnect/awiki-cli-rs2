@@ -1077,6 +1077,12 @@ roster_readiness 缓存。状态绑定当前 Core、owner、DID、精确 device�
 当前设备 roster；普通成员只验证完整业务成员集合与本地 MLS。实际提交始终保留
 Host 当前资格、版本、epoch、证明与幂等检查，版本错误使本地 Ready 失效。
 
+并发 Remove 的失败设备不能把 anp.target_not_found 单独解释为未接受。仅消费 Host
+可选的 rejected_membership_submission，逐项匹配原 operation／actor／目标设备／
+group_state_ref／crypto group／epoch／Commit摘要后，调用既有SDK abort 清除未被接受的
+pending Commit，再由原同步和恢复流程收敛成功方的Commit。缺少、未知版本或错绑定
+证据继续保留原WAL；SDK仍拒绝中止accepted/finalized记录，不回滚已合并的MLS状态。
+
 已有应用操作首先读取并验证冻结 journal。未知提交结果重发原密文，已接受结果只补
 公开投影，不因补投影重新要求当前群仍可发送。错误不普遍代表未接受，不能自动
 更换原 operation 的密文。安全路由也可由已验证且与原请求绑定的冻结记录确定。

@@ -21,3 +21,5 @@ pub(crate) mod v2_status;
 pub(crate) mod wire;
 
 pub(crate) const DEFAULT_GROUP_MLS_DEVICE_ID: &str = "default";
+
+mod v2_remove_recovery;
