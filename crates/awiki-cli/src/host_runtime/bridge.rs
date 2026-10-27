@@ -15,6 +15,9 @@ use std::time::Duration;
 #[cfg(unix)]
 #[path = "bridge_peer.rs"]
 mod peer;
+#[cfg(unix)]
+#[path = "bridge_readiness.rs"]
+mod readiness;
 #[cfg(windows)]
 #[path = "bridge_windows_peer.rs"]
 mod windows_peer;
@@ -500,6 +503,19 @@ pub fn accept_bridge(listener: &BridgeListener) -> io::Result<BridgeStream> {
     let (stream, _) = listener.accept()?;
     peer::require_same_user(&stream)?;
     Ok(stream)
+}
+
+pub fn wait_for_bridge_connection(listener: &BridgeListener, timeout: Duration) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        readiness::wait(listener, timeout)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = listener;
+        std::thread::sleep(timeout);
+        Ok(())
+    }
 }
 
 #[cfg(windows)]

@@ -174,7 +174,11 @@ impl ListenerSupervisor {
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(50));
+                        if bridge::wait_for_bridge_connection(&listener, Duration::from_millis(50))
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     Err(_) => break,
                 }
