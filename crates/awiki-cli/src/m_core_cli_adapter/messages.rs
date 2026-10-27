@@ -2213,6 +2213,11 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::LocalStateUnavailable { detail } => {
             MessageAdapterError::LocalStateUnavailable(detail)
         }
+        im_core::ImError::CursorStale => MessageAdapterError::ForegroundSyncPending {
+            budget_exhausted: false,
+            error_code: Some("group_state_sync_pending".to_owned()),
+            warnings: vec![],
+        },
         im_core::ImError::PathUnavailable { path_kind, detail } => {
             MessageAdapterError::PathUnavailable(format!("{path_kind} path unavailable: {detail}"))
         }

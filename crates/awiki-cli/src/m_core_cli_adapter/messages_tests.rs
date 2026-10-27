@@ -631,3 +631,15 @@ fn backend_capability_reason_survives_message_adapter() {
         MessageAdapterError::BackendCapability(reason.into())
     );
 }
+
+#[test]
+fn changing_group_preparation_is_resumable_instead_of_an_internal_failure() {
+    let mapped = im_error_to_message_error(im_core::ImError::CursorStale);
+    assert!(
+        matches!(&mapped, MessageAdapterError::ForegroundSyncPending { error_code: Some(code), .. } if code == "group_state_sync_pending")
+    );
+    let public = crate::cli_shell::message_exit(mapped, "retry the same intent");
+    assert_eq!(public.detail.code, "transport_unavailable");
+    assert!(public.detail.retryable);
+    assert!(public.detail.hint.contains("same message ID"));
+}

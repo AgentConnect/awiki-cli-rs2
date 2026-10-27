@@ -378,6 +378,38 @@ async fn send_group_async_impl(
     mut request: crate::messages::SendMessageRequest,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     normalize_message_identity(&mut request)?;
+    let scope = crate::internal::message_runtime::send_lifecycle::owner_scope(client).ok();
+    for attempt in 0..2 {
+        let result = send_group_attempt_async(client, &request).await;
+        if attempt == 1 || !matches!(&result, Err(crate::ImError::CursorStale)) {
+            return result;
+        }
+        if scope.is_none()
+            || crate::internal::message_runtime::send_lifecycle::owner_scope(client).ok() != scope
+        {
+            return result;
+        }
+        // The attempt has released its group lock. Reconcile before retrying
+        // the same intent; any frozen submission is loaded before preparation.
+        client
+            .messages()
+            .request_sync_async(crate::messages::MessageSyncRequest {
+                reason: "foreground_reconcile".to_owned(),
+                limit: None,
+            })
+            .await?;
+        if crate::internal::message_runtime::send_lifecycle::owner_scope(client).ok() != scope {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    unreachable!("bounded group send retry returns from its final attempt")
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn send_group_attempt_async(
+    client: &crate::core::ImClient,
+    request: &crate::messages::SendMessageRequest,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
     let group = match &request.target {
         crate::messages::MessageTarget::Group(group) => group.clone(),
         crate::messages::MessageTarget::Direct(_) => {
@@ -400,22 +432,25 @@ async fn send_group_async_impl(
     };
     if saved.is_none()
         && crate::internal::group_e2ee::send_state::has_observation(client, &group)
-        && crate::internal::group_e2ee::send_state::preparation_ticket(client, &group)?.is_none()
+        && crate::internal::group_e2ee::send_state::prepared_snapshot(client, &group)?.is_none()
     {
         // A known receive gap must be repaired before generating new MLS
         // ciphertext. This occurs before acquiring the lifecycle lock needed
         // by the receive/maintenance workers. Frozen retries bypass it.
         client
             .messages()
-            .request_receive_async(crate::messages::MessageSyncRequest {
+            .request_sync_async(crate::messages::MessageSyncRequest {
                 reason: "foreground_reconcile".to_owned(),
                 limit: None,
             })
             .await?;
-        if crate::internal::group_e2ee::send_state::preparation_ticket(client, &group)?.is_none() {
-            return Err(crate::ImError::LocalStateUnavailable {
-                detail: "group_state_sync_pending".to_owned(),
-            });
+        client
+            .secure()
+            .group(group.clone())
+            .prepare_observed_async()
+            .await?;
+        if crate::internal::group_e2ee::send_state::prepared_snapshot(client, &group)?.is_none() {
+            return Err(crate::ImError::CursorStale);
         }
     }
     let group_lock = client

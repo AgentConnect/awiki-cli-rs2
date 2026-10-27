@@ -1631,8 +1631,15 @@ pub(crate) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             err.to_string(),
             "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow.",
         ),
-        MessageAdapterError::TransportUnavailable(_)
-        | MessageAdapterError::ForegroundSyncPending { .. } => ExitError::new(
+        MessageAdapterError::ForegroundSyncPending { .. } => {
+            let mut mapped = ExitError::new(
+                "transport_unavailable", 1, err.to_string(),
+                "Let pending synchronization finish, then retry the same message ID and idempotency key.",
+            );
+            mapped.detail.retryable = true;
+            mapped
+        }
+        MessageAdapterError::TransportUnavailable(_) => ExitError::new(
             "transport_unavailable",
             1,
             err.to_string(),
