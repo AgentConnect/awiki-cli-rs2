@@ -357,6 +357,45 @@ pub(crate) fn preparation_ticket(
     }))
 }
 
+/// Bounded local-only test evidence. No identities, keys, endpoint identifiers,
+/// tokens, or ciphertext are exposed, and no synchronization is triggered.
+#[cfg(feature = "internal-test-helpers")]
+pub(crate) fn diagnostics_for_test(
+    client: &crate::ImClient,
+    group: &GroupRef,
+) -> crate::ImResult<serde_json::Value> {
+    let key = match scope(client, group) {
+        Ok(key) => key,
+        Err(_) => return Ok(json!({"scope_valid":false})),
+    };
+    let token = connection_token(client);
+    let observed = client
+        .core_inner()
+        .group_send_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .observed
+        .get(&key)
+        .cloned();
+    let mut value = json!({"scope_valid":true,"connection_present":token.is_some(),"observed":observed.is_some(),
+        "group_enabled":client.core_inner().group_e2ee_v2_enabled(),
+        "connection_scope":crate::internal::message_runtime::send_lifecycle::diagnostics_for_test(client)});
+    if let Some(observed) = observed {
+        value["observation_connected"] = json!(observed.connection.is_some());
+        value["connection_matches"] = json!(token.is_some() && observed.connection == token);
+        value["caught_up"] = json!(observed.caught_up);
+        value["epoch_present"] = json!(observed.observation.epoch.is_some());
+        value["prepared"] = json!(observed.ready.is_some());
+        value["generation"] = json!(observed.local_generation);
+        let current = endpoints(client, group);
+        value["sdk_ready"] = json!(current.is_ok());
+        if let (Ok(current), Some(ready)) = (current, observed.ready) {
+            value["endpoints_match"] = json!(current == ready.endpoints);
+        }
+    }
+    Ok(value)
+}
+
 fn endpoints(
     client: &crate::ImClient,
     group: &GroupRef,

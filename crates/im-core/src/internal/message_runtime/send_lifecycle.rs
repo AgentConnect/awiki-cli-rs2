@@ -46,6 +46,33 @@ pub(crate) fn connection_token(client: &crate::ImClient) -> Option<String> {
         .map(|session| session.observation.clone())
 }
 
+#[cfg(feature = "internal-test-helpers")]
+pub(crate) fn diagnostics_for_test(client: &crate::ImClient) -> serde_json::Value {
+    let Ok(owner) = owner_scope(client) else {
+        return serde_json::json!({"scope_valid":false});
+    };
+    let state = client
+        .core_inner()
+        .send_connections
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let known: Vec<_> = state
+        .sessions
+        .keys()
+        .filter(|key| key.owner == owner.owner)
+        .collect();
+    serde_json::json!({
+        "scope_valid":true,
+        "owner_connections":known.len(),
+        "scope_matches":state.sessions.contains_key(&owner),
+        "did_matches":known.iter().any(|key| key.did == owner.did),
+        "device_matches":known.iter().any(|key| key.device == owner.device),
+        "generation_matches":known.iter().any(|key| key.generation == owner.generation),
+        "signing_key_matches":known.iter().any(|key| key.signing_key == owner.signing_key),
+        "e2ee_key_matches":known.iter().any(|key| key.e2ee_key == owner.e2ee_key),
+    })
+}
+
 pub(crate) fn invalidate_sync(client: &crate::ImClient) {
     let Ok(owner) = owner_scope(client) else {
         return;

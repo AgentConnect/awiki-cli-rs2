@@ -415,14 +415,20 @@ impl BridgeRuntime {
                         .get("group")
                         .and_then(Value::as_str)
                         .ok_or_else(|| anyhow::anyhow!("group is required"))?;
-                    Ok(Map::from_iter([(
-                        "ready".into(),
-                        Value::Bool(
-                            client.group_send_prepared_for_test(im_core::ids::GroupRef::parse(
-                                group,
-                            )?)?,
+                    Ok(Map::from_iter([
+                        (
+                            "ready".into(),
+                            Value::Bool(client.group_send_prepared_for_test(
+                                im_core::ids::GroupRef::parse(group)?,
+                            )?),
                         ),
-                    )]))
+                        (
+                            "state".into(),
+                            client.group_send_state_diagnostics_for_test(
+                                im_core::ids::GroupRef::parse(group)?,
+                            )?,
+                        ),
+                    ]))
                 }
                 Some("direct_ready") => {
                     let peer = request

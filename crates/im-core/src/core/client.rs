@@ -437,6 +437,15 @@ impl ImClient {
     }
 
     #[doc(hidden)]
+    #[cfg(all(feature = "internal-test-helpers", feature = "group-e2ee"))]
+    pub fn group_send_state_diagnostics_for_test(
+        &self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<serde_json::Value> {
+        crate::internal::group_e2ee::send_state::diagnostics_for_test(self, &group)
+    }
+
+    #[doc(hidden)]
     #[cfg(all(feature = "internal-test-helpers", feature = "secure-direct"))]
     pub fn direct_documents_prepared_for_test(
         &self,
