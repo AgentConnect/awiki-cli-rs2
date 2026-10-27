@@ -41,6 +41,7 @@ mod legacy_sqlite {
 mod http_request_handlers;
 mod mail_handlers;
 mod msg_handlers;
+pub(crate) use msg_handlers::message_exit;
 mod onboarding_handlers;
 mod page_handlers;
 mod people_handlers;

@@ -144,6 +144,7 @@ pub(crate) fn consume_hint(
         return true;
     }
     let result = hint_group(notification, client.did().as_str()).and_then(|group| {
+        super::send_state::invalidate(client, Some(group.as_str()));
         crate::internal::group_runtime::recovery::record(
             client,
             &format!("recovery:repair:{}", group.as_str()),

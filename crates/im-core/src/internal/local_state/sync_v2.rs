@@ -3772,7 +3772,28 @@ pub(super) fn apply_delta_events_in_transaction(
         invalidation.thread_ids = thread_ids.into_iter().collect();
     }
     for group in groups {
+        #[cfg(feature = "group-e2ee")]
+        let maintenance_group = group.group_id.clone();
+        #[cfg(feature = "group-e2ee")]
+        let maintenance_change = serde_json::from_str::<serde_json::Value>(&group.metadata)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("event_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
         super::groups::upsert_group(transaction, group)?;
+        #[cfg(feature = "group-e2ee")]
+        if let Some(change_id) = maintenance_change {
+            crate::internal::group_runtime::journal::schedule_group_state_change_on(
+                transaction,
+                &input.owner_identity_id,
+                &input.protocol_device_id,
+                &maintenance_group,
+                &change_id,
+            )?;
+        }
     }
     for read_state in read_states {
         apply_remote_read_state(

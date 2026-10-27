@@ -11,6 +11,29 @@ pub(crate) fn resolve(
         return Ok(requested);
     };
     preflight(client, &requested)?;
+    #[cfg(feature = "group-e2ee")]
+    if let Some(authoritative) =
+        crate::internal::group_e2ee::send_state::prepared_snapshot(client, group)?
+    {
+        return group_mode(
+            requested,
+            crate::groups::authoritative_group_e2ee_classification(group.as_str(), &authoritative)?,
+        );
+    }
+    #[cfg(feature = "group-e2ee")]
+    if crate::internal::group_e2ee::send_state::has_observation(client, group) {
+        // This authenticated observation inventory contains encrypted groups
+        // only. It selects the immutable route, never grants send readiness.
+        return group_mode(requested, true);
+    }
+    // A locally known immutable encrypted policy can only select the stronger
+    // route. Never use a cached plain policy to downgrade a remote encrypted group.
+    if crate::internal::group_runtime::cache::cached_group_snapshot(client, group.as_str())?
+        .as_ref()
+        .is_some_and(crate::internal::group_runtime::cache::group_snapshot_uses_e2ee)
+    {
+        return group_mode(requested, true);
+    }
     let authoritative = client.groups().get_authoritative_group(group.clone())?;
     group_mode(
         requested,
@@ -27,6 +50,26 @@ pub(crate) async fn resolve_async(
         return Ok(requested);
     };
     preflight(client, &requested)?;
+    #[cfg(feature = "group-e2ee")]
+    if let Some(authoritative) =
+        crate::internal::group_e2ee::send_state::prepared_snapshot(client, group)?
+    {
+        return group_mode(
+            requested,
+            crate::groups::authoritative_group_e2ee_classification(group.as_str(), &authoritative)?,
+        );
+    }
+    #[cfg(feature = "group-e2ee")]
+    if crate::internal::group_e2ee::send_state::has_observation(client, group) {
+        return group_mode(requested, true);
+    }
+    if crate::internal::group_runtime::cache::cached_group_snapshot_async(client, group.as_str())
+        .await?
+        .as_ref()
+        .is_some_and(crate::internal::group_runtime::cache::group_snapshot_uses_e2ee)
+    {
+        return group_mode(requested, true);
+    }
     let authoritative = client
         .groups()
         .get_authoritative_group_async(group.clone())
@@ -35,6 +78,51 @@ pub(crate) async fn resolve_async(
         requested,
         crate::groups::authoritative_group_e2ee_classification(group.as_str(), &authoritative)?,
     )
+}
+
+/// A valid frozen operation already fixes its security route. This also permits
+/// projection repair after the user left the group, without a new remote read.
+pub(crate) fn resumes_group_operation(
+    client: &crate::ImClient,
+    request: &super::SendMessageRequest,
+) -> crate::ImResult<bool> {
+    if !matches!(&request.target, MessageTarget::Group(_)) {
+        return Ok(false);
+    }
+    #[cfg(feature = "group-e2ee")]
+    {
+        if !client.core_inner().group_e2ee_v2_enabled()
+            || matches!(
+                crate::internal::identity_device_state::active_authorization_for_client(client),
+                Err(crate::ImError::PermissionDenied)
+            )
+        {
+            return Ok(false);
+        }
+        if matches!(&request.target, MessageTarget::Group(_))
+            && matches!(
+                request.security,
+                MessageSecurityMode::DefaultPlain
+                    | MessageSecurityMode::E2eeRequired
+                    | MessageSecurityMode::GroupE2ee
+            )
+            && request.client_message_id.is_some()
+            && request
+                .delivery
+                .idempotency_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty())
+        {
+            preflight(client, &MessageSecurityMode::GroupE2ee)?;
+            let mut frozen = request.clone();
+            frozen.security = MessageSecurityMode::GroupE2ee;
+            let journal =
+                crate::internal::group_e2ee::send_journal::SendJournal::new(client, &frozen)?;
+            return Ok(journal.load(client)?.is_some());
+        }
+    }
+    let _ = (client, request);
+    Ok(false)
 }
 
 fn group_mode(

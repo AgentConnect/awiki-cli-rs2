@@ -9,6 +9,9 @@ use crate::workspace_config::Resolved;
 use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
 
+#[path = "listener_send.rs"]
+mod listener_send;
+
 fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     let requested = requested.trim();
     if requested.is_empty() {
@@ -338,6 +341,13 @@ impl App {
             );
         }
 
+        if let Some(mut result) =
+            listener_send::message(&resolved, &self.globals.identity, &request)?
+        {
+            result.warnings.extend(request_warnings);
+            return self.render_message_result("awiki-cli msg send", &resolved, result);
+        }
+
         let client = crate::m_core_cli_adapter::build_im_client(
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -405,6 +415,13 @@ impl App {
                 },
                 request_warnings,
             );
+        }
+
+        if let Some(mut result) =
+            listener_send::message_async(&resolved, &self.globals.identity, &request).await?
+        {
+            result.warnings.extend(request_warnings);
+            return self.render_message_result("awiki-cli msg send", &resolved, result);
         }
 
         let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
@@ -476,6 +493,17 @@ impl App {
             );
         }
 
+        if let Some(mut result) = listener_send::attachment(
+            resolved,
+            &self.globals.identity,
+            &target,
+            &request,
+            client_message_id.clone(),
+        )? {
+            result.warnings.extend(request_warnings);
+            return self.render_message_result("awiki-cli msg send", resolved, result);
+        }
+
         let client = crate::m_core_cli_adapter::build_im_client(
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -540,6 +568,19 @@ impl App {
                 },
                 request_warnings,
             );
+        }
+
+        if let Some(mut result) = listener_send::attachment_async(
+            resolved,
+            &self.globals.identity,
+            &target,
+            &request,
+            client_message_id.clone(),
+        )
+        .await?
+        {
+            result.warnings.extend(request_warnings);
+            return self.render_message_result("awiki-cli msg send", resolved, result);
         }
 
         let client = crate::m_core_cli_adapter::build_im_client_async(
@@ -1515,7 +1556,7 @@ fn inbox_read_exit(error: MessageAdapterError) -> ExitError {
 #[path = "msg_inbox_error_tests.rs"]
 mod inbox_error_tests;
 
-pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> ExitError {
+pub(crate) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> ExitError {
     let err = err.into();
     match err {
         MessageAdapterError::TargetRequired

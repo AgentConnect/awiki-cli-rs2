@@ -12,6 +12,12 @@ use std::path::Path;
 #[cfg(windows)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(unix)]
+#[path = "bridge_peer.rs"]
+mod peer;
+#[cfg(windows)]
+#[path = "bridge_windows_peer.rs"]
+mod windows_peer;
 #[cfg(windows)]
 use std::time::Instant;
 
@@ -220,6 +226,27 @@ pub fn resolved_bridge_endpoint(resolved: &Resolved) -> String {
     }
 }
 
+/// Bind high-level sends to the selected tenant and local state, including when
+/// a caller explicitly configures a non-default socket path. No paths or keys
+/// are exported by the capability response.
+pub fn send_workspace_binding(resolved: &Resolved) -> String {
+    let path = |value: &str| {
+        std::fs::canonicalize(value)
+            .unwrap_or_else(|_| Path::new(value).to_path_buf())
+            .to_string_lossy()
+            .into_owned()
+    };
+    let value = serde_json::json!([
+        path(&resolved.paths.workspace_home_dir),
+        path(&resolved.paths.database_file),
+        path(&resolved.paths.identity_dir),
+        resolved.service_base_url,
+        resolved.message_service_endpoint,
+        resolved.anp_service_did,
+    ]);
+    format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+}
+
 pub fn default_bridge_endpoint(paths: &Paths) -> String {
     default_bridge_endpoint_for_parts(&paths.workspace_home_dir, &paths.state_dir)
 }
@@ -374,7 +401,14 @@ pub fn call_local_bridge(
 }
 
 fn bridge_request_read_timeout(method: &str, config: &cli_http::Config) -> Duration {
-    if matches!(method, "local.inbox" | "local.history" | "local.mark_read") {
+    if matches!(
+        method,
+        "local.inbox"
+            | "local.history"
+            | "local.mark_read"
+            | "local.send_message"
+            | "local.send_attachment"
+    ) {
         config.timeout_for_profile(cli_http::Profile::RpcReadHeavy)
     } else {
         config.bridge_read_timeout
@@ -390,7 +424,9 @@ pub fn listen_bridge(path: &str) -> anyhow::Result<BridgeListener> {
         set_dir_mode(parent, 0o700)?;
     }
     let _ = fs::remove_file(path);
-    std::os::unix::net::UnixListener::bind(path).map_err(|err| anyhow::anyhow!(err))
+    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    set_dir_mode(Path::new(path), 0o600)?;
+    Ok(listener)
 }
 
 #[cfg(not(unix))]
@@ -461,7 +497,9 @@ pub fn clone_bridge_listener(_listener: &BridgeListener) -> io::Result<BridgeLis
 
 #[cfg(unix)]
 pub fn accept_bridge(listener: &BridgeListener) -> io::Result<BridgeStream> {
-    listener.accept().map(|(stream, _)| stream)
+    let (stream, _) = listener.accept()?;
+    peer::require_same_user(&stream)?;
+    Ok(stream)
 }
 
 #[cfg(windows)]
@@ -563,6 +601,13 @@ fn call_bridge_once(
             &err.to_string(),
         )
     })?;
+    peer::require_same_user(&conn).map_err(|error| {
+        BridgeCallError::new(
+            "bridge_dial",
+            "listener peer identity mismatch",
+            &error.to_string(),
+        )
+    })?;
     let payload = serde_json::to_vec(&request)?;
     let _ = conn.set_write_timeout(Some(write_timeout));
     if let Err(err) = conn.write_all(&[payload.as_slice(), b"\n"].concat()) {
@@ -612,6 +657,13 @@ fn call_bridge_once(
                 &err.to_string(),
             )
         })?;
+    windows_peer::require_trusted_server(conn.handle).map_err(|error| {
+        BridgeCallError::new(
+            "bridge_dial",
+            "listener peer identity mismatch",
+            &error.to_string(),
+        )
+    })?;
     let payload = serde_json::to_vec(&request)?;
     if let Err(err) = conn.write_all(&[payload.as_slice(), b"\n"].concat()) {
         return Err(BridgeCallError::new(

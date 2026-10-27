@@ -2326,8 +2326,11 @@ impl<'a> MessageService<'a> {
         &self,
         mut request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
-        request.security =
-            super::security::resolve(self.client, &request.target, request.security)?;
+        request.security = if super::security::resumes_group_operation(self.client, &request)? {
+            super::MessageSecurityMode::GroupE2ee
+        } else {
+            super::security::resolve(self.client, &request.target, request.security)?
+        };
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -2462,8 +2465,11 @@ impl<'a> MessageService<'a> {
         &self,
         mut request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
-        request.security =
-            super::security::resolve_async(self.client, &request.target, request.security).await?;
+        request.security = if super::security::resumes_group_operation(self.client, &request)? {
+            super::MessageSecurityMode::GroupE2ee
+        } else {
+            super::security::resolve_async(self.client, &request.target, request.security).await?
+        };
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -5552,6 +5558,9 @@ fn message_page_from_read_result(
 
 #[cfg(all(test, feature = "group-e2ee"))]
 mod group_e2ee_public_send_tests {
+    #[cfg(feature = "secure-direct")]
+    mod direct_document_state_tests;
+    mod event_driven_tests;
     #[cfg(feature = "blocking")]
     mod recovery_tests;
     use std::fs;

@@ -612,11 +612,18 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
         if let Some(document) = self.documents.get(did) {
             return Ok(document.clone());
         }
+        #[cfg(feature = "secure-direct")]
+        if let Some(document) = super::document_state::get(self.client, did)? {
+            self.documents.insert(did.to_owned(), document.clone());
+            return Ok(document);
+        }
         let document = crate::internal::discovery::did_document::resolve_did_document_async(
             &mut crate::internal::transport::CoreHttpTransport::new(self.client),
             did,
         )
         .await?;
+        #[cfg(feature = "secure-direct")]
+        super::document_state::remember(self.client, did, &document)?;
         self.documents.insert(did.to_owned(), document.clone());
         Ok(document)
     }
@@ -671,6 +678,10 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
             "send.device_delivery",
             started,
         );
+        #[cfg(feature = "secure-direct")]
+        if result.is_err() {
+            super::document_state::invalidate(self.client);
+        }
         if matches!(
             result,
             Err(crate::ImError::PermissionDenied
@@ -680,6 +691,8 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
                 })
         ) {
             self.core.inner().prekey_publications.lock().await.clear();
+            #[cfg(feature = "secure-direct")]
+            super::document_state::invalidate(self.client);
         }
         result
     }
@@ -692,12 +705,17 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
         self.core
             .network()
             .trace(&prepared.metadata.message_id, "send.prepare", self.started);
-        super::v2_prekey_runtime::post_standard_direct_attachment(
+        let result = super::v2_prekey_runtime::post_standard_direct_attachment(
             self.client,
             prepared,
             attachment_grant_ref,
         )
-        .await
+        .await;
+        #[cfg(feature = "secure-direct")]
+        if result.is_err() {
+            super::document_state::invalidate(self.client);
+        }
+        result
     }
 }
 
@@ -716,6 +734,35 @@ pub(crate) fn local_identity_uses_vnext(client: &crate::core::ImClient) -> crate
         .is_some_and(|state| {
             state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
         }))
+}
+
+#[cfg(all(feature = "internal-test-helpers", feature = "secure-direct"))]
+pub(crate) fn prepared_targets_for_test(
+    client: &crate::ImClient,
+    peer: &str,
+) -> crate::ImResult<bool> {
+    let Some(local) = super::document_state::get(client, client.did().as_str())? else {
+        return Ok(false);
+    };
+    let Some(remote) = super::document_state::get(client, peer)? else {
+        return Ok(false);
+    };
+    let context = V2DirectProductContext::from_client(&client.core_handle(), client)?;
+    validate_local_endpoint(&context, &local)?;
+    let targets = delivery_targets(&context, peer, &remote, &local)?;
+    if !targets
+        .iter()
+        .any(|target| target.class == DeliveryClass::Recipient)
+    {
+        return Ok(false);
+    }
+    for target in targets {
+        let binding = binding_for(&context, &target.device, &target.recipient_did)?;
+        if !context.with_direct(|direct| direct.has_established_session(&binding))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) async fn send_for_client(
@@ -849,7 +896,6 @@ async fn preflight_recipients<H>(
 where
     H: V2DirectProductHost,
 {
-    host.ensure_local_prekey_published().await?;
     let local_document = host.resolve_did_document(&context.local_did).await?;
     validate_local_endpoint(context, &local_document)?;
     let target_document = if target_did == context.local_did {
@@ -992,9 +1038,9 @@ where
         .plaintext(&input.logical_message_id, input.conversation_id.as_deref())?;
     let source_digest = business_source_digest(&plaintext)?;
 
-    // Publishing also proves that the selected local vNext device remains a
-    // valid P5 endpoint. It runs before any recipient ledger or wire effect.
-    host.ensure_local_prekey_published().await?;
+    // Current device/key eligibility is checked against the DID independently
+    // of publishing PreKeys. Established pairs and frozen retries do not need
+    // to republish their local PreKey material before every business message.
     let local_document = host.resolve_did_document(&context.local_did).await?;
     validate_local_endpoint(context, &local_document)?;
     let target_document = if input.target_did == context.local_did {
@@ -1434,6 +1480,9 @@ where
         });
     }
 
+    // Only a new device-pair session needs this preparation. The production
+    // host coalesces the same local publication across parallel target devices.
+    host.ensure_local_prekey_published().await?;
     let fetched = host
         .fetch_prekey(
             &record.recipient_did,

@@ -76,6 +76,18 @@ pub(crate) async fn process_ordinary<R: AsyncRpcTransport>(
         .map_err(|_| {
             sync_inbox::error("SYNC_INPUT_INVALID", "ordinary envelope cannot be decoded")
         })?;
+    #[cfg(feature = "group-e2ee")]
+    if matches!(
+        event.event_type.as_str(),
+        "group.member_changed" | "group.profile_updated"
+    ) {
+        let group = event
+            .payload
+            .pointer("/group/group_did")
+            .and_then(Value::as_str)
+            .or(event.thread_key.as_deref());
+        crate::internal::group_e2ee::send_state::invalidate(client, group);
+    }
     let hydrated = claim
         .payload
         .get("hydrated")
@@ -170,6 +182,15 @@ pub(crate) async fn process_ordinary<R: AsyncRpcTransport>(
         client.emit_committed_system_notification(notification);
     }
     super::sync::emit_committed_sync_invalidation(client, &outcome.invalidation);
+    #[cfg(feature = "group-e2ee")]
+    if matches!(
+        event.event_type.as_str(),
+        "group.member_changed" | "group.profile_updated"
+    ) {
+        // The projection transaction also persists any eligible owner's repair
+        // task. Wake only after commit; restart uses that same durable journal.
+        super::sync_dispatcher::wake_group_recovery(client);
+    }
     let mut incoming = Vec::new();
     if claim.payload.get("source").and_then(Value::as_str) != Some("snapshot") {
         for event_id in &outcome.projected_message_event_ids {
@@ -260,13 +281,16 @@ pub(crate) async fn process_p6(
                 )
             }
         }
-        "p6.control.notice" => Prepared::Notice(
-            crate::internal::group_e2ee::v2_notice::prepare_for_client_async(
-                client,
-                &claim.payload,
+        "p6.control.notice" => {
+            crate::internal::group_e2ee::send_state::invalidate(client, claim.group_did.as_deref());
+            Prepared::Notice(
+                crate::internal::group_e2ee::v2_notice::prepare_for_client_async(
+                    client,
+                    &claim.payload,
+                )
+                .await?,
             )
-            .await?,
-        ),
+        }
         _ => {
             return Err(sync_inbox::error(
                 "SYNC_INPUT_INVALID",

@@ -1,5 +1,178 @@
 use super::*;
 
+#[cfg(feature = "group-e2ee")]
+fn change_fixture(db: &Connection) {
+    db.execute_batch(SCHEMA).unwrap();
+    db.execute_batch("CREATE TABLE groups (owner_identity_id TEXT, group_id TEXT, my_role TEXT, membership_status TEXT, metadata TEXT, PRIMARY KEY(owner_identity_id,group_id));").unwrap();
+    for (owner, role, status, profile) in [
+        ("owner", "owner", "active", "group-e2ee"),
+        ("member", "member", "active", "group-e2ee"),
+        ("left", "owner", "left", "group-e2ee"),
+        ("plain", "owner", "active", "transport-protected"),
+        ("unknown", "owner", "active", ""),
+    ] {
+        db.execute(
+            "INSERT INTO groups VALUES (?1,'did:example:group',?2,?3,?4)",
+            (
+                owner,
+                role,
+                status,
+                serde_json::json!({"required_security_profile":profile}).to_string(),
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn change_progress(db: &Connection, device: &str) -> Value {
+    let raw: String = db.query_row(
+        "SELECT intent_json FROM group_operation_journal WHERE owner_identity_id='owner' AND local_device_id=?1 AND operation_key='recovery:repair:did:example:group'",
+        [device], |row| row.get(0),
+    ).unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[cfg(feature = "group-e2ee")]
+#[test]
+fn group_change_recovery_commits_with_projection_and_survives_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("changes.sqlite");
+    let mut db = Connection::open(&path).unwrap();
+    change_fixture(&db);
+    {
+        let tx = db.transaction().unwrap();
+        assert!(schedule_group_state_change_on(
+            &tx,
+            "owner",
+            "device",
+            "did:example:group",
+            "event-1"
+        )
+        .unwrap());
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM group_operation_journal", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let tx = db.transaction().unwrap();
+    assert!(
+        schedule_group_state_change_on(&tx, "owner", "device", "did:example:group", "event-1")
+            .unwrap()
+    );
+    tx.commit().unwrap();
+    drop(db);
+    let db = Connection::open(path).unwrap();
+    let observed = change_progress(&db, "device");
+    assert_eq!(observed["phase"], "preparing");
+    assert_eq!(observed["next_attempt_at"], 0);
+    assert!(!schedule_group_state_change_on(
+        &db,
+        "owner",
+        "device",
+        "did:example:group",
+        "event-1"
+    )
+    .unwrap());
+    assert_eq!(change_progress(&db, "device"), observed);
+}
+
+#[cfg(feature = "group-e2ee")]
+#[test]
+fn older_group_repair_cannot_complete_or_delay_a_new_change() {
+    let db = Connection::open_in_memory().unwrap();
+    change_fixture(&db);
+    let key = "recovery:repair:did:example:group";
+    schedule_group_state_change_on(&db, "owner", "device", "did:example:group", "event-1").unwrap();
+    let observed = change_progress(&db, "device");
+    schedule_group_state_change_on(&db, "owner", "device", "did:example:group", "event-2").unwrap();
+    let current = change_progress(&db, "device");
+    for phase in ["completed", "retry"] {
+        let mut stale_completion = observed.clone();
+        stale_completion["phase"] = serde_json::json!(phase);
+        stale_completion["next_attempt_at"] = serde_json::json!(99999);
+        assert!(
+            !replace_if_unchanged_on(&db, "owner", "device", key, &observed, stale_completion)
+                .unwrap()
+        );
+        assert_eq!(change_progress(&db, "device"), current);
+    }
+    let mut completed = current.clone();
+    completed["phase"] = serde_json::json!("completed");
+    assert!(
+        replace_if_unchanged_on(&db, "owner", "device", key, &current, completed.clone()).unwrap()
+    );
+    assert!(!schedule_group_state_change_on(
+        &db,
+        "owner",
+        "device",
+        "did:example:group",
+        "event-2"
+    )
+    .unwrap());
+    assert_eq!(change_progress(&db, "device"), completed);
+}
+
+#[cfg(feature = "group-e2ee")]
+#[test]
+fn group_change_does_not_grant_owner_authority_or_cross_device_scope() {
+    let db = Connection::open_in_memory().unwrap();
+    change_fixture(&db);
+    // Partial group projections legitimately have no known role. They must not
+    // stop the enclosing sync transaction or acquire owner maintenance rights.
+    db.execute(
+        "INSERT INTO groups VALUES ('unknown-role','did:example:group',NULL,'active',?1)",
+        [serde_json::json!({"required_security_profile":"group-e2ee"}).to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO groups VALUES ('unknown-policy','did:example:group','owner','active',NULL)",
+        [],
+    )
+    .unwrap();
+    for owner in [
+        "member",
+        "left",
+        "plain",
+        "unknown",
+        "missing",
+        "unknown-role",
+        "unknown-policy",
+    ] {
+        assert!(!schedule_group_state_change_on(
+            &db,
+            owner,
+            "device",
+            "did:example:group",
+            "event-1"
+        )
+        .unwrap());
+    }
+    let scheduled: i64 = db
+        .query_row("SELECT count(*) FROM group_operation_journal", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(scheduled, 0);
+    for device in ["a", "b"] {
+        assert!(schedule_group_state_change_on(
+            &db,
+            "owner",
+            device,
+            "did:example:group",
+            "event-1"
+        )
+        .unwrap());
+    }
+    let before_b = change_progress(&db, "b");
+    schedule_group_state_change_on(&db, "owner", "a", "did:example:group", "event-2").unwrap();
+    assert_eq!(change_progress(&db, "b"), before_b);
+    assert_eq!(change_progress(&db, "a")["change_generation"], 2);
+}
+
 #[test]
 fn lazy_group_intent_produces_once_across_connections_and_reopen() {
     use std::sync::{

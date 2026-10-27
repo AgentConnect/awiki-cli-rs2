@@ -419,24 +419,28 @@ pub(crate) fn initialize_created_group(
         .product
         .publish_current_key_package(&prepared_package)?;
 
-    let submission = context.product.prepare_or_resume_create(V2CreateGroupInput {
-        meta: service_meta(
-            client,
-            &context.device,
-            service_did.as_str(),
-            &create_operation,
-            GROUP_E2EE_SECURITY_PROFILE_V2,
-            &now_text,
-        ),
-        group_state_ref,
-        creator_key_package: prepared_package.body.group_key_package,
-        creator_did_document: context.did_document,
-        now: now_text,
-        draft_extension_negotiated: true,
-        pending_commit_id: format!("pending-{create_operation}"),
-        request_id: format!("{create_operation}-prepare"),
-    })?;
-    let Some(submission) = submission else { return Ok(()); };
+    let submission = context
+        .product
+        .prepare_or_resume_create(V2CreateGroupInput {
+            meta: service_meta(
+                client,
+                &context.device,
+                service_did.as_str(),
+                &create_operation,
+                GROUP_E2EE_SECURITY_PROFILE_V2,
+                &now_text,
+            ),
+            group_state_ref,
+            creator_key_package: prepared_package.body.group_key_package,
+            creator_did_document: context.did_document,
+            now: now_text,
+            draft_extension_negotiated: true,
+            pending_commit_id: format!("pending-{create_operation}"),
+            request_id: format!("{create_operation}-prepare"),
+        })?;
+    let Some(submission) = submission else {
+        return Ok(());
+    };
     context
         .product
         .submit_create(&submission, format!("{create_operation}-finalize"))?;
@@ -515,24 +519,28 @@ pub(crate) async fn initialize_created_group_async(
         .publish_current_key_package_async(&mut transport, &prepared_package)
         .await?;
 
-    let submission = context.product.prepare_or_resume_create(V2CreateGroupInput {
-        meta: service_meta(
-            client,
-            &context.device,
-            service_did.as_str(),
-            &create_operation,
-            GROUP_E2EE_SECURITY_PROFILE_V2,
-            &now_text,
-        ),
-        group_state_ref,
-        creator_key_package: prepared_package.body.group_key_package,
-        creator_did_document: context.did_document,
-        now: now_text,
-        draft_extension_negotiated: true,
-        pending_commit_id: format!("pending-{create_operation}"),
-        request_id: format!("{create_operation}-prepare"),
-    })?;
-    let Some(submission) = submission else { return Ok(()); };
+    let submission = context
+        .product
+        .prepare_or_resume_create(V2CreateGroupInput {
+            meta: service_meta(
+                client,
+                &context.device,
+                service_did.as_str(),
+                &create_operation,
+                GROUP_E2EE_SECURITY_PROFILE_V2,
+                &now_text,
+            ),
+            group_state_ref,
+            creator_key_package: prepared_package.body.group_key_package,
+            creator_did_document: context.did_document,
+            now: now_text,
+            draft_extension_negotiated: true,
+            pending_commit_id: format!("pending-{create_operation}"),
+            request_id: format!("{create_operation}-prepare"),
+        })?;
+    let Some(submission) = submission else {
+        return Ok(());
+    };
     context
         .product
         .submit_create_async(&submission, format!("{create_operation}-finalize"))
@@ -1492,7 +1500,7 @@ pub(crate) async fn reconcile_group_roster_before_send_async(
     // Membership management still belongs only to the current active owner.
     let authority = reconcile_authority_from_snapshot(client, group.as_str(), &authoritative)?;
     if !can_reconcile_roster_before_send(authority) {
-        return super::roster_readiness::validate_async(client, group, &authoritative)
+        return super::send_state::validate_async(client, group, &authoritative)
             .await?
             .ok_or_else(|| crate::ImError::LocalStateUnavailable {
                 detail: "group_membership_change_pending".to_owned(),
@@ -1649,7 +1657,7 @@ async fn reconcile_group_device_roster_with_snapshot_async(
         let (extra, missing) =
             next_roster_change_for_authority(client.did().as_str(), authority, extra, missing);
         if extra.is_none() && missing.is_none() {
-            super::roster_readiness::confirm_members(
+            super::send_state::confirm_members(
                 client,
                 &group,
                 &refreshed,

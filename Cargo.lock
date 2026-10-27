@@ -408,6 +408,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "futures-util",
+ "libc",
  "rand 0.8.6",
  "reqwest",
  "rusqlite",

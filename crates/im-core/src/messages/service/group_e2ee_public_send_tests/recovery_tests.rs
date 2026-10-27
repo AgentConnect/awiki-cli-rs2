@@ -1,6 +1,150 @@
 use super::*;
 
 #[test]
+fn proven_expired_group_send_uses_a_new_frozen_attempt_and_keeps_original_bytes() {
+    let fixture = Fixture::vnext();
+    let open = |url| {
+        crate::core::ImCore::new_with_options(
+            fixture.config(url),
+            fixture.paths(),
+            fixture.vnext_open_options(),
+        )
+        .unwrap()
+    };
+    let selector = crate::identity::IdentitySelector::LocalAlias("alice".into());
+    let core = open("http://127.0.0.1:9".into());
+    let own = core
+        .client(selector.clone())
+        .unwrap()
+        .did()
+        .as_str()
+        .to_owned();
+    drop(core);
+    let view = json!({"group_snapshot":{"group_did":fixture.group_did,"my_role":"member","membership_status":"active"}});
+    let info = |version| {
+        json!({"group_did":fixture.group_did,"group_state_version":version,
+        "group_profile":{},"group_policy":{"message_security_profile":"group-e2ee"}})
+    };
+    let members = |version| {
+        json!({"group_did":fixture.group_did,"group_state_version":version,
+        "members":[{"agent_did":own,"status":"active","role":"member"}],"total":1,"has_more":false})
+    };
+    let first = RpcTestServer::spawn(vec![
+        view.clone(),
+        info("1"),
+        view.clone(),
+        info("1"),
+        members("1"),
+        view.clone(),
+        info("1"),
+        json!({"_test_drop_response":true}),
+    ]);
+    let core = open(first.base_url());
+    let client = core.client(selector.clone()).unwrap();
+    prepare_local_mls_group(&client, &fixture.group_did);
+    let request = crate::messages::SendMessageRequest {
+        target: crate::messages::MessageTarget::Group(
+            crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
+        ),
+        body: crate::messages::MessageBody::Text {
+            text: "same logical message".into(),
+            kind: crate::messages::MessageKind::Text,
+        },
+        security: crate::messages::MessageSecurityMode::GroupE2ee,
+        client_message_id: Some(crate::ids::MessageId::parse("msg-expired").unwrap()),
+        delivery: crate::messages::MessageDeliveryOptions {
+            idempotency_key: Some("op-expired".into()),
+            wait_for_final_acceptance: true,
+        },
+        delegated_signing: None,
+    };
+    assert!(client.messages().send(request.clone()).is_err());
+    let journal =
+        crate::internal::group_e2ee::send_journal::SendJournal::new(&client, &request).unwrap();
+    let original = journal.load(&client).unwrap().unwrap();
+    assert!(!journal.is_expired(&client, &original).unwrap());
+    let unavailable = crate::ImError::Service {
+        status_code: None,
+        code: Some("group.e2ee.state_not_ready".into()),
+        message: "in progress".into(),
+        data: None,
+    };
+    assert!(!journal
+        .record_expired(&client, &original, &unavailable)
+        .unwrap());
+    let proof = json!({"schema_version":1,"reason":"state_version_advanced","current_value":"2",
+        "group_did":fixture.group_did,"operation_id":"op-expired","group_state_version":"1","epoch":"0",
+        "crypto_group_id_b64u":original.encrypted.cipher.crypto_group_id_b64u});
+    let mut wrong = proof.clone();
+    wrong["operation_id"] = json!("someone-else");
+    let error = |proof| crate::ImError::Service {
+        status_code: None,
+        code: Some("group.state_version_conflict".into()),
+        message: "version advanced".into(),
+        data: Some(json!({"expired_submission":proof})),
+    };
+    assert!(journal
+        .record_expired(&client, &original, &error(wrong))
+        .is_err());
+    assert!(!journal.is_expired(&client, &original).unwrap());
+    journal
+        .record_expired(&client, &original, &error(proof))
+        .unwrap();
+    let next_operation = journal.retry_operation(&original).unwrap();
+    let original_bytes = original.encrypted.clone();
+    drop(client);
+    drop(core);
+
+    let second = RpcTestServer::spawn(vec![
+        view.clone(),
+        info("2"),
+        members("2"),
+        view,
+        info("2"),
+        json!({"accepted":true,"group_did":fixture.group_did,"message_id":"msg-expired","operation_id":next_operation,
+            "group_event_seq":"91","group_state_version":"2","accepted_at":"2026-05-21T00:00:00Z","epoch":"0","group_receipt":{}}),
+    ]);
+    let core = open(second.base_url());
+    let client = core.client(selector).unwrap();
+    client.messages().send(request.clone()).unwrap();
+    let count = second.requests().len();
+    client.messages().send(request.clone()).unwrap();
+    assert_eq!(
+        second.requests().len(),
+        count,
+        "accepted child attempt replays locally"
+    );
+    let current = crate::internal::group_e2ee::send_journal::SendJournal::new(&client, &request)
+        .unwrap()
+        .load(&client)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.encrypted.meta.operation_id, next_operation);
+    assert_eq!(
+        current.encrypted.meta.message_id,
+        original_bytes.meta.message_id
+    );
+    assert_ne!(
+        current.encrypted.cipher.private_message_b64u,
+        original_bytes.cipher.private_message_b64u
+    );
+    let db = rusqlite::Connection::open(fixture.paths().local_state.sqlite_path).unwrap();
+    let frozen: String = db.query_row("SELECT intent_json FROM group_operation_journal WHERE json_extract(intent_json,'$.encrypted.meta.operation_id')='op-expired'",[],|row|row.get(0)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frozen).unwrap()["encrypted"],
+        json!(original_bytes)
+    );
+    let messages: i64 = db
+        .query_row(
+            "SELECT count(*) FROM messages WHERE group_did=?1 AND server_seq=91",
+            [fixture.group_did.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(messages, 1);
+}
+
+#[test]
 fn public_group_send_reopens_unknown_submission_with_original_ciphertext() {
     let fixture = Fixture::vnext();
     let open = |url| {
@@ -42,10 +186,7 @@ fn public_group_send_reopens_unknown_submission_with_original_ciphertext() {
         "group_state_version":"1","accepted_at":"2026-05-21T00:00:00Z","epoch":"0","group_receipt":{"test":true}});
     let mut responses = reads();
     responses.push(json!({"_test_drop_response":true}));
-    responses.extend(reads());
-    responses.push(accepted);
-    responses.extend(reads()); // A reopened accepted intent only restores projection.
-    responses.extend([view.clone(), info.clone(), view, info]); // Changed body fails closed.
+    responses.push(accepted); // Frozen retry skips group preparation; accepted replay is local.
     let server = RpcTestServer::spawn(responses);
     let request = crate::messages::SendMessageRequest {
         target: crate::messages::MessageTarget::Group(
@@ -187,30 +328,21 @@ fn check_operation_key_domains(legacy: bool) {
             ("msg-key-two", "op-key:accepted", "92"),
         ]
     };
-    for (message, operation, seq) in deliveries {
-        responses.extend([
-            view.clone(),
-            info.clone(),
-            view.clone(),
-            info.clone(),
-            members.clone(),
-            view.clone(),
-            info.clone(),
-        ]);
+    for (index, (message, operation, seq)) in deliveries.into_iter().enumerate() {
+        if index < 2 {
+            responses.extend([
+                view.clone(),
+                info.clone(),
+                view.clone(),
+                info.clone(),
+                members.clone(),
+                view.clone(),
+                info.clone(),
+            ]);
+        }
         responses.push(json!({"accepted":true,"group_did":fixture.group_did,
             "message_id":message,"operation_id":operation,"group_event_seq":seq,
             "group_state_version":"1","accepted_at":"2026-05-21T00:00:00Z","epoch":"0","group_receipt":{}}));
-    }
-    if legacy {
-        responses.extend([
-            view.clone(),
-            info.clone(),
-            view.clone(),
-            info.clone(),
-            members.clone(),
-            view.clone(),
-            info.clone(),
-        ]);
     }
     let server = RpcTestServer::spawn(responses);
     let steps = if legacy { vec![0, 1, 0, 1] } else { vec![0, 1] };

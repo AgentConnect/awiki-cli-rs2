@@ -156,22 +156,20 @@ impl ListenerSupervisor {
         bridge::set_bridge_listener_nonblocking(&listener, true)?;
         self.listener = Some(bridge::clone_bridge_listener(&listener)?);
         self.set_bridge_available(true);
-        let status = self.status.clone();
         let resolved = self.resolved.clone();
-        let host_notify = self.host_notify.clone();
         let clients = self.clients.clone();
         let runtime = tokio::runtime::Handle::current();
+        let network = self.core.network();
         let shutdown = self.shutdown.clone();
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
                 match bridge::accept_bridge(&listener) {
                     Ok(stream) => {
                         let runtime = BridgeRuntime {
-                            status: status.clone(),
-                            host_notify: host_notify.clone(),
                             resolved: resolved.clone(),
                             clients: clients.clone(),
                             runtime: runtime.clone(),
+                            network: network.clone(),
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
                     }
@@ -297,11 +295,10 @@ impl ListenerSupervisor {
 }
 
 struct BridgeRuntime {
-    status: Arc<Mutex<Status>>,
-    host_notify: Arc<HostNotifySinkImpl>,
     resolved: Arc<Resolved>,
     clients: Arc<Mutex<HashMap<String, im_core::ImClient>>>,
     runtime: tokio::runtime::Handle,
+    network: Arc<im_core::network::NetworkRuntime>,
 }
 
 impl ListenerBridgeRuntime for BridgeRuntime {
@@ -349,21 +346,35 @@ impl ListenerBridgeRuntime for BridgeRuntime {
     }
 }
 
-impl Drop for BridgeRuntime {
-    fn drop(&mut self) {
-        let _ = self.host_notify.close();
-        let _ = self
-            .status
-            .lock()
-            .map(|status| listener::write_status(&status.status_file, &status));
-    }
-}
-
+// Bridge requests borrow the supervisor's client registry. They do not own
+// the notification sink or its shutdown; closing either per request would
+// disconnect a file-backed listener after its first capability probe.
 impl BridgeRuntime {
     fn execute_local_request(
         &self,
         request: &bridge::BridgeRequest,
     ) -> anyhow::Result<Map<String, Value>> {
+        if request.method == "local.capabilities" {
+            return Ok(serde_json::json!({
+                "schema_version":1,
+                "workspace_binding":bridge::send_workspace_binding(&self.resolved),
+                "methods":["local.send_message", "local.send_attachment"],
+            })
+            .as_object()
+            .expect("capabilities object")
+            .clone());
+        }
+        if matches!(
+            request.method.as_str(),
+            "local.send_message" | "local.send_attachment"
+        ) && request
+            .params
+            .get("workspace_binding")
+            .and_then(Value::as_str)
+            != Some(bridge::send_workspace_binding(&self.resolved).as_str())
+        {
+            anyhow::bail!("listener send workspace binding mismatch");
+        }
         let client = self
             .clients
             .lock()
@@ -378,7 +389,122 @@ impl BridgeRuntime {
                     )
                 )
             })?;
+        #[cfg(feature = "system-test-probe")]
+        if request.method == "local.test_send_state" {
+            if std::env::var("AWIKI_CLI_INTERNAL_ENTRY").as_deref() != Ok("1")
+                || request
+                    .params
+                    .get("workspace_binding")
+                    .and_then(Value::as_str)
+                    != Some(bridge::send_workspace_binding(&self.resolved).as_str())
+            {
+                anyhow::bail!("test send-state diagnostics are not enabled for this scope");
+            }
+            return match request.params.get("action").and_then(Value::as_str) {
+                Some("clear") => {
+                    self.network.clear_diagnostics_for_test();
+                    Ok(Map::new())
+                }
+                Some("snapshot") => Ok(Map::from_iter([(
+                    "diagnostics".into(),
+                    serde_json::to_value(self.network.diagnostics())?,
+                )])),
+                Some("group_ready") => {
+                    let group = request
+                        .params
+                        .get("group")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("group is required"))?;
+                    Ok(Map::from_iter([(
+                        "ready".into(),
+                        Value::Bool(
+                            client.group_send_prepared_for_test(im_core::ids::GroupRef::parse(
+                                group,
+                            )?)?,
+                        ),
+                    )]))
+                }
+                Some("direct_ready") => {
+                    let peer = request
+                        .params
+                        .get("peer")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("peer is required"))?;
+                    Ok(Map::from_iter([(
+                        "ready".into(),
+                        Value::Bool(
+                            client.direct_documents_prepared_for_test(im_core::ids::Did::parse(
+                                peer,
+                            )?)?,
+                        ),
+                    )]))
+                }
+                _ => anyhow::bail!("unsupported test send-state action"),
+            };
+        }
         let result = match request.method.as_str() {
+            "local.send_message" => {
+                let intent: im_core::messages::SendMessageRequest = serde_json::from_value(
+                    request
+                        .params
+                        .get("request")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("send intent is missing"))?,
+                )?;
+                require_stable_send_ids(
+                    intent.client_message_id.as_ref(),
+                    intent.delivery.idempotency_key.as_deref(),
+                )?;
+                match self.runtime.block_on(
+                    crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
+                        &self.resolved,
+                        &client,
+                        intent,
+                    ),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => return Ok(listener_send_error(error)),
+                }
+            }
+            "local.send_attachment" => {
+                let target = serde_json::from_value(
+                    request
+                        .params
+                        .get("target")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("attachment target is missing"))?,
+                )?;
+                let intent: im_core::attachments::AttachmentSendRequest = serde_json::from_value(
+                    request
+                        .params
+                        .get("request")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("attachment intent is missing"))?,
+                )?;
+                let message_id: im_core::ids::MessageId = serde_json::from_value(
+                    request
+                        .params
+                        .get("client_message_id")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("attachment message id is missing"))?,
+                )?;
+                require_stable_send_ids(
+                    Some(&message_id),
+                    intent.delivery.idempotency_key.as_deref(),
+                )?;
+                match self.runtime.block_on(
+                    crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
+                        &self.resolved,
+                        &client,
+                        target,
+                        intent,
+                        Some(message_id),
+                    ),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => return Ok(listener_send_error(error)),
+                }
+            }
             "local.inbox" => {
                 let query = serde_json::from_value::<im_core::messages::InboxQuery>(
                     request
@@ -487,6 +613,33 @@ impl BridgeRuntime {
             ),
         ]))
     }
+}
+
+fn require_stable_send_ids(
+    message: Option<&im_core::ids::MessageId>,
+    operation: Option<&str>,
+) -> anyhow::Result<()> {
+    if message.is_none_or(|message| message.as_str().trim().is_empty())
+        || operation.is_none_or(|operation| operation.trim().is_empty())
+    {
+        anyhow::bail!("listener sends require stable message and operation identifiers");
+    }
+    Ok(())
+}
+
+fn listener_send_error(
+    error: crate::m_core_cli_adapter::message_result::MessageAdapterError,
+) -> Map<String, Value> {
+    let error = crate::cli_shell::message_exit(
+        error,
+        "Retry the original message intent after resolving the reported problem.",
+    );
+    Map::from_iter([(
+        "command_error".to_owned(),
+        serde_json::json!({
+            "exit_code":error.exit_code, "error":error.detail,
+        }),
+    )])
 }
 
 fn listener_local_inbox_secure_hydration_or_warning(

@@ -425,6 +425,26 @@ impl ImClient {
         self.emit_committed_message_projection(reason);
     }
 
+    /// Read-only readiness oracle for system-test builds. Does not initialize,
+    /// repair, fetch group state, or advance a receive cursor.
+    #[doc(hidden)]
+    #[cfg(all(feature = "internal-test-helpers", feature = "group-e2ee"))]
+    pub fn group_send_prepared_for_test(
+        &self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<bool> {
+        Ok(crate::internal::group_e2ee::send_state::prepared_snapshot(self, &group)?.is_some())
+    }
+
+    #[doc(hidden)]
+    #[cfg(all(feature = "internal-test-helpers", feature = "secure-direct"))]
+    pub fn direct_documents_prepared_for_test(
+        &self,
+        peer: crate::ids::Did,
+    ) -> crate::ImResult<bool> {
+        crate::internal::secure_direct::v2_product::prepared_targets_for_test(self, peer.as_str())
+    }
+
     pub(crate) fn message_store(
         &self,
     ) -> Arc<crate::internal::runtime_store::message_store::MessageStore> {

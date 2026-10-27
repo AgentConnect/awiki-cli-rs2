@@ -1293,7 +1293,12 @@ async fn partial_retry_attempts_only_the_failed_device() {
     assert_eq!(first.failed_device_count, 1);
     assert_eq!(host.post_attempts.len(), 2);
 
+    let publications = host.ensure_count;
     let second = send_with_host(&alice, &mut host, input()).await.unwrap();
+    assert_eq!(
+        host.ensure_count, publications,
+        "frozen retry and accepted copies do not republish PreKeys"
+    );
     assert!(second.fully_accepted());
     assert_eq!(second.attempted_device_count, 1);
     assert_eq!(second.previously_accepted_device_count, 1);
@@ -1593,6 +1598,7 @@ async fn established_pair_uses_cipher_after_reply_and_controls_never_project_as_
     assert_eq!(reply_outcome, V2InboundProductOutcome::ConsumedControl);
 
     let before = alice_host.post_attempts.len();
+    let publications = alice_host.ensure_count;
     send_with_host(
         &alice,
         &mut alice_host,
@@ -1602,6 +1608,10 @@ async fn established_pair_uses_cipher_after_reply_and_controls_never_project_as_
     .unwrap();
     let second = &alice_host.post_attempts[before];
     assert!(matches!(second.body, V2DirectBody::Cipher(_)));
+    assert_eq!(
+        alice_host.ensure_count, publications,
+        "an established pair must not republish PreKeys"
+    );
 
     let metadata = V2DirectMetadata {
         anp_version: None,

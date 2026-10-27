@@ -1,8 +1,6 @@
-//! Reuses a completed P4/MLS member-set comparison at the same current version.
-//!
-//! The caller still obtains a fresh authoritative group snapshot. This cache
-//! neither authorizes devices nor caches DID Documents. A different owner,
-//! device generation, P4 version or local MLS member set requires validation.
+//! One owner/device-scoped source for prepared group sends and roster evidence.
+//! Old servers retain explicit preparation; observed current state can reuse a
+//! completed preparation while the same Core maintains its receive lifecycle.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,21 +8,34 @@ use crate::groups::GroupReadResult;
 use crate::ids::GroupRef;
 use crate::internal::group_runtime::read::GroupReadRuntime;
 
+#[path = "send_state_observations.rs"]
+mod observations;
+pub(crate) use crate::internal::message_runtime::send_lifecycle::connection_token;
+#[cfg(test)]
+pub(crate) use crate::internal::message_runtime::send_lifecycle::ConnectionGuard;
+pub(crate) use observations::{
+    forget_observations, has_observation, invalidate, observe_async, observe_group_read,
+    preparation_ticket, prepared_snapshot, publish_prepared, validate_preparation_ticket,
+};
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Scope {
     owner: String,
     did: String,
     device: String,
     generation: u64,
+    signing_key: String,
+    e2ee_key: String,
     group: String,
 }
 
 #[derive(Default)]
-pub(crate) struct RosterReadinessCache {
+pub(crate) struct GroupSendState {
     entries: BTreeMap<Scope, (String, BTreeSet<String>)>,
+    observed: BTreeMap<Scope, observations::ObservedGroup>,
 }
 
-impl RosterReadinessCache {
+impl GroupSendState {
     fn contains(&self, scope: &Scope, version: &str, local: &BTreeSet<String>) -> bool {
         self.entries
             .get(scope)
@@ -42,6 +53,10 @@ impl RosterReadinessCache {
 }
 
 fn scope(client: &crate::ImClient, group: &GroupRef) -> crate::ImResult<Scope> {
+    scope_for(client, group.as_str())
+}
+
+fn scope_for(client: &crate::ImClient, group: &str) -> crate::ImResult<Scope> {
     let authorization =
         crate::internal::identity_device_state::active_authorization_for_client(client)?;
     Ok(Scope {
@@ -49,7 +64,9 @@ fn scope(client: &crate::ImClient, group: &GroupRef) -> crate::ImResult<Scope> {
         did: client.did().as_str().to_owned(),
         device: authorization.protocol_device_id.as_str().to_owned(),
         generation: authorization.auth_generation,
-        group: group.as_str().to_owned(),
+        signing_key: authorization.signing_key_id,
+        e2ee_key: authorization.e2ee_key_id,
+        group: group.to_owned(),
     })
 }
 
@@ -99,7 +116,7 @@ fn cache_hit(
     }
     Ok(client
         .core_inner()
-        .group_roster_readiness
+        .group_send_state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(initial_scope, version, &local))
@@ -120,7 +137,7 @@ pub(crate) fn confirm_members(
     }
     let mut cache = client
         .core_inner()
-        .group_roster_readiness
+        .group_send_state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if matches {
@@ -206,5 +223,5 @@ pub(crate) fn validate(
 }
 
 #[cfg(test)]
-#[path = "roster_readiness_tests.rs"]
+#[path = "send_state_tests.rs"]
 mod tests;

@@ -1050,35 +1050,45 @@ without Registry or DID Document network access. Only a record without that resu
 exact Registry, generation, checkpoint, DID Document hash and Manifest match. Recovery is bounded,
 shares the revoke lock, never submits a new revoke request, and never touches MLS.
 
-Message Service owns the per-group maintenance fact. Core group secure status reads the
-Host-authoritative, low-sensitivity `group.get.e2ee_maintenance` projection before reporting
-readiness. `device_revocation_pending + send_paused=false` is a non-blocking warning and preserves
-the local readiness/send result. `group_membership_change_pending + send_paused=true` remains a
-hard gate; the old `device_revocation_pending + true` shape is accepted only as a conservative
-rolling-upgrade input. A missing or malformed authoritative response fails closed and cannot be
-reported as `Ready`. Status does not mutate MLS, resolve device Manifests, or build a Commit.
-It retains the complete P4 business-member/MLS-member-set comparison: a current authoritative
-group version plus an equal local MLS member DID set may reuse a bounded process-local proof.
-That proof is scoped to Core/tenant, owner identity and DID, exact device, authorization generation,
-group and opaque P4 version. On a cache miss, the read-only collector still completes all pages
-and rechecks the group version; a missing/unprepared business member cannot become `Ready`.
-Changing the group version, local member set or owner/device generation, or reopening Core,
-requires a new proof. This is not a device authorization or DID Document cache. Existing recovery
-journal scheduling remains available when the local MLS state needs repair. The low-sensitivity maintenance object accepts exactly
-`reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
-silently projected.
+Message Service owns the per-group maintenance fact. Existing maintenance shapes and Host
+submission checks remain authoritative. The old `device_revocation_pending + true` response
+and unknown maintenance objects fail closed; a modern `device_revocation_pending + false`
+response retains the explicit preparation path and never creates a cached Ready certificate.
 
-发送前只有活跃群主执行既有 P4 roster 收敛；普通成员的身份设备管理权限不能触发
-全群变更或修复。普通成员的只读完整成员检查在缺少同版本有效证据时仍保留，不能把
-“本地 MLS 已存在”误作全部业务成员准备完成。成员退出引发的暂停允许群主先完成收敛，随后必须
-重新读取权威群状态并通过暂停检查才能加密。设备撤销仍不在发送入口自动修复，旧版
-`device_revocation_pending + true` 与未知维护状态继续 fail closed。
+Core 的 `group_e2ee::send_state` 统一保存成员集合比较结果和可复用发送状态，替代独立的
+roster_readiness 缓存。状态绑定当前 Core、owner、DID、精确 device、auth generation、
+签名／E2EE key 引用以及群。普通角色不因缓存或事件触发获得全群 MLS 修改权限。
 
-一次发送在群生命周期锁内获取并传递经过验证的权威快照。群主复用该次权限判断和自己
-已解析的当前 DID 文档；完整成员遍历之后仍复核 P4 版本和 transition。只有该次无待处理
-成员差异时，最终快照才供 readiness 和 `group_state_ref` 复用；WAL 修复或 Add/Remove
-使旧快照失效。公共安全策略选择与最终提交前的必要权威读取仍保留；没有将整个远端
-维护状态变为跨消息缓存，也没有改变 Host 的最终接受校验。
+`sync.delta.group_e2ee_state` 是本域依赖观察，不是授权令牌或跨 lane 的原子快照。
+仅在完整清单、同一 Home/Host、全部身份依赖具备本地覆盖、P6 lane 补齐且公开 epoch
+已初始化时建立准备依据；旧服务、缺字段、跨域来源或未知版本保留原读取路径。
+观察到变化后先失效，再把维护写入原 group_operation_journal；不增加通用队列。
+
+真正的 Ready 还要求一次完成的权威群／成员准备、本地 SDK typed readiness 和精确设备
+成员集合、没有相应的未处理普通/P6/基线输入或恢复待办。Ready 快照只在持有活跃接收
+连接的同一进程使用；连接代次变化、断线、接收失败/取消、输入变化或 key binding 变化
+使其失效。持久观察用于恢复触发，不会在重开时直接授予 Ready。连接在线本身不够。
+
+新消息在就绪时直接本地加密并提交 `group.e2ee.send`，不先执行 get/get_info/list_members
+或 DID 扫描；附件准备等异步工作之后、生成新密文之前再次核对本地准备代次。
+缺少依据时仍在群锁内执行必要准备，并共享本轮快照。群主只在准备／维护阶段收敛
+当前设备 roster；普通成员只验证完整业务成员集合与本地 MLS。实际提交始终保留
+Host 当前资格、版本、epoch、证明与幂等检查，版本错误使本地 Ready 失效。
+
+已有应用操作首先读取并验证冻结 journal。未知提交结果重发原密文，已接受结果只补
+公开投影，不因补投影重新要求当前群仍可发送。错误不普遍代表未接受，不能自动
+更换原 operation 的密文。安全路由也可由已验证且与原请求绑定的冻结记录确定。
+
+群状态变化的维护入口（2026-10-27）：ordinary 同步在应用已认证群成员／资料投影的
+同一 SQLite 事务中，为本地已知为加密群的 active owner 写入现有群恢复 journal，提交后
+唤醒既有 dispatcher。重复或过时事件不会通过重复应用创建新任务；普通成员、已退出成员、
+明文群和安全分类未知的群不会借此获得 MLS 修改权限。该触发只安排维护，执行器仍读取并
+验证当前权限。缺失本地群投影时，完整的本域依赖观察也能安排显式准备；
+普通群事件本身仍不能当作完整设备状态订阅。
+
+恢复执行在远端 IO 前保存观察到的进度，只以 compare-and-set 写入重试、失败或完成。
+修复过程中到达的新变化必须保留为 pending，不能被旧 repair 的“当前可发送”结果清除。
+该实现继续复用 group_operation_journal；没有新增数据库表或通用任务队列。
 
 ## 9.1 Key Material Boundary
 
@@ -2074,8 +2084,39 @@ Dart/Node 暴露相同 JSON 安全投影；APP 管理导航和自身任务，DSH
 
 ### 私聊发送与确认关键路径
 
-P5 v2 一次操作内只解析并验证每份 DID Document 一次，预密钥发布、fan-out 和确认复用该操作快照，不建立跨操作 DID 长期缓存。先排对方设备，再排自己其他设备；不同目标最多四路并发。每个副本维持独立 ledger、固定 operation_id 和已准备密文，部分失败继续按原 summary 报告，重试跳过已接受副本。同一 peer 的准备与投递准入按 FIFO 排队，准入后立即释放该队列；逐设备完成票据保证后续操作有序，自己的慢设备不会阻挡下一条消息的对方副本。同一设备的 prepare/post 仍使用同一设备锁。
+本地 PreKey 发布确认只放在需要新设备对会话的准备分支，既有 Established 会话、
+固定密文恢复及已接受副本不因发送再次确认发布。当前自己／对端 DID 与设备密钥绑定
+验证继续独立执行，不能把发布成功当作授权新鲜度。
+
+P5 v2 一次操作内只解析并验证每份 DID Document 一次，预密钥发布、fan-out 和确认复用该操作快照。跨操作复用仅限当前连接／同步代次内有权威文档哈希的本域受管文档；不是 TTL 授权缓存。先排对方设备，再排自己其他设备；不同目标最多四路并发。每个副本维持独立 ledger、固定 operation_id 和已准备密文，部分失败继续按原 summary 报告，重试跳过已接受副本。同一 peer 的准备与投递准入按 FIFO 排队，准入后立即释放该队列；逐设备完成票据保证后续操作有序，自己的慢设备不会阻挡下一条消息的对方副本。同一设备的 prepare/post 仍使用同一设备锁。
 
 发布确认只在 Core 运行时内缓存成功结果，键绑定本 Core 租户、owner、device、授权代次与完整 immutable publication；不超过五分钟或 signed-prekey 有效期，轮换/代次不匹配立即移除。所有本地授权和当前 DID endpoint 检查仍在命中缓存之前，失败不写缓存，进程重启重新确认。
 
 首次 Init 在解密、ratchet 和业务投影与 session-reply ledger 一起提交后即可返回处理结果。生产接收 wrapper 立即唤醒既有持久处理 dispatcher，由 P5Replies 维护任务发送确认；界面不等待确认 HTTP。业务发送不再遍历清空全部历史确认。重启由同一 ledger 恢复并复用固定确认密文，不改变加密协议或消息格式。
+
+
+### 事件驱动发送的宿主与恢复边界（2026-10-27）
+
+P5/P6 共用 owner、DID、exact device、auth generation、两种 key reference 绑定的连接／
+接收生命周期。身份 dirty hint 会推进观察代次，旧的 in-flight delta 不能重新授权缓存。
+同一进程重连后，只有新的完整观察确认依赖未变化，才可继续复用已有内存准备；进程重开
+不恢复 Ready。P5 文档缓存最多 128 份，每份最多 256 KiB；本域 User/Agent WBA 和平台
+托管 Web DID 还需完整同步哈希相等与逐次 method/endpoint 验证，其他来源继续解析。
+
+群发送结果未知保持原密文和原 operation。仅在 Host 的幂等 Fresh 分支给出严格版本／
+epoch 前进证据后，下一次重试才使用原用户意图的独立 attempt。原 Prepared、过期依据、
+每次接受回执均保留在原 journal，最多 32 个尝试；不覆盖旧密文、不回滚 MLS，未来版本、
+不同 crypto group、暂停、InProgress、认证错误、网络超时均不能启动此分支。
+
+CLI listener 新的 local.send_message/local.send_attachment 是本机高层意图入口，不是
+ANP 方法。调用者在业务提交前探测 local.capabilities 并核对 workspace binding；提交后
+不能退回独立 Core。IPC 读写结果未知只原样重试一次，失败交还稳定消息／幂等 ID。
+Unix 双向核对 peer UID、socket mode 为 0600；Windows 在发出意图前核对命名管道服务端
+进程 SID（当前用户或 LocalSystem），既有服务 DACL 保留。参考
+[Linux unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) 和
+[Windows pipe server identity](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid)。
+通知 sink 仅由 supervisor 关闭，单个 bridge 请求不再关闭共享 sink 或重复写 status。
+
+system-test-probe 编译特性和显式内部入口共同启用 local.test_send_state，仅提供只读
+就绪观察与有界网络计时窗口；不会初始化、修复、消费通知或放宽生产发送判断。测试消息
+仍使用正常 msg send，不能将这些只读诊断当作新的产品发送实现。

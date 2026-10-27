@@ -4,6 +4,8 @@ pub(crate) mod group;
 pub(crate) mod local_projection;
 pub(crate) mod mark_read;
 pub(crate) mod read;
+#[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+pub(crate) mod send_lifecycle;
 pub(crate) mod state;
 pub(crate) mod sync;
 pub(crate) mod sync_coordinator;

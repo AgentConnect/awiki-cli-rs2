@@ -1352,9 +1352,15 @@ where
         mut self,
         request: crate::messages::MessageSyncRequest,
     ) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
-        self.receive_run(request)
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        let guard = super::send_lifecycle::ReceiveGuard::new(self.client);
+        let result = self
+            .receive_run(request)
             .await
-            .map(crate::messages::MessageReceiveOutcome::from_receive_run)
+            .map(crate::messages::MessageReceiveOutcome::from_receive_run);
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        guard.finish(result.is_ok());
+        result
     }
 
     // Wire-fixture tests inject their directory transport. The production
@@ -1673,6 +1679,8 @@ where
                     &p6_client_instance_id,
                 )?
             };
+            #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+            let send_connection = super::send_lifecycle::connection_token(self.client);
             let raw = self
                 .transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.delta", params)
@@ -1843,6 +1851,44 @@ where
             state.last_server_time = Some(page.server_time);
             state.last_success_at = Some(unix_time_i64());
             let has_continuation = page.has_more || lane_has_more;
+            #[cfg(feature = "group-e2ee")]
+            if self.client.core_inner().group_e2ee_v2_enabled()
+                && requested_lanes
+                    .contains_key(&crate::internal::wire::sync_v2::SyncLaneV3::P6Group)
+            {
+                crate::internal::group_e2ee::send_state::observe_async(
+                    self.client,
+                    page.group_e2ee_state.as_ref(),
+                    send_connection.clone(),
+                    !has_continuation
+                        && !page.lane_transport_invalid
+                        && !blocked_lanes
+                            .contains(&crate::internal::wire::sync_v2::SyncLaneV3::P6Group)
+                        && requested_lanes
+                            .contains_key(&crate::internal::wire::sync_v2::SyncLaneV3::P6Group),
+                    self.on_receive_committed.is_some(),
+                )
+                .await?;
+            }
+            #[cfg(feature = "group-e2ee")]
+            if !requested_lanes.contains_key(&crate::internal::wire::sync_v2::SyncLaneV3::P6Group) {
+                crate::internal::group_e2ee::send_state::forget_observations(self.client);
+            }
+            #[cfg(feature = "secure-direct")]
+            if requested_lanes.contains_key(&crate::internal::wire::sync_v2::SyncLaneV3::P5Device) {
+                crate::internal::secure_direct::document_state::observe_async(
+                    self.client,
+                    page.direct_e2ee_state.as_ref(),
+                    send_connection,
+                    !has_continuation
+                        && !page.lane_transport_invalid
+                        && !blocked_lanes
+                            .contains(&crate::internal::wire::sync_v2::SyncLaneV3::P5Device),
+                )
+                .await?;
+            } else {
+                crate::internal::secure_direct::document_state::invalidate(self.client);
+            }
             if has_continuation
                 && (delta_pages_fetched >= SYNC_RUN_MAX_PAGES
                     || run_started.elapsed() >= self.run_deadline)

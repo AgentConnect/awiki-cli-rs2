@@ -76,6 +76,32 @@ pub struct GroupSecureConversation<'a> {
 }
 
 impl GroupSecureConversation<'_> {
+    #[cfg(feature = "group-e2ee")]
+    fn observed_status(&self) -> crate::ImResult<Option<super::GroupSecureStatus>> {
+        let prepared =
+            crate::internal::group_e2ee::send_state::prepared_snapshot(self.client, &self.group)?;
+        if prepared.is_none()
+            && !crate::internal::group_e2ee::send_state::has_observation(self.client, &self.group)
+        {
+            return Ok(None);
+        }
+        let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+        let mut status =
+            crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                .status(self.group.clone())?;
+        if let Some(authoritative) = prepared {
+            return overlay_group_maintenance_status(status, &authoritative).map(Some);
+        }
+        status.can_send_secure = false;
+        status.state = super::GroupSecureState::Syncing;
+        status.problem = Some(super::SecureProblem {
+            code: super::SecureProblemCode::GroupStateUnavailable,
+            message: "正在同步群加密状态".to_owned(),
+            retryable: true,
+        });
+        Ok(Some(status))
+    }
+
     pub fn status(&self) -> crate::ImResult<super::GroupSecureStatus> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
@@ -84,6 +110,9 @@ impl GroupSecureConversation<'_> {
                     self.group.clone(),
                     crate::ImError::unsupported("group-e2ee-v2"),
                 ));
+            }
+            if let Some(status) = self.observed_status()? {
+                return Ok(status);
             }
             let authoritative = match crate::internal::group_runtime::read::GroupReadRuntime::new(
                 self.client,
@@ -109,7 +138,7 @@ impl GroupSecureConversation<'_> {
             {
                 Ok(mut status) => {
                     if status.can_send_secure
-                        && !crate::internal::group_e2ee::roster_readiness::validate(
+                        && !crate::internal::group_e2ee::send_state::validate(
                             self.client,
                             self.group.clone(),
                             &authoritative,
@@ -208,6 +237,9 @@ impl GroupSecureConversation<'_> {
                     crate::ImError::unsupported("group-e2ee-v2"),
                 ));
             }
+            if let Some(status) = self.observed_status()? {
+                return Ok(status);
+            }
             let authoritative = match crate::internal::group_runtime::read::GroupReadRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -269,7 +301,7 @@ impl GroupSecureConversation<'_> {
         match status.and_then(|status| overlay_group_maintenance_status(status, authoritative)) {
             Ok(mut status) => {
                 if status.can_send_secure
-                    && !crate::internal::group_e2ee::roster_readiness::validate_async(
+                    && !crate::internal::group_e2ee::send_state::validate_async(
                         self.client,
                         self.group.clone(),
                         &authoritative,
@@ -371,6 +403,13 @@ impl GroupSecureConversation<'_> {
             if !self.client.core_inner().group_e2ee_v2_enabled() {
                 return Err(crate::ImError::unsupported("group-e2ee-v2"));
             }
+            // Capture before any network/MLS work. Events arriving during repair
+            // must not be marked completed by this older pass.
+            let observed_recovery = crate::internal::group_runtime::journal::pending(self.client)?;
+            let preparation_ticket = crate::internal::group_e2ee::send_state::preparation_ticket(
+                self.client,
+                &self.group,
+            )?;
             self.client
                 .messages()
                 .prepare_encrypted_messaging_async()
@@ -402,20 +441,27 @@ impl GroupSecureConversation<'_> {
             result.repaired |= roster.added_devices > 0
                 || roster.removed_devices > 0
                 || roster.repaired_wal_entries > 0;
-            let status = self.status_async().await?;
+            let authoritative =
+                crate::internal::group_e2ee::v2_lifecycle::read_authoritative_group_async(
+                    self.client,
+                    self.group.clone(),
+                )
+                .await?;
+            let status = self.status_with_authoritative_async(&authoritative).await?;
             result.state = status.state;
             result.problem = status.problem;
             if status.can_send_secure {
-                for (key, value) in crate::internal::group_runtime::journal::pending(self.client)? {
+                for (key, value) in observed_recovery {
                     if value["group_did"] == self.group.as_str() {
-                        crate::internal::group_runtime::recovery::record(
-                            self.client,
-                            &key,
-                            self.group.as_str(),
-                            None,
-                            true,
-                        )?;
-                        if let Some(member) = value["request"]["member"].as_str() {
+                        let completed =
+                            crate::internal::group_runtime::recovery::complete_observed(
+                                self.client,
+                                &key,
+                                &value,
+                            )?;
+                        if let Some(member) =
+                            value["request"]["member"].as_str().filter(|_| completed)
+                        {
                             crate::internal::group_runtime::journal::save(
                                 self.client,
                                 &format!("member-wire:{}:{member}", self.group.as_str()),
@@ -424,6 +470,11 @@ impl GroupSecureConversation<'_> {
                         }
                     }
                 }
+                crate::internal::group_e2ee::send_state::publish_prepared(
+                    self.client,
+                    preparation_ticket,
+                    &authoritative,
+                )?;
             }
             Ok(result)
         }
@@ -431,6 +482,85 @@ impl GroupSecureConversation<'_> {
         {
             Err(crate::ImError::unsupported("group-e2ee"))
         }
+    }
+
+    /// Background preparation for observed state changes. Ordinary members
+    /// validate their state here; identity-management authority must not turn a
+    /// normal member refresh into an owner-only full-roster mutation.
+    #[cfg(feature = "group-e2ee")]
+    pub(crate) async fn prepare_observed_async(
+        &self,
+    ) -> crate::ImResult<super::GroupSecurePrepareResult> {
+        let lock = self.client.core_inner().group_lifecycle_lock(
+            self.client.current_identity().id.as_str(),
+            self.group.as_str(),
+        );
+        let _guard = lock.lock().await;
+        if crate::internal::group_e2ee::send_state::prepared_snapshot(self.client, &self.group)?
+            .is_some()
+        {
+            let status = self.status_async().await?;
+            return Ok(super::GroupSecurePrepareResult {
+                group: status.group,
+                state: status.state,
+                can_send_secure: status.can_send_secure,
+                warnings: status.warnings,
+            });
+        }
+        let ticket =
+            crate::internal::group_e2ee::send_state::preparation_ticket(self.client, &self.group)?;
+        let observed = crate::internal::group_runtime::journal::pending(self.client)?;
+        let mut authoritative =
+            crate::internal::group_e2ee::v2_lifecycle::read_authoritative_group_async(
+                self.client,
+                self.group.clone(),
+            )
+            .await?;
+        let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+        let local = crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+            .status(self.group.clone())?;
+        if !local.local_readiness.has_local_state
+            && authoritative
+                .group
+                .as_ref()
+                .is_some_and(|group| group.my_role.as_deref() == Some("owner"))
+        {
+            crate::internal::group_e2ee::v2_lifecycle::resume_created_group_async(
+                self.client,
+                &self.group,
+            )
+            .await?;
+        }
+        authoritative =
+            crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
+                self.client,
+                self.group.clone(),
+                authoritative,
+            )
+            .await?;
+        let status = self.status_with_authoritative_async(&authoritative).await?;
+        if status.can_send_secure {
+            for (key, progress) in observed {
+                if progress["group_did"] == self.group.as_str() {
+                    crate::internal::group_runtime::recovery::complete_observed(
+                        self.client,
+                        &key,
+                        &progress,
+                    )?;
+                }
+            }
+            crate::internal::group_e2ee::send_state::publish_prepared(
+                self.client,
+                ticket,
+                &authoritative,
+            )?;
+        }
+        Ok(super::GroupSecurePrepareResult {
+            group: status.group,
+            state: status.state,
+            can_send_secure: status.can_send_secure,
+            warnings: status.warnings,
+        })
     }
 }
 

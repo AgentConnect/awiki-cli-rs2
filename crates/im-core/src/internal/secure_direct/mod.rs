@@ -3,6 +3,8 @@ pub(crate) mod async_receive;
 #[cfg(feature = "sqlite")]
 pub(crate) mod client;
 pub(crate) mod control;
+#[cfg(feature = "secure-direct")]
+pub(crate) mod document_state;
 #[cfg(feature = "sqlite")]
 pub(crate) mod identity_material;
 #[cfg(feature = "sqlite")]

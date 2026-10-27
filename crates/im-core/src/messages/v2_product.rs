@@ -391,48 +391,104 @@ async fn send_group_async_impl(
             "P6 v2 group target must be a DID",
         ));
     }
+    let send_journal =
+        crate::internal::group_e2ee::send_journal::SendJournal::new(client, &request)?;
+    let saved = send_journal.load(client)?;
+    let (saved, expired) = match saved {
+        Some(prepared) if send_journal.is_expired(client, &prepared)? => (None, Some(prepared)),
+        saved => (saved, None),
+    };
+    if saved.is_none()
+        && crate::internal::group_e2ee::send_state::has_observation(client, &group)
+        && crate::internal::group_e2ee::send_state::preparation_ticket(client, &group)?.is_none()
+    {
+        // A known receive gap must be repaired before generating new MLS
+        // ciphertext. This occurs before acquiring the lifecycle lock needed
+        // by the receive/maintenance workers. Frozen retries bypass it.
+        client
+            .messages()
+            .request_receive_async(crate::messages::MessageSyncRequest {
+                reason: "foreground_reconcile".to_owned(),
+                limit: None,
+            })
+            .await?;
+        if crate::internal::group_e2ee::send_state::preparation_ticket(client, &group)?.is_none() {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "group_state_sync_pending".to_owned(),
+            });
+        }
+    }
     let group_lock = client
         .core_inner()
         .group_lifecycle_lock(client.current_identity().id.as_str(), group_did);
     let _group_guard = group_lock.lock().await;
     let device = current_vnext_device(client)?;
-    let mut authoritative =
-        crate::internal::group_e2ee::v2_lifecycle::read_authoritative_group_async(
-            client,
-            group.clone(),
-        )
-        .await?;
-    let device_revocation_pending =
-        group_device_revocation_pending_for_send(authoritative.raw_response().ok_or_else(
-            || crate::ImError::LocalStateUnavailable {
-                detail: "group send snapshot is missing".to_owned(),
-            },
-        )?)?;
-    // P4 membership may have advanced independently (for example, a member
-    // called group.leave). Before encrypting at the current MLS epoch, let the
-    // active owner converge its accepted local tree to the authoritative P4/P2
-    // roster. Non-owners and already-converged owners are no-ops.
-    if !device_revocation_pending {
-        authoritative =
-            crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
+    let send_ticket = crate::internal::group_e2ee::send_state::preparation_ticket(client, &group)?;
+    let group_state_ref = if let Some(saved) = &saved {
+        saved.encrypted.cipher.group_state_ref.clone()
+    } else if let Some(authoritative) =
+        crate::internal::group_e2ee::send_state::prepared_snapshot(client, &group)?
+    {
+        group_state_ref_from_send_snapshot(group_did, &authoritative)?
+    } else {
+        let ticket = send_ticket.clone();
+        let observed_recovery = crate::internal::group_runtime::journal::pending(client)?;
+        let mut authoritative =
+            crate::internal::group_e2ee::v2_lifecycle::read_authoritative_group_async(
                 client,
                 group.clone(),
-                authoritative,
             )
             .await?;
-    }
-    if !device_revocation_pending
-        && !client
-            .secure()
-            .group(group.clone())
-            .status_with_authoritative_async(&authoritative)
-            .await?
-            .can_send_secure
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "group_membership_change_pending".to_owned(),
-        });
-    }
+        if !crate::groups::authoritative_group_e2ee_classification(group_did, &authoritative)? {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let device_revocation_pending =
+            group_device_revocation_pending_for_send(authoritative.raw_response().ok_or_else(
+                || crate::ImError::LocalStateUnavailable {
+                    detail: "group send snapshot is missing".to_owned(),
+                },
+            )?)?;
+        // P4 membership may have advanced independently (for example, a member
+        // called group.leave). Before encrypting at the current MLS epoch, let the
+        // active owner converge its accepted local tree to the authoritative P4/P2
+        // roster. Non-owners and already-converged owners are no-ops.
+        if !device_revocation_pending {
+            authoritative =
+                crate::internal::group_e2ee::v2_lifecycle::reconcile_group_roster_before_send_async(
+                    client,
+                    group.clone(),
+                    authoritative,
+                )
+                .await?;
+        }
+        if !device_revocation_pending
+            && !client
+                .secure()
+                .group(group.clone())
+                .status_with_authoritative_async(&authoritative)
+                .await?
+                .can_send_secure
+        {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "group_membership_change_pending".to_owned(),
+            });
+        }
+        if !device_revocation_pending {
+            for (key, progress) in observed_recovery {
+                if progress["group_did"] == group_did {
+                    crate::internal::group_runtime::recovery::complete_observed(
+                        client, &key, &progress,
+                    )?;
+                }
+            }
+            crate::internal::group_e2ee::send_state::publish_prepared(
+                client,
+                ticket,
+                &authoritative,
+            )?;
+        }
+        group_state_ref_from_send_snapshot(group_did, &authoritative)?
+    };
     let logical_message_id = required_message_id(&request)?.to_owned();
     let operation_id = request
         .delivery
@@ -442,6 +498,10 @@ async fn send_group_async_impl(
         .filter(|value| !value.is_empty())
         .ok_or(crate::ImError::PermissionDenied)?
         .to_owned();
+    let operation_id = match expired.as_ref() {
+        Some(previous) => send_journal.retry_operation(previous)?,
+        None => operation_id,
+    };
     let created_at = crate::internal::wire::common::now_rfc3339();
     let did_document = client
         .runtime()
@@ -450,7 +510,6 @@ async fn send_group_async_impl(
         .ok_or_else(|| crate::ImError::LocalStateUnavailable {
             detail: "P6 v2 requires the current DID Document".to_owned(),
         })?;
-    let group_state_ref = group_state_ref_from_send_snapshot(group_did, &authoritative)?;
 
     let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
     let signer = client
@@ -499,8 +558,7 @@ async fn send_group_async_impl(
         content_type: anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2.to_owned(),
         created_at: Some(created_at.clone()),
     };
-    let send_journal = crate::internal::group_e2ee::send_journal::SendJournal::new(client, &request)?;
-    let prepared = if let Some(saved) = send_journal.load(client)? {
+    let prepared = if let Some(saved) = saved {
         saved
     } else {
         let (application, attachment_projection) = match &request.body {
@@ -553,7 +611,12 @@ async fn send_group_async_impl(
                 )
             }
         };
-        send_journal.prepare(client, || {
+        let produce = || {
+            if let Some(ticket) = &send_ticket {
+                crate::internal::group_e2ee::send_state::validate_preparation_ticket(
+                    client, ticket,
+                )?;
+            }
             let prepared = product.prepare_product_application_send(
                 meta,
                 group_state_ref,
@@ -564,12 +627,51 @@ async fn send_group_async_impl(
                 format!("p6-v2-encrypt-{operation_id}"),
             )?;
             Ok((prepared.encrypted, attachment_projection))
-        })?
+        };
+        match expired.as_ref() {
+            Some(previous) => send_journal.prepare_retry(client, previous, produce)?,
+            None => send_journal.prepare(client, produce)?,
+        }
     };
     let accepted = if let Some(accepted) = send_journal.accepted(client, &prepared)? {
         accepted
     } else {
-        let accepted = product.submit_application_send_async(&prepared.encrypted).await?;
+        let accepted = match product
+            .submit_application_send_async(&prepared.encrypted)
+            .await
+        {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                send_journal.record_expired(client, &prepared, &error)?;
+                if matches!(&error, crate::ImError::Service { code:Some(code), .. }
+                    if matches!(code.as_str(), "group.state_version_conflict" | "group.e2ee.state_not_ready"
+                        | "group.e2ee.epoch_conflict" | "group.e2ee.leaf_not_current" | "anp.device_state_changed"))
+                {
+                    crate::internal::group_e2ee::send_state::invalidate(client, Some(group_did));
+                    let _ = crate::internal::group_runtime::recovery::record(
+                        client,
+                        &format!("recovery:repair:{group_did}"),
+                        group_did,
+                        None,
+                        false,
+                    );
+                    crate::internal::message_runtime::sync_dispatcher::wake_group_recovery(client);
+                    let recovering = client.clone();
+                    tokio::spawn(async move {
+                        let _ = recovering
+                            .messages()
+                            .request_receive_async(crate::messages::MessageSyncRequest {
+                                reason: "after_mutation".to_owned(),
+                                limit: None,
+                            })
+                            .await;
+                    });
+                }
+                // A later explicit retry may advance only a proven expired
+                // attempt. Unknown results preserve their original ciphertext.
+                return Err(error);
+            }
+        };
         send_journal.record_accepted(client, &prepared, &accepted)?;
         accepted
     };

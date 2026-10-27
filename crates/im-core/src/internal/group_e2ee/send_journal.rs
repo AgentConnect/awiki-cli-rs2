@@ -6,11 +6,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "send_journal_expiry.rs"]
+mod expiry;
+
+const MAX_SEND_ATTEMPTS: u32 = 32;
+fn initial_attempt(attempt: &u32) -> bool {
+    *attempt == 0
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreparedSend {
     schema_version: u32,
     request_binding: String,
+    #[serde(default, skip_serializing_if = "initial_attempt")]
+    attempt: u32,
     pub(crate) encrypted: V2PreparedApplicationSend,
     pub(crate) attachment_projection: Option<Value>,
 }
@@ -101,6 +111,11 @@ impl SendJournal {
         if saved.schema_version != 1 || saved.request_binding != self.binding {
             return Err(invalid());
         }
+        if saved.attempt >= MAX_SEND_ATTEMPTS
+            || saved.encrypted.meta.operation_id != self.operation_for_attempt(saved.attempt)
+        {
+            return Err(invalid());
+        }
         saved.encrypted.meta.validate().map_err(|_| invalid())?;
         saved.encrypted.cipher.validate().map_err(|_| invalid())?;
         if saved.encrypted.meta.target.did != saved.encrypted.cipher.group_state_ref.group_did {
@@ -114,16 +129,36 @@ impl SendJournal {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<Option<PreparedSend>> {
         self.check_scope(client)?;
-        if let Some(value) = journal::load(client, &self.key)? {
-            return self.decode(value).map(Some);
+        let first = match journal::load(client, &self.key)? {
+            Some(value) => Some(self.decode(value)?),
+            None => match journal::load(client, &self.legacy_key)? {
+                // A legacy receipt for `x` occupies the raw prepared key for the
+                // distinct operation `x:accepted`. Leave that receipt untouched.
+                Some(value) if self.is_legacy_receipt_for_other_operation(&value) => None,
+                Some(value) => Some(self.decode(value)?),
+                None => None,
+            },
+        };
+        let Some(mut current) = first else {
+            return Ok(None);
+        };
+        if current.attempt != 0 {
+            return Err(invalid());
         }
-        match journal::load(client, &self.legacy_key)? {
-            // A legacy receipt for `x` occupies the raw prepared key for the
-            // distinct operation `x:accepted`. Leave that receipt untouched.
-            Some(value) if self.is_legacy_receipt_for_other_operation(&value) => Ok(None),
-            Some(value) => self.decode(value).map(Some),
-            None => Ok(None),
+        for attempt in 1..MAX_SEND_ATTEMPTS {
+            let Some(value) = journal::load(client, &self.attempt_key(attempt))? else {
+                break;
+            };
+            if !self.is_expired(client, &current)? {
+                return Err(invalid());
+            }
+            let next = self.decode(value)?;
+            if next.attempt != attempt {
+                return Err(invalid());
+            }
+            current = next;
         }
+        Ok(Some(current))
     }
 
     fn is_legacy_receipt_for_other_operation(&self, value: &Value) -> bool {
@@ -165,6 +200,7 @@ impl SendJournal {
             serde_json::to_value(PreparedSend {
                 schema_version: 1,
                 request_binding: self.binding.clone(),
+                attempt: 0,
                 encrypted,
                 attachment_projection,
             })
@@ -180,15 +216,21 @@ impl SendJournal {
         prepared: &PreparedSend,
     ) -> crate::ImResult<Option<V2GroupSendResult>> {
         self.check_scope(client)?;
-        let current = journal::load(client, &format!("{}:accepted", self.key))?;
+        let current = journal::load(
+            client,
+            &format!("{}:accepted", self.attempt_key(prepared.attempt)),
+        )?;
         let value = match current {
             Some(value) => Some(value),
-            None => match journal::load(client, &format!("{}:accepted", self.legacy_key))? {
-                // An older, distinct prepared operation may occupy this raw
-                // receipt key. Resubmit our own frozen ciphertext, never theirs.
-                Some(value) if self.is_legacy_prepared_for_other_operation(&value) => None,
-                value => value,
-            },
+            None if prepared.attempt == 0 => {
+                match journal::load(client, &format!("{}:accepted", self.legacy_key))? {
+                    // An older, distinct prepared operation may occupy this raw
+                    // receipt key. Resubmit our own frozen ciphertext, never theirs.
+                    Some(value) if self.is_legacy_prepared_for_other_operation(&value) => None,
+                    value => value,
+                }
+            }
+            None => None,
         };
         value
             .map(|value| {
@@ -214,7 +256,7 @@ impl SendJournal {
         validate_receipt(&prepared.encrypted, result)?;
         journal::freeze(
             client,
-            &format!("{}:accepted", self.key),
+            &format!("{}:accepted", self.attempt_key(prepared.attempt)),
             &self.binding,
             serde_json::json!({"request_binding": self.binding, "result": result}),
         )?;

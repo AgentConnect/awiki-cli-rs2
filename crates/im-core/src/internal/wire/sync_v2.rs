@@ -5,6 +5,11 @@ use sha2::{Digest, Sha256};
 
 use super::common::{self, WireIdentity};
 
+#[path = "direct_e2ee_state.rs"]
+pub(crate) mod direct_e2ee_state;
+#[path = "group_e2ee_state.rs"]
+pub(crate) mod group_e2ee_state;
+
 pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
 pub(crate) const MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1: &str =
     "awiki.message-sync.explicit-negotiation.v1";
@@ -139,6 +144,8 @@ pub(crate) struct SyncDeltaPageV2 {
     pub(crate) warnings: Vec<String>,
     pub(crate) lanes: BTreeMap<SyncLaneV3, SyncLaneDeltaSectionV3>,
     pub(crate) lane_transport_invalid: bool,
+    pub(crate) group_e2ee_state: Option<group_e2ee_state::GroupStateObservations>,
+    pub(crate) direct_e2ee_state: Option<direct_e2ee_state::IdentityObservations>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -939,6 +946,8 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
         warnings: warnings(object.get("warnings"))?,
         lanes,
         lane_transport_invalid,
+        group_e2ee_state: group_e2ee_state::parse(object.get("group_e2ee_state"))?,
+        direct_e2ee_state: direct_e2ee_state::parse(object.get("direct_e2ee_state"))?,
     }))
 }
 

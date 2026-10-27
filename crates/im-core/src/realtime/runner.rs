@@ -2231,6 +2231,8 @@ pub(crate) fn run_default_until_shutdown(
         client,
         socket: None,
         idle_ticks: 0,
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        connection_guard: None,
     };
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = ChannelRunnerEvents { sender };
@@ -2279,6 +2281,8 @@ where
         client,
         socket: None,
         idle_ticks: 0,
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        connection_guard: None,
     };
     let (_sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = SinkRunnerEvents { sink: event_sink };
@@ -2327,6 +2331,8 @@ pub(crate) fn spawn_default(
                 client: &client,
                 socket: None,
                 idle_ticks: 0,
+                #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+                connection_guard: None,
             };
             let receiver = mpsc::channel().1;
             let mut sink = SenderRunnerEvents { sender };
@@ -2389,6 +2395,8 @@ pub(crate) async fn spawn_default_async(
             client: client.clone(),
             socket: None,
             idle_ticks: 0,
+            #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+            connection_guard: None,
         };
         let events = TokioRunnerEvents {
             sender: event_sender,
@@ -2447,26 +2455,59 @@ struct AsyncDefaultRunnerTransport {
     client: crate::core::ImClient,
     socket: Option<crate::internal::realtime::async_ws_transport::AsyncWsTransport>,
     idle_ticks: u32,
+    #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+    connection_guard: Option<crate::internal::message_runtime::send_lifecycle::ConnectionGuard>,
 }
 
 impl AsyncRealtimeRunnerTransport for AsyncDefaultRunnerTransport {
     async fn connect(&mut self) -> crate::ImResult<()> {
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        {
+            self.connection_guard.take();
+        }
         let socket =
             crate::internal::realtime::transport::connect_async_websocket_session(&self.client)
                 .await?;
         self.socket = Some(socket);
         self.idle_ticks = 0;
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        {
+            self.connection_guard =
+                crate::internal::message_runtime::send_lifecycle::ConnectionGuard::connected(
+                    &self.client,
+                )
+                .ok();
+        }
         Ok(())
     }
 
     async fn next_notification(&mut self) -> crate::ImResult<Option<Value>> {
+        let result = self.read_next_notification().await;
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        if matches!(&result, Ok(None) | Err(_)) {
+            self.connection_guard.take();
+        }
+        result
+    }
+}
+
+impl AsyncDefaultRunnerTransport {
+    async fn read_next_notification(&mut self) -> crate::ImResult<Option<Value>> {
         let Some(socket) = self.socket.as_mut() else {
             return Ok(None);
         };
         match tokio::time::timeout(Duration::from_millis(250), socket.read_json_message()).await {
             Ok(Ok(Some(message))) => {
                 self.idle_ticks = 0;
-                Ok(Some(Value::Object(message)))
+                {
+                    let message = Value::Object(message);
+                    #[cfg(feature = "secure-direct")]
+                    crate::internal::secure_direct::document_state::observe_hint(
+                        &self.client,
+                        &message,
+                    );
+                    Ok(Some(message))
+                }
             }
             Ok(Ok(None)) => Ok(None),
             Ok(Err(err)) => Err(err),
@@ -2487,26 +2528,60 @@ struct DefaultRunnerTransport<'a> {
     client: &'a crate::core::ImClient,
     socket: Option<crate::internal::realtime::ws_transport::WsTransport>,
     idle_ticks: u32,
+    #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+    connection_guard: Option<crate::internal::message_runtime::send_lifecycle::ConnectionGuard>,
 }
 
 #[cfg(feature = "blocking")]
 impl RealtimeRunnerTransport for DefaultRunnerTransport<'_> {
     fn connect(&mut self) -> crate::ImResult<()> {
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        {
+            self.connection_guard.take();
+        }
         let socket =
             crate::internal::realtime::transport::connect_native_websocket_session(self.client)?;
         self.socket = Some(socket);
         self.idle_ticks = 0;
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        {
+            self.connection_guard =
+                crate::internal::message_runtime::send_lifecycle::ConnectionGuard::connected(
+                    self.client,
+                )
+                .ok();
+        }
         Ok(())
     }
 
     fn next_notification(&mut self) -> crate::ImResult<Option<Value>> {
+        let result = self.read_next_notification();
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        if matches!(&result, Ok(None) | Err(_)) {
+            self.connection_guard.take();
+        }
+        result
+    }
+}
+
+#[cfg(feature = "blocking")]
+impl DefaultRunnerTransport<'_> {
+    fn read_next_notification(&mut self) -> crate::ImResult<Option<Value>> {
         let Some(socket) = self.socket.as_mut() else {
             return Ok(None);
         };
         match socket.read_json_message_timeout(Duration::from_millis(250)) {
             Ok(Some(message)) => {
                 self.idle_ticks = 0;
-                Ok(Some(Value::Object(message)))
+                {
+                    let message = Value::Object(message);
+                    #[cfg(feature = "secure-direct")]
+                    crate::internal::secure_direct::document_state::observe_hint(
+                        &self.client,
+                        &message,
+                    );
+                    Ok(Some(message))
+                }
             }
             Ok(None) => {
                 self.idle_ticks = self.idle_ticks.saturating_add(1);

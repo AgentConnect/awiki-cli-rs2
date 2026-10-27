@@ -70,6 +70,8 @@ where
             info_params,
         )?;
         let merged = merge_authoritative_group_policy(group.as_str(), local, authoritative)?;
+        #[cfg(feature = "group-e2ee")]
+        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &merged);
         Ok(crate::groups::GroupReadResult::from_raw_response(
             merged,
             Vec::new(),
@@ -162,6 +164,8 @@ where
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)?;
+        #[cfg(feature = "group-e2ee")]
+        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw);
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
@@ -214,6 +218,8 @@ where
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get_info", info_params)
             .await?;
         let merged = merge_authoritative_group_policy(group.as_str(), local, authoritative)?;
+        #[cfg(feature = "group-e2ee")]
+        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &merged);
         Ok(crate::groups::GroupReadResult::from_raw_response(
             merged,
             Vec::new(),
@@ -308,6 +314,8 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)
             .await?;
+        #[cfg(feature = "group-e2ee")]
+        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw);
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),

@@ -89,7 +89,7 @@ pub(crate) fn save(client: &crate::core::ImClient, key: &str, value: Value) -> c
     )
 }
 
-fn save_on(
+pub(crate) fn save_on(
     connection: &Connection,
     owner: &str,
     device: &str,
@@ -101,6 +101,148 @@ fn save_on(
         (owner, device, key, value.to_string()),
     ).map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(())
+}
+
+/// Replace only the progress observed before doing asynchronous work. A newer
+/// change must survive completion, retry accounting, and failure of older work.
+pub(crate) fn replace_if_unchanged(
+    client: &crate::core::ImClient,
+    key: &str,
+    expected: &Value,
+    replacement: Value,
+) -> crate::ImResult<bool> {
+    let device = device_key(client)?;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    replace_if_unchanged_on(
+        &connection,
+        client.current_identity().id.as_str(),
+        &device,
+        key,
+        expected,
+        replacement,
+    )
+}
+
+fn replace_if_unchanged_on(
+    connection: &Connection,
+    owner: &str,
+    device: &str,
+    key: &str,
+    expected: &Value,
+    replacement: Value,
+) -> crate::ImResult<bool> {
+    let changed = connection.execute(
+        "UPDATE group_operation_journal SET intent_json=?4 WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3 AND intent_json=?5",
+        (owner, device, key, replacement.to_string(), expected.to_string()),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(changed == 1)
+}
+
+/// Schedule maintenance in the same transaction as an authenticated ordinary
+/// group-state projection. This is a trigger, never permission to mutate MLS:
+/// the existing repair executor still checks the current owner and device.
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn schedule_group_state_change_on(
+    connection: &Connection,
+    owner: &str,
+    device: &str,
+    group: &str,
+    change_id: &str,
+) -> crate::ImResult<bool> {
+    let eligible: Option<(Option<String>, String, Option<String>)> = connection.query_row(
+        "SELECT my_role,membership_status,metadata FROM groups WHERE owner_identity_id=?1 AND group_id=?2",
+        (owner, group),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    let Some((role, membership, metadata)) = eligible else {
+        return Ok(false);
+    };
+    if role.as_deref() != Some("owner") || membership != "active" {
+        return Ok(false);
+    }
+    let Some(metadata) = metadata else {
+        return Ok(false);
+    };
+    let metadata: Value =
+        serde_json::from_str(&metadata).map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group security projection".to_owned(),
+        })?;
+    let profiles = [
+        metadata.pointer("/group_policy/message_security_profile"),
+        metadata.get("message_security_profile"),
+        metadata.get("required_security_profile"),
+    ];
+    // Unknown policy is not authorization to prepare a plain group as MLS.
+    let mut encrypted = false;
+    for profile in profiles
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_null())
+    {
+        if profile.as_str() != Some("group-e2ee") {
+            return Ok(false);
+        }
+        encrypted = true;
+    }
+    if !encrypted {
+        return Ok(false);
+    }
+    schedule_preparation_on(connection, owner, device, group, change_id)
+}
+
+/// Authenticated dependency observations can trigger preparation even before a
+/// complete local group projection exists. The executor checks authoritative
+/// policy and role; this trigger grants no MLS authority.
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn schedule_preparation_on(
+    connection: &Connection,
+    owner: &str,
+    device: &str,
+    group: &str,
+    change_id: &str,
+) -> crate::ImResult<bool> {
+    let key = format!("recovery:repair:{group}");
+    let previous: Option<String> = connection.query_row(
+        "SELECT intent_json FROM group_operation_journal WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3",
+        (owner, device, &key), |row| row.get(0),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut value = previous
+        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .transpose()
+        .map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group recovery progress".to_owned(),
+        })?
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !value.is_object() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "invalid group recovery progress".to_owned(),
+        });
+    }
+    if value["last_change_id"].as_str() == Some(change_id) {
+        return Ok(false);
+    }
+    let generation = value["change_generation"]
+        .as_u64()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "group recovery generation exhausted".to_owned(),
+        })?;
+    value["phase"] = serde_json::json!("preparing");
+    value["group_did"] = serde_json::json!(group);
+    value["last_change_id"] = serde_json::json!(change_id);
+    value["change_generation"] = serde_json::json!(generation);
+    value["attempts"] = serde_json::json!(0);
+    value["next_attempt_at"] = serde_json::json!(0);
+    value["status"] = serde_json::json!({
+        "operation_id": key, "group_did": group, "phase": "preparing",
+        "business_committed": true, "encryption_ready": false,
+        "reason": "encryption_preparation_pending", "next_action": "wait",
+    });
+    save_on(connection, owner, device, &key, value)?;
+    Ok(true)
 }
 
 /// Enqueue Welcome replenishment in the same transaction as sync completion.
