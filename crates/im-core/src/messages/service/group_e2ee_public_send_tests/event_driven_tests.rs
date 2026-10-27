@@ -140,7 +140,10 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
             .to_string()
             .contains("one encrypted submission"));
         send_state::invalidate(&client, Some(group.as_str()));
-        send_state::publish_prepared(&client, ticket, &authoritative).unwrap();
+        assert!(matches!(
+            send_state::publish_prepared(&client, ticket, &authoritative),
+            Err(crate::ImError::CursorStale)
+        ), "stale preparation must not let recovery mark its work completed");
         assert!(
             send_state::prepared_snapshot(&client, &group)
                 .unwrap()

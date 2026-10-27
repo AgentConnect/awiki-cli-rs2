@@ -187,8 +187,8 @@ pub(crate) async fn process_ordinary<R: AsyncRpcTransport>(
         event.event_type.as_str(),
         "group.member_changed" | "group.profile_updated"
     ) {
-        // The projection transaction also persists any eligible owner's repair
-        // task. Wake only after commit; restart uses that same durable journal.
+        // The projection transaction also persists role-aware preparation
+        // work. Wake only after commit; restart uses that same durable journal.
         super::sync_dispatcher::wake_group_recovery(client);
     }
     let mut incoming = Vec::new();
@@ -330,7 +330,21 @@ pub(crate) async fn process_p6(
                     crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(&transaction, &manifest)?;
                 }
             }
-            Prepared::Notice(notice) => { notice.apply_on(Some(&transaction), true)?; }
+            Prepared::Notice(notice) => {
+                let applied = notice.apply_on(Some(&transaction), true)?;
+                // The control notice invalidated readiness before IO. Persist
+                // its follow-up together with completion, even if an earlier
+                // observation's preparation finished while this input waited.
+                if let Some(group) = committed_claim.group_did.as_deref().filter(|_| !applied.self_removed) {
+                    crate::internal::group_runtime::journal::schedule_preparation_on(
+                        &transaction,
+                        &committed_claim.owner_identity_id,
+                        &committed_claim.device_id,
+                        group,
+                        &format!("p6-applied:{}", committed_claim.event_id),
+                    )?;
+                }
+            }
         }
         sync_inbox::complete_claim(&transaction, &committed_claim, now())?;
         transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -347,6 +361,9 @@ pub(crate) async fn process_p6(
         let _ = runtime
             .with_nonblocking_operations()
             .forget_received_decryption(message_id, group_did);
+    }
+    if claim.event_type == "p6.control.notice" {
+        super::sync_dispatcher::wake_group_recovery(client);
     }
     client.emit_committed_local_message_projection("sync_p6_processed");
     Ok(MessageProcessingUpdate {

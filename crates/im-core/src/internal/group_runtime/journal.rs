@@ -190,8 +190,8 @@ fn replace_if_unchanged_on(
 }
 
 /// Schedule maintenance in the same transaction as an authenticated ordinary
-/// group-state projection. This is a trigger, never permission to mutate MLS:
-/// the existing repair executor still checks the current owner and device.
+/// group-state projection. This schedules role-aware preparation, not MLS
+/// authority: only the current owner may mutate the roster; members validate.
 #[cfg(feature = "group-e2ee")]
 pub(crate) fn schedule_group_state_change_on(
     connection: &Connection,
@@ -208,7 +208,9 @@ pub(crate) fn schedule_group_state_change_on(
     let Some((role, membership, metadata)) = eligible else {
         return Ok(false);
     };
-    if role.as_deref() != Some("owner") || membership != "active" {
+    if !matches!(role.as_deref(), Some("owner" | "member" | "admin"))
+        || membership != "active"
+    {
         return Ok(false);
     }
     let Some(metadata) = metadata else {

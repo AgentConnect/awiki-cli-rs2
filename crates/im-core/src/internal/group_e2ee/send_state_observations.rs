@@ -425,19 +425,30 @@ pub(crate) fn publish_prepared(
     ticket: Option<PreparationTicket>,
     authoritative: &GroupReadResult,
 ) -> crate::ImResult<()> {
-    let Some(ticket) = ticket else { return Ok(()) };
+    let Some(ticket) = ticket else {
+        // A live observer must finish synchronization before its recovery task
+        // can complete. Legacy/HTTP-only preparation has no reusable ticket.
+        if connection_token(client).is_some()
+            && authoritative.group.as_ref().is_some_and(|group| {
+                has_observation(client, &group.did)
+            })
+        {
+            return Err(crate::ImError::CursorStale);
+        }
+        return Ok(());
+    };
     let group = GroupRef::parse(&ticket.scope.group)?;
     if authoritative
         .raw_response()
         .is_none_or(|raw| raw.get("e2ee_maintenance").is_some())
         || !crate::groups::authoritative_group_e2ee_classification(group.as_str(), authoritative)?
     {
-        return Ok(());
+        return Err(crate::ImError::CursorStale);
     }
     if scope(client, &group)? != ticket.scope
         || inputs(&group, authoritative)?.0 != ticket.observation.group_state_version
     {
-        return Ok(());
+        return Err(crate::ImError::CursorStale);
     }
     let endpoints = endpoints(client, &group)?;
     let mut state = client
@@ -455,9 +466,10 @@ pub(crate) fn publish_prepared(
                 authoritative: authoritative.clone(),
                 endpoints,
             });
+            return Ok(());
         }
     }
-    Ok(())
+    Err(crate::ImError::CursorStale)
 }
 
 pub(crate) fn prepared_snapshot(

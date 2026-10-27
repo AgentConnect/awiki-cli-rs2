@@ -451,6 +451,11 @@ impl GroupSecureConversation<'_> {
             result.state = status.state;
             result.problem = status.problem;
             if status.can_send_secure {
+                crate::internal::group_e2ee::send_state::publish_prepared(
+                    self.client,
+                    preparation_ticket,
+                    &authoritative,
+                )?;
                 for (key, value) in observed_recovery {
                     if value["group_did"] == self.group.as_str() {
                         let completed =
@@ -470,11 +475,6 @@ impl GroupSecureConversation<'_> {
                         }
                     }
                 }
-                crate::internal::group_e2ee::send_state::publish_prepared(
-                    self.client,
-                    preparation_ticket,
-                    &authoritative,
-                )?;
             }
             Ok(result)
         }
@@ -540,6 +540,11 @@ impl GroupSecureConversation<'_> {
             .await?;
         let status = self.status_with_authoritative_async(&authoritative).await?;
         if status.can_send_secure {
+            crate::internal::group_e2ee::send_state::publish_prepared(
+                self.client,
+                ticket,
+                &authoritative,
+            )?;
             for (key, progress) in observed {
                 if progress["group_did"] == self.group.as_str() {
                     crate::internal::group_runtime::recovery::complete_observed(
@@ -549,11 +554,6 @@ impl GroupSecureConversation<'_> {
                     )?;
                 }
             }
-            crate::internal::group_e2ee::send_state::publish_prepared(
-                self.client,
-                ticket,
-                &authoritative,
-            )?;
         }
         Ok(super::GroupSecurePrepareResult {
             group: status.group,

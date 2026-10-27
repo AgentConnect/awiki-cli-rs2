@@ -134,7 +134,6 @@ fn group_change_does_not_grant_owner_authority_or_cross_device_scope() {
     )
     .unwrap();
     for owner in [
-        "member",
         "left",
         "plain",
         "unknown",
@@ -157,6 +156,11 @@ fn group_change_does_not_grant_owner_authority_or_cross_device_scope() {
         })
         .unwrap();
     assert_eq!(scheduled, 0);
+    // Members also lose Ready on a membership projection. They must retain
+    // preparation work; the executor separately enforces owner-only mutations.
+    assert!(schedule_group_state_change_on(
+        &db, "member", "device", "did:example:group", "member-event",
+    ).unwrap());
     for device in ["a", "b"] {
         assert!(schedule_group_state_change_on(
             &db,

@@ -474,8 +474,19 @@ fn member_dids_from_authoritative_roster(
     if snapshot.get("group_did").and_then(Value::as_str) != Some(&notice.group_did) {
         return Err(crate::ImError::PermissionDenied);
     }
-    if snapshot.get("group_state_version").and_then(Value::as_str)
-        != Some(&notice.group_state_ref.group_state_version)
+    let version = snapshot
+        .get("group_state_version")
+        .and_then(Value::as_str)
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    // This roster locates current DID documents; it is not the historical
+    // Commit's authorization proof. A later P4 change must not strand an
+    // already accepted Commit in the receive queue. The SDK still verifies the
+    // original notice state reference against authenticated MLS AAD, exact
+    // epoch order, sender/device credentials and the membership delta.
+    if crate::internal::local_state::sync_v2::compare_decimal(
+        version,
+        &notice.group_state_ref.group_state_version,
+    )? == std::cmp::Ordering::Less
     {
         return Err(crate::ImError::CursorStale);
     }
