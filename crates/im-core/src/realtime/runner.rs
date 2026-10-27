@@ -42,10 +42,14 @@ pub(crate) struct RealtimeProjectionOutcome {
 }
 
 pub(crate) trait RealtimeNotificationProjector {
+    fn connected(&mut self) {}
+
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome;
 }
 
 pub(crate) trait AsyncRealtimeNotificationProjector {
+    fn connected(&mut self) {}
+
     fn project_async(
         &mut self,
         notification: Value,
@@ -56,6 +60,10 @@ impl<T> AsyncRealtimeNotificationProjector for T
 where
     T: RealtimeNotificationProjector + Send,
 {
+    fn connected(&mut self) {
+        RealtimeNotificationProjector::connected(self);
+    }
+
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         RealtimeNotificationProjector::project(self, notification)
     }
@@ -175,6 +183,7 @@ where
             }
         }
 
+        projector.connected();
         emit_state(events, super::RealtimeConnectionState::Connected, None);
         loop {
             if shutdown.is_requested() || control.is_closed() {
@@ -408,6 +417,13 @@ impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
 
 #[cfg(all(feature = "blocking", feature = "sqlite"))]
 impl RealtimeNotificationProjector for AsyncFirstSecureRealtimeNotificationProjector<'_> {
+    fn connected(&mut self) {
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        if let Some(runtime) = self.runtime.as_ref() {
+            schedule_connected_receive(self.client, runtime.handle());
+        }
+    }
+
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         #[cfg(feature = "sqlite")]
         {
@@ -526,6 +542,11 @@ impl<'a> AsyncSecureRealtimeNotificationProjector<'a> {
 
 #[cfg(feature = "sqlite")]
 impl AsyncRealtimeNotificationProjector for AsyncSecureRealtimeNotificationProjector<'_> {
+    fn connected(&mut self) {
+        #[cfg(any(feature = "group-e2ee", feature = "secure-direct"))]
+        schedule_connected_receive(self.client, &tokio::runtime::Handle::current());
+    }
+
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         #[cfg(feature = "sqlite")]
         {
@@ -637,6 +658,10 @@ impl<P> RealtimeNotificationProjector for LocalStateRealtimeNotificationProjecto
 where
     P: RealtimeNotificationProjector,
 {
+    fn connected(&mut self) {
+        self.inner.connected();
+    }
+
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3(
             self.client,
@@ -743,6 +768,10 @@ impl<P> AsyncRealtimeNotificationProjector for AsyncLocalStateRealtimeNotificati
 where
     P: AsyncRealtimeNotificationProjector + Send,
 {
+    fn connected(&mut self) {
+        self.inner.connected();
+    }
+
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         let operation = notification
             .pointer("/sync/event/event_id")
@@ -2059,6 +2088,7 @@ where
             }
         }
 
+        projector.connected();
         emit_state(&mut events, super::RealtimeConnectionState::Connected, None);
         loop {
             if shutdown.is_requested() || control.is_closed() {
@@ -2449,6 +2479,30 @@ async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)
             .await;
+}
+
+/// Bootstrap can finish before the socket exists. A new connection must obtain
+/// an observation bound to its token even when no further notification arrives.
+/// DirtyAfterCurrent coalesces this with a receive already in flight; encryption
+/// readiness remains withheld until that receive actually commits.
+#[cfg(all(
+    feature = "sqlite",
+    any(feature = "group-e2ee", feature = "secure-direct")
+))]
+fn schedule_connected_receive(client: &crate::ImClient, runtime: &tokio::runtime::Handle) {
+    if crate::internal::message_runtime::send_lifecycle::connection_token(client).is_none() {
+        return;
+    }
+    let client = client.clone();
+    runtime.spawn(async move {
+        let _ = client
+            .messages()
+            .request_receive_async(crate::messages::MessageSyncRequest {
+                reason: "realtime_connected".to_owned(),
+                limit: None,
+            })
+            .await;
+    });
 }
 
 struct AsyncDefaultRunnerTransport {

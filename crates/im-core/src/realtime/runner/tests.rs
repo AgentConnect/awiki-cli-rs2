@@ -1778,3 +1778,56 @@ async fn realtime_transition_hint_schedules_one_restart_safe_repair_without_chat
 #[cfg(feature = "group-e2ee")]
 #[path = "recovery_wakeup_tests.rs"]
 mod recovery_wakeup_tests;
+
+#[tokio::test]
+async fn connection_and_reconnection_wake_preparation_without_inbound_messages() {
+    struct ConnectionProjector {
+        connections: usize,
+    }
+    impl RealtimeNotificationProjector for ConnectionProjector {
+        fn connected(&mut self) {
+            self.connections += 1;
+        }
+        fn project(&mut self, _: Value) -> RealtimeProjectionOutcome {
+            panic!("this regression has no inbound notification or business send")
+        }
+    }
+    let options = super::super::RealtimeOptions {
+        reconnect: super::super::ReconnectPolicy::Fixed {
+            delay_ms: 0,
+            max_attempts: Some(1),
+        },
+        ..Default::default()
+    };
+    let (sender, _receiver) = tokio_mpsc::channel(options.event_buffer);
+    let (status, _status_receiver) =
+        watch::channel(super::super::session::initial_realtime_status(
+            &options,
+            super::super::RealtimeConnectionState::Disconnected,
+            None,
+        ));
+    let events = TokioRunnerEvents {
+        sender,
+        status,
+        subscriptions: options.subscriptions.clone(),
+    };
+    let mut transport = FakeAsyncRealtimeTransport {
+        connect_attempts: 0,
+        connect_results: VecDeque::from([Ok(()), Ok(())]),
+        notifications: VecDeque::from([Ok(None), Ok(None)]),
+        shutdown_on_next_notification: None,
+    };
+    let mut projector = ConnectionProjector { connections: 0 };
+    run_realtime_async_transport_until_shutdown(
+        options,
+        super::super::ShutdownSignal::pending(),
+        super::super::RealtimeControl::default(),
+        &mut transport,
+        events,
+        &mut projector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(transport.connect_attempts, 2);
+    assert_eq!(projector.connections, 2);
+}
