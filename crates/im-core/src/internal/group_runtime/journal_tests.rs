@@ -415,3 +415,68 @@ fn welcome_replenishment_commits_with_sync_and_replay_keeps_completed_progress()
         2
     );
 }
+
+#[test]
+fn concurrent_local_group_progress_merges_without_losing_recovery_claims_or_signals() {
+    use std::sync::{Arc, Barrier};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("progress-merge.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    let initial = serde_json::json!({"attempts":0,"signal_generation":0,"phase":"preparing"});
+    save_on(
+        &db,
+        "owner",
+        "device",
+        "recovery:create:group",
+        initial.clone(),
+    )
+    .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = ["attempts", "signal_generation"]
+        .into_iter()
+        .map(|field| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut db = Connection::open(path).unwrap();
+                db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                barrier.wait();
+                update_progress_on_with(
+                    &mut db,
+                    "owner",
+                    "device",
+                    "recovery:create:group",
+                    |previous| {
+                        let mut value = previous.unwrap();
+                        value[field] = serde_json::json!(value[field].as_u64().unwrap() + 1);
+                        Ok((value, ()))
+                    },
+                )
+                .unwrap();
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let raw: String = db
+        .query_row(
+            "SELECT intent_json FROM group_operation_journal",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let merged: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(merged["attempts"], 1);
+    assert_eq!(merged["signal_generation"], 1);
+    assert!(!replace_if_unchanged_on(
+        &db,
+        "owner",
+        "device",
+        "recovery:create:group",
+        &initial,
+        serde_json::json!({"phase":"completed"})
+    )
+    .unwrap());
+}

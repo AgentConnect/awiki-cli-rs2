@@ -8,76 +8,67 @@ pub(crate) fn record(
     request: Option<Value>,
     ready: bool,
 ) -> crate::ImResult<crate::groups::GroupOperationStatus> {
-    let previous = super::journal::load(client, key)?;
-    let mut status = crate::groups::GroupOperationStatus {
-        operation_id: key.to_owned(),
-        group_did: group.to_owned(),
-        phase: if ready {
-            "completed"
-        } else if group.is_empty() {
-            "submitted"
-        } else {
-            "preparing"
+    super::journal::update_progress_with(client, key, |previous| {
+        let mut status = crate::groups::GroupOperationStatus {
+            operation_id: key.to_owned(),
+            group_did: group.to_owned(),
+            phase: if ready {
+                "completed"
+            } else if group.is_empty() {
+                "submitted"
+            } else {
+                "preparing"
+            }
+            .to_owned(),
+            business_committed: !group.is_empty(),
+            encryption_ready: ready,
+            reason: (!ready).then(|| "encryption_preparation_pending".to_owned()),
+            next_action: if ready { "none" } else { "wait" }.to_owned(),
+        };
+        if !ready && request.is_none() {
+            if let Some(old) = previous
+                .as_ref()
+                .filter(|v| v["group_did"] == group && v["phase"] == "retry")
+            {
+                status.phase = "retry".to_owned();
+                status.reason = old["status"]["reason"].as_str().map(str::to_owned);
+                status.next_action = "retry".to_owned();
+            }
         }
-        .to_owned(),
-        business_committed: !group.is_empty(),
-        encryption_ready: ready,
-        reason: (!ready).then(|| "encryption_preparation_pending".to_owned()),
-        next_action: if ready { "none" } else { "wait" }.to_owned(),
-    };
-    if !ready && request.is_none() {
-        if let Some(old) = previous
-            .as_ref()
-            .filter(|v| v["group_did"] == group && v["phase"] == "retry")
-        {
-            status.phase = "retry".to_owned();
-            status.reason = old["status"]["reason"].as_str().map(str::to_owned);
-            status.next_action = "retry".to_owned();
+        let mut value = previous.clone().unwrap_or_else(|| json!({}));
+        if !value.is_object() {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "invalid group recovery progress".to_owned(),
+            });
         }
-    }
-    let mut value = previous.clone().unwrap_or_else(|| json!({}));
-    if !value.is_object() {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "invalid group recovery progress".to_owned(),
+        if !ready && request.is_none() {
+            // Hints have no authoritative version and may be repeated. Preserve
+            // backoff, but fence a repair already in flight from completing this
+            // newly observed signal without another pass.
+            let generation = value["signal_generation"]
+                .as_u64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                    detail: "group recovery signal generation exhausted".to_owned(),
+                })?;
+            value["signal_generation"] = json!(generation);
+        }
+        let progress = json!({
+            "phase": status.phase, "group_did": group,
+            "request": request.or_else(|| previous.as_ref().and_then(|v| v.get("request")).cloned()),
+            "attempts": previous.as_ref().and_then(|v| v["attempts"].as_u64()).unwrap_or(0),
+            "next_attempt_at": if ready { 0 } else { previous.as_ref().and_then(|v| v["next_attempt_at"].as_i64()).unwrap_or(0) }, "status": status,
         });
-    }
-    if !ready && request.is_none() {
-        // Hints have no authoritative version and may be repeated. Preserve
-        // backoff, but fence a repair already in flight from completing this
-        // newly observed signal without another pass.
-        let generation = value["signal_generation"]
-            .as_u64()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                detail: "group recovery signal generation exhausted".to_owned(),
-            })?;
-        value["signal_generation"] = json!(generation);
-    }
-    let progress = json!({
-        "phase": status.phase, "group_did": group,
-        "request": request.or_else(|| previous.as_ref().and_then(|v| v.get("request")).cloned()),
-        "attempts": previous.as_ref().and_then(|v| v["attempts"].as_u64()).unwrap_or(0),
-        "next_attempt_at": if ready { 0 } else { previous.as_ref().and_then(|v| v["next_attempt_at"].as_i64()).unwrap_or(0) }, "status": status,
-    });
-    let fields = value
-        .as_object_mut()
-        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-            detail: "invalid group recovery progress".to_owned(),
-        })?;
-    fields.extend(progress.as_object().expect("progress object").clone());
-    if let Some(previous) = previous {
-        if !super::journal::replace_if_unchanged(client, key, &previous, value)? {
-            return Err(crate::ImError::CursorStale);
-        }
-    } else {
-        // Do not overwrite a state-change task inserted after the initial read.
-        let stored = super::journal::freeze(client, key, key, value.clone())?;
-        if stored != value {
-            return Err(crate::ImError::CursorStale);
-        }
-    }
-    Ok(status)
+        let fields =
+            value
+                .as_object_mut()
+                .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                    detail: "invalid group recovery progress".to_owned(),
+                })?;
+        fields.extend(progress.as_object().expect("progress object").clone());
+        Ok((value, status))
+    })
 }
 
 /// Complete exactly the task observed before repair. Newer state changes remain

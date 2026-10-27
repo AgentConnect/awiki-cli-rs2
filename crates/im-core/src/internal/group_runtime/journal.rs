@@ -103,6 +103,55 @@ pub(crate) fn save_on(
     Ok(())
 }
 
+/// Merge a new local progress signal under the SQLite writer lock. Unlike a
+/// completion of remote work, this update has no earlier observation to fence.
+/// The callback must do local, synchronous work only.
+pub(crate) fn update_progress_with<T>(
+    client: &crate::core::ImClient,
+    key: &str,
+    update: impl FnOnce(Option<Value>) -> crate::ImResult<(Value, T)>,
+) -> crate::ImResult<T> {
+    let device = device_key(client)?;
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    update_progress_on_with(
+        &mut connection,
+        client.current_identity().id.as_str(),
+        &device,
+        key,
+        update,
+    )
+}
+
+fn update_progress_on_with<T>(
+    connection: &mut Connection,
+    owner: &str,
+    device: &str,
+    key: &str,
+    update: impl FnOnce(Option<Value>) -> crate::ImResult<(Value, T)>,
+) -> crate::ImResult<T> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let raw: Option<String> = transaction.query_row(
+        "SELECT intent_json FROM group_operation_journal WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3",
+        (owner, device, key), |row| row.get(0),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    let previous = raw
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map_err(|_| crate::ImError::LocalStateUnavailable {
+            detail: "invalid group recovery progress".to_owned(),
+        })?;
+    let (value, result) = update(previous)?;
+    save_on(&transaction, owner, device, key, value)?;
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(result)
+}
+
 /// Replace only the progress observed before doing asynchronous work. A newer
 /// change must survive completion, retry accounting, and failure of older work.
 pub(crate) fn replace_if_unchanged(
