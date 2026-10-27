@@ -2489,6 +2489,12 @@ async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
     feature = "sqlite",
     any(feature = "group-e2ee", feature = "secure-direct")
 ))]
+const CONNECTED_RECEIVE_REASON: &str = "websocket_reconnect";
+
+#[cfg(all(
+    feature = "sqlite",
+    any(feature = "group-e2ee", feature = "secure-direct")
+))]
 fn schedule_connected_receive(client: &crate::ImClient, runtime: &tokio::runtime::Handle) {
     if crate::internal::message_runtime::send_lifecycle::connection_token(client).is_none() {
         return;
@@ -2498,7 +2504,7 @@ fn schedule_connected_receive(client: &crate::ImClient, runtime: &tokio::runtime
         let _ = client
             .messages()
             .request_receive_async(crate::messages::MessageSyncRequest {
-                reason: "realtime_connected".to_owned(),
+                reason: CONNECTED_RECEIVE_REASON.to_owned(),
                 limit: None,
             })
             .await;

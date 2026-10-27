@@ -1831,3 +1831,39 @@ async fn connection_and_reconnection_wake_preparation_without_inbound_messages()
     assert_eq!(transport.connect_attempts, 2);
     assert_eq!(projector.connections, 2);
 }
+
+#[test]
+#[cfg(all(
+    feature = "sqlite",
+    any(feature = "group-e2ee", feature = "secure-direct")
+))]
+fn realtime_connection_catchup_uses_an_existing_sync_trigger() {
+    use crate::internal::wire::{
+        common::WireIdentity,
+        sync_v2::{build_delta_params, SyncCursorV2},
+    };
+    let identity = WireIdentity {
+        did: "did:example:alice".to_owned(),
+    };
+    let cursor = SyncCursorV2 {
+        stream_epoch: "1".to_owned(),
+        scan_seq: "0".to_owned(),
+    };
+    let params = build_delta_params(
+        &identity,
+        &cursor,
+        100,
+        CONNECTED_RECEIVE_REASON,
+        "realtime-test-client",
+    )
+    .unwrap();
+    assert_eq!(params["body"]["reason"], "websocket_reconnect");
+    assert!(build_delta_params(
+        &identity,
+        &cursor,
+        100,
+        "realtime_connected",
+        "realtime-test-client"
+    )
+    .is_err());
+}
