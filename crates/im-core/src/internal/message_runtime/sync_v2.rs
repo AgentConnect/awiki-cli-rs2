@@ -10321,7 +10321,7 @@ END;
                 Some(&json!("41"))
             );
             assert_eq!(
-                calls[3]
+                calls[2]
                     .params
                     .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
                 Some(&json!("51"))

@@ -47,7 +47,6 @@ async fn concurrent_cores_receive_without_superseding_each_other() {
             SyncSnapshotTransport::queued(
                 Rc::new(RefCell::new(Vec::new())),
                 vec![
-                    Ok(explicit_sync_negotiation_response()),
                     Ok(sync_snapshot_delta("1", "0", vec![])),
                 ],
             ),

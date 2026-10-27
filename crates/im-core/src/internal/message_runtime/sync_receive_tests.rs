@@ -61,12 +61,7 @@ async fn read_outbox_worker_refreshes_once_without_restarting_receive() {
             ReloadingSyncSnapshotTransport {
                 inner: SyncSnapshotTransport::queued(
                     Rc::clone(&calls),
-                    vec![
-                        Err(rejection()),
-                        Ok(explicit_sync_negotiation_response()),
-                        Ok(bootstrap),
-                        response,
-                    ],
+                    vec![Err(rejection()), Ok(bootstrap), response],
                 ),
                 authentication_reloads: Rc::clone(&reloads),
             },
@@ -89,7 +84,6 @@ async fn read_outbox_worker_refreshes_once_without_restarting_receive() {
                 .collect::<Vec<_>>(),
             [
                 "read_state.mark_read",
-                "anp.get_capabilities",
                 "sync.bootstrap",
                 "read_state.mark_read"
             ]
@@ -108,7 +102,7 @@ async fn read_outbox_worker_refreshes_once_without_restarting_receive() {
         );
         assert_eq!(
             calls.borrow()[0].params["meta"]["operation_id"],
-            calls.borrow()[3].params["meta"]["operation_id"]
+            calls.borrow()[2].params["meta"]["operation_id"]
         );
         let pending = db
             .run_local(|connection| {
