@@ -71,6 +71,10 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
         let group = crate::ids::GroupRef::parse(&fixture.group_did).unwrap();
         send_state::observe_async(&client, Some(&observation), None, true, false).await.unwrap();
         assert!(!send_state::observation_is_current(&client, &group));
+        crate::internal::group_runtime::recovery::maintain(&client).await;
+        let waiting = crate::internal::group_runtime::journal::pending(&client).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].1["attempts"], 0, "waiting for observation must not create failure backoff");
         assert!(matches!(client.secure().group(group.clone()).prepare_observed_async().await,
             Err(crate::ImError::CursorStale)));
         let connection = send_state::ConnectionGuard::connected(&client).unwrap();

@@ -108,6 +108,15 @@ pub(crate) async fn maintain(client: &crate::core::ImClient) {
         if value["next_attempt_at"].as_i64().unwrap_or(0) > now {
             continue;
         }
+        // A retained observation task belongs to its original connection.
+        // Wait for this Core's fresh receive facts before charging an attempt;
+        // hints can wake the journal before in-memory observation publication.
+        if value["last_change_id"].as_str().is_some_and(|id| id.starts_with("observation:")) {
+            let current = value["group_did"].as_str()
+                .and_then(|group| crate::ids::GroupRef::parse(group).ok())
+                .is_some_and(|group| crate::internal::group_e2ee::send_state::observation_is_current(client, &group));
+            if !current { continue; }
+        }
         let attempts = value["attempts"].as_u64().unwrap_or(0).saturating_add(1);
         // Charge the attempt before remote IO so a timeout/restart retains backoff.
         let observed = value.clone();
