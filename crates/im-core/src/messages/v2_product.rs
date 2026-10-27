@@ -380,7 +380,9 @@ async fn send_group_async_impl(
     normalize_message_identity(&mut request)?;
     let scope = crate::internal::message_runtime::send_lifecycle::owner_scope(client).ok();
     for attempt in 0..2 {
-        let result = send_group_attempt_async(client, &request).await;
+        // Keep the nested receive/preparation future off the listener IPC
+        // thread's bounded stack, including unoptimized diagnostic builds.
+        let result = Box::pin(send_group_attempt_async(client, &request)).await;
         if attempt == 1 || !matches!(&result, Err(crate::ImError::CursorStale)) {
             return result;
         }
@@ -438,12 +440,13 @@ async fn send_group_attempt_async(
         // Join existing preparation when reception already has current facts;
         // a foreground waiter is not another remote change notification.
         if crate::internal::group_e2ee::send_state::observation_is_current(client, &group) {
-            client.messages().watch_processing_updates()?.wait_async(client).await?;
+            let mut processing = client.messages().watch_processing_updates()?;
+            Box::pin(processing.wait_async(client)).await?;
         } else {
-            client.messages().sync_now_async(crate::messages::MessageSyncRequest {
+            Box::pin(client.messages().sync_now_async(crate::messages::MessageSyncRequest {
                 reason: "foreground_reconcile".to_owned(),
                 limit: None,
-            }).await?;
+            })).await?;
         }
         client
             .secure()
