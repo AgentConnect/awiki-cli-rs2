@@ -507,6 +507,14 @@ impl GroupSecureConversation<'_> {
                 warnings: status.warnings,
             });
         }
+        // Do not scan a roster using pre-connection or incomplete observation
+        // facts. The existing receive worker will schedule preparation again
+        // once this connection has caught up. Explicit HTTP repair is separate.
+        if crate::internal::group_e2ee::send_state::has_observation(self.client, &self.group)
+            && !crate::internal::group_e2ee::send_state::observation_is_current(self.client, &self.group)
+        {
+            return Err(crate::ImError::CursorStale);
+        }
         let ticket =
             crate::internal::group_e2ee::send_state::preparation_ticket(self.client, &self.group)?;
         let observed = crate::internal::group_runtime::journal::pending(self.client)?;

@@ -16,7 +16,7 @@ pub(crate) use crate::internal::message_runtime::send_lifecycle::ConnectionGuard
 #[cfg(feature = "internal-test-helpers")]
 pub(crate) use observations::diagnostics_for_test;
 pub(crate) use observations::{
-    forget_observations, has_observation, invalidate, observe_async, observe_group_read,
+    forget_observations, has_observation, invalidate, observation_is_current, observe_async, observe_group_read,
     preparation_ticket, prepared_snapshot, publish_prepared, validate_preparation_ticket,
 };
 

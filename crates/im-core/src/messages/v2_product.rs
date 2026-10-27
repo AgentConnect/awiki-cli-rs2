@@ -435,16 +435,16 @@ async fn send_group_attempt_async(
         && crate::internal::message_runtime::send_lifecycle::connection_token(client).is_some()
         && crate::internal::group_e2ee::send_state::prepared_snapshot(client, &group)?.is_none()
     {
-        // A known receive gap must be repaired before generating new MLS
-        // ciphertext. This occurs before acquiring the lifecycle lock needed
-        // by the receive/maintenance workers. Frozen retries bypass it.
-        client
-            .messages()
-            .request_sync_async(crate::messages::MessageSyncRequest {
+        // Join existing preparation when reception already has current facts;
+        // a foreground waiter is not another remote change notification.
+        if crate::internal::group_e2ee::send_state::observation_is_current(client, &group) {
+            client.messages().watch_processing_updates()?.wait_async(client).await?;
+        } else {
+            client.messages().sync_now_async(crate::messages::MessageSyncRequest {
                 reason: "foreground_reconcile".to_owned(),
                 limit: None,
-            })
-            .await?;
+            }).await?;
+        }
         client
             .secure()
             .group(group.clone())

@@ -56,7 +56,6 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
         )
         .unwrap();
         drop(db);
-        let connection = send_state::ConnectionGuard::connected(&client).unwrap();
         let observation = GroupStateObservations {
             schema_version: 1,
             complete: true,
@@ -69,6 +68,20 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
                 local_identity_coverage: true,
             }],
         };
+        let group = crate::ids::GroupRef::parse(&fixture.group_did).unwrap();
+        send_state::observe_async(&client, Some(&observation), None, true, false).await.unwrap();
+        assert!(!send_state::observation_is_current(&client, &group));
+        assert!(matches!(client.secure().group(group.clone()).prepare_observed_async().await,
+            Err(crate::ImError::CursorStale)));
+        let connection = send_state::ConnectionGuard::connected(&client).unwrap();
+        assert!(matches!(client.secure().group(group.clone()).prepare_observed_async().await,
+            Err(crate::ImError::CursorStale)));
+        assert!(server.requests().is_empty(), "pre-connection preparation must not scan the roster");
+        let mut bootstrap_observation = observation.clone();
+        bootstrap_observation.groups[0].epoch = None;
+        send_state::observe_async(&client, Some(&bootstrap_observation), send_state::connection_token(&client), true, false).await.unwrap();
+        assert!(send_state::observation_is_current(&client, &group), "a fresh uninitialized group can bootstrap");
+        assert!(send_state::preparation_ticket(&client, &group).unwrap().is_none(), "bootstrap permission is not send readiness");
         send_state::observe_async(
             &client,
             Some(&observation),
@@ -78,7 +91,7 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
         )
         .await
         .unwrap();
-        let group = crate::ids::GroupRef::parse(&fixture.group_did).unwrap();
+        assert!(send_state::observation_is_current(&client, &group));
         assert!(
             send_state::prepared_snapshot(&client, &group)
                 .unwrap()

@@ -49,6 +49,29 @@ pub(crate) fn has_observation(client: &crate::ImClient, group: &GroupRef) -> boo
         .contains_key(&scope)
 }
 
+/// Whether preparation can use the latest complete observation on this live
+/// connection. Unlike a send ticket, bootstrap does not require an MLS epoch.
+pub(crate) fn observation_is_current(client: &crate::ImClient, group: &GroupRef) -> bool {
+    let Ok(key) = scope(client, group) else {
+        return false;
+    };
+    let Some(connection) = connection_token(client) else {
+        return false;
+    };
+    client
+        .core_inner()
+        .group_send_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .observed
+        .get(&key)
+        .is_some_and(|observed| {
+            observed.caught_up
+                && observed.connection.as_ref() == Some(&connection)
+                && observed.local_generation != u64::MAX
+        })
+}
+
 pub(crate) fn invalidate(client: &crate::ImClient, group: Option<&str>) {
     let Ok(owner) = scope_for(client, "") else {
         return;
