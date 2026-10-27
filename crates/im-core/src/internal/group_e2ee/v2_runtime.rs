@@ -25,11 +25,12 @@ use super::provider::map_group_mls_error;
 #[derive(Debug, Clone)]
 pub(crate) struct GroupE2eeV2Runtime {
     store: ImCoreSqliteGroupMlsStore,
+    control_inbox: Option<std::path::PathBuf>,
 }
 
 impl GroupE2eeV2Runtime {
     pub(crate) fn new(store: ImCoreSqliteGroupMlsStore) -> Self {
-        Self { store }
+        Self { store, control_inbox: None }
     }
 
     pub(crate) fn owner_scope(&self) -> crate::ImResult<GroupMlsOwnerScope> {
@@ -134,6 +135,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2CreateGroupInput,
     ) -> crate::ImResult<V2PreparedCreate> {
+        let _guard = self.membership_guard()?;
+        self.require_control_inbox_drained(&input.group_state_ref.group_did)?;
         v2::create_group_prepare_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -141,6 +144,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2AddMemberInput,
     ) -> crate::ImResult<V2PreparedAdd> {
+        let _guard = self.membership_guard()?;
+        self.require_control_inbox_drained(&input.group_state_ref.group_did)?;
         v2::add_member_prepare_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -149,6 +154,8 @@ impl GroupE2eeV2Runtime {
         input: V2AddMemberInput,
         controller: V2DidTransitionController,
     ) -> crate::ImResult<V2PreparedAdd> {
+        let _guard = self.membership_guard()?;
+        self.require_control_inbox_drained(&input.group_state_ref.group_did)?;
         v2::add_member_prepare_for_did_transition_v2(&self.store, input, controller)
             .map_err(map_group_mls_error)
     }
@@ -157,6 +164,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2RemoveMemberInput,
     ) -> crate::ImResult<V2PreparedRemove> {
+        let _guard = self.membership_guard()?;
+        self.require_control_inbox_drained(&input.group_state_ref.group_did)?;
         v2::remove_member_prepare_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -175,6 +184,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2ProcessWelcomeInput,
     ) -> crate::ImResult<V2ProcessCommitOutput> {
+        let _guard = self.membership_guard()?;
+        self.require_membership_settled(&input.group_did)?;
         v2::process_welcome_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -189,6 +200,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2ProcessCommitInput,
     ) -> crate::ImResult<V2ProcessCommitOutput> {
+        let _guard = self.membership_guard()?;
+        self.require_membership_settled(&input.group_state_ref.group_did)?;
         v2::process_commit_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -196,6 +209,8 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2ProcessNoticeInput,
     ) -> crate::ImResult<V2ProcessNoticeOutput> {
+        let _guard = self.membership_guard()?;
+        self.require_membership_settled(&input.notice.group_did)?;
         v2::process_notice_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
@@ -340,7 +355,7 @@ pub(crate) fn runtime_for_client(
     .map_err(|err| crate::ImError::LocalStateUnavailable {
         detail: format!("initialize P6 v2 group MLS store: {err}"),
     })?;
-    Ok(GroupE2eeV2Runtime::new(store))
+    Ok(GroupE2eeV2Runtime::new(store).with_control_inbox(client.core_inner().sdk_paths().local_state.sqlite_path.clone()))
 }
 
 #[cfg(test)]
@@ -515,3 +530,6 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }
+
+#[path = "v2_membership_coordination.rs"]
+mod membership_coordination;

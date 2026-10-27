@@ -993,7 +993,8 @@ fn transition_controller_context_from_documents<'a>(
         if !store.state_db_path().is_file() {
             continue;
         }
-        let runtime = super::v2_runtime::GroupE2eeV2Runtime::new(store);
+        let runtime = super::v2_runtime::GroupE2eeV2Runtime::new(store)
+            .with_control_inbox(client.core_inner().sdk_paths().local_state.sqlite_path.clone());
         let inspected = runtime.inspect_local_group(V2InspectLocalGroupInput {
             owner_did: predecessor_did.clone(),
             owner_device_id: predecessor_device_id.clone(),

@@ -343,7 +343,7 @@ fn runtime_context_for_notice(
         });
     }
     Ok(NoticeRuntimeContext {
-        runtime: GroupE2eeV2Runtime::new(store),
+        runtime: GroupE2eeV2Runtime::new(store).with_control_inbox(client.core_inner().sdk_paths().local_state.sqlite_path.clone()),
         owner_did: marker.previous_did.clone(),
         transition_dids: Some((marker.previous_did, marker.current_did)),
     })

@@ -692,11 +692,17 @@ async fn p6_product_lifecycle(fixture: DidFixture) {
             request_id: "req-remove-a2".to_owned(),
         })
         .expect("prepare exact A2 Remove");
+    let early_echo = remove_commit_notice(&fixture, a1, &remove.prepared.body, "notice-remove-before-host-response");
+    let waiting = consume_public_notice(&directory, &fixture, a1, early_echo.clone())
+        .expect_err("a control notice cannot advance MLS while the local submission is uncertain");
+    assert!(matches!(waiting, crate::ImError::Service {code:Some(code), ..} if code == "group.e2ee.state_not_ready"));
     let removed = a1_product
         .submit_remove_async(&remove, "req-finalize-remove-a2")
         .await
         .expect("submit and finalize exact A2 Remove");
     assert_eq!(removed.finalized.epoch, "2");
+    consume_public_notice(&directory, &fixture, a1, early_echo)
+        .expect("the same retained notice can be processed after the host result settles");
     let remove_notice =
         remove_commit_notice(&fixture, a2, &remove.prepared.body, "notice-remove-a2");
     let remove_output = consume_public_notice(&directory, &fixture, a2, remove_notice)
@@ -1857,3 +1863,6 @@ fn make_did_fixture(label: &str, device_ids: &[&str]) -> DidFixture {
         devices,
     }
 }
+
+#[path = "v2_competing_remove_tests.rs"]
+mod competing_remove_tests;

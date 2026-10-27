@@ -1079,6 +1079,8 @@ roster_readiness 缓存。状态绑定当前 Core、owner、DID、精确 device�
 当前设备 roster；普通成员只验证完整业务成员集合与本地 MLS。实际提交始终保留
 Host 当前资格、版本、epoch、证明与幂等检查，版本错误使本地 Ready 失效。
 
+成员Commit准备与接收使用按SDK owner/device存储作用域隔离的短暂文件协调锁，锁内仅做本地SDK调用，不跨网络等待。新prepare先检查Core持久inbox中该群尚未关闭的P6控制输入；收到的Commit/Welcome则通过SDK typed inspection确认本地没有未决成员Commit后再应用。这样，失败方先核实自己的提交并安全中止未接受的pending，再应用成功方通知；不能先推进本地epoch、随后要求SDK回滚。跨进程同样参与此协调，SDK原有操作锁/WAL仍保留，Core不读取或改写SDK私有表。未知结果继续保留原pending，相关输入由既有inbox可重试处理。
+
 并发 Remove 的失败设备不能把 anp.target_not_found 单独解释为未接受。仅消费 Host
 可选的 rejected_membership_submission，逐项匹配原 operation／actor／目标设备／
 group_state_ref／crypto group／epoch／Commit摘要后，调用既有SDK abort 清除未被接受的
