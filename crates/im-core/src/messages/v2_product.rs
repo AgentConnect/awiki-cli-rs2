@@ -432,6 +432,7 @@ async fn send_group_attempt_async(
     };
     if saved.is_none()
         && crate::internal::group_e2ee::send_state::has_observation(client, &group)
+        && crate::internal::message_runtime::send_lifecycle::connection_token(client).is_some()
         && crate::internal::group_e2ee::send_state::prepared_snapshot(client, &group)?.is_none()
     {
         // A known receive gap must be repaired before generating new MLS

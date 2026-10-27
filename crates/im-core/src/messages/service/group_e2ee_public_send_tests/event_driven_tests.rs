@@ -11,7 +11,15 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
         let accepted = json!({"accepted":true,"group_did":fixture.group_did,
             "message_id":"msg-ready","operation_id":"op-ready","group_event_seq":"91",
             "group_state_version":"1","accepted_at":"2026-05-21T00:00:00Z","epoch":"0","group_receipt":{}});
-        let server = RpcTestServer::spawn(vec![accepted]);
+        let mut responses = vec![accepted];
+        if role == "member" {
+            responses.extend([
+                json!({"group_snapshot":{"group_did":fixture.group_did,"my_role":"member","membership_status":"active"}}),
+                json!({"group_did":fixture.group_did,"group_state_version":"1","group_profile":{},"group_policy":{"message_security_profile":"group-e2ee"}}),
+                json!({"accepted":true,"group_did":fixture.group_did,"message_id":"msg-offline","operation_id":"op-offline","group_event_seq":"92","group_state_version":"1","accepted_at":"2026-05-21T00:00:01Z","epoch":"0","group_receipt":{}}),
+            ]);
+        }
+        let server = RpcTestServer::spawn(responses);
         let mut config = fixture.config(server.base_url());
         config.anp_service_did = Some(crate::ids::Did::parse("did:wba:awiki.test").unwrap());
         let core = crate::core::ImCore::new_with_options(
@@ -115,7 +123,7 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
             },
             delegated_signing: None,
         };
-        client.messages().send_async(request).await.unwrap();
+        client.messages().send_async(request.clone()).await.unwrap();
         let business: Vec<_> = server
             .requests()
             .into_iter()
@@ -154,6 +162,32 @@ async fn prepared_owner_and_member_submit_without_frontloaded_group_reads() {
                 .is_none(),
             "disconnect must require a new synchronized connection"
         );
+        if role == "member" {
+            // An HTTP-only caller may retain observed facts, but must use the
+            // explicit fresh preparation path instead of waiting for a socket.
+            let mut offline = request;
+            offline.client_message_id = Some(crate::ids::MessageId::parse("msg-offline").unwrap());
+            offline.delivery.idempotency_key = Some("op-offline".into());
+            client.messages().send_async(offline).await.unwrap();
+            let methods: Vec<_> = server
+                .requests()
+                .into_iter()
+                .filter(|request| request.rpc_method != "anp.get_capabilities")
+                .map(|request| request.rpc_method)
+                .collect();
+            assert_eq!(
+                methods,
+                [
+                    "group.e2ee.send",
+                    "group.get",
+                    "group.get_info",
+                    "group.e2ee.send"
+                ]
+            );
+            assert!(send_state::prepared_snapshot(&client, &group)
+                .unwrap()
+                .is_none());
+        }
         core.shutdown_local_state_for_reset().await.unwrap();
     }
 }
