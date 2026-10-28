@@ -46,6 +46,20 @@ function fixture(t, channel = 'stable', existing = true, sharedArtifacts = false
   const release = transaction.install(stage,config);
   return {root,config,stage,release,manifest,channel,pointer:path.join(config.web_root,channel),docs:path.join(config.web_root,'docs'),journal:transaction.journalPath(config,channel)};
 }
+test('private operator umask leaves new release parents traversable and journals private', async t => {
+  const previous = process.umask(0o077);
+  let f;
+  try { f = fixture(t, 'stable', false); }
+  finally { process.umask(previous); }
+  for (const dir of [f.config.archive_root, path.join(f.config.archive_root,'releases'),
+    path.dirname(f.release), path.join(f.config.archive_root,'document-releases'),
+    f.config.installer_root, path.dirname(transaction.installerFile(f.config,f.manifest))]) {
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o755, dir);
+  }
+  assert.equal(fs.statSync(f.root).mode & 0o777, 0o700, 'existing private parent stays private');
+  await transaction.activate(f.release,f.config,async()=>{});
+  assert.equal(fs.statSync(f.journal).mode & 0o777, 0o600);
+});
 test('shared stable platform store preserves old archives across activation and rollback', async t => {
   const f = fixture(t, 'stable', true, true);
   const name = path.basename(new URL(f.manifest.packages['linux-amd64'].url).pathname);
