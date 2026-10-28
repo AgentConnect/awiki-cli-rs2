@@ -1,6 +1,6 @@
 # `@awiki/im-core-node` 原生制品
 
-本次协调发布版本为 `0.2.14`，固定使用 IM Core `0.1.11`，native API 为 `21`。wrapper 与五个平台包须共同发布为 `0.2.14`；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+本次协调发布版本为 `0.2.15`，固定使用 IM Core `0.1.12`，native API 为 `21`。wrapper 与五个平台包须共同发布为 `0.2.15`；以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
 源码消费者通过显式 `--local-candidate`
 打包 private tarball；provenance 与 SOURCE 采用实际解析的 ANP/Identity 提交和 dirty 状态，
 并记录 Cargo lock 摘要。native API 从当前 Rust facade 读取。该候选验证不替代正式 registry

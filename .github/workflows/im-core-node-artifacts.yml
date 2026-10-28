@@ -20,6 +20,7 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: 1.88.0
+  CARGO_BUILD_JOBS: 4
   PNPM_VERSION: 10.27.0
   AWIKI_NODE_SOURCE_INTEGRATION: ${{ inputs.dependency_source == 'source' && '1' || '0' }}
 
@@ -161,6 +162,7 @@ jobs:
         run: |
           docker run --rm \
             --user "$(id -u):$(id -g)" \
+            -e CARGO_BUILD_JOBS \
             -e HOME="${HOME}" \
             -e CARGO_HOME="${HOME}/.cargo" \
             -e RUSTUP_HOME="${HOME}/.rustup" \
@@ -188,6 +190,7 @@ jobs:
         run: |
           docker run --rm \
             --user "$(id -u):$(id -g)" \
+            -e CARGO_BUILD_JOBS \
             -e HOME="${HOME}" -e CARGO_HOME="${HOME}/.cargo" -e RUSTUP_HOME="${HOME}/.rustup" \
             -e PATH="${HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
             -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
