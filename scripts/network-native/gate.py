@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import queue
 import re
 import socket
@@ -123,6 +124,43 @@ class MacProxy:
     def command(self, option, *values):
         run("sudo", "-n", "networksetup", "-" + option, self.service, *map(str, values))
 
+    @staticmethod
+    def active_settings():
+        # networksetup writes preferences before configd publishes the live dictionary.
+        # Read the same CFNetwork surface as proxyres, without changing Core policy.
+        cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        network = ctypes.CDLL("/System/Library/Frameworks/CFNetwork.framework/CFNetwork")
+        network.CFNetworkCopySystemProxySettings.restype = ctypes.c_void_p
+        cf.CFPropertyListCreateData.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long, ctypes.c_ulong, ctypes.c_void_p]
+        cf.CFPropertyListCreateData.restype = ctypes.c_void_p
+        cf.CFDataGetLength.argtypes = [ctypes.c_void_p]
+        cf.CFDataGetLength.restype = ctypes.c_long
+        cf.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
+        cf.CFDataGetBytePtr.restype = ctypes.c_void_p
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        settings = network.CFNetworkCopySystemProxySettings()
+        if not settings:
+            raise RuntimeError("native_proxy_settings_missing")
+        data = None
+        try:
+            data = cf.CFPropertyListCreateData(None, settings, 100, 0, None)
+            if not data:
+                raise RuntimeError("native_proxy_settings_unreadable")
+            return plistlib.loads(ctypes.string_at(cf.CFDataGetBytePtr(data), cf.CFDataGetLength(data)))
+        finally:
+            if data:
+                cf.CFRelease(data)
+            cf.CFRelease(settings)
+
+    @staticmethod
+    def settings_match(settings, port, bypass, pac):
+        return (bool(settings.get("HTTPEnable")) == bool(port)
+                and (not port or (settings.get("HTTPProxy"), settings.get("HTTPPort")) == ("127.0.0.1", port))
+                and bool(settings.get("ProxyAutoConfigEnable")) == bool(pac)
+                and (not pac or settings.get("ProxyAutoConfigURLString") == pac)
+                and settings.get("ExceptionsList", []) == (bypass.split(";") if bypass else [])
+                and not settings.get("ProxyAutoDiscoveryEnable"))
+
     def set(self, port=None, bypass="", pac=""):
         self.command("setproxyautodiscovery", "off")
         for kind in ("web", "secureweb"):
@@ -133,6 +171,11 @@ class MacProxy:
             self.command("setautoproxyurl", pac)
         self.command("setautoproxystate", "on" if pac else "off")
         self.command("setproxybypassdomains", *(bypass.split(";") if bypass else ["Empty"]))
+        deadline = time.monotonic() + 5
+        while not self.settings_match(self.active_settings(), port, bypass, pac):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("native_proxy_preferences_not_active")
+            time.sleep(0.1)
 
     def restore(self):
         for kind in ("web", "secureweb"):

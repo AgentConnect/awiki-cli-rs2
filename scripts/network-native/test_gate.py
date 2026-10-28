@@ -6,6 +6,13 @@ import gate
 
 
 class FixtureContract(unittest.TestCase):
+    def test_macos_preferences_wait_for_live_exceptions(self):
+        desired = {"HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 8888,
+                   "ExceptionsList": [gate.ADDRESS]}
+        self.assertTrue(gate.MacProxy.settings_match(desired, 8888, gate.ADDRESS, ""))
+        self.assertFalse(gate.MacProxy.settings_match({**desired, "ExceptionsList": []}, 8888, gate.ADDRESS, ""))
+        self.assertFalse(gate.MacProxy.settings_match({**desired, "HTTPPort": 7777}, 8888, gate.ADDRESS, ""))
+
     def test_only_disposable_native_runners_can_mutate_settings(self):
         for environment, system in [({}, "Darwin"), ({"GITHUB_ACTIONS": "true"}, "Windows"),
                                     ({"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}, "Windows"),

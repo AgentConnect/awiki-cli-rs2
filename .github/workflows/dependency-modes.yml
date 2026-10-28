@@ -7,6 +7,12 @@ on:
         required: false
         default: false
         type: boolean
+      native_platform:
+        description: 原生门禁平台；只用于定向复验失败 lane
+        required: false
+        default: all
+        type: choice
+        options: [all, macos, windows]
       dependency_source:
         description: Select the registry dependency graph or the committed source manifest
         required: false
@@ -55,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022]
+        os: ${{ fromJSON(inputs.native_platform == 'macos' && '["macos-14"]' || inputs.native_platform == 'windows' && '["windows-2022"]' || '["macos-14", "windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:

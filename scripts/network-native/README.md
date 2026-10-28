@@ -14,6 +14,10 @@ macOS 14 与 Windows Server 2022 两条原生 lane。仅接受一次性 GitHub-h
 python3 -m unittest discover -s scripts/network-native -p 'test_*.py' -v
 ```
 
+失败后的定向复验可选择 `native_platform=macos` 或 `windows`。macOS 夹具在
+`networksetup` 返回后轮询 CFNetwork 的活动配置，确认代理端口、PAC、例外已生效再发请求；
+不在设置尚未由 configd 传播时误判 Core，也不调用 Core 的人工失效接口掩盖缓存问题。
+
 检查静态代理、系统例外、原生 PAC、配置变化、接口地址变化失效、关闭/卡住/拒绝认证代理回退、
 失败冷却、业务 403 保留、POST 已提交响应丢失不重发，以及直连禁用环境变量代理。
 CONNECT 探测不含业务标记；所有请求只到自建无账号的夹具。系统设置 API 来自
