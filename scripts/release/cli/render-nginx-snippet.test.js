@@ -7,6 +7,25 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
+test('optional shared stable artifact root preserves the production alias and validates paths', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-shared-render-'));
+  t.after(() => fs.rmSync(dir, {recursive:true,force:true}));
+  const file = path.join(dir, 'server.toml');
+  const base = fs.readFileSync(path.join(__dirname, 'publish-server.example.toml'), 'utf8')
+    .replaceAll('example.com', 'anpclaw.com')
+    .replace('/etc/awiki/cli-document-tenants.json', path.join(__dirname, 'document-tenants.singapore.json'));
+  fs.writeFileSync(file, base + '\nstable_artifact_root = "/var/lib/awiki-cli/artifacts"\n');
+  const render = () => spawnSync(process.execPath, [path.join(__dirname, 'render-nginx-snippet.js'), file], {encoding:'utf8'});
+  const good = render();
+  assert.equal(good.status, 0, good.stderr);
+  assert.match(good.stdout, /location \^~ \/cli\/stable\/artifacts\/ \{\n    alias \/var\/lib\/awiki-cli\/artifacts\//);
+  assert.match(good.stdout, /location \^~ \/cli\/beta\/artifacts\/ \{\n    alias \/var\/www\/awiki-web\/cli\/beta\/artifacts\//);
+  for (const invalid of ['', 'relative', '/var/lib/../unsafe', '/tmp/bad;directive']) {
+    fs.writeFileSync(file, base + `\nstable_artifact_root = "${invalid}"\n`);
+    assert.notEqual(render().status, 0, invalid);
+  }
+});
+
 test('renders all public CLI routes inside the configured namespace', t => {
   const script = path.resolve(__dirname, 'render-nginx-snippet.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-render-'));

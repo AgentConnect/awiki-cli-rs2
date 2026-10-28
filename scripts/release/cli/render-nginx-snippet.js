@@ -48,7 +48,10 @@ for (const channel of ['stable', 'beta']) {
   process.stdout.write(`    rewrite ^ ${publicPath}${channel}/manifest.json last;\n`);
   process.stdout.write('}\n');
   process.stdout.write(`location ^~ ${publicPath}${channel}/artifacts/ {\n`);
-  process.stdout.write(`    alias ${webRoot}${channel}/artifacts/;\n`);
+  const artifacts = channel === 'stable' && config.stable_artifact_root
+    ? `${config.stable_artifact_root.replace(/\/+$/, '')}/`
+    : `${webRoot}${channel}/artifacts/`;
+  process.stdout.write(`    alias ${artifacts};\n`);
   process.stdout.write('    autoindex off;\n');
   process.stdout.write(`    limit_conn cli_download_per_ip ${config.cli_download_max_per_ip};\n`);
   process.stdout.write(`    limit_conn cli_download_total ${config.cli_download_max_total};\n`);

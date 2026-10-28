@@ -11,6 +11,7 @@ const SERVER_KEYS = new Set([
   'cli_download_max_per_ip', 'cli_download_max_total', 'cli_download_rate_after',
   'cli_download_rate',
 ]);
+const OPTIONAL_SERVER_KEYS = new Set(['stable_artifact_root']);
 const RELEASE_KEYS = new Set([
   'schema_version', 'channels', 'anp_repository', 'anp_commit',
   'anp_identity_commit', 'archive_keep_versions', 'targets',
@@ -45,7 +46,7 @@ function parseFlatToml(text) {
 function readServerConfig(filePath) {
   const resolved = path.resolve(filePath);
   const config = parseFlatToml(fs.readFileSync(resolved, 'utf8'));
-  const unknown = Object.keys(config).filter(key => !SERVER_KEYS.has(key));
+  const unknown = Object.keys(config).filter(key => !SERVER_KEYS.has(key) && !OPTIONAL_SERVER_KEYS.has(key));
   const missing = [...SERVER_KEYS].filter(key => !config[key]);
   if (unknown.length) throw new Error(`unknown publish-server keys: ${unknown.join(', ')}`);
   if (missing.length) throw new Error(`missing publish-server keys: ${missing.join(', ')}`);
@@ -66,6 +67,7 @@ function readServerConfig(filePath) {
   for (const key of [
     'web_root', 'archive_root', 'installer_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
     'nginx_backup_root', 'document_tenants',
+    ...(Object.hasOwn(config, 'stable_artifact_root') ? ['stable_artifact_root'] : []),
   ]) {
     if (!path.isAbsolute(config[key])) throw new Error(`${key} must be an absolute filesystem path`);
     if (!/^\/[a-z0-9._/-]+$/i.test(config[key]) || config[key].split('/').includes('..')) {

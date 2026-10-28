@@ -67,6 +67,18 @@ function installAssets(directory, config) {
     const file = installerFile(config, m);
     if (fs.existsSync(file)) check(hash(file) === m.installer.sha256, 'immutable installer already exists with different content');
     else durable.write(file, fs.readFileSync(path.join(directory, 'awiki-cli.tgz')), 0o444);
+    // Existing production installers refer to this shared, versioned-name store.
+    // A channel pointer change must not make their platform archives disappear.
+    if (config.stable_artifact_root) {
+      for (const artifact of Object.values(m.packages)) {
+        const name = path.basename(new URL(artifact.url).pathname);
+        const target = path.join(config.stable_artifact_root, name);
+        const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+        if (existing) check(existing.isFile() && hash(target) === artifact.sha256,
+          `immutable platform artifact already exists with different content: ${name}`);
+        else durable.write(target, fs.readFileSync(path.join(directory, 'artifacts', name)), 0o444);
+      }
+    }
   }
   durable.mkdir(path.join(config.archive_root, 'document-releases'));
   const docRelease = documents.install(path.join(directory, 'documents'), config.archive_root);

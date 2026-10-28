@@ -57,6 +57,11 @@ Stable 的包内元数据、manifest 和引导文档统一使用
 新增必填 `installer_root`：实际安装到 `installer_root/<版本>/awiki-cli.tgz`。
 已有同版本文件仅在摘要相同时复用，内容不同时拒绝覆盖。安装不会更改 User Service 政策。
 
+已有生产的旧 installer 还会引用 `/cli/stable/artifacts/<带版本文件名>`。如果该路径由独立共享
+目录提供，配置可选 `stable_artifact_root` 为原目录；Nginx 生成器保持它的 alias，安装器只添加
+本次摘要核验的文件，已有同名不同内容或符号链接拒绝覆盖，旧文件保留。不能把这一存量路由
+改指只含新版本的 channel 目录。未配置时沿用 `web_root/stable/artifacts`；Beta 不受影响。
+
 **先核对现有下载目录再部署 Nginx**。已有生产版本化包时，`installer_root` 必须指向其当前版本化安装包目录，
 保留旧版本文件和符号链接；不得用一个空目录替换旧版本下载树。缺此配置时发布和 Nginx 生成均失败关闭。
 站点生成器增加更精确的版本化路径及通道安装包、Skill 下载/发现文件路由，保留 User Service 的 manifest 精确代理。
