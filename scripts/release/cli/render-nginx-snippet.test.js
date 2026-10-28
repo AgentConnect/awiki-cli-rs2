@@ -37,6 +37,7 @@ test('renders all public CLI routes inside the configured namespace', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /location = \/cli\/onboarding\.md \{/);
   assert.match(result.stdout, /location = \/cli\/skill\.md \{/);
+  assert.equal((result.stdout.match(/limit_except GET HEAD \{ deny all; \}/g) || []).length, 2);
   assert.match(result.stdout, /alias \/var\/www\/awiki-web\/cli\/docs\/anpclaw\.com\/onboarding\.md;/);
   assert.match(result.stdout, /location = \/cli\/stable\/ \{\n    rewrite \^ \/cli\/stable\/manifest\.json last;/);
   assert.match(result.stdout, /location = \/cli\/beta\/ \{\n    rewrite \^ \/cli\/beta\/manifest\.json last;/);

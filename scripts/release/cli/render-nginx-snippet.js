@@ -16,6 +16,7 @@ for (const document of ['onboarding.md', 'skill.md']) {
   process.stdout.write('    types {}\n    default_type text/markdown;\n    charset utf-8;\n');
   process.stdout.write('    add_header Cache-Control "no-store" always;\n');
   process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n}\n');
+  process.stdout.write('    limit_except GET HEAD { deny all; }\n');
 }
 // Silicon Valley already has this exact prefix in the site config. Reuse it
 // only when its actual alias agrees with the explicitly configured install root.
