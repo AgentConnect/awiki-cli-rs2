@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.15
+
+- Rebuild all five native targets against registry `awiki-im-core` 0.1.12.
+- Include event-driven E2EE readiness, durable group recovery, fixed-ciphertext retries,
+  and the review fix that prevents unrelated conversation backoff from delaying a ready group.
+- Keep native API version 21 and the existing ANP/Identity registry versions.
+
 ## 0.2.13
 
 - Build all five native packages and the wrapper against published IM Core
