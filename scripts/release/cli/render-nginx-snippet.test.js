@@ -75,3 +75,22 @@ test('rejects an existing versioned route pointing at a different installer dire
  const result=spawnSync(process.execPath,[path.join(__dirname,'render-nginx-snippet.js'),server],{encoding:'utf8'});
  assert.notEqual(result.status,0);assert.match(result.stderr,/does not match installer_root/);
 });
+
+test('generated document method restrictions are accepted by real Nginx', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-nginx-syntax-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const server = path.join(root, 'server.toml');
+  fs.writeFileSync(server, fs.readFileSync(path.join(__dirname, 'publish-server.example.toml'), 'utf8')
+    .replaceAll('example.com', 'anpclaw.com')
+    .replace('/etc/awiki/cli-document-tenants.json', path.join(__dirname, 'document-tenants.singapore.json')));
+  const render = spawnSync(process.execPath, [path.join(__dirname, 'render-nginx-snippet.js'), server], {encoding:'utf8'});
+  assert.equal(render.status, 0, render.stderr);
+  const config = path.join(root, 'nginx.conf');
+  fs.writeFileSync(config, `error_log stderr;\npid ${root}/nginx.pid;\nevents {}\nhttp {\n`
+    + 'limit_conn_zone $binary_remote_addr zone=cli_download_per_ip:1m;\n'
+    + 'limit_conn_zone $server_name zone=cli_download_total:1m;\n'
+    + `server { listen 127.0.0.1:18081;\n${render.stdout}\n}\n}\n`);
+  const checked = spawnSync(process.env.NGINX_BIN || 'nginx', ['-t', '-p', root+'/', '-c', config], {encoding:'utf8'});
+  assert.ifError(checked.error);
+  assert.equal(checked.status, 0, checked.stderr);
+});
