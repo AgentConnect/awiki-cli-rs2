@@ -1,7 +1,9 @@
 # 原生系统代理发布门禁
 
 本入口只验证已发布 `awiki-im-core = 0.1.12` 的公共 `NetworkRuntime`，依赖固定在
-`probe/Cargo.lock`。不发布 SDK，不改变正式 App / CLI / Daemon 源码基线。
+`probe/Cargo.lock`，启用与正式消费者一致的默认 features。首次隔离探针错误地只选 `http`，
+已发布 Core 的该非默认组合不能编译；这次门禁不改变产品 features，也不以此扩大 SDK 修改范围。
+不发布 SDK，不改变正式 App / CLI / Daemon 源码基线。
 
 通过既有手动 `Dependency modes` workflow 的 `native_network_gate=true` 运行
 macOS 14 与 Windows Server 2022 两条原生 lane。仅接受一次性 GitHub-hosted runner，
