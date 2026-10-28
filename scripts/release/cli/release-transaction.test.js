@@ -15,7 +15,7 @@ function cleanup(root) {
   }
   fs.chmodSync(root,0o755);
 }
-function fixture(t, channel = 'stable', existing = true) {
+function fixture(t, channel = 'stable', existing = true, sharedArtifacts = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-transaction-'));
   t.after(() => { cleanup(root); fs.rmSync(root, { recursive: true, force: true }); });
   const config = { public_origin:'https://awiki.me', public_base_path:'/cli',
@@ -30,6 +30,15 @@ function fixture(t, channel = 'stable', existing = true) {
   const manifest = {channel,latest:version,source:{commit:'a'.repeat(40)},
     installer:{url:`https://awiki.me/cli/${channel}/${channel==='stable'?`releases/${version}/`:''}awiki-cli.tgz`,sha256:hash(bytes)},
     packages:{},skill:{digest:`sha256:${hash(skill)}`}};
+  if (sharedArtifacts) {
+    config.stable_artifact_root = path.join(root, 'shared-artifacts');
+    fs.mkdirSync(config.stable_artifact_root);
+    fs.writeFileSync(path.join(config.stable_artifact_root, 'old-version.tar.gz'), 'old-version');
+    const name = `awiki-cli-${version}-linux-amd64.tar.gz`, binary = Buffer.from('new-binary');
+    fs.mkdirSync(path.join(stage, 'artifacts'));
+    fs.writeFileSync(path.join(stage, 'artifacts', name), binary);
+    manifest.packages['linux-amd64'] = {url:`https://awiki.me/cli/${channel}/artifacts/${name}`,sha256:hash(binary)};
+  }
   fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify(manifest));
   documents.prepare({template:'{{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz\n<!-- AWIKI_TENANT_SETUP -->',
     config:{schema_version:1,tenants:[{origin:'https://awiki.me',download_origin:'https://awiki.me',backend_origin:'https://awiki.me',did_host:'awiki.me',name:'china',mode:'default'}]},
@@ -37,6 +46,44 @@ function fixture(t, channel = 'stable', existing = true) {
   const release = transaction.install(stage,config);
   return {root,config,stage,release,manifest,channel,pointer:path.join(config.web_root,channel),docs:path.join(config.web_root,'docs'),journal:transaction.journalPath(config,channel)};
 }
+test('private operator umask leaves new release parents traversable and journals private', async t => {
+  const previous = process.umask(0o077);
+  let f;
+  try { f = fixture(t, 'stable', false); }
+  finally { process.umask(previous); }
+  for (const dir of [f.config.archive_root, path.join(f.config.archive_root,'releases'),
+    path.dirname(f.release), path.join(f.config.archive_root,'document-releases'),
+    f.config.installer_root, path.dirname(transaction.installerFile(f.config,f.manifest))]) {
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o755, dir);
+  }
+  assert.equal(fs.statSync(f.root).mode & 0o777, 0o700, 'existing private parent stays private');
+  await transaction.activate(f.release,f.config,async()=>{});
+  assert.equal(fs.statSync(f.journal).mode & 0o777, 0o600);
+});
+test('shared stable platform store preserves old archives across activation and rollback', async t => {
+  const f = fixture(t, 'stable', true, true);
+  const name = path.basename(new URL(f.manifest.packages['linux-amd64'].url).pathname);
+  assert.equal(fs.readFileSync(path.join(f.config.stable_artifact_root, name), 'utf8'), 'new-binary');
+  await assert.rejects(transaction.activate(f.release, f.config, async () => { throw Error('failed public gate'); }), /failed public gate/);
+  assert.equal(fs.readFileSync(path.join(f.config.stable_artifact_root, 'old-version.tar.gz'), 'utf8'), 'old-version');
+  assert.equal(fs.readlinkSync(f.pointer), '/previous-channel');
+  await transaction.activate(f.release, f.config, async () => {});
+  assert.equal(fs.readFileSync(path.join(f.config.stable_artifact_root, name), 'utf8'), 'new-binary');
+});
+for (const kind of ['different-file', 'symlink']) test(`shared stable platform store rejects ${kind} without activation`, async t => {
+  const f = fixture(t, 'stable', true, true);
+  const name = path.basename(new URL(f.manifest.packages['linux-amd64'].url).pathname);
+  const target = path.join(f.config.stable_artifact_root, name);
+  fs.unlinkSync(target);
+  if (kind === 'symlink') fs.symlinkSync(path.join(f.release, 'artifacts', name), target);
+  else fs.writeFileSync(target, 'conflicting');
+  await assert.rejects(transaction.activate(f.release, f.config, async () => {}), /immutable platform artifact/);
+  assert.equal(fs.readlinkSync(f.pointer), '/previous-channel');
+});
+test('shared stable platform store is not used for beta artifacts', t => {
+  const f = fixture(t, 'beta', true, true);
+  assert.deepEqual(fs.readdirSync(f.config.stable_artifact_root), ['old-version.tar.gz']);
+});
 function worker(f, hook, recovery = false) {
   const code = `const tx=require(${JSON.stringify(require.resolve('./release-transaction.js'))});
     const durable=require(${JSON.stringify(require.resolve('./durable-files.js'))});

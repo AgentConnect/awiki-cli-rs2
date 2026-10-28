@@ -15,7 +15,8 @@ for (const document of ['onboarding.md', 'skill.md']) {
   process.stdout.write(`    alias ${webRoot}docs/${new URL(tenant.origin).hostname}/${document};\n`);
   process.stdout.write('    types {}\n    default_type text/markdown;\n    charset utf-8;\n');
   process.stdout.write('    add_header Cache-Control "no-store" always;\n');
-  process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n}\n');
+  process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n');
+  process.stdout.write('    limit_except GET HEAD { deny all; }\n}\n');
 }
 // Silicon Valley already has this exact prefix in the site config. Reuse it
 // only when its actual alias agrees with the explicitly configured install root.
@@ -48,7 +49,10 @@ for (const channel of ['stable', 'beta']) {
   process.stdout.write(`    rewrite ^ ${publicPath}${channel}/manifest.json last;\n`);
   process.stdout.write('}\n');
   process.stdout.write(`location ^~ ${publicPath}${channel}/artifacts/ {\n`);
-  process.stdout.write(`    alias ${webRoot}${channel}/artifacts/;\n`);
+  const artifacts = channel === 'stable' && config.stable_artifact_root
+    ? `${config.stable_artifact_root.replace(/\/+$/, '')}/`
+    : `${webRoot}${channel}/artifacts/`;
+  process.stdout.write(`    alias ${artifacts};\n`);
   process.stdout.write('    autoindex off;\n');
   process.stdout.write(`    limit_conn cli_download_per_ip ${config.cli_download_max_per_ip};\n`);
   process.stdout.write(`    limit_conn cli_download_total ${config.cli_download_max_total};\n`);

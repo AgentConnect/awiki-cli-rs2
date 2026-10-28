@@ -10,7 +10,10 @@ function mkdir(directory) {
   const missing = [];
   for (let p = path.resolve(directory); !fs.existsSync(p); p = path.dirname(p)) missing.push(p);
   fs.mkdirSync(directory, { recursive: true });
-  for (const p of missing) { sync(p); sync(path.dirname(p)); }
+  // These are public release directories. An operator's private umask must
+  // not prevent Nginx from traversing newly created version/artifact parents.
+  // Do not widen existing directories or the 0600 transaction journal files.
+  for (const p of missing) { fs.chmodSync(p, 0o755); sync(p); sync(path.dirname(p)); }
 }
 function write(file, content, mode = 0o600) {
   mkdir(path.dirname(file));

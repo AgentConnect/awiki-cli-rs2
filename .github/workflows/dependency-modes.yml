@@ -2,6 +2,17 @@ name: Dependency modes
 on:
   workflow_dispatch:
     inputs:
+      native_network_gate:
+        description: 仅运行已发布 Core 的原生 macOS / Windows 系统代理门禁
+        required: false
+        default: false
+        type: boolean
+      native_platform:
+        description: 原生门禁平台；只用于定向复验失败 lane
+        required: false
+        default: all
+        type: choice
+        options: [all, macos, windows]
       dependency_source:
         description: Select the registry dependency graph or the committed source manifest
         required: false
@@ -12,6 +23,7 @@ permissions:
   contents: read
 jobs:
   dependency-check:
+    if: ${{ !inputs.native_network_gate }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +45,7 @@ jobs:
             python3 scripts/dependencies/build.py --check --package awiki-cli
           fi
   source-integration-check:
+    if: ${{ !inputs.native_network_gate }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,3 +56,36 @@ jobs:
         run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package awiki-cli
       - if: hashFiles('dependencies.source.json') != ''
         run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package im-core-dart
+  native-network:
+    if: ${{ inputs.native_network_gate }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.native_platform == 'macos' && '["macos-14"]' || inputs.native_platform == 'windows' && '["windows-2022"]' || '["macos-14", "windows-2022"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check fixture safety contracts
+        run: python -m unittest discover -s scripts/network-native -p 'test_*.py' -v
+      - name: Build published Core network probe
+        run: cargo build --locked --manifest-path scripts/network-native/probe/Cargo.toml
+      - name: Exercise native proxy configuration and network changes
+        shell: bash
+        run: |
+          binary=scripts/network-native/probe/target/debug/awiki-native-network-probe
+          if [[ "$RUNNER_OS" == "Windows" ]]; then binary="$binary.exe"; fi
+          python scripts/network-native/gate.py --binary "$binary" --report native-network-report.json
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-network-${{ matrix.os }}
+          path: native-network-report.json
+          if-no-files-found: warn
