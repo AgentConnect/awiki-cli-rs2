@@ -192,6 +192,56 @@ impl MessageProcessingSession {
     }
 }
 
+/// A send joins only its group's retained inputs and the shared local baseline.
+/// Unrelated retry backoff, active jobs and broadcast delivery are not readiness
+/// barriers. This is not authorization: the caller must still prepare under the
+/// group lifecycle lock and validate its send ticket before encryption.
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn wait_for_group_inputs_async(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+) -> crate::ImResult<()> {
+    use crate::internal::{group_e2ee::send_state, message_runtime::send_lifecycle};
+    let scope = send_lifecycle::owner_scope(client)?;
+    let connection = send_lifecycle::connection_token(client).ok_or(crate::ImError::CursorStale)?;
+    let dispatcher = sync_dispatcher::for_client(client);
+    dispatcher.wake_client(client.clone());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
+    let db = client.core_inner().local_state_db().await?;
+    loop {
+        if send_lifecycle::owner_scope(client)? != scope {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if send_lifecycle::connection_token(client).as_deref() != Some(connection.as_str())
+            || !send_state::observation_is_current(client, group)
+        {
+            return Err(crate::ImError::CursorStale);
+        }
+        let owner = scope.owner.clone();
+        let group = group.as_str().to_owned();
+        let summary = db
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_inbox::processing_summary_for_group(
+                    connection,
+                    &owner,
+                    &group,
+                    chrono::Utc::now().timestamp(),
+                )
+            })
+            .await?;
+        // Preserve the bounded wait/blocked-input behavior. Returning does not
+        // grant Ready: retained target inputs/baselines still prevent a valid
+        // prepared_snapshot, including when this wait reaches its deadline.
+        if summary.pending == 0
+            || (summary.blocked > 0 && summary.active == 0 && summary.pending == summary.blocked)
+            || tokio::time::Instant::now() >= deadline
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 pub(crate) async fn compatibility_wait(
     client: &crate::core::ImClient,
     received: super::MessageReceiveOutcome,

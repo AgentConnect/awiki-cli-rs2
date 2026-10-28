@@ -849,13 +849,33 @@ pub(crate) fn processing_summary(
     owner: &str,
     now: i64,
 ) -> crate::ImResult<ProcessingSummary> {
+    processing_summary_scoped(db, owner, None, now)
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn processing_summary_for_group(
+    db: &Connection,
+    owner: &str,
+    group: &str,
+    now: i64,
+) -> crate::ImResult<ProcessingSummary> {
+    processing_summary_scoped(db, owner, Some(group), now)
+}
+
+fn processing_summary_scoped(
+    db: &Connection,
+    owner: &str,
+    group: Option<&str>,
+    now: i64,
+) -> crate::ImResult<ProcessingSummary> {
     db.query_row(
         "SELECT COUNT(*), COALESCE(SUM(attempt_token IS NOT NULL),0),
             COALESCE(SUM(next_attempt_at IS NULL AND attempt_token IS NULL),0),
             MIN(CASE WHEN next_attempt_at>?2 THEN next_attempt_at END),
             MIN(CASE WHEN next_attempt_at IS NULL THEN processing_error_code END)
-         FROM sync_lane_inbox WHERE owner_identity_id=?1 AND closed_at IS NULL",
-        params![owner, now],
+         FROM sync_lane_inbox WHERE owner_identity_id=?1 AND closed_at IS NULL
+           AND (?3 IS NULL OR lane='baseline' OR group_did=?3 OR processing_scope=?3)",
+        params![owner, now, group],
         |row| {
             Ok(ProcessingSummary {
                 pending: row.get(0)?,

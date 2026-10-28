@@ -440,8 +440,7 @@ async fn send_group_attempt_async(
         // Join existing preparation when reception already has current facts;
         // a foreground waiter is not another remote change notification.
         if crate::internal::group_e2ee::send_state::observation_is_current(client, &group) {
-            let mut processing = client.messages().watch_processing_updates()?;
-            Box::pin(processing.wait_async(client)).await?;
+            Box::pin(super::processing::wait_for_group_inputs_async(client, &group)).await?;
         } else {
             Box::pin(client.messages().sync_now_async(crate::messages::MessageSyncRequest {
                 reason: "foreground_reconcile".to_owned(),

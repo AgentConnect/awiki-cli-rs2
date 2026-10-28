@@ -5561,6 +5561,7 @@ mod group_e2ee_public_send_tests {
     #[cfg(feature = "secure-direct")]
     mod direct_document_state_tests;
     mod event_driven_tests;
+    mod group_wait_tests;
     #[cfg(feature = "blocking")]
     mod recovery_tests;
     use std::fs;

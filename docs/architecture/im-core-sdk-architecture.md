@@ -2115,6 +2115,12 @@ P5/P6 共用 owner、DID、exact device、auth generation、两种 key reference
 不恢复 Ready。P5 文档缓存最多 128 份，每份最多 256 KiB；本域 User/Agent WBA 和平台
 托管 Web DID 还需完整同步哈希相等与逐次 method/endpoint 验证，其他来源继续解析。
 
+群发送在当前连接观察有效、后台准备尚未完成时，只等待该owner下目标群的输入
+（group_did或processing_scope匹配）和共享baseline；不等待其他群或私聊的重试退避、
+处理任务与广播通知。等待期间owner/设备/授权绑定及连接观察必须仍有效；等待结束本身
+不授予Ready，后续仍加入目标群生命周期锁，复核prepared snapshot与加密前generation。
+全owner的MessageProcessingSession.wait_async仍保留原有收齐业务处理结果的语义。
+
 群发送结果未知保持原密文和原 operation。仅在 Host 的幂等 Fresh 分支给出严格版本／
 epoch 前进证据后，下一次重试才使用原用户意图的独立 attempt。原 Prepared、过期依据、
 每次接受回执均保留在原 journal，最多 32 个尝试；不覆盖旧密文、不回滚 MLS，未来版本、

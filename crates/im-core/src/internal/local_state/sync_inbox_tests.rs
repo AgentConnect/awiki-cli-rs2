@@ -758,3 +758,79 @@ fn explicit_processing_retry_is_owner_scoped_and_never_revives_a_removed_input()
     );
     assert_eq!(cursor(&db), "1");
 }
+
+
+#[cfg(feature = "group-e2ee")]
+#[test]
+fn group_processing_summary_keeps_target_and_shared_baseline_only() {
+    let db = database();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,current_did,device_id,
+            identity_generation,device_auth_generation,created_at,updated_at)
+         VALUES('other','other-account','did:example:other','other-device','1','1',1,1)",
+        [],
+    ).unwrap();
+    for (id, lane, group, scope) in [
+        ("target-p6", "p6_group", Some("group-a"), "group-a"),
+        ("target-ordinary", "ordinary", None, "group-a"),
+        ("shared-baseline", "baseline", None, "baseline"),
+        ("other-group", "p6_group", Some("group-b"), "group-b"),
+        ("other-direct", "p5_device", None, "peer-b"),
+        ("other-owner", "baseline", None, "baseline"),
+        ("closed-target", "ordinary", Some("group-a"), "group-a"),
+    ] {
+        insert_raw(&db, id, "ordinary", "message.created", 10);
+        db.execute("UPDATE sync_lane_inbox SET lane=?4,group_did=?2,processing_scope=?3,next_attempt_at=70,
+            event_type=CASE ?4 WHEN 'p6_group' THEN 'p6.control.notice' WHEN 'p5_device' THEN 'p5.delivery.created' ELSE 'group.member_changed' END
+            WHERE input_id=?1", params![id,group,scope,lane]).unwrap();
+    }
+    db.execute(
+        "UPDATE sync_lane_inbox SET owner_identity_id='other' WHERE input_id='other-owner'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE sync_lane_inbox SET closed_at=11 WHERE input_id='closed-target'",
+        [],
+    )
+    .unwrap();
+    let scoped = sync_inbox::processing_summary_for_group(&db, "owner", "group-a", 12).unwrap();
+    assert_eq!(scoped.pending, 3);
+    assert_eq!(scoped.next_retry_at, Some(70));
+    assert_eq!(
+        sync_inbox::processing_summary(&db, "owner", 12)
+            .unwrap()
+            .pending,
+        5,
+        "the public owner-wide processing wait must retain its existing scope"
+    );
+    db.execute(
+        "DELETE FROM sync_lane_inbox WHERE input_id IN ('target-p6','target-ordinary')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        sync_inbox::processing_summary_for_group(&db, "owner", "group-a", 12)
+            .unwrap()
+            .pending,
+        1,
+        "a shared baseline remains relevant without a group DID"
+    );
+    db.execute(
+        "DELETE FROM sync_lane_inbox WHERE input_id='shared-baseline'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        sync_inbox::processing_summary_for_group(&db, "owner", "group-a", 12)
+            .unwrap()
+            .pending,
+        0
+    );
+    assert_eq!(
+        sync_inbox::processing_summary(&db, "owner", 12)
+            .unwrap()
+            .pending,
+        2
+    );
+}
