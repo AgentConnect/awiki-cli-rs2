@@ -397,14 +397,139 @@ pub(crate) fn match_recovery_owner(
     authority: StableOwnerAuthority<'_>,
     operation_id: &str,
 ) -> crate::ImResult<StableOwnerMatch> {
-    match_stable_owner_inner(
+    let matched = match_stable_owner_inner(
         sqlite_path,
         Some(identity_root_dir),
         index,
-        authority,
+        authority.clone(),
         Some(operation_id),
         None,
-    )
+    )?;
+    let fresh = matched == StableOwnerMatch::None
+        || (matched == StableOwnerMatch::Conflict
+            && completed_retirements_allow_fresh_recovery(
+                sqlite_path,
+                identity_root_dir,
+                index,
+                &authority,
+            )?);
+    if fresh {
+        return Ok(
+            if competing_recovery_work(sqlite_path, &authority, operation_id)? {
+                StableOwnerMatch::Conflict
+            } else {
+                StableOwnerMatch::None
+            },
+        );
+    }
+    Ok(matched)
+}
+
+// Retirement authorizes a fresh local identity only. It never proves continuity
+// to the current epoch and must not be shared with ordinary Join selection.
+fn completed_retirements_allow_fresh_recovery(
+    sqlite_path: &Path,
+    identity_root_dir: &Path,
+    index: &crate::internal::identity_store::IndexPayload,
+    authority: &StableOwnerAuthority<'_>,
+) -> crate::ImResult<bool> {
+    if index.credentials.values().any(|entry| {
+        entry.user_id == authority.account_user_id
+            || entry.full_handle == authority.full_handle
+            || entry.did == authority.previous_did
+    }) {
+        return Ok(false);
+    }
+    let Some(previous) =
+        crate::internal::identity_handle_recovery_pending::previous_canonical_generation(
+            authority.binding_generation,
+        )
+    else {
+        return Ok(false);
+    };
+    let previous =
+        anp::wns::BindingGeneration::new(previous).map_err(|_| crate::ImError::PermissionDenied)?;
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let mut statement = connection.prepare(
+        "SELECT owner_identity_id,account_id,handle_scope,current_did,identity_generation,device_id FROM identity_account_bindings WHERE account_id=?1 OR handle_scope=?2 OR current_did=?3",
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                authority.account_user_id,
+                authority.full_handle,
+                authority.previous_did
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut found = false;
+    for row in rows {
+        let (owner, account, handle, did, generation, device) =
+            row.map_err(crate::internal::local_state::local_state_unavailable)?;
+        let Ok(generation) = anp::wns::BindingGeneration::new(generation) else {
+            return Ok(false);
+        };
+        let epoch_matches = if did == authority.previous_did {
+            generation == previous
+        } else {
+            generation < previous
+        };
+        if account != authority.account_user_id
+            || handle.as_deref() != Some(authority.full_handle)
+            || !epoch_matches
+            || index
+                .credentials
+                .values()
+                .any(|entry| entry.unique_id == owner || entry.did == did)
+            || !crate::internal::identity_local_deletion::matches_completed_binding(
+                sqlite_path,
+                identity_root_dir,
+                &owner,
+                &did,
+                &device,
+            )?
+        {
+            return Ok(false);
+        }
+        found = true;
+    }
+    Ok(found)
+}
+
+fn competing_recovery_work(
+    sqlite_path: &Path,
+    authority: &StableOwnerAuthority<'_>,
+    operation_id: &str,
+) -> crate::ImResult<bool> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let count: i64 = connection.query_row(
+        r#"SELECT
+        (SELECT COUNT(*) FROM handle_recovery_operations_v4
+         WHERE operation_id<>?1
+           AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending')
+           AND (account_user_id=?2 OR full_handle=?3 OR owner_identity_id IN
+             (SELECT owner_identity_id FROM identity_account_bindings WHERE account_id=?2 OR handle_scope=?3 OR current_did=?4)))
+        + (SELECT COUNT(*) FROM identity_transition_pending
+           WHERE source_id<>?1 AND phase IN ('pending','identity_switched')
+           AND (account_user_id=?2 OR handle=?3 OR previous_did=?4 OR current_did=?4 OR owner_identity_id IN
+             (SELECT owner_identity_id FROM identity_account_bindings WHERE account_id=?2 OR handle_scope=?3 OR current_did=?4)))
+        + (SELECT COUNT(*) FROM local_identity_deletions
+           WHERE phase<>'completed' AND (full_handle=?3 OR current_did=?4 OR owner_identity_id IN
+             (SELECT owner_identity_id FROM identity_account_bindings WHERE account_id=?2 OR handle_scope=?3 OR current_did=?4)))"#,
+        rusqlite::params![operation_id,authority.account_user_id,authority.full_handle,authority.previous_did],
+        |row| row.get(0),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(count != 0)
 }
 
 fn match_stable_owner_inner(
@@ -629,6 +754,8 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest, Sha256};
+
+    include!("identity_local_owner_matcher_recovery_tests.rs");
 
     fn fixture_index() -> crate::internal::identity_store::IndexPayload {
         let mut index = crate::internal::identity_store::IndexPayload::default();
