@@ -244,7 +244,9 @@ result is applied locally; `result_absent` permits the same frozen intent to ret
 blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
 remains `Serialization`; neither classification exposes response content.
 
-凭证已删除后的再次 Recovery：仅在 OTP exchange 冻结 intent 之前，允许精确匹配远端当前账号、Handle、DID 与直接前驱代次的唯一本地绑定，在无相关活跃凭证、无冲突未完成事务，且存在同 owner / DID / protocol device 的已完成删除证明时进入 fresh owner 路径。保留旧绑定和历史，不迁入旧 owner 数据。普通 Join 的 live predecessor matcher 不获得此例外；缺失证明、错误设备、跨账号或更早代次继续失败关闭。
+凭证已删除后的再次 Recovery：OTP exchange 返回权威账号与完整 Handle 后，可将同账号、同 Handle 的已删除本地绑定判为退役历史。每条相关绑定必须有同 owner / DID / protocol device 的精确已完成删除证明；当前 DID 绑定必须代次相同，更早代次必须 DID 不同且严格小于权威当前代次。所有相关绑定均须满足条件，且无相关活跃凭证、未完成删除、其他未完成恢复或迁移事务，才允许建立 fresh owner。保留旧绑定、历史和删除证明，不迁入旧 owner 数据，也不重建旧密钥。普通 Join 的 live predecessor matcher 不获得此例外；跨账号、未来代次、同 DID 代次矛盾、缺失或错设备证明继续失败关闭。
+
+首次 Commit 前在既有 Handle→owner 锁内重新验证 fresh owner 准入。若本地状态变化，不改变冻结的 owner、DID、密钥或 intent，也不发 Commit；已尝试提交的操作继续按原 Result Get / exact retry 合同收敛。旧版未提交且标记 local_migration_unsupported 的任务仍须明确 discard 后重新准备，不能静默清错续交。
 
 For a fresh-install Recovery target, a successful factor exchange refreshes only the successor DID
 Document root proof immediately before the first Commit or a `result_absent` retry. The DID, root and

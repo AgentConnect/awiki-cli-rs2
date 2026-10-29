@@ -526,3 +526,63 @@ fn operation_action_matrix_is_closed_for_lifecycle_factor_and_key_states() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn fresh_recovery_rechecks_competing_work_before_first_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [51; 32]);
+    let operation_id = "recover-v4-fresh-recheck";
+    let mut pending =
+        create_v4_operation_with_transition_identities(&core, operation_id, "owner-fresh-recheck");
+    let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+    let revision = pending.revision;
+    pending
+        .freeze_fresh_local_owner(&pending.local_previous_did.clone())
+        .unwrap();
+    pending
+        .freeze_exchange(
+            crate::internal::identity_handle_recovery_pending::RecoveryAuthoritativeBindingV4 {
+                account_user_id: "account-fresh-recheck".into(),
+                full_handle: pending.full_handle.clone(),
+                current_did: pending.local_previous_did.clone(),
+                binding_generation: "6".into(),
+            },
+            "test-grant".into(),
+            "2099-08-07T00:05:00Z".into(),
+        )
+        .unwrap();
+    store.save_v4_cas(&pending, revision).unwrap();
+    assert!(revalidate_fresh_recovery_owner(&core, &pending).is_ok());
+    let path = &core.inner().sdk_paths().local_state.sqlite_path;
+    let other =
+        crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+            "recover-v4-competing-owner".into(),
+            "owner-other".into(),
+            pending.full_handle.clone(),
+            "other-key".into(),
+            "2026-10-29T00:00:00Z".into(),
+        )
+        .unwrap();
+    crate::internal::identity_handle_recovery_operation::insert(path, &other).unwrap();
+    let result = activate(
+        &core,
+        HandleRecoveryActivateRequest {
+            operation_id: operation_id.into(),
+            user_presence_confirmed: true,
+        },
+    )
+    .await;
+    assert_eq!(
+        service_code(&result.unwrap_err()),
+        Some("local_migration_unsupported")
+    );
+    let (_, after) = store.load_v4(operation_id).unwrap().unwrap();
+    let record = crate::internal::identity_handle_recovery_operation::load(path, operation_id)
+        .unwrap()
+        .unwrap();
+    assert!(!after.commit_attempted);
+    assert!(!record.commit_attempted);
+    assert_eq!(after.intent_hash, pending.intent_hash);
+    assert_eq!(after.identity.did, pending.identity.did);
+    assert_eq!(after.operation_id, pending.operation_id);
+}

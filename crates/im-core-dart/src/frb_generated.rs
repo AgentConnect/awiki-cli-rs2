@@ -27,14 +27,14 @@
 // Section: imports
 
 use crate::api::attachments::*;
+use crate::api::capabilities::*;
 use crate::api::client::*;
 use crate::api::core::DartImCore;
 use crate::api::core::*;
 use crate::api::local_state_upgrade::*;
-use crate::api::realtime::*;
-use crate::api::capabilities::*;
 use crate::api::messages::*;
 use crate::api::network::*;
+use crate::api::realtime::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
@@ -27021,14 +27021,14 @@ mod io {
 
     use super::*;
     use crate::api::attachments::*;
+    use crate::api::capabilities::*;
     use crate::api::client::*;
     use crate::api::core::DartImCore;
     use crate::api::core::*;
     use crate::api::local_state_upgrade::*;
-    use crate::api::realtime::*;
-    use crate::api::capabilities::*;
     use crate::api::messages::*;
     use crate::api::network::*;
+    use crate::api::realtime::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
@@ -27261,14 +27261,14 @@ mod web {
 
     use super::*;
     use crate::api::attachments::*;
+    use crate::api::capabilities::*;
     use crate::api::client::*;
     use crate::api::core::DartImCore;
     use crate::api::core::*;
     use crate::api::local_state_upgrade::*;
-    use crate::api::realtime::*;
-    use crate::api::capabilities::*;
     use crate::api::messages::*;
     use crate::api::network::*;
+    use crate::api::realtime::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };

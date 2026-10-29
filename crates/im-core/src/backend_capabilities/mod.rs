@@ -446,6 +446,15 @@ struct CacheState {
     persistence_failed: bool,
 }
 impl CapabilityCache {
+    #[cfg(test)]
+    pub(crate) fn seed_fixture(&self, snapshot: CapabilitySnapshot) {
+        let mut state = self.state.try_lock().expect("fresh fixture cache");
+        state.snapshot = Some(snapshot);
+        state.success_at = Some(Instant::now());
+        self.persist(&mut state);
+        self.publish(&state);
+    }
+
     fn new(persistence: Option<persistence::Persistence>) -> Self {
         let snapshot = persistence.as_ref().and_then(|p| p.read());
         let age = snapshot

@@ -1343,6 +1343,17 @@ async fn advance_v4(
         }
     }
     if pending.phase == PendingRecoveryPhaseV4::ReadyToCommit {
+        if pending.fresh_local_state && !pending.commit_attempted {
+            if let Err(error) = revalidate_fresh_recovery_owner(core, &pending) {
+                persist_nonterminal_error_v4(
+                    core,
+                    &store,
+                    &mut pending,
+                    HandleRecoveryErrorCode::LocalMigrationUnsupported,
+                )?;
+                return Err(error);
+            }
+        }
         let _ = send_commit_v4(core, &store, &mut pending).await?;
     } else if pending.phase == PendingRecoveryPhaseV4::RemoteOutcomeUnknown {
         match reconcile_result_v4(core, &store, &mut pending).await? {
@@ -1413,6 +1424,42 @@ async fn advance_v4(
     )
     .await;
     progress_v4(core, &pending)
+}
+
+fn revalidate_fresh_recovery_owner(
+    core: &crate::ImCore,
+    pending: &PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let binding = pending
+        .authoritative_binding
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let generation =
+        crate::internal::identity_handle_recovery_pending::increment_canonical_generation(
+            &binding.binding_generation,
+        )
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let matched = crate::internal::identity_local_owner_matcher::match_recovery_owner(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &core.inner().sdk_paths().identities.identity_root_dir,
+        &index,
+        crate::internal::identity_local_owner_matcher::StableOwnerAuthority {
+            account_user_id: &binding.account_user_id,
+            full_handle: &binding.full_handle,
+            previous_did: &binding.current_did,
+            binding_generation: &generation,
+        },
+        &pending.operation_id,
+    )?;
+    if matched != crate::internal::identity_local_owner_matcher::StableOwnerMatch::None {
+        return Err(recovery_error(
+            HandleRecoveryErrorCode::LocalMigrationUnsupported,
+        ));
+    }
+    Ok(())
 }
 
 fn require_v4_local_migration_authority(
@@ -3382,6 +3429,17 @@ mod tests {
         stream.flush().unwrap();
     }
 
+    fn confirmed_recovery_test_backend(core: crate::ImCore) -> crate::ImCore {
+        core.inner().backend_capabilities.seed_fixture(
+            crate::backend_capabilities::CapabilitySnapshot::from_server_info(&json!({
+                "schema_version":1, "capabilities_version":1,
+                "identity":{"handle_recovery":{"methods":[{"id":"phone","enabled":true}]}}
+            }))
+            .unwrap(),
+        );
+        core
+    }
+
     fn recovery_test_core(
         root: &std::path::Path,
         endpoint: &str,
@@ -3419,35 +3477,37 @@ mod tests {
                 temp_dir: root.join("tmp"),
             },
         };
-        crate::ImCore::new_with_options(
-            crate::ImCoreConfig {
-                service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
-                did_domain: "awiki.test".to_owned(),
-                client_version_info: None,
-                user_service_endpoint: None,
-                message_service_endpoint: None,
-                mail_service_endpoint: None,
-                anp_service_endpoint: None,
-                anp_service_did: None,
-                ca_bundle: None,
-                transport_policy: crate::MessageTransportPolicy::HttpOnly,
-            },
-            paths,
-            crate::ImCoreOpenOptions::default()
-                .with_multi_device_handle_recovery_enabled(true)
-                .with_multi_device_group_e2ee_enabled(true)
-                .with_multi_device_audience("awiki-user-service")
-                .with_identity_secret_vault(
-                    crate::IdentitySecretStoragePolicy::VaultRequired,
-                    crate::ImCoreSecretVaultOptions::new(
-                        crate::vault::DeviceVaultRootKey::from_bytes(vault_key),
-                        vault_dir,
-                        workspace_id,
-                        device_id,
+        confirmed_recovery_test_backend(
+            crate::ImCore::new_with_options(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                paths,
+                crate::ImCoreOpenOptions::default()
+                    .with_multi_device_handle_recovery_enabled(true)
+                    .with_multi_device_group_e2ee_enabled(true)
+                    .with_multi_device_audience("awiki-user-service")
+                    .with_identity_secret_vault(
+                        crate::IdentitySecretStoragePolicy::VaultRequired,
+                        crate::ImCoreSecretVaultOptions::new(
+                            crate::vault::DeviceVaultRootKey::from_bytes(vault_key),
+                            vault_dir,
+                            workspace_id,
+                            device_id,
+                        ),
                     ),
-                ),
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     #[cfg(feature = "provider-traits")]
@@ -3471,36 +3531,38 @@ mod tests {
                 temp_dir: root.join("tmp"),
             },
         };
-        crate::ImCore::new_with_options(
-            crate::ImCoreConfig {
-                service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
-                did_domain: "invalid".to_owned(),
-                client_version_info: None,
-                user_service_endpoint: None,
-                message_service_endpoint: None,
-                mail_service_endpoint: None,
-                anp_service_endpoint: None,
-                anp_service_did: None,
-                ca_bundle: None,
-                transport_policy: crate::MessageTransportPolicy::HttpOnly,
-            },
-            paths,
-            crate::ImCoreOpenOptions::default()
-                .with_multi_device_handle_recovery_enabled(true)
-                .with_multi_device_audience("awiki-user-service")
-                .with_external_http_allow_insecure_loopback_for_testing(true)
-                .with_identity_custody_provider(provider)
-                .with_identity_secret_vault(
-                    crate::IdentitySecretStoragePolicy::VaultRequired,
-                    crate::ImCoreSecretVaultOptions::new(
-                        crate::vault::DeviceVaultRootKey::from_bytes(vault_key),
-                        root.join("vault"),
-                        "fixture-workspace-0714",
-                        "fixture-device-0714",
+        confirmed_recovery_test_backend(
+            crate::ImCore::new_with_options(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
+                    did_domain: "invalid".to_owned(),
+                    client_version_info: None,
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                paths,
+                crate::ImCoreOpenOptions::default()
+                    .with_multi_device_handle_recovery_enabled(true)
+                    .with_multi_device_audience("awiki-user-service")
+                    .with_external_http_allow_insecure_loopback_for_testing(true)
+                    .with_identity_custody_provider(provider)
+                    .with_identity_secret_vault(
+                        crate::IdentitySecretStoragePolicy::VaultRequired,
+                        crate::ImCoreSecretVaultOptions::new(
+                            crate::vault::DeviceVaultRootKey::from_bytes(vault_key),
+                            root.join("vault"),
+                            "fixture-workspace-0714",
+                            "fixture-device-0714",
+                        ),
                     ),
-                ),
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     #[cfg(feature = "provider-traits")]

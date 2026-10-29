@@ -555,3 +555,88 @@ async fn recovery_subject_path_preserves_origin_port_and_nested_segments() {
     anp::authentication::verify_active_e1_document(candidate.did.as_str(), &candidate.did_document)
         .unwrap();
 }
+
+#[tokio::test]
+async fn deleted_older_epoch_prepares_a_fresh_owner_after_remote_recovery() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), &endpoint, [141; 32]);
+    let old = predecessor(&core, &["user", "alice"]).await;
+    let remote = predecessor(&core, &["user", "alice"]).await;
+    let old_did = old["id"].as_str().unwrap();
+    let remote_did = remote["id"].as_str().unwrap();
+    let retired_device = anp::authentication::validate_device_manifest(&old)
+        .unwrap()
+        .unwrap()
+        .devices[0]
+        .device_id
+        .clone();
+    let path = &core.inner().sdk_paths().local_state.sqlite_path;
+    crate::internal::local_state::open_writable(path).unwrap().execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-retired','account-alice','alice.awiki.test',?1,?2,'5','1',1,1)",
+        rusqlite::params![old_did,retired_device],
+    ).unwrap();
+    crate::internal::identity_retirement::retire(
+        &core,
+        crate::internal::identity_retirement::IdentityRetirementInput {
+            identity_id: "owner-retired".into(),
+            did: old_did.into(),
+            local_alias: "retired".into(),
+            identity_dir_name: None,
+            next_default_alias: None,
+            protocol_device_id: Some(retired_device),
+        },
+    )
+    .unwrap();
+    let server = Server::start(listener, binding(remote_did), remote_did.into());
+    let otp = core
+        .handle_recovery()
+        .request_handle_recovery_otp(otp_request())
+        .await
+        .unwrap();
+    let prepared = core
+        .handle_recovery()
+        .prepare_handle_recovery(HandleRecoveryPrepareRequest {
+            operation_id: otp.operation_id.clone(),
+            phone: "+15555550123".into(),
+            code: "123456".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(prepared.phase, HandleRecoveryPhase::ReadyToCommit);
+    assert!(!prepared.impact.local_ordinary_data_will_migrate);
+    let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+    let (_, pending) = store.load_v4(&otp.operation_id).unwrap().unwrap();
+    assert!(pending.fresh_local_state);
+    assert!(!pending.commit_attempted);
+    assert_ne!(pending.owner_identity_id, "owner-retired");
+    assert_ne!(pending.identity.did.as_str(), old_did);
+    assert_ne!(pending.identity.did.as_str(), remote_did);
+    assert_eq!(pending.local_previous_did, remote_did);
+    assert!(revalidate_fresh_recovery_owner(&core, &pending).is_ok());
+    let old_binding: String = crate::internal::local_state::open_writable(path).unwrap()
+        .query_row("SELECT current_did FROM identity_account_bindings WHERE owner_identity_id='owner-retired'", [], |row| row.get(0)).unwrap();
+    assert_eq!(old_binding, old_did);
+    drop(store);
+    drop(core);
+    let reopened = recovery_test_core(root.path(), &endpoint, [141; 32]);
+    let context = reopened
+        .handle_recovery()
+        .inspect_handle_recovery_context(crate::identity::HandleRecoveryContextRequest {
+            identity: None,
+            full_handle: "alice.awiki.test".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(context.operation.unwrap().operation_id, otp.operation_id);
+    assert!(context
+        .allowed_actions
+        .contains(&crate::identity::HandleRecoveryAction::Activate));
+    assert!(!server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|method| method == "handle_recovery_commit_v4"));
+}
