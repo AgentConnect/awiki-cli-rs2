@@ -58,6 +58,8 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
 
 #[derive(Debug)]
 pub struct ImCoreOpenOptions {
+    /// Trusted Host-installed recovery tenants. Empty disables PIN recovery.
+    pub pin_recovery_tenants: Vec<crate::pin_recovery::PinRecoveryTenantConfig>,
     /// Optional host transport runtime; absent preserves SDK behavior.
     pub network_runtime: Option<std::sync::Arc<crate::network::NetworkRuntime>>,
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
@@ -103,6 +105,7 @@ pub struct ImCoreOpenOptions {
 impl Default for ImCoreOpenOptions {
     fn default() -> Self {
         Self {
+            pin_recovery_tenants: Vec::new(),
             network_runtime: None,
             identity_secret_storage_policy: IdentitySecretStoragePolicy::default(),
             identity_secret_vault: None,
@@ -137,6 +140,11 @@ impl fmt::Debug for IdentityCustodyProvider {
 }
 
 impl ImCoreOpenOptions {
+    pub fn with_pin_recovery_tenants(mut self, tenants: Vec<crate::pin_recovery::PinRecoveryTenantConfig>) -> Self {
+        self.pin_recovery_tenants = tenants;
+        self
+    }
+
     pub fn file_compat() -> Self {
         Self::default()
     }

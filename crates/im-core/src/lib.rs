@@ -22,6 +22,7 @@ pub mod messages;
 pub mod network;
 pub mod onboarding;
 pub mod paths;
+pub mod pin_recovery;
 pub mod prelude;
 #[cfg(feature = "provider-traits")]
 pub mod provider;

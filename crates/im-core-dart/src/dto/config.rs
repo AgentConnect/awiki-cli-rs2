@@ -41,6 +41,7 @@ pub struct DartImCorePaths {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartImCoreOpenOptions {
+    pub pin_recovery_tenants: Vec<crate::dto::pin_recovery::DartPinRecoveryTenantConfig>,
     pub identity_secret_storage_policy: DartIdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<DartImCoreSecretVaultOptions>,
     pub multi_device_device_revoke_enabled: bool,

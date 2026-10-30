@@ -16,6 +16,7 @@ pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
+    pub(crate) pin_recovery_tenants: Vec<crate::pin_recovery::PinRecoveryTenantConfig>,
     pub(crate) network: Arc<crate::network::NetworkRuntime>,
     #[cfg(feature = "sqlite")]
     pub(crate) prekey_publications: tokio::sync::Mutex<
@@ -110,6 +111,7 @@ impl ImCore {
     ) -> crate::ImResult<Self> {
         let core = Self::new_with_options(sdk_config, sdk_paths, options)?;
         crate::internal::identity_local_deletion::recover_external_deletions(&core).await?;
+        let _ = crate::internal::pin_recovery::v4_cleanup::recover(&core).await;
         Ok(core)
     }
 
@@ -158,6 +160,7 @@ impl ImCore {
         }
         let core = Self {
             inner: Arc::new(ImCoreInner {
+                pin_recovery_tenants: options.pin_recovery_tenants,
                 identity_capability_sessions: Default::default(),
                 capability_worker: Default::default(),
                 backend_capabilities: Arc::new(
@@ -226,6 +229,10 @@ impl ImCore {
 
     pub fn device_revoke(&self) -> crate::identity::DeviceRevokeService<'_> {
         crate::identity::DeviceRevokeService::new(self)
+    }
+
+    pub fn pin_recovery(&self) -> crate::pin_recovery::PinRecoveryService<'_> {
+        crate::pin_recovery::PinRecoveryService { core: self }
     }
 
     pub fn handle_recovery(&self) -> crate::identity::HandleRecoveryService<'_> {

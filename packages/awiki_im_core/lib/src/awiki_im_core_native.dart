@@ -1,3 +1,6 @@
+import 'generated/api/pin_recovery.dart' as gen_pin_api;
+import 'generated/dto/pin_recovery.dart' as gen_pin_dto;
+import 'models/pin_recovery.dart';
 import 'generated/api/network.dart' as gen_network;
 import 'models/network.dart';
 import 'dart:async';
@@ -317,6 +320,186 @@ class AwikiImCore {
           .toList(growable: false),
       blockedReason: result.blockedReason?._toModel(),
     );
+  }
+
+  Future<PinRecoveryBackupStatus> pinRecoveryBackupStatus({
+    required IdentitySelector selector,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.pinRecoveryBackupStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PhoneChallengeSummary> requestPinRecoveryPhoneCode({
+    required String tenantId,
+    required String phone,
+    String? resumeOperationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.requestPinRecoveryPhoneCode(
+        core: _inner,
+        tenantId: tenantId,
+        phone: phone,
+        resumeOperationId: resumeOperationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<DiscoverySessionSummary> verifyPinRecoveryPhoneCode({
+    required String challengeHandle,
+    required String code,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.verifyPinRecoveryPhoneCode(
+        core: _inner,
+        challengeHandle: challengeHandle,
+        code: code,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<List<PinRecoveryTarget>> listPinRecoveryTargets({
+    required String discoveryHandle,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.listPinRecoveryTargets(
+        core: _inner,
+        discoveryHandle: discoveryHandle,
+      ),
+    );
+    return result.map((v) => v._toModel()).toList(growable: false);
+  }
+
+  Future<PhoneSessionSummary> selectPinRecoveryTarget({
+    required String discoveryHandle,
+    required String targetId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.selectPinRecoveryTarget(
+        core: _inner,
+        discoveryHandle: discoveryHandle,
+        targetId: targetId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> beginEnablePinRecovery({
+    required String sessionHandle,
+    required IdentitySelector selector,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.beginEnablePinRecovery(
+        core: _inner,
+        sessionHandle: sessionHandle,
+        selector: selector._toGen(),
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> beginPinRecovery({
+    required String sessionHandle,
+    required String deviceLabel,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.beginPinRecovery(
+        core: _inner,
+        sessionHandle: sessionHandle,
+        deviceLabel: deviceLabel,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> submitPinRecoveryPin({
+    required String operationId,
+    required String pin,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.submitPinRecoveryPin(
+        core: _inner,
+        operationId: operationId,
+        pin: pin,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> confirmPinRecoveryDevice({
+    required String operationId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.confirmPinRecoveryDevice(
+        core: _inner,
+        operationId: operationId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<List<PinRecoveryProgress>> listPendingPinRecoveryOperations() async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.listPendingPinRecoveryOperations(core: _inner),
+    );
+    return result.map((v) => v._toModel()).toList(growable: false);
+  }
+
+  Future<PinRecoveryProgress> pinRecoveryStatus({
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () =>
+          gen_pin_api.pinRecoveryStatus(core: _inner, operationId: operationId),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> resumePinRecovery({
+    required String operationId,
+    String? sessionHandle,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_pin_api.resumePinRecovery(
+        core: _inner,
+        operationId: operationId,
+        sessionHandle: sessionHandle,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<PinRecoveryProgress> cancelPinRecovery({
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () =>
+          gen_pin_api.cancelPinRecovery(core: _inner, operationId: operationId),
+    );
+    return result._toModel();
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
@@ -2780,6 +2963,16 @@ extension on AwikiImCoreOpenOptions {
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
     multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
     multiDeviceAudience: multiDeviceAudience,
+    pinRecoveryTenants: pinRecoveryTenants
+        .map(
+          (v) => gen_pin_dto.DartPinRecoveryTenantConfig(
+            tenantId: v.tenantId,
+            deploymentId: v.deploymentId,
+            controlBaseUrl: v.controlBaseUrl,
+            configSigningKeys: v.configSigningKeys,
+          ),
+        )
+        .toList(growable: false),
   );
 }
 
@@ -5090,4 +5283,182 @@ class AwikiDesktopNetwork {
       close: close,
     );
   }
+}
+
+extension on gen_pin_dto.DartPhoneChallengeSummary {
+  PhoneChallengeSummary _toModel() => PhoneChallengeSummary(
+    challengeHandle: challengeHandle,
+    expiresAt: expiresAt,
+    resendAfterSeconds: resendAfterSeconds,
+    maskedPhone: maskedPhone,
+  );
+}
+
+extension on gen_pin_dto.DartDiscoverySessionSummary {
+  DiscoverySessionSummary _toModel() => DiscoverySessionSummary(
+    discoveryHandle: discoveryHandle,
+    tenantId: tenantId,
+    expiresAt: expiresAt,
+  );
+}
+
+extension on gen_pin_dto.DartPhoneSessionSummary {
+  PhoneSessionSummary _toModel() => PhoneSessionSummary(
+    sessionHandle: sessionHandle,
+    tenantId: tenantId,
+    target: target._toModel(),
+    expiresAt: expiresAt,
+  );
+}
+
+extension on gen_pin_dto.DartPinRecoveryTarget {
+  PinRecoveryTarget _toModel() => PinRecoveryTarget(
+    targetId: targetId,
+    fullHandle: fullHandle,
+    did: did,
+    bindingGeneration: bindingGeneration,
+    activeEpoch: activeEpoch,
+    canEnable: canEnable,
+    canRecover: canRecover,
+    unavailableReason: unavailableReason,
+  );
+}
+
+extension on gen_pin_dto.DartPinRecoveryKind {
+  PinRecoveryKind _toModel() => switch (this) {
+    gen_pin_dto.DartPinRecoveryKind.enable => PinRecoveryKind.enable,
+    gen_pin_dto.DartPinRecoveryKind.recover => PinRecoveryKind.recover,
+  };
+}
+
+extension on gen_pin_dto.DartPinRecoveryPhase {
+  PinRecoveryPhase _toModel() => switch (this) {
+    gen_pin_dto.DartPinRecoveryPhase.awaitingPin =>
+      PinRecoveryPhase.awaitingPin,
+    gen_pin_dto.DartPinRecoveryPhase.authorizing =>
+      PinRecoveryPhase.authorizing,
+    gen_pin_dto.DartPinRecoveryPhase.registering =>
+      PinRecoveryPhase.registering,
+    gen_pin_dto.DartPinRecoveryPhase.verifyingBackup =>
+      PinRecoveryPhase.verifyingBackup,
+    gen_pin_dto.DartPinRecoveryPhase.recoveringKey =>
+      PinRecoveryPhase.recoveringKey,
+    gen_pin_dto.DartPinRecoveryPhase.awaitingDeviceConfirmation =>
+      PinRecoveryPhase.awaitingDeviceConfirmation,
+    gen_pin_dto.DartPinRecoveryPhase.committing => PinRecoveryPhase.committing,
+    gen_pin_dto.DartPinRecoveryPhase.commitUnknown =>
+      PinRecoveryPhase.commitUnknown,
+    gen_pin_dto.DartPinRecoveryPhase.localActivationPending =>
+      PinRecoveryPhase.localActivationPending,
+    gen_pin_dto.DartPinRecoveryPhase.activeSecurePending =>
+      PinRecoveryPhase.activeSecurePending,
+    gen_pin_dto.DartPinRecoveryPhase.cleanupPending =>
+      PinRecoveryPhase.cleanupPending,
+    gen_pin_dto.DartPinRecoveryPhase.completed => PinRecoveryPhase.completed,
+    gen_pin_dto.DartPinRecoveryPhase.failed => PinRecoveryPhase.failed,
+    gen_pin_dto.DartPinRecoveryPhase.cancelled => PinRecoveryPhase.cancelled,
+  };
+}
+
+extension on gen_pin_dto.DartPinRecoveryAction {
+  PinRecoveryAction _toModel() => switch (this) {
+    gen_pin_dto.DartPinRecoveryAction.verifyPhone =>
+      PinRecoveryAction.verifyPhone,
+    gen_pin_dto.DartPinRecoveryAction.submitPin => PinRecoveryAction.submitPin,
+    gen_pin_dto.DartPinRecoveryAction.confirmDevice =>
+      PinRecoveryAction.confirmDevice,
+    gen_pin_dto.DartPinRecoveryAction.resume => PinRecoveryAction.resume,
+    gen_pin_dto.DartPinRecoveryAction.cancel => PinRecoveryAction.cancel,
+    gen_pin_dto.DartPinRecoveryAction.retryLocalActivation =>
+      PinRecoveryAction.retryLocalActivation,
+    gen_pin_dto.DartPinRecoveryAction.inspect => PinRecoveryAction.inspect,
+  };
+}
+
+extension on gen_pin_dto.DartPinRecoverySecureReadiness {
+  PinRecoverySecureReadiness _toModel() => switch (this) {
+    gen_pin_dto.DartPinRecoverySecureReadiness.notStarted =>
+      PinRecoverySecureReadiness.notStarted,
+    gen_pin_dto.DartPinRecoverySecureReadiness.prekeysPending =>
+      PinRecoverySecureReadiness.prekeysPending,
+    gen_pin_dto.DartPinRecoverySecureReadiness.securePending =>
+      PinRecoverySecureReadiness.securePending,
+    gen_pin_dto.DartPinRecoverySecureReadiness.ready =>
+      PinRecoverySecureReadiness.ready,
+  };
+}
+
+extension on gen_pin_dto.DartRealmProgress {
+  RealmProgress _toModel() =>
+      RealmProgress(realmId: realmId, phase: phase, errorCode: errorCode);
+}
+
+extension on gen_pin_dto.DartPinRecoveryError {
+  PinRecoveryError _toModel() => PinRecoveryError(
+    code: code,
+    retryable: retryable,
+    retryAfterSeconds: retryAfterSeconds,
+  );
+}
+
+extension on gen_pin_dto.DartPinRecoveryProgress {
+  PinRecoveryProgress _toModel() => PinRecoveryProgress(
+    operationId: operationId,
+    kind: kind._toModel(),
+    phase: phase._toModel(),
+    allowedActions: allowedActions
+        .map((v) => v._toModel())
+        .toList(growable: false),
+    target: target._toModel(),
+    nodeProgress: nodeProgress.map((v) => v._toModel()).toList(growable: false),
+    attemptsUsed: attemptsUsed,
+    attemptsLimit: attemptsLimit,
+    needsPhoneVerification: needsPhoneVerification,
+    needsUserConfirmation: needsUserConfirmation,
+    recoveredIdentity: recoveredIdentity?._toModel(),
+    newDeviceId: newDeviceId,
+    deviceLabel: deviceLabel,
+    secureReadiness: secureReadiness._toModel(),
+    cleanupRemaining: cleanupRemaining,
+    error: error?._toModel(),
+  );
+}
+
+extension on gen_identity.DartIdentitySelector {
+  IdentitySelector _toModel() => switch (this) {
+    gen_identity.DartIdentitySelector_Default() =>
+      const IdentitySelector.defaultIdentity(),
+    gen_identity.DartIdentitySelector_Id(:final id) => IdentitySelector.id(id),
+    gen_identity.DartIdentitySelector_Did(:final did) => IdentitySelector.did(
+      did,
+    ),
+    gen_identity.DartIdentitySelector_Handle(:final handle) =>
+      IdentitySelector.handle(handle),
+    gen_identity.DartIdentitySelector_LocalAlias(:final alias) =>
+      IdentitySelector.localAlias(alias),
+  };
+}
+
+extension on gen_pin_dto.DartPinRecoveryBackupState {
+  PinRecoveryBackupState _toModel() => switch (this) {
+    gen_pin_dto.DartPinRecoveryBackupState.unknown =>
+      PinRecoveryBackupState.unknown,
+    gen_pin_dto.DartPinRecoveryBackupState.notEnabled =>
+      PinRecoveryBackupState.notEnabled,
+    gen_pin_dto.DartPinRecoveryBackupState.pending =>
+      PinRecoveryBackupState.pending,
+    gen_pin_dto.DartPinRecoveryBackupState.active =>
+      PinRecoveryBackupState.active,
+  };
+}
+
+extension on gen_pin_dto.DartPinRecoveryBackupStatus {
+  PinRecoveryBackupStatus _toModel() => PinRecoveryBackupStatus(
+    did: did,
+    fullHandle: fullHandle,
+    bindingGeneration: bindingGeneration,
+    state: state._toModel(),
+    activeEpoch: activeEpoch,
+    error: error?._toModel(),
+  );
 }

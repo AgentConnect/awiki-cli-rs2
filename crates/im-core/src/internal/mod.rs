@@ -70,6 +70,7 @@ pub(crate) mod key_provider;
 pub(crate) mod local_state;
 pub(crate) mod message_runtime;
 pub(crate) mod platform_secret;
+pub(crate) mod pin_recovery;
 pub(crate) mod profile_runtime;
 pub(crate) mod proof;
 pub(crate) mod public_discovery_http;

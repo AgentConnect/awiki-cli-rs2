@@ -1,3 +1,4 @@
+import 'models/pin_recovery.dart';
 import 'models/network.dart';
 import 'models/attachment.dart';
 import 'models/config.dart';
@@ -11,11 +12,70 @@ UnsupportedError _unsupported() => UnsupportedError(
 );
 
 class AwikiImCore {
-  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() => backendCapabilities();
-  Stream<Map<String, dynamic>> watchBackendCapabilities() => const Stream.empty();
+  Future<PinRecoveryBackupStatus> pinRecoveryBackupStatus({
+    required IdentitySelector selector,
+  }) async => throw _unsupported();
 
-  Future<Map<String, dynamic>> backendCapabilities({bool force = false}) async =>
-      {'capabilities_version': 1, 'status': 'unavailable', 'fetched_at': null, 'expired': true, 'capabilities': <String, dynamic>{}};
+  Future<PhoneChallengeSummary> requestPinRecoveryPhoneCode({
+    required String tenantId,
+    required String phone,
+    String? resumeOperationId,
+  }) async => throw _unsupported();
+  Future<DiscoverySessionSummary> verifyPinRecoveryPhoneCode({
+    required String challengeHandle,
+    required String code,
+  }) async => throw _unsupported();
+  Future<List<PinRecoveryTarget>> listPinRecoveryTargets({
+    required String discoveryHandle,
+  }) async => throw _unsupported();
+  Future<PhoneSessionSummary> selectPinRecoveryTarget({
+    required String discoveryHandle,
+    required String targetId,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> beginEnablePinRecovery({
+    required String sessionHandle,
+    required IdentitySelector selector,
+    required bool userPresenceConfirmed,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> beginPinRecovery({
+    required String sessionHandle,
+    required String deviceLabel,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> submitPinRecoveryPin({
+    required String operationId,
+    required String pin,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> confirmPinRecoveryDevice({
+    required String operationId,
+    required bool userPresenceConfirmed,
+  }) async => throw _unsupported();
+  Future<List<PinRecoveryProgress>> listPendingPinRecoveryOperations() async =>
+      throw _unsupported();
+  Future<PinRecoveryProgress> pinRecoveryStatus({
+    required String operationId,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> resumePinRecovery({
+    required String operationId,
+    String? sessionHandle,
+  }) async => throw _unsupported();
+  Future<PinRecoveryProgress> cancelPinRecovery({
+    required String operationId,
+  }) async => throw _unsupported();
+
+  Future<Map<String, dynamic>> backendCapabilitiesSnapshot() =>
+      backendCapabilities();
+  Stream<Map<String, dynamic>> watchBackendCapabilities() =>
+      const Stream.empty();
+
+  Future<Map<String, dynamic>> backendCapabilities({
+    bool force = false,
+  }) async => {
+    'capabilities_version': 1,
+    'status': 'unavailable',
+    'fetched_at': null,
+    'expired': true,
+    'capabilities': <String, dynamic>{},
+  };
 
   static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
     required AwikiImCorePaths paths,

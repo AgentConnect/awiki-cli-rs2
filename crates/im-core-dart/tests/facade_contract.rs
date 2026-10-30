@@ -1252,6 +1252,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     assert!(!debug.contains("7, 7"));
 
     let options = awiki_im_core::dto::config::DartImCoreOpenOptions {
+        pin_recovery_tenants: vec![],
         identity_secret_storage_policy:
             awiki_im_core::dto::config::DartIdentitySecretStoragePolicy::VaultRequired,
         identity_secret_vault: Some(awiki_im_core::dto::config::DartImCoreSecretVaultOptions {
@@ -1292,6 +1293,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
 #[test]
 fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
     let options = awiki_im_core::dto::config::DartImCoreOpenOptions {
+        pin_recovery_tenants: vec![],
         identity_secret_storage_policy:
             awiki_im_core::dto::config::DartIdentitySecretStoragePolicy::VaultPreferred,
         identity_secret_vault: Some(awiki_im_core::dto::config::DartImCoreSecretVaultOptions {

@@ -1,3 +1,4 @@
+import 'pin_recovery.dart';
 import 'dart:typed_data';
 
 enum MessageTransportPolicy { auto, httpOnly, realtimePreferred }
@@ -26,6 +27,7 @@ class AwikiImCoreConfig {
   final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
+
   /// PEM roots added to Core's trust store; TLS verification remains enabled.
   final String? caBundle;
   final MessageTransportPolicy transportPolicy;
@@ -54,6 +56,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceAudience,
+    this.pinRecoveryTenants = const [],
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
@@ -63,7 +66,8 @@ class AwikiImCoreOpenOptions {
       multiDeviceDirectE2eeEnabled = false,
       multiDeviceGroupE2eeEnabled = false,
       multiDeviceHandleRecoveryEnabled = false,
-      multiDeviceAudience = null;
+      multiDeviceAudience = null,
+      pinRecoveryTenants = const [];
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
@@ -72,6 +76,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceAudience,
+    this.pinRecoveryTenants = const [],
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
@@ -81,6 +86,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceAudience,
+    this.pinRecoveryTenants = const [],
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
@@ -90,6 +96,7 @@ class AwikiImCoreOpenOptions {
   final bool multiDeviceGroupE2eeEnabled;
   final bool multiDeviceHandleRecoveryEnabled;
   final String? multiDeviceAudience;
+  final List<PinRecoveryTenantConfig> pinRecoveryTenants;
 }
 
 class ImCoreSecretVaultOptions {

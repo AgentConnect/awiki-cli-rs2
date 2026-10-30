@@ -116,6 +116,43 @@ Core 的同步与原生异步密码操作在 Provider 返回明确的 generation
 
 新 Join 的 challenge 准备前，若本地 DID 文档落后于认证 Registry，Core 解析并验真远端文档，再以独立的 sibling convergence 权限同步 controller custody 和本地投影。必须保持 DID、根密钥、本机 signing/E2EE 密钥及 auth generation 不变，本机在 Registry 仍为 active/admin/management_ready，文档和 Registry checkpoint 均不可回退。Provider 必须没有 pending document change，并在原子 adoption 中执行根指纹、当前 generation 和本机密钥授权检查；不借用 Recovery 或已确认 Join 的 pending publication 权限。旧 custody 无此保证时失败关闭。成功后重新打开 client，仍按原有精确文档摘要检查准备 challenge；同步不发送根密钥，也不批准 Join。
 
+### PIN 原根恢复的环境与 custody 边界
+
+`ImCore::pin_recovery()` 独占短信 discovery、单目标 PST、P-256 DPoP、每次 attempt 的
+RAT、固定版本 Juicebox SDK、根密文包与秘密 pending。Dart/App 只提交安全输入及明确
+确认，并显示 typed progress；不接触 JWT/CBOR/根私钥。受信 Host 预安装配置验签公钥，
+Core 验完整配置 JWS 与不可变 crypto config hash 后才接受三节点地址。
+
+Provider 新增根备份导出、恢复 pending ingress、固定意图签名和精确远端结果激活四个
+窄能力族。导出/导入使用 zeroizing PKCS#8 Rust bytes；现有根的 enable 管理签名及
+pending 根的新设备双 JWS 都绑定同操作/目标/根/代际。未实现 capability 的外部 Provider
+明确拒绝；旧在线 Root Transfer 的 sender evidence 不作为 Realm ingress 证据。
+
+PIN 操作的权威秘密状态位于专用 `IdentityPinRecoveryPending` Vault records；旁路
+`<local-state stem>.pin-recovery.sqlite` 只索引 operation/target/DID/phase，可从 Vault
+重建。`<local-state stem>.pin-recovery.lock` 串行跨进程 mutation。SQLite 不保存手机号、
+验证码、PIN、K、Token、根、份额或 OPRF 正文。注册先密封三个精确 Register2 payload
+再写节点；缺失完整 payload 的 staging 不混用新随机份额。recover future 的 blinding
+factor 只在内存；重启前尚未恢复 K 时，resume 仅对账，新的用户 PIN 提交创建新 attempt。
+K/根已密封或 custody pending 已建立时，同操作续接不再猜 PIN、不再生成第二套设备。
+首次 ingress 调用前先密封 `custody_ingress_started`；Provider 成功后立即密封实际 proposal。
+恢复、确认及取消先重开同 binding 读取 Provider 的真实 phase/generation；Core 旧快照不能
+把已签名的 PublicationUncertain 降回 Prepared。查询和取消只观察已有 namespace，
+不以缺失 proposal 为理由生成设备。取消通过 session 的精确 Prepared capability；
+远端已 cancelled/expired 且 namespace 已删除时，可幂等完成本地收尾。
+
+恢复使用当前权威 `recovery_checkpoint`，独立解析 DID 并校验当前根/完整文档摘要；
+候选仅增加本次设备。服务端提交未知、Provider 已签但 Core 尚未发包、远端完成而本地
+落盘失败都保留原材料。未提交对账使用发起时间晚于旧 challenge 到期加时钟容差的权威 GET；响应延迟到到期后
+不能把过期前快照变成此证据。已确认 cancelled/expired 终态只能对账和清理，不重签、
+新猜测或续发 RAT。过期后同绑定、原 DPoP key 的新 PST 只读续接可取精确历史提交结果。
+
+历史 device_result 只证明提交发生过。Provider 激活及 active 投影之前，Core 重新查询
+当前 Registry 摘要，独立解析当前 DID，核对当前 checkpoint、device/两个 KID 和权限。
+撤销、角色下降或管理未就绪均明确拒绝；projection 使用当前 auth generation。
+其他设备推进文档时，只以既有受限 sibling adoption 接续当前 doc/checkpoint，不能
+回写历史文档。既有 Join、Root Transfer 与 V4 保留独立授权。
+
 ### 4.2 Manifest Handle Recovery boundary
 
 E1 Recovery preserves the predecessor's encoded origin and stable subject path; registration's
@@ -2140,3 +2177,27 @@ Unix 双向核对 peer UID、socket mode 为 0600；Windows 在发出意图前�
 system-test-probe 编译特性和显式内部入口共同启用 local.test_send_state，仅提供只读
 就绪观察与有界网络计时窗口；不会初始化、修复、消费通知或放宽生产发送判断。测试消息
 仍使用正常 msg send，不能将这些只读诊断当作新的产品发送实现。
+
+
+### V4 后旧 PIN pending 的精确本地收尾（2026-10-31）
+
+V4 在同一个 `mark_applied` CAS 中预标 `pin_recovery_cleanup_pending`，因此首次清理扫描前
+退出或 I/O 失败仍可从 Applied journal 继续。清理只匹配已确认 V4 的 account、full Handle、
+旧 DID 和旧 binding generation；intent/result、Completed initiator marker 与当前权威绑定
+相互核对，当前 successor 文档摘要与认证 Registry checkpoint 一致。普通
+`binding_changed` 不能产生清理许可，也不把曾提交的结果伪造为 NotCommitted。
+
+未完成、从未投影的 PIN-origin namespace 使用专用 V4 supersession：先持久 cleanup
+claim，Provider 在 CAS 下隔离为 Revoked/rootAbsent/keysRevoked，再核精确 ref/generation
+后调用普通 exact delete。当前/历史 projection、Core 曾返回的 recovered selector 或
+`previous_custody` 引用均禁止此隔离；已有历史 identity 材料继续遵循原 V4 策略。
+
+Operation 的 K、DER、attempt 与注册 payload 清除后，统一清理所有原/续接 Session：
+旧绑定且不再被其他活跃 operation 引用的记录删除；合法新绑定只 prune 明确属于旧
+operation 的 exact requests，保留新凭据。缺失归属的升级数据留为 cleanup pending。
+只有 Operation 与 Session 都清理并持久化后才标 `core_cleared`。
+
+cleanup claim 独立于 V4 journal。显式本地删除移除 V4 journal 前会把尚未完成的旧 PIN
+收尾移交给持久 claim；未捕获 retirement 权限的情形保留 Provider，不推导宽删除许可。
+`Core::open_with_options` 维护入口可继续已验证的精确 claim，已隔离 namespace 的删除
+不依赖新身份仍存在。只读 `list_pending` 不承担删除动作。

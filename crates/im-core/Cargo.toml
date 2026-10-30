@@ -32,7 +32,7 @@ identity-external-provider = ["provider-traits"]
 
 [dependencies]
 anp.workspace = true
-anp-identity = { workspace = true, optional = true }
+anp-identity = { workspace = true, optional = true, features = ["pin-recovery"] }
 async-trait.workspace = true
 base64.workspace = true
 bs58.workspace = true
@@ -44,6 +44,11 @@ hkdf.workspace = true
 hmac.workspace = true
 idna.workspace = true
 ipnet = "2"
+juicebox_sdk = { git = "https://github.com/juicebox-systems/juicebox-sdk", rev = "2e0f544e3fd0bd0997a034f73c8efb6fade3690c", features = ["tokio"] }
+juicebox_networking = { git = "https://github.com/juicebox-systems/juicebox-sdk", rev = "2e0f544e3fd0bd0997a034f73c8efb6fade3690c" }
+juicebox_realm_api = { git = "https://github.com/juicebox-systems/juicebox-sdk", rev = "2e0f544e3fd0bd0997a034f73c8efb6fade3690c" }
+juicebox_marshalling = { git = "https://github.com/juicebox-systems/juicebox-sdk", rev = "2e0f544e3fd0bd0997a034f73c8efb6fade3690c" }
+p256 = { version = "0.13", features = ["ecdsa"] }
 rand.workspace = true
 reqwest = { workspace = true, features = ["socks"] }
 futures-util.workspace = true

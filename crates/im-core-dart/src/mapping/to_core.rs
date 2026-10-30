@@ -182,6 +182,13 @@ impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenO
         options.multi_device_group_e2ee_enabled = value.multi_device_group_e2ee_enabled;
         options.multi_device_handle_recovery_enabled = value.multi_device_handle_recovery_enabled;
         options.multi_device_audience = value.multi_device_audience;
+        options = options.with_pin_recovery_tenants(
+            value
+                .pin_recovery_tenants
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
         if let Some(vault) = value.identity_secret_vault {
             options.identity_secret_vault = Some(vault.try_into()?);
         }

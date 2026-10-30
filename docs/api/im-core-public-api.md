@@ -162,6 +162,7 @@ impl ImCore {
     pub fn bootstrap(&self) -> CoreBootstrap<'_>;
     pub fn onboarding(&self) -> SkillOnboardingService<'_>;
     pub fn handle_recovery(&self) -> HandleRecoveryService<'_>;
+    pub fn pin_recovery(&self) -> pin_recovery::PinRecoveryService<'_>;
 
     pub fn client(&self, selector: IdentitySelector) -> ImResult<ImClient>;
 }
@@ -2450,3 +2451,73 @@ Core 的显式 CA 配置仍独立于其他租户客户端；共享开关、路�
 WS 连接绑定建立前的网络代次，握手期间切换策略使旧候选失效。读边界廉价核对缓存代次，
 系统配置检查使用保存在连接上的一秒截止时间；持续帧及宿主 250ms 读取消均不能重置截止时间。
 发现变化后复用既有重连机制，App 在连接恢复后补拉；不取消已提交业务写入、不重建账号。
+
+
+### PIN 根备份与原 DID 加设备（2026-10-30 开发候选）
+
+环境级 `core.pin_recovery()` 可在尚无身份的新设备上调用。受信 Host 通过
+`ImCoreOpenOptions::with_pin_recovery_tenants` 安装 tenant/deployment、控制面 base URL
+及按 kid 登记的 Ed25519 配置验签公钥；普通业务入参不能指定服务地址。未安装 tenant
+时返回 `capability_unavailable`。此能力要求 `IdentitySecretStoragePolicy::VaultRequired`。
+网络合同由 [Realm 首版集成合同](../../../awiki-realm/Docs/07_首版集成合同.md) 及其 OpenAPI 拥有。
+
+公开调用顺序为 `request_phone_code` → `verify_phone_code` → `list_targets` →
+`select_target`。验证返回 `DiscoverySessionHandle`，选定后返回单目标 `PhoneSessionHandle`。
+句柄只在当前 Core/Vault 的 workspace、device scope 内解析；不是 HTTP credential。
+DPoP 私钥、discovery credential、PST、RAT 均留在 Core 的密封 pending。
+
+开启备份调用 `begin_enable(EnablePinRecoveryRequest)`，明确指定本机 `IdentitySelector`
+和 `UserPresence`；只支持具有当前单一 Ed25519 RootControl 的身份。原根恢复调用
+`begin_recover(BeginPinRecoveryRequest)`，仅输入已选会话和设备名称。
+`submit_pin(operation_id, SecretPin)` 保留前导零，仅接受四个 ASCII 数字。
+`SecretOtp` 为独立六位 ASCII 敏感类型；两者均不实现 serde 或 Debug。
+恢复后 `confirm_device` 需要再次明确 `UserPresence`，返回原 DID 和新设备；
+根与设备秘密不会进入公开 DTO。
+
+`list_pending()` 只读当前 Vault/已安装 tenant 的非秘密进度，支持 begin 响应丢失及进程重启后发现原操作；不自动续跑或列出其他 scope。`status` 组合远端权威状态与本地 custody 状态。`resume` 不猜 PIN、不创建第二设备；
+新会话可由 `ResumePinRecoveryRequest.session` 提供，且 `request_phone_code` 必须携带
+原 `resume_operation_id` 以复用原 DPoP key。服务端重新检查手机号、账号、目标、DID
+及绑定代际。没有原 key 不能继承秘密 pending。`cancel` 只取消未提交操作；
+结果未知先对账，不能把瞬时未提交的 GET 当成允许丢弃已签名材料。
+过期后相同绑定和原 key 的新会话只允许读取历史结果或未提交终态；Core 只完成原
+pending 的本地激活或清理，不延长期限、不发新 RAT。历史提交后的本地激活仍检查
+当前文档及 Registry 的同 device/keys/权限，已撤销时返回 `device_revoked`。
+
+`PinRecoveryProgress` 提供业务 phase、`allowed_actions`、目标摘要、节点进度、服务端
+猜测计数、是否需要短信/用户确认、新设备、已激活 selector 及独立 secure readiness。
+3/3 注册、2/3 回读并经控制面激活才显示备份完成；远端 device committed 与本地
+activation pending 分别表达。主动跳过由产品保留未开启，不创建 backup operation。
+本版没有 change_pin、普通 disable、邮箱恢复或人工 CLI。
+
+专用真实 Core driver 为 `crates/im-core/tests/pin_recovery_driver.rs` 的显式 ignored 测试，
+以 `AWIKI_PIN_RECOVERY_DRIVER_CONFIG` 读取权限为 0600 的输入文件，禁止 PIN/OTP argv。
+使用 `cargo test -p awiki-im-core --test pin_recovery_driver live_pin_root_roundtrip -- --ignored --nocapture`。
+该 driver 通过现有注册 API 创建本轮精确 Handle，再用两个独立 Vault 执行备份、原根恢复
+和新设备激活；只输出非秘密操作摘要。它不发布为 CLI，也不代替 System Test 或 App E2E。
+
+错误 PIN 的真实 owning driver 使用同一保护输入文件，调用
+`cargo test -p awiki-im-core --test pin_recovery_driver live_pin_wrong_pin_is_one_attempt_without_device -- --ignored --nocapture`。
+它在独立 storage C 对本轮既有目标明确提交一次错误 PIN，检查服务端全局计数只增加一次、
+没有本地身份/新设备、已认证 Registry 前后不变，最后取消该未提交操作；不会创建账号。
+此用例与同 Handle 的其他验证码及在线猜测串行执行。精简原生结果归档在
+`target/test-results/pin-recovery/`，不把 focused driver 当成完整 System/App E2E。
+
+新控制面 HTTP（包括签名配置读取）沿用 Core Host 的 `client_version_info`，接受既有产品
+版本准入。Realm 直连继续使用固定 Juicebox/protocol headers。测试 driver 使用本轮实际
+App 源码版本元数据，不关闭服务端版本检查。
+
+
+`backup_status(identity: IdentitySelector) -> PinRecoveryBackupStatus` 使用当前合法 Device
+JWT 读取 `/user-service/v1/key-recovery/device-status`，不请求短信、PST、RAT 或修改备份。
+返回 `did/full_handle?/binding_generation?/state/active_epoch?/error?`；state 为
+`unknown/not_enabled/pending/active`。离线、不支持或认证错误明确给出 unknown 与 typed
+error；只有服务端肯定的 not_enabled 才表示未开启。metadata pending 可能由另一设备
+发起，只有本机 journal 的 `list_pending` 才提供继续/取消句柄。
+`PinRecoveryProgress.device_label` 在 recover 时返回本操作已固定的设备名称，enable 为
+null，冷启动确认不由 App 猜测名称。
+
+真实 V4 owning driver 是 `live_v4_retires_old_backup_and_allows_new_backup`：独立 E 先恢复
+旧根到从未投影的 pending，执行明确 V4，核旧 namespace 和 Session 已清，再核新根跳过
+备份仍可用，随后明确开启新备份并由独立 F 恢复。它使用保护输入中的实际
+`multi_device_audience`；公开操作 IDs 证据不含秘密，不能代替 Core 状态机。物理旧槽删除
+由 System owner 独立核验三 Realm 的签名 Delete 收据与 tombstone。

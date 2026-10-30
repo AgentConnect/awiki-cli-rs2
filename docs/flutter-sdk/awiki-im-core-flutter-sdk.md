@@ -1468,3 +1468,43 @@ CA bundle。用户设置切换影响新请求，已提交请求继续完成；WS
 直连策略也覆盖 WS 握手失败；Core 内部禁止换路重新启用代理。WS 的策略检测截止时间不随
 宿主的短轮询读取重建，空闲、持续消息和 Ping/Pong 场景均检查代次。群恢复控制提示在 Core
 提交 journal 后直接唤醒后台维护，Flutter 宿主无需靠前台周期同步启动修复；现有权限和退避保留。
+
+### PIN 根备份与恢复绑定（2026-10-30 开发候选）
+
+环境级 `AwikiImCore` 暴露短信专用 PIN 恢复接口；新设备无需先创建身份。
+Host 在 `AwikiImCoreOpenOptions.pinRecoveryTenants` 安装 `PinRecoveryTenantConfig`
+（`tenantId`、`deploymentId`、`controlBaseUrl`、`configSigningKeys`）。配置验签公钥必须
+来自受信 Host 配置，不能用同一未验证网络响应中的公钥自证。默认空列表失败关闭；
+必须使用 `vaultRequired`，秘密凭证与恢复根留在 Core 密封状态。
+
+调用顺序为 `requestPinRecoveryPhoneCode` → `verifyPinRecoveryPhoneCode` →
+`listPinRecoveryTargets` → `selectPinRecoveryTarget`。返回的 challenge、discovery、session
+句柄是 Core scope 内的非秘密标识，不是 HTTP Token。开启调用 `beginEnablePinRecovery`
+并明确传入本机 `selector` 和 `userPresenceConfirmed: true`；恢复调用 `beginPinRecovery`
+并传入设备名称。`submitPinRecoveryPin` 仅接受四个 ASCII 数字字符串，保留前导零；
+验证码为六个 ASCII 数字。PIN/OTP 仅作输入参数，不生成可打印请求 DTO，不写日志。
+Dart 不可擦除不可变 String，因此 Host 应在提交后及时清空输入控件和引用。
+
+`confirmPinRecoveryDevice` 要求独立用户确认。所有操作返回 typed `PinRecoveryProgress`，
+保留 Core 的 phase、allowedActions、猜测计数、节点进度、错误码和独立 secureReadiness；
+不可把 commitUnknown/localActivationPending/activeSecurePending 显示为完整完成。
+`bindingGeneration` 和 `activeEpoch` 都以十进制 String 过 FFI，避免 u64 精度丢失。
+`listPendingPinRecoveryOperations` 只发现当前 Vault 的非秘密 pending；`pinRecoveryStatus`
+只对账，`resumePinRecovery` 续接同一 operation。过期重新短信验证须把原 operationId
+作为 `requestPinRecoveryPhoneCode.resumeOperationId`，再将新 sessionHandle 传给 resume，
+不能换 DPoP key 或重置预算。`cancelPinRecovery` 遵循 Core 的提交对账限制。异常沿用 SDK 合同：
+`AwikiImCoreException.code` 为 `service_error`，业务码在 `serviceCode`；错误 PIN 为
+`invalid_pin`，预算耗尽为 `guess_budget_exhausted`，节点故障为 `realm_unavailable`，
+控制面网络故障为 `network_unavailable`。`progress.error.code` 直接承载业务码。
+跳过 PIN 属于 Host 未开启状态，不创建 operation。既有邮箱登录、在线 Join、V4 保留。
+无 change PIN、邮箱 Realm 恢复、根/K/JWT 导出 API；Web 同签名明确不支持。
+Rust/Dart FRB 生成代码与 native library 必须来自同一源码候选；当前联调使用
+`scripts/flutter/build-linux.sh` 的本地源码模式，不能描述为已发布 registry 能力。
+
+`pinRecoveryBackupStatus(selector:)` 使用当前设备身份取得只属于该 DID 的权威备份状态，
+返回 `PinRecoveryBackupStatus`：`unknown`、`notEnabled`、`pending`、`active`。
+离线、认证失败或控制面不支持时保留 `unknown` 和 typed `error`；不能从空 pending
+列表推导未开启。该查询不消耗短信验证码，不获取 PST，也不返回任何 Token。
+`fullHandle`、`bindingGeneration`、`activeEpoch` 可能为空，代际和 epoch 保留为字符串。
+`PinRecoveryProgress.deviceLabel` 为非秘密可空设备名称，供重启后确认原待加入设备，
+Host 不应为冷启动续接生成第二个设备提案。

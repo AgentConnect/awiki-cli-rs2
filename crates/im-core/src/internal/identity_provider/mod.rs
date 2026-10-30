@@ -1,3 +1,5 @@
+mod pin_recovery;
+pub use pin_recovery::*;
 #[cfg(feature = "identity-native-anp")]
 mod direct;
 
@@ -819,6 +821,26 @@ impl ProviderExportedRoot {
 
 #[async_trait]
 pub trait IdentityCustody: Send + Sync {
+    async fn retire_pin_root_recovery_after_v4(
+        &self,
+        _request: ProviderPinRecoveryV4RetirementRequest,
+    ) -> ProviderResult<ProviderPinRecoveryV4RetirementOutcome> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
+    async fn begin_pin_root_recovery(
+        &self,
+        _request: ProviderBeginPinRootRecoveryRequest,
+    ) -> ProviderResult<Arc<dyn ProviderPinRootRecoverySession>> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
     async fn store_info(&self) -> ProviderResult<ProviderStoreInfo>;
 
     async fn list_identities(&self) -> ProviderResult<Vec<ProviderIdentityDescriptor>>;
@@ -929,6 +951,31 @@ pub trait IdentityCustody: Send + Sync {
 
 #[async_trait]
 pub trait IdentitySession: Send + Sync {
+    async fn pin_root_generation(&self) -> ProviderResult<u64> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+    async fn export_root_for_pin_backup(
+        &self,
+        _request: ProviderPinRootBackupRequest,
+    ) -> ProviderResult<ProviderPinRootBackup> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+    async fn sign_pin_recovery_intent(
+        &self,
+        _request: ProviderPinBackupIntentRequest,
+    ) -> ProviderResult<String> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
     async fn public_identity(&self) -> ProviderResult<ProviderPublicIdentity>;
 
     async fn host_status(&self) -> ProviderResult<ProviderHostStatus>;

@@ -1,3 +1,4 @@
+mod pin_recovery;
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
@@ -80,6 +81,20 @@ impl DirectAnpIdentitySession {
 
 #[async_trait]
 impl IdentityCustody for DirectAnpIdentityCustody {
+    async fn retire_pin_root_recovery_after_v4(
+        &self,
+        request: super::ProviderPinRecoveryV4RetirementRequest,
+    ) -> ProviderResult<super::ProviderPinRecoveryV4RetirementOutcome> {
+        pin_recovery::retire(self.manager.clone(), request).await
+    }
+
+    async fn begin_pin_root_recovery(
+        &self,
+        request: super::ProviderBeginPinRootRecoveryRequest,
+    ) -> ProviderResult<Arc<dyn super::ProviderPinRootRecoverySession>> {
+        pin_recovery::begin(self.manager.clone(), request).await
+    }
+
     async fn store_info(&self) -> ProviderResult<ProviderStoreInfo> {
         let manager = self.manager.clone();
         run_blocking(move || {
@@ -585,6 +600,22 @@ fn native_migration_key(
 
 #[async_trait]
 impl IdentitySession for DirectAnpIdentitySession {
+    async fn pin_root_generation(&self) -> ProviderResult<u64> {
+        pin_recovery::generation(self.identity.clone()).await
+    }
+    async fn export_root_for_pin_backup(
+        &self,
+        request: super::ProviderPinRootBackupRequest,
+    ) -> ProviderResult<super::ProviderPinRootBackup> {
+        pin_recovery::export(self.identity.clone(), request).await
+    }
+    async fn sign_pin_recovery_intent(
+        &self,
+        request: super::ProviderPinBackupIntentRequest,
+    ) -> ProviderResult<String> {
+        pin_recovery::sign_backup(self.identity.clone(), request).await
+    }
+
     async fn public_identity(&self) -> ProviderResult<ProviderPublicIdentity> {
         let identity = self.identity.clone();
         run_blocking(move || {

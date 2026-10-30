@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'pin_recovery.dart';
 
 class DartClientVersionInfo {
   final String product;
@@ -112,6 +113,7 @@ class DartImCoreConfig {
 }
 
 class DartImCoreOpenOptions {
+  final List<DartPinRecoveryTenantConfig> pinRecoveryTenants;
   final DartIdentitySecretStoragePolicy identitySecretStoragePolicy;
   final DartImCoreSecretVaultOptions? identitySecretVault;
   final bool multiDeviceDeviceRevokeEnabled;
@@ -121,6 +123,7 @@ class DartImCoreOpenOptions {
   final String? multiDeviceAudience;
 
   const DartImCoreOpenOptions({
+    required this.pinRecoveryTenants,
     required this.identitySecretStoragePolicy,
     this.identitySecretVault,
     required this.multiDeviceDeviceRevokeEnabled,
@@ -132,6 +135,7 @@ class DartImCoreOpenOptions {
 
   @override
   int get hashCode =>
+      pinRecoveryTenants.hashCode ^
       identitySecretStoragePolicy.hashCode ^
       identitySecretVault.hashCode ^
       multiDeviceDeviceRevokeEnabled.hashCode ^
@@ -145,6 +149,7 @@ class DartImCoreOpenOptions {
       identical(this, other) ||
       other is DartImCoreOpenOptions &&
           runtimeType == other.runtimeType &&
+          pinRecoveryTenants == other.pinRecoveryTenants &&
           identitySecretStoragePolicy == other.identitySecretStoragePolicy &&
           identitySecretVault == other.identitySecretVault &&
           multiDeviceDeviceRevokeEnabled ==

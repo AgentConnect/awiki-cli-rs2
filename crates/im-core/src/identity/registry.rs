@@ -4666,6 +4666,7 @@ mod tests {
             test_config(),
             test_paths(root.path()),
             crate::ImCoreOpenOptions {
+                pin_recovery_tenants: Vec::new(),
                 network_runtime: None,
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
@@ -5607,6 +5608,7 @@ mod tests {
             test_config(),
             test_paths(root.path()),
             crate::ImCoreOpenOptions {
+                pin_recovery_tenants: Vec::new(),
                 network_runtime: None,
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
