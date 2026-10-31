@@ -178,7 +178,7 @@ pub(crate) fn core_with_ca(
                 did_domain: input.did_domain.clone(),
                 // Matches the current awiki-me/pubspec.yaml and App default release.
                 client_version_info: Some(take(
-                    sdk::ClientVersionInfo::new("awiki-me", "0815", "0.1.41", Some(53)),
+                    sdk::ClientVersionInfo::new("awiki-me", "0815", "0.1.42", Some(54)),
                     "current App version metadata",
                 )),
                 user_service_endpoint: None,
