@@ -15,3 +15,5 @@ pub mod secure;
 pub mod unsupported;
 
 pub mod network;
+
+pub mod pin_recovery;

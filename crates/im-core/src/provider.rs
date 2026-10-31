@@ -33,3 +33,19 @@ pub use crate::internal::identity_provider::{
     CAP_HTTP_SIGN, CAP_IDENTITY_SIGN, CAP_KEY_AGREEMENT, CAP_ORIGIN_PROOF, CAP_STORE_READ,
     IDENTITY_PROVIDER_PROTOCOL,
 };
+
+// Rust Host SPI only. Root-bearing capability inputs have no serde/Debug and
+// must never be bridged as ordinary Node or Dart provider messages.
+pub use crate::internal::identity_provider::{
+    ProviderBeginPinRootRecoveryRequest, ProviderPinBackupIntentRequest, ProviderPinBackupPurpose,
+    ProviderPinRecoveryBinding, ProviderPinRecoveryChallenge, ProviderPinRecoveryCompletion,
+    ProviderPinRecoveryProposal, ProviderPinRecoveryRemoteOutcome, ProviderPinRecoverySignRequest,
+    ProviderPinRecoverySignedIntent, ProviderPinRootBackup, ProviderPinRootBackupRequest,
+    ProviderPinRootRecoverySession,
+};
+
+pub use crate::internal::identity_provider::{
+    ProviderPinRecoveryCurrentBinding, ProviderPinRecoveryV4RetirementOutcome,
+    ProviderPinRecoveryV4RetirementRequest, ProviderPinRecoveryV4RetirementScope,
+    ProviderVerifiedPinRecoveryV4Supersession,
+};

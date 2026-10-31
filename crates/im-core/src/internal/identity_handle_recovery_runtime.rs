@@ -454,7 +454,8 @@ pub(crate) fn list_pending_operations(
         for record in applied {
             if let Some((_, pending)) = store.load_v4(&record.operation_id)? {
                 if pending.phase == PendingRecoveryPhaseV4::Applied
-                    && pending.registration_candidate_cleanup.is_some()
+                    && (pending.registration_candidate_cleanup.is_some()
+                        || pending.pin_recovery_cleanup_pending)
                 {
                     records.push(record);
                 }
@@ -1423,6 +1424,9 @@ async fn advance_v4(
         &mut pending,
     )
     .await;
+    if pending.phase == PendingRecoveryPhaseV4::Applied {
+        let _ = crate::internal::pin_recovery::v4_cleanup::finish(core, &store, &mut pending).await;
+    }
     progress_v4(core, &pending)
 }
 

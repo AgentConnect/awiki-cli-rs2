@@ -29,6 +29,8 @@ pub enum SecretKind {
     /// Encrypted exact-retry state for Manifest Handle Recovery. The record
     /// may contain a short-lived Recovery grant and newly generated keys.
     IdentityHandleRecoveryPending,
+    /// Environment-level phone/DPoP and PIN root recovery exact retry secrets.
+    IdentityPinRecoveryPending,
     /// Encrypted exact-retry state for the one-device Legacy promotion.
     IdentityLegacyUpgradePending,
     /// Canonical 48-byte root PKCS#8 DER awaiting remote completion and exact
@@ -70,6 +72,7 @@ impl SecretKind {
             Self::IdentityJoinActivationPending => "identity.join.activation.pending",
             Self::IdentityRegistrationPending => "identity.registration.pending",
             Self::IdentityHandleRecoveryPending => "identity.handle_recovery.pending",
+            Self::IdentityPinRecoveryPending => "identity.pin_recovery.pending",
             Self::IdentityLegacyUpgradePending => "identity.legacy_upgrade.pending",
             Self::IdentityRootImportPending => "identity.root_import.pending",
             Self::IdentityAuthCommitPending => "identity.auth_commit.pending",

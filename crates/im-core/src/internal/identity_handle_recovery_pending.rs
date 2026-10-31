@@ -210,6 +210,8 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) registration_candidate_cleanup: Option<
         crate::internal::identity_handle_recovery_registration_cleanup::RegistrationCandidateCleanup,
     >,
+    #[serde(default)]
+    pub(crate) pin_recovery_cleanup_pending: bool,
     pub(crate) factor_state: RecoveryFactorStateV4,
     pub(crate) authoritative_binding: Option<RecoveryAuthoritativeBindingV4>,
     pub(crate) intent: Option<RecoveryIntentV4>,
@@ -369,6 +371,7 @@ impl PendingHandleRecoveryV4 {
             identity,
             previous_custody: None,
             registration_candidate_cleanup: None,
+            pin_recovery_cleanup_pending: false,
             factor_state: RecoveryFactorStateV4::AwaitingOtp,
             authoritative_binding: None,
             intent: None,
@@ -655,6 +658,7 @@ impl PendingHandleRecoveryV4 {
             return Err(crate::ImError::PermissionDenied);
         }
         self.local_transition_state = LocalTransitionStateV4::Applied;
+        self.pin_recovery_cleanup_pending = true;
         self.phase = PendingRecoveryPhaseV4::Applied;
         self.last_error_code = None;
         self.retry_metadata.last_retryable_code = None;
@@ -1027,6 +1031,7 @@ impl PendingHandleRecoveryStore {
             local_previous_did: legacy.local_previous_did,
             previous_custody: None,
             registration_candidate_cleanup: None,
+            pin_recovery_cleanup_pending: false,
             identity: HandleRecoveryIdentityRef {
                 store_id: public.reference.store_id,
                 identity_id: public.reference.identity_id,
@@ -1250,7 +1255,19 @@ impl PendingHandleRecoveryStore {
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        if let Some((reference, _)) = self.load_v4(operation_id)? {
+        if let Some((reference, pending)) = self.load_v4(operation_id)? {
+            if pending.pin_recovery_cleanup_pending {
+                let pin_store =
+                    crate::internal::pin_recovery::pending::Store::from_vault_for_cleanup(
+                        self.vault.clone(),
+                        self.workspace_id.clone(),
+                        self.device_id.clone(),
+                        sqlite_path,
+                    );
+                crate::internal::pin_recovery::v4_cleanup::handoff_for_local_deletion(
+                    &pin_store, &pending,
+                )?;
+            }
             self.vault.delete(&reference)?;
         }
         Ok(())

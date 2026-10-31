@@ -18,6 +18,7 @@ import 'api/identity.dart';
 import 'api/local_state_upgrade.dart';
 import 'api/messages.dart';
 import 'api/network.dart';
+import 'api/pin_recovery.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
 import 'api/secure.dart';
@@ -34,6 +35,7 @@ import 'dto/group.dart';
 import 'dto/identity.dart';
 import 'dto/local_state_upgrade.dart';
 import 'dto/message.dart';
+import 'dto/pin_recovery.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
 import 'dto/secure.dart';
@@ -194,6 +196,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
     dynamic raw,
   );
+
+  @protected
+  Map<String, String> dco_decode_Map_String_String_None(dynamic raw);
 
   @protected
   ArcDartCapabilitySubscription
@@ -436,6 +441,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessageSyncRequest dco_decode_box_autoadd_dart_message_sync_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartPinRecoveryError dco_decode_box_autoadd_dart_pin_recovery_error(
     dynamic raw,
   );
 
@@ -744,6 +754,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
+
+  @protected
+  DartDiscoverySessionSummary dco_decode_dart_discovery_session_summary(
+    dynamic raw,
+  );
 
   @protected
   DartDisplayProfile dco_decode_dart_display_profile(dynamic raw);
@@ -1154,10 +1169,59 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartNetworkStatus dco_decode_dart_network_status(dynamic raw);
 
   @protected
+  DartPhoneChallengeSummary dco_decode_dart_phone_challenge_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartPhoneSessionSummary dco_decode_dart_phone_session_summary(dynamic raw);
+
+  @protected
+  DartPinRecoveryAction dco_decode_dart_pin_recovery_action(dynamic raw);
+
+  @protected
+  DartPinRecoveryBackupState dco_decode_dart_pin_recovery_backup_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartPinRecoveryBackupStatus dco_decode_dart_pin_recovery_backup_status(
+    dynamic raw,
+  );
+
+  @protected
+  DartPinRecoveryError dco_decode_dart_pin_recovery_error(dynamic raw);
+
+  @protected
+  DartPinRecoveryKind dco_decode_dart_pin_recovery_kind(dynamic raw);
+
+  @protected
+  DartPinRecoveryPhase dco_decode_dart_pin_recovery_phase(dynamic raw);
+
+  @protected
+  DartPinRecoveryProgress dco_decode_dart_pin_recovery_progress(dynamic raw);
+
+  @protected
+  DartPinRecoverySecureReadiness dco_decode_dart_pin_recovery_secure_readiness(
+    dynamic raw,
+  );
+
+  @protected
+  DartPinRecoveryTarget dco_decode_dart_pin_recovery_target(dynamic raw);
+
+  @protected
+  DartPinRecoveryTenantConfig dco_decode_dart_pin_recovery_tenant_config(
+    dynamic raw,
+  );
+
+  @protected
   DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
 
   @protected
   DartReadWatermark dco_decode_dart_read_watermark(dynamic raw);
+
+  @protected
+  DartRealmProgress dco_decode_dart_realm_progress(dynamic raw);
 
   @protected
   DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw);
@@ -1409,6 +1473,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartNetworkHeader> dco_decode_list_dart_network_header(dynamic raw);
 
   @protected
+  List<DartPinRecoveryAction> dco_decode_list_dart_pin_recovery_action(
+    dynamic raw,
+  );
+
+  @protected
+  List<DartPinRecoveryProgress> dco_decode_list_dart_pin_recovery_progress(
+    dynamic raw,
+  );
+
+  @protected
+  List<DartPinRecoveryTarget> dco_decode_list_dart_pin_recovery_target(
+    dynamic raw,
+  );
+
+  @protected
+  List<DartPinRecoveryTenantConfig>
+  dco_decode_list_dart_pin_recovery_tenant_config(dynamic raw);
+
+  @protected
+  List<DartRealmProgress> dco_decode_list_dart_realm_progress(dynamic raw);
+
+  @protected
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
     dynamic raw,
   );
@@ -1421,6 +1507,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<(String, String)> dco_decode_list_record_string_string(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -1544,6 +1633,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
 
   @protected
+  DartPinRecoveryError? dco_decode_opt_box_autoadd_dart_pin_recovery_error(
+    dynamic raw,
+  );
+
+  @protected
   DartReadWatermark? dco_decode_opt_box_autoadd_dart_read_watermark(
     dynamic raw,
   );
@@ -1580,6 +1674,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupAvatarMember>? dco_decode_opt_list_dart_group_avatar_member(
     dynamic raw,
   );
+
+  @protected
+  (String, String) dco_decode_record_string_string(dynamic raw);
 
   @protected
   int dco_decode_u_16(dynamic raw);
@@ -1707,6 +1804,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartThreadMessagePatchSession
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Map<String, String> sse_decode_Map_String_String_None(
     SseDeserializer deserializer,
   );
 
@@ -1997,6 +2099,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessageSyncRequest sse_decode_box_autoadd_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryError sse_decode_box_autoadd_dart_pin_recovery_error(
     SseDeserializer deserializer,
   );
 
@@ -2377,6 +2484,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDirectoryResolution sse_decode_dart_directory_resolution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDiscoverySessionSummary sse_decode_dart_discovery_session_summary(
     SseDeserializer deserializer,
   );
 
@@ -2895,10 +3007,75 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartPhoneChallengeSummary sse_decode_dart_phone_challenge_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPhoneSessionSummary sse_decode_dart_phone_session_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryAction sse_decode_dart_pin_recovery_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryBackupState sse_decode_dart_pin_recovery_backup_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryBackupStatus sse_decode_dart_pin_recovery_backup_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryError sse_decode_dart_pin_recovery_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryKind sse_decode_dart_pin_recovery_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryPhase sse_decode_dart_pin_recovery_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryProgress sse_decode_dart_pin_recovery_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoverySecureReadiness sse_decode_dart_pin_recovery_secure_readiness(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryTarget sse_decode_dart_pin_recovery_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartPinRecoveryTenantConfig sse_decode_dart_pin_recovery_tenant_config(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
 
   @protected
   DartReadWatermark sse_decode_dart_read_watermark(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRealmProgress sse_decode_dart_realm_progress(
     SseDeserializer deserializer,
   );
 
@@ -3228,6 +3405,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartPinRecoveryAction> sse_decode_list_dart_pin_recovery_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartPinRecoveryProgress> sse_decode_list_dart_pin_recovery_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartPinRecoveryTarget> sse_decode_list_dart_pin_recovery_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartPinRecoveryTenantConfig>
+  sse_decode_list_dart_pin_recovery_tenant_config(SseDeserializer deserializer);
+
+  @protected
+  List<DartRealmProgress> sse_decode_list_dart_realm_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
     SseDeserializer deserializer,
   );
@@ -3242,6 +3443,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<(String, String)> sse_decode_list_record_string_string(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -3391,6 +3597,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartPinRecoveryError? sse_decode_opt_box_autoadd_dart_pin_recovery_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartReadWatermark? sse_decode_opt_box_autoadd_dart_read_watermark(
     SseDeserializer deserializer,
   );
@@ -3427,6 +3638,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartGroupAvatarMember>? sse_decode_opt_list_dart_group_avatar_member(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (String, String) sse_decode_record_string_string(
     SseDeserializer deserializer,
   );
 
@@ -3577,6 +3793,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
     ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Map_String_String_None(
+    Map<String, String> self,
     SseSerializer serializer,
   );
 
@@ -3902,6 +4124,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_message_sync_request(
     DartMessageSyncRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_pin_recovery_error(
+    DartPinRecoveryError self,
     SseSerializer serializer,
   );
 
@@ -4352,6 +4580,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_directory_resolution(
     DartDirectoryResolution self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_discovery_session_summary(
+    DartDiscoverySessionSummary self,
     SseSerializer serializer,
   );
 
@@ -4989,6 +5223,78 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_phone_challenge_summary(
+    DartPhoneChallengeSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_phone_session_summary(
+    DartPhoneSessionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_action(
+    DartPinRecoveryAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_backup_state(
+    DartPinRecoveryBackupState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_backup_status(
+    DartPinRecoveryBackupStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_error(
+    DartPinRecoveryError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_kind(
+    DartPinRecoveryKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_phase(
+    DartPinRecoveryPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_progress(
+    DartPinRecoveryProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_secure_readiness(
+    DartPinRecoverySecureReadiness self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_target(
+    DartPinRecoveryTarget self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_pin_recovery_tenant_config(
+    DartPinRecoveryTenantConfig self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_profile_patch(
     DartProfilePatch self,
     SseSerializer serializer,
@@ -4997,6 +5303,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_read_watermark(
     DartReadWatermark self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_realm_progress(
+    DartRealmProgress self,
     SseSerializer serializer,
   );
 
@@ -5397,6 +5709,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_pin_recovery_action(
+    List<DartPinRecoveryAction> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_pin_recovery_progress(
+    List<DartPinRecoveryProgress> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_pin_recovery_target(
+    List<DartPinRecoveryTarget> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_pin_recovery_tenant_config(
+    List<DartPinRecoveryTenantConfig> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_realm_progress(
+    List<DartRealmProgress> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_relationship_list_item(
     List<DartRelationshipListItem> self,
     SseSerializer serializer,
@@ -5414,6 +5756,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_string_string(
+    List<(String, String)> self,
     SseSerializer serializer,
   );
 
@@ -5575,6 +5923,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_pin_recovery_error(
+    DartPinRecoveryError? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_read_watermark(
     DartReadWatermark? self,
     SseSerializer serializer,
@@ -5619,6 +5973,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_list_dart_group_avatar_member(
     List<DartGroupAvatarMember>? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_string(
+    (String, String) self,
     SseSerializer serializer,
   );
 

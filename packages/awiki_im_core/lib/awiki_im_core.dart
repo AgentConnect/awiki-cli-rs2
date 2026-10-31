@@ -18,3 +18,4 @@ export 'src/models/profile.dart';
 export 'src/models/realtime.dart';
 export 'src/models/secure.dart';
 export 'src/models/network.dart';
+export 'src/models/pin_recovery.dart';

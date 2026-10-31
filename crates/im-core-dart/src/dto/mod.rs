@@ -11,3 +11,5 @@ pub mod message;
 pub mod profile;
 pub mod realtime;
 pub mod secure;
+
+pub mod pin_recovery;

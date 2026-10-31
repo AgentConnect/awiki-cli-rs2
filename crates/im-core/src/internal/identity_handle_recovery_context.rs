@@ -47,7 +47,8 @@ pub(crate) fn operation_actions(
     }
     if record.lifecycle_class == Lifecycle::Applied
         && pending.phase == Phase::Applied
-        && pending.registration_candidate_cleanup.is_some()
+        && (pending.registration_candidate_cleanup.is_some()
+            || pending.pin_recovery_cleanup_pending)
     {
         return Ok(vec![Action::Resume]);
     }
