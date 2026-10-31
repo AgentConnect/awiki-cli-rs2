@@ -1,200 +1,248 @@
 use super::*;
+use serde::{Deserialize, Serialize};
+use std::{io::Write, path::PathBuf, process::Command};
 use zeroize::Zeroizing;
-
-async fn run_wrong_guesses(
-    input: &Input,
-    name: &str,
-    count: u16,
-) -> (sdk::ImCore, PinRecoveryOperationId) {
-    let candidate = fresh_recovery(input, name).await;
-    let session = phone_session(&candidate, input, None).await;
-    require_sacrificial(input, &session);
-    assert!(session.target.can_recover);
-    let facade = candidate.pin_recovery();
-    let begun = take(
-        facade
-            .begin_recover(BeginPinRecoveryRequest {
-                session: session.session_handle,
-                device_label: "sacrificial budget acceptance".into(),
-            })
-            .await,
-        "begin sacrificial recovery",
+#[derive(Serialize, Deserialize)]
+struct Marker {
+    mode: String,
+    target_id: String,
+    operation_id: String,
+    attempts_used: u16,
+}
+fn mode() -> String {
+    let m = std::env::var("AWIKI_PIN_RECOVERY_BUDGET_MODE").expect("budget mode");
+    assert!(matches!(m.as_str(), "last-correct" | "exhausted"));
+    m
+}
+fn path(i: &Input, m: &str) -> PathBuf {
+    i.storage_b
+        .parent()
+        .unwrap()
+        .join(format!("acceptance-{m}"))
+}
+fn save(i: &Input, name: &str, v: &Marker) {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut f = o
+        .open(path(i, &v.mode).join(name))
+        .expect("new public budget marker");
+    f.write_all(&serde_json::to_vec(v).unwrap())
+        .expect("budget marker write");
+    f.sync_all().unwrap();
+}
+fn command(name: &str, m: &str) -> Command {
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", name, "--ignored", "--nocapture"])
+        .env("AWIKI_PIN_RECOVERY_BUDGET_MODE", m)
+        .env_remove("AWIKI_PIN_RECOVERY_TEST_ENABLE")
+        .env_remove("AWIKI_PIN_RECOVERY_TEST_CUT")
+        .env_remove("AWIKI_PIN_RECOVERY_TEST_MARKER");
+    c
+}
+async fn parent(m: &str) {
+    let i = read_input();
+    assert!(
+        !path(&i, m).exists(),
+        "preserve prior uncertain budget scope"
     );
-    println!(
-        "PIN-DRIVER pending_operation=true operation={}",
-        begun.operation_id.0
+    let owner = core(&i, &i.storage_a, "a");
+    let before = owner_registry(&owner, "budget Registry before real children").await;
+    child_evidence::run(
+        &i,
+        "wrong-guesses",
+        &mut command("acceptance_child_budget_wrong_guesses", m),
+        0,
+    );
+    child_evidence::run(
+        &i,
+        "fresh-reauthentication",
+        &mut command("acceptance_child_budget_reauthenticate", m),
+        0,
+    );
+    let done: Marker =
+        serde_json::from_slice(&std::fs::read(path(&i, m).join("completed.json")).unwrap())
+            .unwrap();
+    assert!(
+        done.mode == m
+            && done.attempts_used == 10
+            && uuid::Uuid::parse_str(&done.operation_id).is_ok()
     );
     assert_eq!(
-        begun.attempts_used, 0,
-        "sacrificial backup starts with unused global budget"
+        before,
+        owner_registry(&owner, "budget Registry after actual process exits").await
     );
-    assert_eq!(begun.attempts_limit, 10);
-    let mut wrong = Zeroizing::new(input.pin.as_bytes().to_vec());
+    if m == "last-correct" {
+        println!("PIN-DRIVER nine_wrong_guesses=true reauthentication_preserves_budget=true last_correct_pin_recovered=true restricted_pending=true cancelled=true operation={}",done.operation_id);
+    } else {
+        println!("PIN-DRIVER budget_exhausted=true new_session_preserves_budget=true correct_pin_rejected_after_exhaustion=true no_identity=true registry_unchanged=true cancelled=true operation={}",done.operation_id);
+    }
+}
+pub(super) async fn last_correct() {
+    parent("last-correct").await;
+}
+pub(super) async fn exhausted() {
+    parent("exhausted").await;
+}
+pub(super) async fn wrong_child() {
+    let i = read_input();
+    let m = mode();
+    let count = if m == "last-correct" { 9 } else { 10 };
+    let c = fresh_recovery(&i, &format!("acceptance-{m}")).await;
+    let s = phone_session(&c, &i, None).await;
+    require_sacrificial(&i, &s);
+    let f = c.pin_recovery();
+    let b = take(
+        f.begin_recover(BeginPinRecoveryRequest {
+            session: s.session_handle,
+            device_label: "sacrificial paced budget".into(),
+        })
+        .await,
+        "begin actual child budget",
+    );
+    assert_eq!(b.attempts_used, 0, "independent slot must start at zero");
+    assert_eq!(b.attempts_limit, 10);
+    println!(
+        "PIN-DRIVER pending_operation=true operation={}",
+        b.operation_id.0
+    );
+    let mut wrong = Zeroizing::new(i.pin.as_bytes().to_vec());
     assert_eq!(wrong.len(), 4);
     wrong[3] = b'0' + (wrong[3] - b'0' + 1) % 10;
     for number in 1..=count {
-        let expected = if number == 10 {
-            "guess_budget_exhausted"
-        } else {
-            "invalid_pin"
-        };
+        if number > 1 {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
         expect_error(
-            facade
-                .submit_pin(
-                    begun.operation_id.clone(),
-                    take(SecretPin::new(wrong.to_vec()), "wrong PIN format"),
-                )
-                .await,
-            &[expected],
-            "one explicit wrong guess",
+            f.submit_pin(
+                b.operation_id.clone(),
+                take(SecretPin::new(wrong.to_vec()), "wrong PIN format"),
+            )
+            .await,
+            &[if number == 10 {
+                "guess_budget_exhausted"
+            } else {
+                "invalid_pin"
+            }],
+            "one paced explicit guess; rate_limited is not a PIN result",
         );
         let status = take(
-            facade.status(begun.operation_id.clone()).await,
-            "global budget after explicit guess",
+            f.status(b.operation_id.clone()).await,
+            "authoritative budget after each guess",
         );
-        assert_eq!(
-            status.attempts_used, number,
-            "one submit consumes exactly one shared attempt"
-        );
+        assert_eq!(status.attempts_used, number);
         assert!(status.recovered_identity.is_none() && status.new_device_id.is_none());
-        assert!(take(
-            candidate.identities().list(),
-            "no identity from wrong guesses"
-        )
-        .is_empty());
+        assert!(take(c.identities().list(), "wrong child inventory").is_empty());
     }
-    drop(facade);
-    (candidate, begun.operation_id)
-}
-
-pub(super) async fn last_correct() {
-    let input = read_input();
-    let (candidate, operation_id) = run_wrong_guesses(&input, "acceptance-last-correct", 9).await;
-    drop(candidate);
-    // Reopen the same sealed scope, obtain a real new PST with the original key,
-    // and prove that neither process restart nor reauthentication refunds guesses.
-    let path = input
-        .storage_b
-        .parent()
-        .expect("scope parent")
-        .join("acceptance-last-correct");
-    let reopened = core(&input, &path, "acceptance-last-correct");
-    let session = phone_session(&reopened, &input, Some(operation_id.clone())).await;
-    let facade = reopened.pin_recovery();
-    let resumed = take(
-        facade
-            .resume(ResumePinRecoveryRequest {
-                operation_id: operation_id.clone(),
-                session: Some(session.session_handle),
-            })
-            .await,
-        "reauthenticate same ninth-guess operation",
-    );
-    assert_eq!(resumed.attempts_used, 9);
-    let recovered = take(
-        facade
-            .submit_pin(
-                operation_id.clone(),
-                take(
-                    SecretPin::new(input.pin.as_bytes().to_vec()),
-                    "correct last PIN format",
-                ),
+    if m == "exhausted" {
+        assert_eq!(
+            take(
+                f.cancel(b.operation_id.clone()).await,
+                "cancel exhausted first op"
             )
-            .await,
-        "last allowed correct PIN",
+            .phase,
+            PinRecoveryPhase::Cancelled
+        );
+    }
+    save(
+        &i,
+        "wrong-stage.json",
+        &Marker {
+            mode: m,
+            target_id: s.target.target_id.0,
+            operation_id: b.operation_id.0,
+            attempts_used: count,
+        },
     );
-    assert_eq!(
-        recovered.phase,
-        PinRecoveryPhase::AwaitingDeviceConfirmation
-    );
-    assert!(recovered.recovered_identity.is_none() && recovered.new_device_id.is_some());
-    assert_eq!(recovered.attempts_used, 10);
-    assert!(take(
-        reopened.identities().list(),
-        "restricted last-guess pending"
+}
+pub(super) async fn reauthenticate_child() {
+    let i = read_input();
+    let m = mode();
+    let old: Marker =
+        serde_json::from_slice(&std::fs::read(path(&i, &m).join("wrong-stage.json")).unwrap())
+            .unwrap();
+    assert!(old.mode == m && old.attempts_used == if m == "last-correct" { 9 } else { 10 });
+    let c = core(&i, &path(&i, &m), &format!("acceptance-{m}"));
+    assert!(take(c.identities().list(), "fresh process inventory").is_empty());
+    let old_id = PinRecoveryOperationId(old.operation_id);
+    let s = phone_session(
+        &c,
+        &i,
+        if m == "last-correct" {
+            Some(old_id.clone())
+        } else {
+            None
+        },
     )
-    .is_empty());
-    let cancelled = take(
-        facade.cancel(operation_id).await,
-        "cancel exact last-guess pending",
-    );
-    assert_eq!(cancelled.phase, PinRecoveryPhase::Cancelled);
-    println!("PIN-DRIVER nine_wrong_guesses=true reauthentication_preserves_budget=true last_correct_pin_recovered=true restricted_pending=true cancelled=true operation={}", cancelled.operation_id.0);
-}
-
-pub(super) async fn exhausted() {
-    let input = read_input();
-    let owner = core(&input, &input.storage_b, "b");
-    let before = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry before sacrificial exhaustion",
-    );
-    let (candidate, first_id) = run_wrong_guesses(&input, "acceptance-exhausted", 10).await;
-    let cancelled = take(
-        candidate.pin_recovery().cancel(first_id).await,
-        "cancel exhausted operation",
-    );
-    assert_eq!(cancelled.phase, PinRecoveryPhase::Cancelled);
-    drop(candidate);
-    let path = input
-        .storage_b
-        .parent()
-        .expect("scope parent")
-        .join("acceptance-exhausted");
-    let reopened = core(&input, &path, "acceptance-exhausted");
-    let session = phone_session(&reopened, &input, None).await;
-    require_sacrificial(&input, &session);
-    let facade = reopened.pin_recovery();
-    let begun = take(
-        facade
-            .begin_recover(BeginPinRecoveryRequest {
-                session: session.session_handle,
-                device_label: "exhausted fresh session".into(),
+    .await;
+    require_sacrificial(&i, &s);
+    assert!(s.target.target_id.0 == old.target_id);
+    let f = c.pin_recovery();
+    let id = if m == "last-correct" {
+        let p = take(
+            f.resume(ResumePinRecoveryRequest {
+                operation_id: old_id.clone(),
+                session: Some(s.session_handle),
             })
             .await,
-        "new session after global exhaustion",
-    );
-    println!(
-        "PIN-DRIVER pending_operation=true operation={}",
-        begun.operation_id.0
-    );
-    assert_eq!(begun.attempts_used, 10);
-    expect_error(
-        facade
-            .submit_pin(
-                begun.operation_id.clone(),
-                take(
-                    SecretPin::new(input.pin.as_bytes().to_vec()),
-                    "correct PIN after exhaustion",
-                ),
-            )
+            "same-key fresh-process ninth guess resume",
+        );
+        assert_eq!(p.attempts_used, 9);
+        old_id
+    } else {
+        let p = take(
+            f.begin_recover(BeginPinRecoveryRequest {
+                session: s.session_handle,
+                device_label: "exhausted fresh process and PST".into(),
+            })
             .await,
-        &["guess_budget_exhausted"],
-        "reauthentication cannot refund global budget",
-    );
-    let status = take(
-        facade.status(begun.operation_id.clone()).await,
-        "persistent exhausted status",
-    );
-    assert_eq!(status.attempts_used, 10);
-    assert!(take(reopened.identities().list(), "exhausted no active identity").is_empty());
-    assert_eq!(
-        before,
-        take(
-            owner
-                .device_join()
-                .registry(sdk::IdentitySelector::Default)
-                .await,
-            "Registry after sacrificial exhaustion"
+            "new op after actual child exit",
+        );
+        assert_eq!(p.attempts_used, 10);
+        p.operation_id
+    };
+    let result = f
+        .submit_pin(
+            id.clone(),
+            take(
+                SecretPin::new(i.pin.as_bytes().to_vec()),
+                "explicit correct PIN",
+            ),
         )
+        .await;
+    if m == "last-correct" {
+        let p = take(result, "tenth correct PIN after actual process restart");
+        assert_eq!(p.phase, PinRecoveryPhase::AwaitingDeviceConfirmation);
+        assert_eq!(p.attempts_used, 10);
+        assert!(p.recovered_identity.is_none() && p.new_device_id.is_some());
+    } else {
+        expect_error(
+            result,
+            &["guess_budget_exhausted"],
+            "new process/PST must not refund global budget",
+        );
+    }
+    assert!(take(c.identities().list(), "no activated budget identity").is_empty());
+    assert_eq!(
+        take(f.status(id.clone()).await, "final global budget").attempts_used,
+        10
     );
-    let cancelled = take(
-        facade.cancel(begun.operation_id).await,
-        "cancel exact exhausted new-session operation",
+    assert_eq!(
+        take(f.cancel(id.clone()).await, "cancel exact budget pending").phase,
+        PinRecoveryPhase::Cancelled
     );
-    assert_eq!(cancelled.phase, PinRecoveryPhase::Cancelled);
-    println!("PIN-DRIVER budget_exhausted=true new_session_preserves_budget=true correct_pin_rejected_after_exhaustion=true no_identity=true registry_unchanged=true cancelled=true operation={}", cancelled.operation_id.0);
+    save(
+        &i,
+        "completed.json",
+        &Marker {
+            mode: m,
+            target_id: s.target.target_id.0,
+            operation_id: id.0,
+            attempts_used: 10,
+        },
+    );
 }

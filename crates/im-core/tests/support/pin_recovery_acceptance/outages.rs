@@ -11,16 +11,11 @@ pub(super) async fn two_nodes() {
         .iter()
         .all(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit())));
     let input = read_input();
-    let owner = core(&input, &input.storage_b, "b");
-    let before = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry before two-node outage",
-    );
+    let owner = core(&input, &input.storage_a, "a");
+    let before = owner_registry(&owner, "Registry before two-node outage").await;
     let candidate = fresh_recovery(&input, "acceptance-two-nodes").await;
     let session = phone_session(&candidate, &input, None).await;
+    require_sacrificial(&input, &session);
     assert!(session.target.can_recover);
     let facade = candidate.pin_recovery();
     let begun = take(
@@ -58,13 +53,7 @@ pub(super) async fn two_nodes() {
     assert!(take(candidate.identities().list(), "two-node local inventory").is_empty());
     assert_eq!(
         before,
-        take(
-            owner
-                .device_join()
-                .registry(sdk::IdentitySelector::Default)
-                .await,
-            "Registry after two-node outage"
-        )
+        owner_registry(&owner, "Registry after two-node outage").await
     );
     let cancelled = take(
         facade.cancel(begun.operation_id).await,
@@ -155,16 +144,17 @@ pub(super) async fn partial_registration() {
         .expect("System owner audit Python required");
     let root = std::env::var_os("AWIKI_REALM_SYSTEM_AUDIT_ROOT")
         .expect("System owner audit root required");
-    let audit = std::process::Command::new(python)
-        .current_dir(root)
-        .args([
+    let audit = child_evidence::run(
+        &input,
+        "partial-registration-audit",
+        std::process::Command::new(python).current_dir(root).args([
             "-m",
             "tests_v2.key_recovery.cleanup_audit",
             "--partial-register",
             &begun.operation_id.0,
-        ])
-        .output()
-        .expect("independent exact registered receipt audit");
+        ]),
+        0,
+    );
     assert!(audit.status.success(), "System owner must independently verify exactly two actual registered receipts before cancel");
     let cancelled = take(
         facade.cancel(begun.operation_id).await,
@@ -179,4 +169,69 @@ pub(super) async fn partial_registration() {
         .did == identity.did
     );
     println!("PIN-DRIVER partial_registration=true two_registered_receipts_verified=true active_epoch_absent=true root_still_usable=true cancelled=true operation={}", cancelled.operation_id.0);
+}
+
+pub(super) async fn reconcile_partial() {
+    let input = read_input();
+    let expected = std::env::var("AWIKI_PIN_RECOVERY_PARTIAL_RECONCILE_OPERATION_ID")
+        .expect("exact failed partial operation required");
+    assert!(uuid::Uuid::parse_str(&expected).is_ok());
+    assert_eq!(
+        std::env::var("AWIKI_PIN_RECOVERY_TEST_ENABLE").as_deref(),
+        Ok("1")
+    );
+    let owner = core(&input, &input.storage_a, "a");
+    let original = take(
+        owner.identities().resolve(sdk::IdentitySelector::Default),
+        "partial reconciliation original identity",
+    );
+    let prior = pending(&owner, &input, PinRecoveryKind::Enable)
+        .await
+        .expect("exact existing partial staging must remain");
+    assert!(
+        prior.operation_id.0 == expected
+            && prior.target.full_handle == input.full_handle
+            && prior.target.active_epoch.is_none()
+    );
+    let session = phone_session(&owner, &input, Some(prior.operation_id.clone())).await;
+    require_sacrificial(&input, &session);
+    let facade = owner.pin_recovery();
+    // Bind the legitimately renewed same-key PST through public resume. The
+    // third Register2 remains blocked; no new PIN or replacement shares exist.
+    match facade.resume(ResumePinRecoveryRequest{operation_id:prior.operation_id.clone(),session:Some(session.session_handle)}).await{
+        Ok(status)=>assert!(status.target.active_epoch.is_none()&&status.phase!=PinRecoveryPhase::Completed),
+        error=>expect_error(error,&["attempt_expiring","realm_unavailable"],"expired original registration attempt may not be silently replaced during exact cancel reconciliation"),
+    }
+    let status = take(
+        facade.status(prior.operation_id.clone()).await,
+        "same partial after normal session renewal",
+    );
+    assert!(status.target.active_epoch.is_none() && status.new_device_id.is_none());
+    let python = std::env::var_os("AWIKI_REALM_SYSTEM_AUDIT_PYTHON").expect("System audit Python");
+    let root = std::env::var_os("AWIKI_REALM_SYSTEM_AUDIT_ROOT").expect("System audit owner root");
+    child_evidence::run(
+        &input,
+        "reconciled-partial-registration-audit",
+        std::process::Command::new(python).current_dir(root).args([
+            "-m",
+            "tests_v2.key_recovery.cleanup_audit",
+            "--partial-register",
+            &expected,
+        ]),
+        0,
+    );
+    let cancelled = take(
+        facade.cancel(prior.operation_id).await,
+        "public Core cancel exact original partial operation",
+    );
+    assert_eq!(cancelled.phase, PinRecoveryPhase::Cancelled);
+    assert_eq!(
+        take(
+            owner.identities().resolve(sdk::IdentitySelector::Default),
+            "original root remains after staging cancel"
+        )
+        .did,
+        original.did
+    );
+    println!("PIN-DRIVER partial_registration=true two_registered_receipts_verified=true active_epoch_absent=true root_still_usable=true cancelled=true operation={expected}");
 }

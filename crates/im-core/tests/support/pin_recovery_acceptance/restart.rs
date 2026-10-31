@@ -37,13 +37,16 @@ fn cut_child(input: &Input, cut: &str, test: &str) {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
             .expect("private restart scope permissions");
     }
-    let result = Command::new(std::env::current_exe().expect("native acceptance executable"))
-        .args(["--exact", test, "--ignored", "--nocapture"])
-        .env("AWIKI_PIN_RECOVERY_TEST_ENABLE", "1")
-        .env("AWIKI_PIN_RECOVERY_TEST_CUT", cut)
-        .env("AWIKI_PIN_RECOVERY_TEST_MARKER", path.join("cut.json"))
-        .output()
-        .expect("spawn actual restart cut child");
+    let result = child_evidence::run(
+        input,
+        "restart-cut",
+        Command::new(std::env::current_exe().expect("native acceptance executable"))
+            .args(["--exact", test, "--ignored", "--nocapture"])
+            .env("AWIKI_PIN_RECOVERY_TEST_ENABLE", "1")
+            .env("AWIKI_PIN_RECOVERY_TEST_CUT", cut)
+            .env("AWIKI_PIN_RECOVERY_TEST_MARKER", path.join("cut.json")),
+        86,
+    );
     assert_eq!(
         result.status.code(),
         Some(86),
@@ -67,13 +70,7 @@ pub(super) async fn register_parent() {
     );
     assert_eq!(initial.state, PinRecoveryBackupState::NotEnabled);
     assert!(initial.error.is_none());
-    let before = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry before registration restart",
-    );
+    let before = owner_registry(&owner, "Registry before registration restart").await;
     drop(owner);
     cut_child(&input, cut, "acceptance_child_register_until_sealed_cut");
     let marker = marker(&input, cut);
@@ -132,13 +129,7 @@ pub(super) async fn register_parent() {
     );
     assert_eq!(
         before,
-        take(
-            owner
-                .device_join()
-                .registry(sdk::IdentitySelector::Default)
-                .await,
-            "Registry after registration restart"
-        )
+        owner_registry(&owner, "Registry after registration restart").await
     );
     println!("PIN-DRIVER registration_process_exit=true sealed_payloads_resumed_without_pin=true same_operation=true three_registered=true self_check_active=true registry_unchanged=true operation={}", marker.operation_id);
 }
@@ -184,14 +175,8 @@ pub(super) async fn register_child() {
 pub(super) async fn blinding_parent() {
     let input = read_input();
     let cut = "recover2_response_received";
-    let owner = core(&input, &input.storage_b, "b");
-    let before = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry before lost blinding factor",
-    );
+    let owner = core(&input, &input.storage_a, "a");
+    let before = owner_registry(&owner, "Registry before lost blinding factor").await;
     cut_child(
         &input,
         cut,
@@ -249,13 +234,7 @@ pub(super) async fn blinding_parent() {
     .is_empty());
     assert_eq!(
         before,
-        take(
-            owner
-                .device_join()
-                .registry(sdk::IdentitySelector::Default)
-                .await,
-            "Registry unchanged after resumed recovery"
-        )
+        owner_registry(&owner, "Registry unchanged after resumed recovery").await
     );
     let cancelled = take(
         facade.cancel(id).await,
@@ -314,4 +293,91 @@ pub(super) async fn blinding_child() {
         "Recover2 until actual charged response",
     );
     panic!("charged Recover2 cut did not terminate child");
+}
+
+pub(super) async fn self_check_failure() {
+    use zeroize::Zeroizing;
+    let input = read_input();
+    let cut = "registration_payloads_sealed";
+    let owner = core(&input, &input.storage_a, "a");
+    let identity = take(
+        owner.identities().resolve(sdk::IdentitySelector::Default),
+        "self-check original identity",
+    );
+    let status = take(
+        owner
+            .pin_recovery()
+            .backup_status(sdk::IdentitySelector::Default)
+            .await,
+        "self-check starts without active backup",
+    );
+    assert_eq!(status.state, PinRecoveryBackupState::NotEnabled);
+    assert!(status.active_epoch.is_none() && status.error.is_none());
+    drop(owner);
+    cut_child(&input, cut, "acceptance_child_register_until_sealed_cut");
+    let marker = marker(&input, cut);
+    let owner = core(&input, &input.storage_a, "a");
+    let facade = owner.pin_recovery();
+    let progress = take(
+        facade
+            .resume(ResumePinRecoveryRequest {
+                operation_id: PinRecoveryOperationId(marker.operation_id.clone()),
+                session: None,
+            })
+            .await,
+        "resume all three registrations without self-check PIN",
+    );
+    assert_eq!(progress.phase, PinRecoveryPhase::AwaitingPin);
+    assert_eq!(
+        progress
+            .node_progress
+            .iter()
+            .filter(|node| node.phase == "registered")
+            .count(),
+        3
+    );
+    let mut wrong = Zeroizing::new(input.pin.as_bytes().to_vec());
+    wrong[3] = b'0' + (wrong[3] - b'0' + 1) % 10;
+    expect_error(
+        facade
+            .submit_pin(
+                progress.operation_id.clone(),
+                take(
+                    SecretPin::new(wrong.to_vec()),
+                    "explicit wrong self-check PIN",
+                ),
+            )
+            .await,
+        &["invalid_pin"],
+        "3/3 registration with failing self-check must never activate",
+    );
+    let status = take(
+        facade.status(progress.operation_id.clone()).await,
+        "failed self-check authoritative state",
+    );
+    assert!(status.target.active_epoch.is_none());
+    assert_ne!(status.phase, PinRecoveryPhase::Completed);
+    let current = take(
+        facade.backup_status(sdk::IdentitySelector::Default).await,
+        "failed self-check current device state",
+    );
+    assert!(current.active_epoch.is_none());
+    assert_ne!(current.state, PinRecoveryBackupState::Active);
+    assert_eq!(
+        take(
+            facade.cancel(progress.operation_id.clone()).await,
+            "cancel exact failed-self-check staging"
+        )
+        .phase,
+        PinRecoveryPhase::Cancelled
+    );
+    assert_eq!(
+        take(
+            owner.identities().resolve(sdk::IdentitySelector::Default),
+            "original identity remains usable"
+        )
+        .did,
+        identity.did
+    );
+    println!("PIN-DRIVER three_realms_registered=true wrong_self_check_rejected=true active_epoch_absent=true root_still_usable=true cancelled=true operation={}",progress.operation_id.0);
 }

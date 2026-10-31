@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::{io::Write, path::PathBuf, process::Command};
 
 #[derive(Deserialize)]
-struct CutMarker {
+pub(super) struct CutMarker {
     schema_version: u32,
     cutpoint: String,
-    operation_id: String,
-    device_id: Option<String>,
+    pub(super) operation_id: String,
+    pub(super) device_id: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct CompletedMarker {
@@ -16,7 +16,7 @@ struct CompletedMarker {
     original_did_preserved: bool,
     authenticated: bool,
 }
-fn scope(input: &Input, cut: &str) -> PathBuf {
+pub(super) fn scope(input: &Input, cut: &str) -> PathBuf {
     assert!(matches!(
         cut,
         "device_commit_response_received" | "local_activation_pending_saved"
@@ -27,7 +27,10 @@ fn scope(input: &Input, cut: &str) -> PathBuf {
         .expect("scope parent")
         .join(format!(
             "acceptance-process-{cut}{}",
-            if std::env::var("AWIKI_PIN_RECOVERY_ACCEPTANCE_EXPIRE_OPERATION").as_deref() == Ok("1")
+            if std::env::var("AWIKI_PIN_RECOVERY_ACCEPTANCE_REVOKE_DEVICE").as_deref() == Ok("1") {
+                "-revoked-before-activation"
+            } else if std::env::var("AWIKI_PIN_RECOVERY_ACCEPTANCE_EXPIRE_OPERATION").as_deref()
+                == Ok("1")
             {
                 "-expired-pst-and-operation"
             } else if std::env::var("AWIKI_PIN_RECOVERY_ACCEPTANCE_WAIT_EXPIRY").as_deref()
@@ -48,7 +51,7 @@ fn child_cut() -> String {
     ));
     cut
 }
-fn child_command(name: &str, cut: &str) -> Command {
+pub(super) fn child_command(name: &str, cut: &str) -> Command {
     let mut command = Command::new(std::env::current_exe().expect("native acceptance executable"));
     command
         .args(["--exact", name, "--ignored", "--nocapture"])
@@ -58,7 +61,7 @@ fn child_command(name: &str, cut: &str) -> Command {
         .env_remove("AWIKI_PIN_RECOVERY_TEST_MARKER");
     command
 }
-fn load_cut(input: &Input, cut: &str) -> CutMarker {
+pub(super) fn load_cut(input: &Input, cut: &str) -> CutMarker {
     let bytes =
         std::fs::read(scope(input, cut).join("cut.json")).expect("public native cut marker");
     let marker: CutMarker = serde_json::from_slice(&bytes).expect("cut marker schema");
@@ -86,33 +89,24 @@ pub(super) async fn parent(cut: &str, wait_for_expiry: bool) {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
             .expect("private cut scope permissions");
     }
-    let owner = core(&input, &input.storage_b, "b");
-    let before = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry before child commit",
+    let owner = core(&input, &input.storage_a, "a");
+    let before = owner_registry(&owner, "Registry before child commit").await;
+    let committed = child_evidence::run(
+        &input,
+        "commit-cut",
+        child_command("acceptance_child_commit_with_cut", cut)
+            .env("AWIKI_PIN_RECOVERY_TEST_ENABLE", "1")
+            .env("AWIKI_PIN_RECOVERY_TEST_CUT", cut)
+            .env("AWIKI_PIN_RECOVERY_TEST_MARKER", path.join("cut.json")),
+        86,
     );
-    let committed = child_command("acceptance_child_commit_with_cut", cut)
-        .env("AWIKI_PIN_RECOVERY_TEST_ENABLE", "1")
-        .env("AWIKI_PIN_RECOVERY_TEST_CUT", cut)
-        .env("AWIKI_PIN_RECOVERY_TEST_MARKER", path.join("cut.json"))
-        .output()
-        .expect("spawn actual commit child");
     assert_eq!(
         committed.status.code(),
         Some(86),
         "child must terminate at the exact real successful boundary"
     );
     let marker = load_cut(&input, cut);
-    let after_cut = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry after child exited",
-    );
+    let after_cut = owner_registry(&owner, "Registry after child exited").await;
     assert_eq!(after_cut.devices.len(), before.devices.len() + 1);
     assert!(
         before
@@ -141,12 +135,15 @@ pub(super) async fn parent(cut: &str, wait_for_expiry: bool) {
             .expect("System expiry fixture Python required");
         let root = std::env::var_os("AWIKI_REALM_SYSTEM_AUDIT_ROOT")
             .expect("System expiry fixture owner root required");
-        let expiry = Command::new(python)
-            .current_dir(root)
-            .args(["-m", "tests_v2.key_recovery.expiry_fixture", "--advance"])
-            .arg(path.join("cut.json"))
-            .output()
-            .expect("exact committed operation deadline fixture");
+        let expiry = child_evidence::run(
+            &input,
+            "committed-expiry-audit",
+            Command::new(python)
+                .current_dir(root)
+                .args(["-m", "tests_v2.key_recovery.expiry_fixture", "--advance"])
+                .arg(path.join("cut.json")),
+            0,
+        );
         assert!(
             expiry.status.success(),
             "guarded exact-record deadline advancement must succeed before resuming"
@@ -175,10 +172,61 @@ pub(super) async fn parent(cut: &str, wait_for_expiry: bool) {
             tokio::time::sleep(std::time::Duration::from_secs(remaining as u64)).await;
         }
         assert!(chrono::Utc::now().timestamp() > deadline);
+        let waiting = serde_json::json!({"schemaVersion":1,"operation_id":marker.operation_id,"device_id":marker.device_id,"pst_expired_at_unix":deadline});
+        let waiting_path = path.join("pst-expired-waiting-otp.json");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(waiting_path)
+            .expect("new public expired-PST OTP handoff marker");
+        file.write_all(&serde_json::to_vec(&waiting).unwrap())
+            .expect("OTP handoff marker write");
+        file.sync_all().unwrap();
+        let gate = std::path::PathBuf::from(
+            std::env::var_os("AWIKI_PIN_RECOVERY_ACCEPTANCE_RESUME_GATE")
+                .expect("coordinator OTP handoff gate required"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while !gate.exists() {
+            assert!(
+                std::time::Instant::now() < until,
+                "explicit OTP handoff did not arrive before the bound"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&gate).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let permission: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(gate).expect("protected OTP handoff gate"))
+                .expect("OTP gate schema");
+        assert_eq!(permission["schemaVersion"], 1);
+        assert!(permission["operation_id"].as_str() == Some(&marker.operation_id));
+        assert!(permission["device_id"].as_str() == marker.device_id.as_deref());
+        let authorized = permission["authorized_at_unix"]
+            .as_i64()
+            .expect("actual OTP handoff timestamp");
+        assert!(
+            authorized > deadline && authorized <= chrono::Utc::now().timestamp() + 1,
+            "OTP handoff must be explicit after actual expiry, not a predicted timer"
+        );
     }
-    let resumed = child_command("acceptance_child_resume_same_operation", cut)
-        .output()
-        .expect("spawn independent resume child");
+    let resumed = child_evidence::run(
+        &input,
+        "separate-resume",
+        &mut child_command("acceptance_child_resume_same_operation", cut),
+        0,
+    );
     assert!(
         resumed.status.success(),
         "new process must reconcile and activate the exact committed device"
@@ -189,13 +237,7 @@ pub(super) async fn parent(cut: &str, wait_for_expiry: bool) {
     .expect("completed marker schema");
     assert!(completed.operation_id == marker.operation_id && completed.device_id == device_id);
     assert!(completed.original_did_preserved && completed.authenticated);
-    let final_registry = take(
-        owner
-            .device_join()
-            .registry(sdk::IdentitySelector::Default)
-            .await,
-        "Registry after separate process resume",
-    );
+    let final_registry = owner_registry(&owner, "Registry after separate process resume").await;
     assert_eq!(
         after_cut, final_registry,
         "resume must not commit a second device or overwrite concurrent authority"
@@ -222,6 +264,7 @@ pub(super) async fn commit_child() {
         .await
         .is_none());
     let session = phone_session(&candidate, &input, None).await;
+    require_sacrificial(&input, &session);
     assert!(session.target.can_recover);
     let mut expiry_options = std::fs::OpenOptions::new();
     expiry_options.write(true).create_new(true);
@@ -331,16 +374,18 @@ pub(super) async fn resume_child() {
         candidate.identities().resolve(selector.clone()),
         "resumed identity",
     );
-    let owner = core(&input, &input.storage_b, "b");
+    let owner = core(&input, &input.storage_a, "a");
     let original = take(
         owner.identities().resolve(sdk::IdentitySelector::Default),
         "original current identity",
     );
     assert!(identity.did == original.did);
-    let _client = take(
-        candidate.client_async(selector).await,
-        "resumed device JWT/P5 activation",
-    );
+    let _client = ensure_client(
+        &candidate,
+        selector,
+        "resumed device normal UserProfile authentication",
+    )
+    .await;
     let completed = CompletedMarker {
         operation_id: resumed.operation_id.0,
         device_id: resumed.new_device_id.expect("resumed device ID"),
