@@ -1,4 +1,7 @@
 //! Provider boundary: root material remains exclusively inside Rust.
+#[cfg(test)]
+#[path = "custody_tests.rs"]
+mod tests;
 use super::{
     crypto, failure,
     pending::{Operation, Session},
@@ -142,25 +145,32 @@ pub(super) async fn sign_backup(
 }
 pub(super) async fn export(
     core: &crate::ImCore,
-    o: &Operation,
+    o: &mut Operation,
 ) -> crate::ImResult<zeroize::Zeroizing<Vec<u8>>> {
+    // A same-root sibling document may advance generation while the user is
+    // entering the PIN. Revalidate custody instead of reusing the old snapshot;
+    // the provider still performs its exact generation CAS at export time.
+    let (reference, generation) = backup_identity(core, &o.target).await?;
+    if o.identity.as_ref() != Some(&reference) {
+        return Err(failure("binding_changed", false));
+    }
     let root = open(core, o)
         .await?
         .export_root_for_pin_backup(ProviderPinRootBackupRequest {
-            expected_generation: o
-                .identity_generation
-                .ok_or_else(|| failure("corrupt_pending", false))?,
+            expected_generation: generation,
             root_kid: o.target.root_kid.clone(),
             user_presence_confirmed: true,
         })
         .await
         .map_err(map)?;
-    if root.root_kid != o.target.root_kid
+    if root.generation != generation
+        || root.root_kid != o.target.root_kid
         || root.root_public_key_multibase != crypto::root_multibase(&o.target.root_public_jwk)?
     {
         return Err(failure("root_key_mismatch", false));
     }
     crypto::verify_root(&root.pkcs8_der, &o.target)?;
+    o.identity_generation = Some(generation);
     Ok(root.pkcs8_der)
 }
 fn challenge(c: &wire::Challenge) -> crate::ImResult<ProviderPinRecoveryChallenge> {

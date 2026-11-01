@@ -320,7 +320,9 @@ pub(crate) async fn resume(
             .as_ref()
             .is_some_and(|r| r.registered_realms.len() < 3)
     {
-        refresh_tokens(core, &store, &mut s, &mut o).await?;
+        // The creation endpoint reuses a live register attempt or replaces its
+        // expired authorization under the same operation and exact payloads.
+        attempt(core, &store, &mut s, &mut o, "register").await?;
         let adapter = adapter::Adapter::new(core, &store, s, o);
         let result = adapter.resume_register().await;
         let (mut s, mut o) = adapter.snapshot().await;

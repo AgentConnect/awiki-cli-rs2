@@ -135,6 +135,14 @@ PIN 操作的权威秘密状态位于专用 `IdentityPinRecoveryPending` Vault r
 再写节点；缺失完整 payload 的 staging 不混用新随机份额。recover future 的 blinding
 factor 只在内存；重启前尚未恢复 K 时，resume 仅对账，新的用户 PIN 提交创建新 attempt。
 K/根已密封或 custody pending 已建立时，同操作续接不再猜 PIN、不再生成第二套设备。
+部分注册的续接通过既有 attempt 创建接口取得仍可签发 RAT 的注册 attempt；服务端只在
+原授权窗口不足时替换，不延长原 operation/PST。Core 保留密封 Register2 正文及精确请求，
+将控制面已签发的注册 attempt ID 保存在同一 Vault pending 中。已注册节点可能返回原
+attempt 的已签名结果，仅注册收据允许命中该已知历史；同操作/节点/槽/版本/密文 hash/
+正文 hash/签名/有效期校验全部保留，Recover3 仍只接受当前 attempt。
+等待 PIN 期间同根文档采纳可以推进 Identity generation。首次导出前重新验证当前唯一
+Identity 引用、Active RootControl、DID 与根公钥，再取得新 generation 并执行原导出 CAS；
+成功后保存新快照。换根、换引用、失去根权限或校验后的并发更新仍拒绝，不跳过底层 CAS。
 首次 ingress 调用前先密封 `custody_ingress_started`；Provider 成功后立即密封实际 proposal。
 恢复、确认及取消先重开同 binding 读取 Provider 的真实 phase/generation；Core 旧快照不能
 把已签名的 PublicationUncertain 降回 Prepared。查询和取消只观察已有 namespace，

@@ -391,7 +391,7 @@ fn local_pending_never_becomes_an_active_identity_or_repeats_a_guess() {
         .allowed_actions
         .contains(&PinRecoveryAction::SubmitPin));
 }
-fn remote_fixture(s: &Session, o: &Operation) -> wire::OperationResponse {
+pub(super) fn remote_fixture(s: &Session, o: &Operation) -> wire::OperationResponse {
     wire::OperationResponse {
         protocol: wire::PROTOCOL.into(),
         operation_id: o.id.clone(),

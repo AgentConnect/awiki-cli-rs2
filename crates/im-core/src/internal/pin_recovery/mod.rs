@@ -407,6 +407,7 @@ fn new_operation(session: &Session, kind: PinRecoveryKind) -> crate::ImResult<Op
         attempt: None,
         attempt_running: false,
         registration_payloads: BTreeMap::new(),
+        registration_attempt_ids: Default::default(),
         receipts: Vec::new(),
         custody_ingress_started: false,
         custody_pending: None,
@@ -684,6 +685,18 @@ async fn attempt(
             return Err(failure("invalid_wire", false));
         }
     }
+    if action == "register" {
+        if let Some(old) = o.attempt.as_ref().filter(|old| old.action == "register") {
+            if old.operation_id != o.id
+                || old.slot_id != a.slot_id
+                || old.backup_epoch != a.backup_epoch
+            {
+                return Err(failure("binding_changed", false));
+            }
+            o.registration_attempt_ids.insert(old.attempt_id.clone());
+        }
+        o.registration_attempt_ids.insert(a.attempt_id.clone());
+    }
     o.attempt = Some(a);
     o.attempt_running = true;
     store.save_operation(o)
@@ -812,7 +825,8 @@ async fn enable_pin(
         let r = o
             .remote
             .as_ref()
-            .ok_or_else(|| failure("corrupt_pending", false))?;
+            .ok_or_else(|| failure("corrupt_pending", false))?
+            .clone();
         if !r.allowed_actions.iter().any(|a| a == "upload_backup") {
             return Err(failure("action_not_allowed", false));
         }
@@ -876,7 +890,7 @@ async fn enable_pin(
             (*s, *o) = adapter.snapshot().await;
             result?;
         } else if o.registration_payloads.len() == 3 {
-            refresh_tokens(core, store, s, o).await?;
+            attempt(core, store, s, o, "register").await?;
             let adapter = adapter::Adapter::new(core, store, s.clone(), o.clone());
             let result = adapter.resume_register().await;
             (*s, *o) = adapter.snapshot().await;
@@ -1079,6 +1093,7 @@ fn clear_ephemeral(o: &mut Operation) {
     }
     o.recovered_root_b64u = None;
     o.registration_payloads.clear();
+    o.registration_attempt_ids.clear();
     o.attempt = None;
     o.attempt_running = false;
 }

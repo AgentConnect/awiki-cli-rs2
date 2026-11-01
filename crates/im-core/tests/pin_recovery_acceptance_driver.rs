@@ -366,6 +366,18 @@ async fn live_sealed_registration_resumes_without_regenerating_shares() {
 }
 #[cfg(feature = "internal-test-helpers")]
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "fresh root; natural 630-second expiry after two registered Realm receipts"]
+async fn live_partial_registration_resumes_after_attempt_expiry() {
+    restart::late_register_parent().await;
+}
+#[cfg(feature = "internal-test-helpers")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "fresh root; normal same-root document update while awaiting PIN then reopen"]
+async fn live_backup_continues_after_awaiting_pin_document_advance() {
+    restart::backup_after_document_advance().await;
+}
+#[cfg(feature = "internal-test-helpers")]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "independent zero-budget-used slot; real Recover2 is charged before the process loses its blinding factor"]
 async fn live_lost_blinding_factor_preserves_charge_and_requires_new_pin_attempt() {
     restart::blinding_parent().await;

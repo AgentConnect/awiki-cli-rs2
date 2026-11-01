@@ -54,8 +54,18 @@ fn cut_child(input: &Input, cut: &str, test: &str) {
     );
 }
 pub(super) async fn register_parent() {
+    register_parent_inner(false).await;
+}
+pub(super) async fn late_register_parent() {
+    register_parent_inner(true).await;
+}
+async fn register_parent_inner(late: bool) {
     let input = read_input();
-    let cut = "registration_payloads_sealed";
+    let cut = if late {
+        "registration_two_realms_registered"
+    } else {
+        "registration_payloads_sealed"
+    };
     let owner = core(&input, &input.storage_a, "a");
     let original = take(
         owner.identities().resolve(sdk::IdentitySelector::Default),
@@ -79,6 +89,26 @@ pub(super) async fn register_parent() {
         .await
         .expect("same sealed registration pending survives process exit");
     assert!(pending.operation_id.0 == marker.operation_id);
+    let session = if late {
+        // Natural time, without changing PST/attempt/operation deadlines or the
+        // shared PIN budget. The child already received two genuine receipts.
+        let started = std::time::Instant::now();
+        for _ in 0..21 {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            println!(
+                "PIN-DRIVER late_registration_wait_elapsed_seconds={}",
+                started.elapsed().as_secs()
+            );
+        }
+        assert!(started.elapsed().as_secs() >= 630);
+        Some(
+            phone_session(&owner, &input, Some(pending.operation_id.clone()))
+                .await
+                .session_handle,
+        )
+    } else {
+        None
+    };
     let facade = owner.pin_recovery();
     // No PIN is supplied to resume. Registration can only use the three exact
     // payloads sealed by the previous process, not regenerate SDK shares.
@@ -86,7 +116,7 @@ pub(super) async fn register_parent() {
         facade
             .resume(ResumePinRecoveryRequest {
                 operation_id: pending.operation_id.clone(),
-                session: None,
+                session,
             })
             .await,
         "resume exact sealed registration without PIN",
@@ -132,12 +162,15 @@ pub(super) async fn register_parent() {
         owner_registry(&owner, "Registry after registration restart").await
     );
     println!("PIN-DRIVER registration_process_exit=true sealed_payloads_resumed_without_pin=true same_operation=true three_registered=true self_check_active=true registry_unchanged=true operation={}", marker.operation_id);
+    if late {
+        println!("PIN-DRIVER two_registered_before_exit=true natural_attempt_expired=true same_key_reauthentication=true old_registration_receipts_accepted=true");
+    }
 }
 pub(super) async fn register_child() {
-    assert_eq!(
+    assert!(matches!(
         std::env::var("AWIKI_PIN_RECOVERY_TEST_CUT").as_deref(),
-        Ok("registration_payloads_sealed")
-    );
+        Ok("registration_payloads_sealed" | "registration_two_realms_registered")
+    ));
     let input = read_input();
     let owner = core(&input, &input.storage_a, "a");
     let session = phone_session(&owner, &input, None).await;
@@ -171,6 +204,97 @@ pub(super) async fn register_child() {
         "registration until all exact payloads are sealed",
     );
     panic!("registration sealed cut did not terminate child");
+}
+
+pub(super) async fn backup_after_document_advance() {
+    let input = read_input();
+    let owner = core(&input, &input.storage_a, "a");
+    let original = take(
+        owner.identities().resolve(sdk::IdentitySelector::Default),
+        "source root",
+    );
+    let session = phone_session(&owner, &input, None).await;
+    require_sacrificial(&input, &session);
+    let begun = take(
+        owner
+            .pin_recovery()
+            .begin_enable(EnablePinRecoveryRequest {
+                session: session.session_handle,
+                identity: sdk::IdentitySelector::Default,
+                user_presence: UserPresence::confirmed(),
+            })
+            .await,
+        "backup waiting for PIN",
+    );
+    assert_eq!(begun.phase, PinRecoveryPhase::AwaitingPin);
+    let document = take(
+        owner
+            .identities()
+            .identity_document_async(sdk::IdentitySelector::Default)
+            .await,
+        "current public document",
+    );
+    let mut services: Vec<sdk::identity::DidDocumentService> = serde_json::from_value(
+        document
+            .get("service")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .expect("public services");
+    services.push(sdk::identity::DidDocumentService {
+        id: format!("{}#pin-backup-continuation", original.did.as_str()),
+        service_type: "PinBackupContinuationProbe".into(),
+        service_endpoint: "https://awiki.info/pin-backup-continuation".into(),
+        service_did: None,
+        profiles: vec![],
+        security_profiles: vec![],
+    });
+    let updated = take(
+        owner
+            .identities()
+            .update_services_async(sdk::IdentitySelector::Default, services)
+            .await,
+        "normal same-root document update",
+    );
+    assert_ne!(document, updated);
+    drop(owner);
+    let owner = core(&input, &input.storage_a, "a");
+    let pending = pending(&owner, &input, PinRecoveryKind::Enable)
+        .await
+        .expect("original backup pending");
+    assert_eq!(pending.operation_id, begun.operation_id);
+    let completed = take(
+        owner
+            .pin_recovery()
+            .submit_pin(
+                pending.operation_id,
+                take(SecretPin::new(input.pin.as_bytes().to_vec()), "PIN"),
+            )
+            .await,
+        "same backup after document update and reopen",
+    );
+    assert_eq!(completed.phase, PinRecoveryPhase::Completed);
+    assert_eq!(completed.operation_id, begun.operation_id);
+    assert_eq!(
+        take(
+            owner.identities().resolve(sdk::IdentitySelector::Default),
+            "same root identity"
+        )
+        .did,
+        original.did
+    );
+    assert_eq!(
+        take(
+            owner
+                .pin_recovery()
+                .backup_status(sdk::IdentitySelector::Default)
+                .await,
+            "active backup"
+        )
+        .state,
+        PinRecoveryBackupState::Active
+    );
+    println!("PIN-DRIVER awaiting_pin_document_advanced=true reopened_same_operation=true original_did_preserved=true three_realm_backup_active=true");
 }
 pub(super) async fn blinding_parent() {
     let input = read_input();

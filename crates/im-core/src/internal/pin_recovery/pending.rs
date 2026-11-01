@@ -74,6 +74,8 @@ pub(crate) struct Operation {
     pub attempt: Option<wire::AttemptResponse>,
     pub attempt_running: bool,
     pub registration_payloads: std::collections::BTreeMap<String, ExactRequest>,
+    #[serde(default)]
+    pub registration_attempt_ids: std::collections::BTreeSet<String>,
     pub receipts: Vec<String>,
     #[serde(default)]
     pub custody_ingress_started: bool,

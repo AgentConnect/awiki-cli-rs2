@@ -1,4 +1,7 @@
 //! Pinned, unmodified Juicebox SDK with exact transport retry and receipts.
+#[cfg(test)]
+#[path = "adapter_tests.rs"]
+mod tests;
 use super::{
     crypto, failure, http,
     pending::{ExactRequest, Operation, Session, Store},
@@ -349,6 +352,9 @@ impl Adapter {
                 state.operation.receipts.push(receipt.clone());
             }
             self.0.store.save_operation(&state.operation)?;
+            if phase == "Register2" && state.operation.receipts.len() == 2 {
+                super::fault::cut("registration_two_realms_registered", &state.operation)?;
+            }
             self.0.registration_barrier.notify_waiters();
         }
         // Recover1 is verified by the SDK too. The Realm's live authorizer pins
@@ -496,7 +502,10 @@ fn verify_receipt(
         || r.realm_id != realm.id
         || r.tenant_id != session.tenant_id
         || r.operation_id != operation.id
-        || r.attempt_id != attempt.attempt_id
+        || (r.attempt_id != attempt.attempt_id
+            && !(phase == "Register2"
+                && attempt.action == "register"
+                && operation.registration_attempt_ids.contains(&r.attempt_id)))
         || r.slot_id != remote.slot_id
         || r.backup_epoch != remote.backup_epoch
         || r.backup_hash != remote.backup_hash.clone().unwrap_or_default()
