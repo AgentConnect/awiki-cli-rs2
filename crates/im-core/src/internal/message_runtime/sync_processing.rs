@@ -230,6 +230,7 @@ pub(crate) async fn process_p6(
     }
     enum Prepared {
         Cached,
+        OtherPredecessorDevice,
         Message(super::read::PreparedP6Incoming),
         Notice(crate::internal::group_e2ee::v2_notice::PreparedP6Notice),
     }
@@ -283,13 +284,14 @@ pub(crate) async fn process_p6(
         }
         "p6.control.notice" => {
             crate::internal::group_e2ee::send_state::invalidate(client, claim.group_did.as_deref());
-            Prepared::Notice(
-                crate::internal::group_e2ee::v2_notice::prepare_for_client_async(
+            match crate::internal::group_e2ee::v2_notice::prepare_for_input_async(
                     client,
                     &claim.payload,
                 )
-                .await?,
-            )
+                .await? {
+                crate::internal::group_e2ee::v2_notice::PreparedP6ControlInput::Notice(notice) => Prepared::Notice(notice),
+                crate::internal::group_e2ee::v2_notice::PreparedP6ControlInput::OtherPredecessorDevice => Prepared::OtherPredecessorDevice,
+            }
         }
         _ => {
             return Err(sync_inbox::error(
@@ -312,7 +314,10 @@ pub(crate) async fn process_p6(
         let mut conversations = Vec::new();
         let mut committed = Vec::new();
         match prepared {
-            Prepared::Cached => {}
+            Prepared::Cached | Prepared::OtherPredecessorDevice => {
+                // A completed input reduction is not an SDK crypto receipt.
+                // The owner-bound predecessor route requires no local effect.
+            }
             Prepared::Message(message) => {
                 let mut projected = super::read::project_prepared_p6_incoming(&committing_client, message, true)?;
                 let manifest = super::read::attachment_manifest_cache_record(&committing_client, &projected);

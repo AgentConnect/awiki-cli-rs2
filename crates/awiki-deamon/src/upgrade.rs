@@ -2385,7 +2385,7 @@ mod tests {
         assert_eq!(
             status.policy_url,
             format!(
-                "{}/user-service/v1/server-info?client_platform=daemon",
+                "{}/user-service/v1/server-info?client_platform=daemon&capabilities_version=1",
                 server.address
             )
         );

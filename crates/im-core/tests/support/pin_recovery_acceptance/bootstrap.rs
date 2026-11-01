@@ -156,8 +156,17 @@ pub(super) async fn prepare(with_backup: bool) {
     assert!(output
         .parent()
         .is_some_and(|parent| parent == source.parent().expect("allocated fixture parent")));
+    let device = take(
+        owner
+            .identities()
+            .device_summary_async(sdk::IdentitySelector::Id(identity.id.clone()))
+            .await,
+        "bootstrap authorized device summary",
+    )
+    .protocol_device_id
+    .expect("bootstrap identity has an active protocol device");
     let metadata = serde_json::json!({"schema_version":1,"environment":"awiki-info-testing",
-        "target_id":target_id,"full_handle":input.full_handle,"did":identity.did,"device_id":identity.device_id,
+        "target_id":target_id,"full_handle":input.full_handle,"did":identity.did,"device_id":device,
         "source_config":source,"source_owner_storage":input.storage_a,"fresh_candidate_storage":input.storage_b,
         "backup_active":with_backup,"backup_operation_id":backup_operation});
     let mut options = std::fs::OpenOptions::new();

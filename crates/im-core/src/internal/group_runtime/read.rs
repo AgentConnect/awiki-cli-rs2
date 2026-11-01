@@ -165,7 +165,18 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)?;
         #[cfg(feature = "group-e2ee")]
-        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw);
+        match method {
+            "group.get" => {
+                crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw)
+            }
+            "group.list_members" => {
+                crate::internal::group_e2ee::send_state::observe_group_member_page(
+                    self.client,
+                    &raw,
+                )
+            }
+            _ => {}
+        }
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
@@ -315,7 +326,18 @@ where
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)
             .await?;
         #[cfg(feature = "group-e2ee")]
-        crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw);
+        match method {
+            "group.get" => {
+                crate::internal::group_e2ee::send_state::observe_group_read(self.client, &raw)
+            }
+            "group.list_members" => {
+                crate::internal::group_e2ee::send_state::observe_group_member_page(
+                    self.client,
+                    &raw,
+                )
+            }
+            _ => {}
+        }
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),

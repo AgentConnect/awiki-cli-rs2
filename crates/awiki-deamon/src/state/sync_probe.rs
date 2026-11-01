@@ -7,7 +7,7 @@ impl DaemonState {
     /// reached that checkpoint. A missing per-Agent probe row is deliberately
     /// counted as false so one healthy Agent cannot mask another failed Agent.
     pub fn load_sync_probe(&self) -> Result<DaemonSyncProbe> {
-        let connection = self.connection()?;
+        let connection = self.connection_read_only()?;
         let (active_count, negotiated_count, bootstrap_count, reconcile_count) = connection
             .query_row(
                 r#"

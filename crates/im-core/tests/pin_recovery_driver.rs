@@ -65,7 +65,14 @@ async fn live_pin_root_roundtrip() {
         )
     };
     let original_did = identity.did.clone();
-    let original_device = identity.device_id.clone();
+    let original_device = take(
+        a.identities()
+            .device_summary_async(sdk::IdentitySelector::Id(identity.id.clone()))
+            .await,
+        "source authorized device summary",
+    )
+    .protocol_device_id
+    .expect("source identity has an active protocol device");
     let pending_a = pending(&a, &input, PinRecoveryKind::Enable).await;
     let session = phone_session(
         &a,
@@ -140,7 +147,15 @@ async fn live_pin_root_roundtrip() {
     if pending_b.is_none() && !inventory.is_empty() {
         assert_eq!(inventory.len(), 1, "B contains only the test device");
         assert_eq!(inventory[0].did, original_did);
-        assert_ne!(inventory[0].device_id, original_device);
+        let restored_device = take(
+            b.identities()
+                .device_summary_async(sdk::IdentitySelector::Id(inventory[0].id.clone()))
+                .await,
+            "previously activated device summary",
+        )
+        .protocol_device_id
+        .expect("previously activated identity has a protocol device");
+        assert_ne!(restored_device, original_device);
         take(
             b.client_async(sdk::IdentitySelector::Id(inventory[0].id.clone()))
                 .await,
@@ -223,7 +238,15 @@ async fn live_pin_root_roundtrip() {
         "activated identity",
     );
     assert_eq!(identity.did, original_did);
-    assert_ne!(identity.device_id, original_device);
+    let recovered_device = take(
+        b.identities()
+            .device_summary_async(selector.clone())
+            .await,
+        "recovered authorized device summary",
+    )
+    .protocol_device_id
+    .expect("recovered identity has an active protocol device");
+    assert_ne!(recovered_device, original_device);
     let _authenticated_client = take(
         b.client_async(selector).await,
         "normal authenticated client",

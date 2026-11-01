@@ -2,7 +2,8 @@ use super::*;
 use crate::internal::wire::sync_v2::group_e2ee_state::{
     GroupStateObservation, GroupStateObservations,
 };
-use serde_json::json;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub(super) struct ObservedGroup {
@@ -11,6 +12,7 @@ pub(super) struct ObservedGroup {
     caught_up: bool,
     local_generation: u64,
     ready: Option<PreparedState>,
+    maintenance_fingerprint: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -25,6 +27,126 @@ pub(crate) struct PreparationTicket {
     observation: GroupStateObservation,
     connection: String,
     local_generation: u64,
+}
+
+impl ObservedGroup {
+    fn refresh(
+        previous: Option<&Self>,
+        observation: GroupStateObservation,
+        connection: Option<String>,
+        caught_up: bool,
+    ) -> Self {
+        let ready = previous
+            .filter(|old| old.observation == observation && caught_up)
+            .and_then(|old| old.ready.clone());
+        let local_generation = previous.map_or(0, |old| old.local_generation);
+        Self {
+            observation,
+            connection,
+            caught_up,
+            local_generation,
+            ready,
+            maintenance_fingerprint: previous.and_then(|old| old.maintenance_fingerprint),
+        }
+    }
+
+    fn maintenance_from_read(&self, raw: &Value) -> crate::ImResult<Option<[u8; 32]>> {
+        if raw.get("e2ee_maintenance").is_none_or(Value::is_null) {
+            return Ok(None);
+        }
+        let maintenance = super::super::transition::validated_maintenance(
+            raw,
+            Some(&self.observation.group_did),
+        )?
+        .ok_or(crate::ImError::CursorStale)?;
+        if !matches!(
+            (
+                maintenance.get("reason").and_then(Value::as_str),
+                maintenance.get("send_paused").and_then(Value::as_bool)
+            ),
+            (Some("device_revocation_pending"), Some(_))
+                | (Some("group_membership_change_pending"), Some(true))
+        ) {
+            return Err(crate::ImError::CursorStale);
+        }
+        // Keep only a bounded process-local change marker. It is neither a
+        // preparation ticket nor authority to send or modify the roster.
+        let mut digest = Sha256::new();
+        serde_json_canonicalizer::to_writer(maintenance, &mut digest)
+            .map_err(|_| crate::ImError::CursorStale)?;
+        Ok(Some(digest.finalize().into()))
+    }
+
+    fn invalidate_from_read(&mut self, raw: &serde_json::Value) -> bool {
+        self.invalidate_from_read_fields(raw, true)
+    }
+
+    fn invalidate_from_member_page(&mut self, raw: &serde_json::Value) -> bool {
+        self.invalidate_from_read_fields(raw, false)
+    }
+
+    fn invalidate_from_read_fields(
+        &mut self,
+        raw: &serde_json::Value,
+        maintenance_is_complete: bool,
+    ) -> bool {
+        let version = raw
+            .get("group_state_version")
+            .or_else(|| raw.pointer("/group_snapshot/group_state_version"));
+        let ordering = version.and_then(Value::as_str).map(|version| {
+            crate::internal::local_state::sync_v2::compare_decimal(
+                version,
+                &self.observation.group_state_version,
+            )
+        });
+        if matches!(&ordering, Some(Ok(std::cmp::Ordering::Less))) {
+            return false;
+        }
+        let changed_version =
+            version.is_some() && !matches!(&ordering, Some(Ok(std::cmp::Ordering::Equal)));
+        let membership = raw
+            .get("membership_status")
+            .or_else(|| raw.pointer("/group_snapshot/membership_status"))
+            .and_then(Value::as_str);
+        let role = raw
+            .get("my_role")
+            .or_else(|| raw.pointer("/group_snapshot/my_role"))
+            .and_then(Value::as_str);
+        let changed_role = role.is_some_and(|role| {
+            self.ready
+                .as_ref()
+                .and_then(|ready| ready.authoritative.group.as_ref())
+                .and_then(|group| group.my_role.as_deref())
+                .is_some_and(|previous| previous != role)
+        });
+        // Member pages report roster/version facts, not maintenance absence.
+        // Explicit negative facts still invalidate; omission cannot clear a
+        // maintenance marker learned from a complete group read.
+        let maintenance = if maintenance_is_complete || raw.get("e2ee_maintenance").is_some() {
+            self.maintenance_from_read(raw)
+        } else {
+            Ok(self.maintenance_fingerprint)
+        };
+        let changed_maintenance = maintenance
+            .as_ref()
+            .map_or(true, |value| *value != self.maintenance_fingerprint);
+        let changed = changed_version
+            || changed_role
+            || membership.is_some_and(|status| status != "active")
+            || changed_maintenance;
+        if !changed {
+            return false;
+        }
+        let wake = self.caught_up || self.ready.is_some();
+        // A new phase (including maintenance removal) needs one fresh receive.
+        // Reading the same pending fact after that receive must not invalidate
+        // it forever and prevent the existing recovery worker from resuming.
+        self.maintenance_fingerprint = maintenance.unwrap_or(None);
+        self.ready = None;
+        self.caught_up = false;
+        self.local_generation = self.local_generation.saturating_add(1);
+        wake
+    }
 }
 
 fn same_owner(left: &Scope, right: &Scope) -> bool {
@@ -92,7 +214,18 @@ pub(crate) fn invalidate(client: &crate::ImClient, group: Option<&str>) {
 /// An explicit authenticated read can discover a change before its notification.
 /// It invalidates old facts but cannot mint a replacement readiness certificate.
 pub(crate) fn observe_group_read(client: &crate::ImClient, raw: &serde_json::Value) {
-    use serde_json::Value;
+    observe_group_read_fields(client, raw, true);
+}
+
+pub(crate) fn observe_group_member_page(client: &crate::ImClient, raw: &serde_json::Value) {
+    observe_group_read_fields(client, raw, false);
+}
+
+fn observe_group_read_fields(
+    client: &crate::ImClient,
+    raw: &serde_json::Value,
+    maintenance_is_complete: bool,
+) {
     let group = raw
         .get("group_did")
         .or_else(|| raw.pointer("/group_snapshot/group_did"))
@@ -110,50 +243,11 @@ pub(crate) fn observe_group_read(client: &crate::ImClient, raw: &serde_json::Val
         let Some(observed) = state.observed.get_mut(&key) else {
             return;
         };
-        let version = raw
-            .get("group_state_version")
-            .or_else(|| raw.pointer("/group_snapshot/group_state_version"));
-        let ordering = version.and_then(Value::as_str).map(|version| {
-            crate::internal::local_state::sync_v2::compare_decimal(
-                version,
-                &observed.observation.group_state_version,
-            )
-        });
-        if matches!(&ordering, Some(Ok(std::cmp::Ordering::Less))) {
-            return;
+        if maintenance_is_complete {
+            observed.invalidate_from_read(raw)
+        } else {
+            observed.invalidate_from_member_page(raw)
         }
-        let changed_version =
-            version.is_some() && !matches!(&ordering, Some(Ok(std::cmp::Ordering::Equal)));
-        let membership = raw
-            .get("membership_status")
-            .or_else(|| raw.pointer("/group_snapshot/membership_status"))
-            .and_then(Value::as_str);
-        let role = raw
-            .get("my_role")
-            .or_else(|| raw.pointer("/group_snapshot/my_role"))
-            .and_then(Value::as_str);
-        let changed_role = role.is_some_and(|role| {
-            observed
-                .ready
-                .as_ref()
-                .and_then(|ready| ready.authoritative.group.as_ref())
-                .and_then(|group| group.my_role.as_deref())
-                .is_some_and(|previous| previous != role)
-        });
-        let changed = changed_version
-            || changed_role
-            || membership.is_some_and(|status| status != "active")
-            || raw
-                .get("e2ee_maintenance")
-                .is_some_and(|value| !value.is_null());
-        if !changed {
-            return;
-        }
-        let wake = observed.caught_up || observed.ready.is_some();
-        observed.ready = None;
-        observed.caught_up = false;
-        observed.local_generation = observed.local_generation.saturating_add(1);
-        wake
     };
     if wake && tokio::runtime::Handle::try_current().is_ok() {
         let client = client.clone();
@@ -309,28 +403,16 @@ pub(crate) async fn observe_async(
         for observation in observations.groups {
             let mut key = owner.clone();
             key.group = observation.group_did.clone();
-            let ready = state
-                .observed
-                .get(&key)
-                .filter(|old| old.observation == observation && caught_up)
-                .and_then(|old| old.ready.clone());
-            let local_generation = state
-                .observed
-                .get(&key)
-                .map_or(0, |old| old.local_generation);
+            let refreshed = ObservedGroup::refresh(
+                state.observed.get(&key),
+                observation,
+                expected_connection.clone(),
+                caught_up,
+            );
             if state.observed.len() >= 4096 && !state.observed.contains_key(&key) {
                 state.observed.pop_first();
             }
-            state.observed.insert(
-                key,
-                ObservedGroup {
-                    observation,
-                    connection: expected_connection.clone(),
-                    caught_up,
-                    local_generation,
-                    ready,
-                },
-            );
+            state.observed.insert(key, refreshed);
         }
     }
     if wake_processing {
@@ -452,9 +534,10 @@ pub(crate) fn publish_prepared(
         // A live observer must finish synchronization before its recovery task
         // can complete. Legacy/HTTP-only preparation has no reusable ticket.
         if connection_token(client).is_some()
-            && authoritative.group.as_ref().is_some_and(|group| {
-                has_observation(client, &group.did)
-            })
+            && authoritative
+                .group
+                .as_ref()
+                .is_some_and(|group| has_observation(client, &group.did))
         {
             return Err(crate::ImError::CursorStale);
         }
@@ -565,3 +648,7 @@ pub(crate) fn validate_preparation_ticket(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "send_state_observations_tests.rs"]
+mod tests;

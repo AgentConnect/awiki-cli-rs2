@@ -21,6 +21,48 @@ struct NoticeRuntimeContext {
     transition_dids: Option<(String, String)>,
 }
 
+/// Reliable input disposition is separate from an SDK cryptographic receipt.
+pub(crate) enum PreparedP6ControlInput {
+    Notice(PreparedP6Notice),
+    OtherPredecessorDevice,
+}
+
+pub(crate) async fn prepare_for_input_async(
+    client: &crate::core::ImClient,
+    value: &Value,
+) -> crate::ImResult<PreparedP6ControlInput> {
+    let (meta, _) = parse_notice(value)?;
+    let current = super::v2_runtime::runtime_for_client(client)?.owner_scope()?;
+    let marker = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        &current.owner_identity_id,
+    )?;
+    if marker.as_ref().is_some_and(|marker| {
+        marker.current_did == current.owner_did
+            && marker.current_device_id.as_deref() == Some(current.device_id.as_str())
+            && marker.previous_did != marker.current_did
+            && meta.target.did == marker.previous_did
+    }) {
+        let marker = marker.expect("matching marker");
+        let recipient = meta.recipient_device_id.clone();
+        let db = client.core_inner().local_state_db().await?;
+        let other = db
+            .run_local(move |connection| {
+                let previous = crate::internal::identity_transition_pending::predecessor_device_on(
+                    connection, &marker,
+                )?;
+                Ok(previous.is_some_and(|previous| previous != recipient))
+            })
+            .await?;
+        if other {
+            return Ok(PreparedP6ControlInput::OtherPredecessorDevice);
+        }
+    }
+    prepare_for_client_async(client, value)
+        .await
+        .map(PreparedP6ControlInput::Notice)
+}
+
 /// Returns true only for the standard P6 v2 notice profile and notice shape.
 ///
 /// History/inbox responses may retain only `meta` and `body`, so a flat
@@ -252,8 +294,14 @@ fn resolve_member_documents(
         crate::internal::transport::CoreHttpTransport::new(client),
     )
     .authoritative_members(group)?;
-    let mut dids = member_dids_from_authoritative_roster(owner_did, notice, &authoritative)?;
-    include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
+    let dids = notice_document_dids(
+        client.did().as_str(),
+        owner_did,
+        meta,
+        notice,
+        transition_dids,
+        &authoritative,
+    )?;
     dids.into_iter()
         .map(|did| {
             resolve_did_document(client, &mut transport, &did)
@@ -287,8 +335,14 @@ async fn resolve_member_documents_async(
     )
     .authoritative_members_async(group)
     .await?;
-    let mut dids = member_dids_from_authoritative_roster(owner_did, notice, &authoritative)?;
-    include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
+    let dids = notice_document_dids(
+        client.did().as_str(),
+        owner_did,
+        meta,
+        notice,
+        transition_dids,
+        &authoritative,
+    )?;
     let mut documents = Vec::with_capacity(dids.len());
     for did in dids {
         let document = resolve_did_document_async(client, &mut transport, &did).await?;
@@ -343,7 +397,14 @@ fn runtime_context_for_notice(
         });
     }
     Ok(NoticeRuntimeContext {
-        runtime: GroupE2eeV2Runtime::new(store).with_control_inbox(client.core_inner().sdk_paths().local_state.sqlite_path.clone()),
+        runtime: GroupE2eeV2Runtime::new(store).with_control_inbox(
+            client
+                .core_inner()
+                .sdk_paths()
+                .local_state
+                .sqlite_path
+                .clone(),
+        ),
         owner_did: marker.previous_did.clone(),
         transition_dids: Some((marker.previous_did, marker.current_did)),
     })
@@ -367,6 +428,28 @@ fn include_transition_notice_dids(
         dids.insert(previous_did.clone());
         dids.insert(current_did.clone());
     }
+}
+
+fn notice_document_dids(
+    caller_did: &str,
+    crypto_owner_did: &str,
+    meta: &V2GroupNoticeMetadata,
+    notice: &V2E2eeNotice,
+    transition: Option<&(String, String)>,
+    snapshot: &Value,
+) -> crate::ImResult<BTreeSet<String>> {
+    if caller_did != crypto_owner_did
+        && !transition.is_some_and(|(previous, current)| {
+            previous == crypto_owner_did && current == caller_did && meta.target.did == *previous
+        })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    // The current caller is the P4 member. The predecessor is only an MLS
+    // credential; requiring it to remain a P4 member contradicts DID recovery.
+    let mut dids = member_dids_from_authoritative_roster(caller_did, notice, snapshot)?;
+    include_transition_notice_dids(&mut dids, meta, notice, transition);
+    Ok(dids)
 }
 
 fn resolve_self_remove_member_documents(
@@ -1133,3 +1216,7 @@ mod tests {
 #[cfg(test)]
 #[path = "v2_notice_roster_tests.rs"]
 mod roster_tests;
+
+#[cfg(test)]
+#[path = "v2_notice_transition_scope_tests.rs"]
+mod transition_scope_tests;

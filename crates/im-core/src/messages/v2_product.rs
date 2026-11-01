@@ -834,22 +834,12 @@ fn group_state_ref_from_send_snapshot(
 fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult<bool> {
     // Membership maintenance must reach the owner reconciliation below. The
     // authoritative paused gate is checked again before preparing ciphertext.
-    let Some(maintenance) = snapshot.get("e2ee_maintenance") else {
+    let Some(maintenance) = crate::internal::group_e2ee::transition::validated_maintenance(
+        snapshot,
+        snapshot.get("group_did").and_then(Value::as_str),
+    )? else {
         return Ok(false);
     };
-    let Some(maintenance) = maintenance.as_object() else {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "P6 v2 group maintenance projection is malformed".to_owned(),
-        });
-    };
-    if maintenance.len() != 2
-        || !maintenance.contains_key("reason")
-        || !maintenance.contains_key("send_paused")
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
-        });
-    }
     match (
         maintenance.get("reason").and_then(Value::as_str),
         maintenance.get("send_paused").and_then(Value::as_bool),

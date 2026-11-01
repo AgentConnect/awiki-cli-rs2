@@ -74,6 +74,10 @@ impl DaemonState {
 
     #[cfg(test)]
     pub(crate) fn open_without_secret_vault_for_legacy(config: &DaemonConfig) -> Self {
+        Self::for_inspection(config)
+    }
+
+    pub(crate) fn for_inspection(config: &DaemonConfig) -> Self {
         Self {
             database_path: config.daemon_db_path.clone(),
             secret_vault: None,
@@ -108,6 +112,38 @@ impl DaemonState {
             "#,
         )?;
         Ok(connection)
+    }
+
+    pub(crate) fn connection_read_only(&self) -> Result<Connection> {
+        Connection::open_with_flags(
+            &self.database_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .with_context(|| format!("inspect daemon database {}", self.database_path.display()))
+    }
+
+    pub(crate) fn inspect_initialized(&self) -> Result<Option<StateSummary>> {
+        if !self.database_path.is_file() {
+            return Ok(None);
+        }
+        let connection = self.connection_read_only()?;
+        let has_schema: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+            [], |row| row.get(0),
+        )?;
+        if !has_schema {
+            return Ok(None);
+        }
+        let version: Option<i64> =
+            connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })?;
+        Ok(
+            (version == Some(schema::DAEMON_SCHEMA_VERSION)).then(|| StateSummary {
+                database_path: self.database_path.clone(),
+                schema_version: schema::DAEMON_SCHEMA_VERSION,
+            }),
+        )
     }
 
     pub(crate) fn identity_custody_root(&self) -> Result<PathBuf> {

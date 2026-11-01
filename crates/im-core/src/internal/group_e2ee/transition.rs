@@ -56,6 +56,43 @@ impl TransitionPlan {
     }
 }
 
+/// Parse the existing Host maintenance shape without discarding its bound DID
+/// transition. Unknown fields and plans without the current group/version fail
+/// closed; the caller still applies the ordinary reason/send-pause policy.
+pub(crate) fn validated_maintenance<'a>(
+    raw: &'a Value,
+    group_did: Option<&str>,
+) -> crate::ImResult<Option<&'a serde_json::Map<String, Value>>> {
+    let Some(value) = raw.get("e2ee_maintenance") else {
+        return Ok(None);
+    };
+    let invalid = || crate::ImError::LocalStateUnavailable {
+        detail: "authoritative group maintenance projection is unsupported".to_owned(),
+    };
+    let maintenance = value.as_object().ok_or_else(invalid)?;
+    if !maintenance.contains_key("reason")
+        || !maintenance.contains_key("send_paused")
+        || maintenance
+            .keys()
+            .any(|key| !matches!(key.as_str(), "reason" | "send_paused" | "did_transition"))
+    {
+        return Err(invalid());
+    }
+    if maintenance.contains_key("did_transition") {
+        let group_did = group_did.ok_or_else(invalid)?;
+        let reference = super::state_ref::group_state_ref_from_group_response(group_did, raw)
+            .ok_or_else(invalid)?;
+        let reference = anp::group_e2ee::V2GroupStateRef {
+            group_did: reference.group_did,
+            group_state_version: reference.group_state_version,
+            policy_hash: reference.policy_hash,
+            roster_hash: None,
+        };
+        TransitionPlan::from_group_response(raw, &reference)?.ok_or_else(invalid)?;
+    }
+    Ok(Some(maintenance))
+}
+
 pub(crate) fn validate_roster_members(
     plan: Option<&TransitionPlan>,
     members: &std::collections::BTreeSet<String>,

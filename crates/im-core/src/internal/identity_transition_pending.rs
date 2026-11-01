@@ -890,6 +890,98 @@ pub(crate) fn migrate_initiator_new_local_state(
     )
 }
 
+#[cfg(feature = "group-e2ee")]
+fn predecessor_device_value(
+    marker: &IdentityTransitionMarker,
+    previous: &str,
+    current: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "phase":"completed", "schema_version":1,
+        "recovery_id":marker.recovery_id, "source_kind":marker.source_kind.as_str(),
+        "source_id":marker.source_id, "state_root_fingerprint":marker.state_root_fingerprint,
+        "account_user_id":marker.account_user_id, "previous_did":marker.previous_did,
+        "current_did":marker.current_did, "binding_generation":marker.binding_generation,
+        "previous_device_id":previous, "current_device_id":current,
+    })
+}
+
+#[cfg(feature = "group-e2ee")]
+fn freeze_predecessor_device_on(
+    connection: &rusqlite::Connection,
+    marker: &IdentityTransitionMarker,
+    current: &str,
+) -> crate::ImResult<()> {
+    use rusqlite::OptionalExtension;
+    let previous: Option<String> = connection.query_row(
+        "SELECT device_id FROM identity_account_bindings WHERE owner_identity_id=?1 AND account_id=?2 AND current_did=?3",
+        (&marker.owner_identity_id,&marker.account_user_id,&marker.previous_did), |row| row.get(0),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    let Some(previous) = previous else {
+        return Ok(());
+    };
+    crate::ids::ProtocolDeviceId::parse(&previous)?;
+    let value = predecessor_device_value(marker, &previous, current).to_string();
+    let binding = format!("{:x}", Sha256::digest(value.as_bytes()));
+    let key = format!("identity-predecessor-device-v1:{}", marker.recovery_id);
+    connection
+        .execute_batch(crate::internal::group_runtime::journal::SCHEMA)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    connection.execute(
+        "INSERT INTO group_operation_journal VALUES (?1,?2,?3,?4,?5) ON CONFLICT(owner_identity_id,local_device_id,operation_key) DO NOTHING",
+        (&marker.owner_identity_id,current,&key,&binding,&value),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    let existing: (String,String) = connection.query_row(
+        "SELECT request_binding,intent_json FROM group_operation_journal WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3",
+        (&marker.owner_identity_id,current,&key), |row| Ok((row.get(0)?,row.get(1)?)),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    if existing != (binding, value) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+/// Public routing metadata frozen in the same transaction as the old binding
+/// replacement. Absence is unknown, never evidence that a notice is foreign.
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn predecessor_device_on(
+    connection: &rusqlite::Connection,
+    marker: &IdentityTransitionMarker,
+) -> crate::ImResult<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='group_operation_journal')",
+        [], |row| row.get(0),
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    if !exists {
+        return Ok(None);
+    }
+    let Some(current) = marker.current_device_id.as_deref() else {
+        return Ok(None);
+    };
+    let key = format!("identity-predecessor-device-v1:{}", marker.recovery_id);
+    let record: Option<(String,String)> = connection.query_row(
+        "SELECT request_binding,intent_json FROM group_operation_journal WHERE owner_identity_id=?1 AND local_device_id=?2 AND operation_key=?3",
+        (&marker.owner_identity_id,current,&key), |row| Ok((row.get(0)?,row.get(1)?)),
+    ).optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+    let Some((binding, raw)) = record else {
+        return Ok(None);
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| crate::ImError::PermissionDenied)?;
+    let previous = value
+        .get("previous_device_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    crate::ids::ProtocolDeviceId::parse(previous)?;
+    if binding != format!("{:x}", Sha256::digest(raw.as_bytes()))
+        || value != predecessor_device_value(marker, previous, current)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(Some(previous.to_owned()))
+}
+
 fn migrate_local_state_inner(
     sqlite_path: &Path,
     marker: &IdentityTransitionMarker,
@@ -980,6 +1072,9 @@ fn migrate_local_state_inner(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+
+    #[cfg(feature = "group-e2ee")]
+    freeze_predecessor_device_on(&transaction, marker, bootstrap_device_id)?;
 
     let now_unix = time::OffsetDateTime::now_utc().unix_timestamp();
     if let Some((account_id, handle_scope, current_did, identity_generation)) = binding.as_ref() {
@@ -1396,6 +1491,98 @@ mod tests {
             "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-1','user-1','alice.example.invalid','did:wba:example.invalid:users:alice-old','old-device','7','3',1,1)",
             [],
         ).unwrap();
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn transition_predecessor_device_binding_is_frozen_with_the_rebind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        insert_old_binding(&path);
+        let marker = test_marker(&path);
+        persist(&path, &marker).unwrap();
+        migrate_local_state(&path, &marker, "device-new", 1).unwrap();
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        assert_eq!(
+            predecessor_device_on(&connection, &marker)
+                .unwrap()
+                .as_deref(),
+            Some("old-device")
+        );
+        assert_eq!(connection.query_row("SELECT device_id FROM identity_account_bindings WHERE owner_identity_id='owner-1'",[],|row| row.get::<_,String>(0)).unwrap(),"device-new");
+        // There is no SDK state in this fixture: losing a store does not change
+        // the exact old-device identity proven by the migration transaction.
+        assert!(!dir.path().join("group_mls").exists());
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn transition_predecessor_device_binding_unknown_or_mismatched_is_not_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        insert_old_binding(&path);
+        let marker = test_marker(&path);
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        assert_eq!(predecessor_device_on(&connection, &marker).unwrap(), None);
+        connection
+            .execute_batch(crate::internal::group_runtime::journal::SCHEMA)
+            .unwrap();
+        assert_eq!(predecessor_device_on(&connection, &marker).unwrap(), None);
+        freeze_predecessor_device_on(&connection, &marker, "device-new").unwrap();
+        for change in 0..8 {
+            let mut other = marker.clone();
+            match change {
+                0 => other.owner_identity_id = "other-owner".into(),
+                1 => other.current_device_id = Some("other-device".into()),
+                2 => other.recovery_id = "other-recovery".into(),
+                3 => other.previous_did = "did:example:other".into(),
+                4 => other.current_did = "did:example:other".into(),
+                5 => other.account_user_id = "other-account".into(),
+                6 => other.binding_generation = "99".into(),
+                _ => other.state_root_fingerprint = "other-root".into(),
+            }
+            assert!(matches!(
+                predecessor_device_on(&connection, &other),
+                Ok(None) | Err(_)
+            ));
+        }
+        connection.execute("UPDATE group_operation_journal SET intent_json=json_set(intent_json,'$.previous_device_id','other-device')",[]).unwrap();
+        assert!(predecessor_device_on(&connection, &marker).is_err());
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn transition_predecessor_device_binding_rolls_back_with_failed_identity_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        insert_old_binding(&path);
+        let marker = test_marker(&path);
+        persist(&path, &marker).unwrap();
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection
+            .execute_batch(crate::internal::group_runtime::journal::SCHEMA)
+            .unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_rebind BEFORE UPDATE ON identity_account_bindings BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+        assert!(migrate_local_state(&path, &marker, "device-new", 1).is_err());
+        assert_eq!(predecessor_device_on(&connection, &marker).unwrap(), None);
+        assert_eq!(connection.query_row("SELECT device_id FROM identity_account_bindings WHERE owner_identity_id='owner-1'",[],|row|row.get::<_,String>(0)).unwrap(),"old-device");
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn transition_predecessor_device_binding_conflict_does_not_replace_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        insert_old_binding(&path);
+        let marker = test_marker(&path);
+        persist(&path, &marker).unwrap();
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection
+            .execute_batch(crate::internal::group_runtime::journal::SCHEMA)
+            .unwrap();
+        connection.execute("INSERT INTO group_operation_journal VALUES ('owner-1','device-new','identity-predecessor-device-v1:recovery-1','other','{}')",[]).unwrap();
+        assert!(migrate_local_state(&path, &marker, "device-new", 1).is_err());
+        assert_eq!(connection.query_row("SELECT device_id FROM identity_account_bindings WHERE owner_identity_id='owner-1'",[],|row|row.get::<_,String>(0)).unwrap(),"old-device");
     }
 
     #[test]

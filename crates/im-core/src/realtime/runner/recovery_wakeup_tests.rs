@@ -165,6 +165,7 @@ async fn hints_arriving_while_recovery_is_running_are_not_lost() {
 }
 
 #[test]
+#[cfg(feature = "blocking")]
 fn blocking_realtime_drives_group_recovery_while_the_socket_is_idle() {
     let fixture = TestClientFixture::new("group-hint-blocking");
     let client = fixture

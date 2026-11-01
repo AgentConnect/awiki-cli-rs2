@@ -914,9 +914,23 @@ Recovery 导致 P4 成员 DID 接续时，Core 接收 Home 本地的
 后执行。Host 的 `e2ee_maintenance.did_transition` 冻结接续设备集合，Core 先 Add 这些
 successor 设备，再 Remove predecessor；后来 Join 的设备和无关差异留待接续完成后处理。
 冻结设备撤销、P4 成员不匹配、计划/版本变化时停止或重新读取，不猜配设备、不绕过 Host fence。
+状态投影和发送准备共用该 maintenance 的闭合解析：保留已有 reason/send_paused 语义，
+允许已定义且通过现有 TransitionPlan 校验的 did_transition，绑定当前群与群版本及冻结设备集合。
+合法接续计划继续暂停发送，不因多出这一已支持字段伪报状态不可用；未知字段、错绑定或畸形计划仍拒绝。
 这一自动恢复合同需要配套的新 Message Service 与 Core，详细本地字段见 Message Service
 `docs/api/message-service-internal-api.md` 的 Recovery 接续章节；标准 P6 验签与 exact-device
 校验保持不变。
+
+接续期间 Home 可把旧 Leaf 控制通知保留在新控制设备的本域接收流。Core 在替换原设备绑定的
+同一事务内，将原设备 ID 和接续 owner/account/DID/代次/根目录绑定冻结到既有 journal 的独立
+元数据 key；不增加表、marker 字段或公共 API。接收时必须同时匹配已完成的接续 marker，
+才能区分本机旧设备与其它旧设备。历史记录缺少绑定或绑定损坏时保留原失败处理；历史观察
+集合和 SDK 文件缺失都不能替代这条绑定，本机旧设备的文件损坏仍报错。
+其它旧设备的输入仅原子完成本机路由归约，
+不执行 SDK、不产生 SDK 回执、聊天消息或权限。本机旧上下文仍通过原 SDK 验证和应用。
+解析所需 DID 文档时以当前调用者的 P4 成员资格为门槛；旧密码学 owner 只可来自同一接续
+记录，并作为历史凭据解析。不能要求已被替换的旧 DID 仍占当前 P4 成员行，也不能由旧凭据
+反向赋予当前成员资格。
 
 本 workspace 对 OpenMLS 0.8 单独设置 dev/test `debug-assertions = false`：该依赖在
 合法检测到 AEAD tag 错误后含无条件 debug assertion，开启时会先 panic，无法返回原有
@@ -1050,6 +1064,21 @@ sink 只用于明确需要内存结果的兼容调用方，不是 App 大文件�
 
 `im-core` is blocking-first. Flutter/Dart and App hosts expose async APIs by running SDK work on their own worker thread or platform runtime. Any future async public API must be designed separately from the current blocking contract.
 
+Daemon foreground 的同步心跳／状态发送与 Controller scope 周期核对必须在阻塞工作线程中
+执行，不能占住驱动 Core 接收和 WebSocket 的单线程 Tokio 运行时。同步 outbox 的线程桥接
+可能等待同一 Core 的连接／接收任务；调用方在接收线程中直接 `join` 会形成相互等待。
+调度位置不改变认证、发送恢复点或幂等语义，原同步调用接口保持兼容。
+周期任务至多一个在途，主循环继续处理接收和控制；它使用共享计数器的 outbox 克隆，
+不在网络等待期间占用 RPC outbox 的外层锁。退出时在关闭 Core 连接前收口当前任务。
+Daemon 控制消息仍按原顺序处理，其同步 Host handler 同样经阻塞工作线程执行；后台 Runtime
+任务维持既有调度。接收完成后另行唤醒有界的本地 incoming recovery，读取已提交投影，
+并继续监听延后处理结果；接收返回的业务处理计数为零不能作为本地投影为空的证据。
+退出时先收口 Host 路由、RPC 和调度工作，再关闭 Core realtime，避免发送中的 Host 工作反过来
+等待已关闭的接收任务。
+Daemon `status` 对已初始化的当前 schema 只做只读检查，Core schema 通过既有 pre-open
+inspection 读取，不重跑 DDL、恢复 lease 或打开密钥 Vault；首次使用和旧 schema 仍走原初始化／
+升级路径。状态轮询不能与正在处理消息的 foreground 争抢写锁。
+
 Transport is explicit through configuration and capability checks:
 
 - `HttpOnly` keeps business operations on HTTP/RPC.
@@ -1102,6 +1131,18 @@ roster_readiness 缓存。状态绑定当前 Core、owner、DID、精确 device�
 仅在完整清单、同一 Home/Host、全部身份依赖具备本地覆盖、P6 lane 补齐且公开 epoch
 已初始化时建立准备依据；旧服务、缺字段、跨域来源或未知版本保留原读取路径。
 观察到变化后先失效，再把维护写入原 group_operation_journal；不增加通用队列。
+
+权威读取首次发现待处理状态、该状态推进或结束时，失效准备依据并等待当前连接重新同步。
+同一已验证待处理状态在同步补齐后再次被读到时，不得反复清除 `caught_up`，否则恢复执行器
+会持续等待自己刚刚触发的同步。Core 仅在原 owner/device/key/generation/group 作用域内保存
+该状态的进程内摘要；摘要不提供权限、不授予 Ready、不进入持久层。未知或非法维护对象仍
+每次失效，发送准备与成员修改继续执行既有权威读取、SDK readiness、票据及 CAS 检查。
+
+读取观察按现有 RPC 的响应范围区分：完整 `group.get` 可以报告维护结束；
+`group.list_members` 的同版本分页未携带维护字段时，不得把字段缺失解释为结束，
+否则完整读取与分页读取会反复清除同一份新鲜接收依据。分页中的新或非法版本、
+明确的负面事实仍使准备依据失效，完整读取的推进与结束检查保持不变；
+分页读取同样不能建立 `caught_up`、Ready 或发送票据。
 
 真正的 Ready 还要求一次完成的权威群／成员准备、本地 SDK typed readiness 和精确设备
 成员集合、没有相应的未处理普通/P6/基线输入或恢复待办。Ready 快照只在持有活跃接收

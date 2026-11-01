@@ -72,8 +72,8 @@ use attachments::{
 };
 use group_context::build_recent_group_context;
 use lifecycle_support::{
-    runtime_callback_outbox, start_runtime_rpc_worker, sync_configured_agent_identities,
-    write_ready_file,
+    receive_and_wake_local_recovery, run_blocking_foreground_work, runtime_callback_outbox,
+    start_runtime_rpc_worker, sync_configured_agent_identities, write_ready_file,
 };
 use outbox::{
     runtime_message_sender_for_agent, runtime_status_sender_for_agent, ControllerOutboxSender,
@@ -409,6 +409,10 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
 
     let rpc_outbox =
         runtime_callback_outbox(&config, &state, &im_core, options.mock_status_outbox)?;
+    let heartbeat_outbox = rpc_outbox
+        .lock()
+        .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?
+        .clone();
     let queue_notifier = QueueSchedulerNotifier::new();
     let rpc_worker = start_runtime_rpc_worker(
         config.local_socket_path.clone(),
@@ -477,6 +481,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processing_ready = HashMap::<String, runtime_realtime::RealtimeSource>::new();
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
+    type PeriodicStatusWork =
+        tokio::task::JoinHandle<Result<(HeartbeatScheduler, Result<Vec<String>>)>>;
+    let mut heartbeat_work: Option<PeriodicStatusWork> = None;
     let mut backend_enabled = true;
     let exit_reason = loop {
         let capabilities = backend_discovery.backend_capabilities_async(false).await?;
@@ -564,14 +571,13 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 last_runtime_inbox_reconciliation = Some(Instant::now());
             }
             _ = tokio::time::sleep(realtime_sync.next_due_delay()), if backend_enabled => {
-                let newly_processed = process_due_realtime_sync_work(
+                let newly_processed = receive_and_wake_local_recovery(process_due_realtime_sync_work(
                     &config,
                     &state,
                     &im_core,
                     &mut realtime_supervisor,
                     &mut realtime_sync,
-                )
-                .await?;
+                ), &mut last_runtime_inbox_reconciliation).await?;
                 if newly_processed > 0 {
                     realtime_supervisor.reconcile_active_agents().await?;
                 }
@@ -590,26 +596,36 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     if count > 0 { queue_notifier.notify_all(); }
                 }
             }
-            _ = heartbeat_interval.tick() => {
-                if !backend_enabled { continue; }
-                {
-                    let outbox = rpc_outbox
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-                    if let Err(error) = heartbeat.tick(&config, &state, &im_core, &*outbox) {
-                        let _ = record_foreground_status_error(&state, &error.to_string());
-                    }
-                };
-                match reconcile_controller_scopes_before_periodic_sync(
-                    &config,
-                    &state,
-                    &registration,
-                ) {
-                    Ok(agent_dids) => realtime_sync.mark_periodic_reconcile(agent_dids),
+            completed = async { heartbeat_work.as_mut().expect("guarded periodic status work").await }, if heartbeat_work.is_some() => {
+                heartbeat_work.take();
+                let (updated_heartbeat, reconciled) = completed
+                    .map_err(|_| anyhow::anyhow!("periodic status task failed"))??;
+                heartbeat = updated_heartbeat;
+                match reconciled {
+                    Ok(agent_dids) if backend_enabled => realtime_sync.mark_periodic_reconcile(agent_dids),
+                    Ok(_) => {},
                     Err(error) => {
                         let _ = record_foreground_status_error(&state, &error.to_string());
                     }
                 }
+            }
+            _ = heartbeat_interval.tick(), if heartbeat_work.is_none() => {
+                if !backend_enabled { continue; }
+                if rpc_outbox.is_poisoned() { bail!("runtime callback outbox lock poisoned"); }
+                let tick_config = config.clone();
+                let tick_state = state.clone();
+                let tick_core = im_core.clone();
+                let tick_outbox = heartbeat_outbox.clone();
+                let tick_registration = registration.clone();
+                let mut tick_heartbeat = heartbeat.clone();
+                heartbeat_work = Some(tokio::spawn(run_blocking_foreground_work(move || {
+                    if let Err(error) = tick_heartbeat.tick(&tick_config, &tick_state, &tick_core, &tick_outbox) {
+                        let _ = record_foreground_status_error(&tick_state, &error.to_string());
+                    }
+                    let reconciled = reconcile_controller_scopes_before_periodic_sync(
+                        &tick_config, &tick_state, &tick_registration);
+                    (tick_heartbeat, reconciled)
+                })));
             }
             _ = tokio::time::sleep(foreground_control_tick_duration(started_at, options.max_runtime_ms)) => {}
         }
@@ -618,13 +634,23 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             write_ready_file(path, &status)?;
         }
     };
-    realtime_supervisor.stop().await;
-    crate::acp::store::request_shutdown(&state)?;
+    if let Some(work) = heartbeat_work {
+        // Keep Core's connections alive until the one in-flight status tick has
+        // completed; no detached status writes may outlive foreground shutdown.
+        let (_, reconciled) = work
+            .await
+            .map_err(|_| anyhow::anyhow!("periodic status task failed"))??;
+        if let Err(error) = reconciled {
+            let _ = record_foreground_status_error(&state, &error.to_string());
+        }
+    }
     runtime_routes.shutdown().await;
-    rpc_worker.stop();
+    crate::acp::store::request_shutdown(&state)?;
+    run_blocking_foreground_work(move || rpc_worker.stop()).await?;
     if let Some(scheduler) = queue_scheduler {
         scheduler.stop().await;
     }
+    realtime_supervisor.stop().await;
     let _ = std::fs::remove_file(&config.local_socket_path);
     Ok(ForegroundRunSummary {
         status,
@@ -1337,18 +1363,29 @@ async fn process_runtime_inbox_message(
         });
         return Ok(Some(true));
     }
-    match route_message(
-        config,
-        state,
-        im_core,
-        registration,
-        client,
-        agent_did,
-        message,
-        group_history,
-    )
-    .await
-    {
+    let runtime_handle = tokio::runtime::Handle::current();
+    let route_config = config.clone();
+    let route_state = state.clone();
+    let route_core = im_core.clone();
+    let route_registration = registration.clone();
+    let route_client = client.clone();
+    let route_agent = agent_did.to_owned();
+    let route_input = message.clone();
+    let route_history = group_history.map(<[Message]>::to_vec);
+    let routed = run_blocking_foreground_work(move || {
+        runtime_handle.block_on(route_message(
+            &route_config,
+            &route_state,
+            &route_core,
+            &route_registration,
+            &route_client,
+            &route_agent,
+            &route_input,
+            route_history.as_deref(),
+        ))
+    })
+    .await?;
+    match routed {
         Ok(routed) => {
             let status = runtime_processed_message_status(message, routed);
             record_runtime_processed_message(state, agent_did, &processed_message_id, status)?;

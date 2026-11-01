@@ -78,13 +78,13 @@ fn accepted_notice_can_resolve_documents_after_a_newer_membership_change() {
     notice.subject_status = "removed".into();
     snapshot["group_state_version"] = json!("4");
     let original_reference = notice.group_state_ref.clone();
-    let dids = member_dids_from_authoritative_roster(
-        "did:example:alice", &notice, &snapshot,
-    ).unwrap();
+    let dids =
+        member_dids_from_authoritative_roster("did:example:alice", &notice, &snapshot).unwrap();
     assert!(dids.contains(&notice.subject_did));
     assert_eq!(notice.group_state_ref, original_reference);
     snapshot["group_state_version"] = json!("2");
-    assert!(matches!(member_dids_from_authoritative_roster(
-        "did:example:alice", &notice, &snapshot,
-    ), Err(crate::ImError::CursorStale)));
+    assert!(matches!(
+        member_dids_from_authoritative_roster("did:example:alice", &notice, &snapshot,),
+        Err(crate::ImError::CursorStale)
+    ));
 }

@@ -631,23 +631,12 @@ fn overlay_group_maintenance_status(
         });
         return Ok(status);
     }
-    let Some(maintenance) = raw.get("e2ee_maintenance") else {
+    let Some(maintenance) = crate::internal::group_e2ee::transition::validated_maintenance(
+        raw,
+        Some(status.group.as_str()),
+    )? else {
         return Ok(status);
     };
-    let maintenance =
-        maintenance
-            .as_object()
-            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                detail: "authoritative group maintenance projection is malformed".to_owned(),
-            })?;
-    if maintenance.len() != 2
-        || !maintenance.contains_key("send_paused")
-        || !maintenance.contains_key("reason")
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "authoritative group maintenance projection is unsupported".to_owned(),
-        });
-    }
     let send_paused = maintenance
         .get("send_paused")
         .and_then(serde_json::Value::as_bool);

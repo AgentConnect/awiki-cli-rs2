@@ -185,9 +185,12 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             let output = crate::daemon_cli::install_product_daemon(options).await?;
             Ok(DaemonCommandOutput::Install(output))
         }
-        DaemonCommand::InitState { state_root } | DaemonCommand::Status { state_root } => Ok(
-            DaemonCommandOutput::Status(initialize_and_report(state_root).await?),
-        ),
+        DaemonCommand::InitState { state_root } => Ok(DaemonCommandOutput::Status(
+            initialize_and_report(state_root).await?,
+        )),
+        DaemonCommand::Status { state_root } => Ok(DaemonCommandOutput::Status(
+            inspect_and_report(state_root).await?,
+        )),
         DaemonCommand::AgentList { state_root } => {
             let (_config, state, _status) = initialize_state_for_management(state_root).await?;
             let output = crate::daemon_cli::list_agents(&state)?;
@@ -238,6 +241,34 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
     }
 }
 
+async fn inspect_and_report(state_root: PathBuf) -> Result<DaemonStatus> {
+    let config = DaemonConfig::for_state_root(&state_root)?;
+    config.validate()?;
+    let state = DaemonState::for_inspection(&config);
+    if let Some(summary) = state.inspect_initialized()? {
+        let core = im_core::inspect_local_state_upgrade(&config.im_core_paths().local_state)?;
+        if core.source_schema_version > 0
+            && core.source_schema_version == core.target_schema_version
+        {
+            return Ok(DaemonStatus {
+                state_root: config.state_root,
+                database_path: summary.database_path,
+                local_socket_path: config.local_socket_path,
+                im_core_sqlite_path: config.im_core_sqlite_path,
+                daemon_schema_version: summary.schema_version,
+                im_core_schema_version: Some(
+                    u32::try_from(core.source_schema_version)
+                        .context("inspect im-core schema version")?,
+                ),
+                sync_probe: state.load_sync_probe()?,
+            });
+        }
+    }
+    // Preserve the existing first-use and upgrade behavior. A current live
+    // foreground store takes the read-only path above and never runs DDL here.
+    initialize_and_report(state_root).await
+}
+
 async fn initialize_and_report(state_root: PathBuf) -> Result<DaemonStatus> {
     let config = DaemonConfig::for_state_root(state_root)?;
     config.validate()?;
@@ -284,3 +315,5 @@ async fn initialize_state_for_management(
     Ok((config, state, status))
 }
 pub mod acp;
+#[cfg(test)]
+mod status_tests;

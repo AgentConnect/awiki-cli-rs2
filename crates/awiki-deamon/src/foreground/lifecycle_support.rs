@@ -1,6 +1,32 @@
 use super::*;
 use crate::agent::AgentDefinition;
 
+/// Synchronous Host transports can wait on Core receive/connection tasks. Keep
+/// those waits off the Tokio thread that drives those same tasks.
+pub(super) async fn run_blocking_foreground_work<T, F>(work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| anyhow::anyhow!("foreground worker failed"))
+}
+
+pub(super) async fn receive_and_wake_local_recovery<F>(
+    receive: F,
+    last_recovery: &mut Option<Instant>,
+) -> Result<usize>
+where
+    F: std::future::Future<Output = Result<usize>>,
+{
+    let count = receive.await?;
+    // Receive completion is a reason to inspect committed local facts; it is
+    // not a claim that deferred business work or message delivery completed.
+    *last_recovery = None;
+    Ok(count)
+}
+
 pub(super) fn runtime_callback_outbox(
     config: &DaemonConfig,
     state: &DaemonState,
@@ -122,6 +148,59 @@ fn sync_one_configured_agent_identity(
 #[cfg(test)]
 mod identity_sync_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn foreground_work_receive_wakes_recovery_without_counting_delivery() {
+        let options = ForegroundOptions {
+            state_root: PathBuf::new(),
+            poll_interval_ms: 100,
+            max_runtime_ms: None,
+            max_processed_messages: None,
+            ready_file: None,
+            agent_jwt_token: None,
+            mock_status_outbox: true,
+        };
+        let mut last = Some(Instant::now());
+        let interval = Duration::from_secs(30);
+        assert!(!runtime_inbox_reconciliation_delay(&options, interval, last).is_zero());
+        let count = receive_and_wake_local_recovery(async { Ok(0) }, &mut last)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(runtime_inbox_reconciliation_delay(&options, interval, last).is_zero());
+    }
+
+    #[tokio::test]
+    async fn foreground_work_receive_failure_preserves_recovery_backoff() {
+        let before = Instant::now();
+        let mut last = Some(before);
+        let result = receive_and_wake_local_recovery(
+            async { Err(anyhow::anyhow!("receive failed")) },
+            &mut last,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(last, Some(before));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn foreground_work_allows_receive_runtime_progress() {
+        // Heartbeat's synchronous send can wait for a Core connection/receive
+        // task on this very runtime. A direct call would time out before that
+        // task gets a chance to run, matching the foreground startup deadlock.
+        let (ready, receiving) = std::sync::mpsc::channel();
+        let connection = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            ready.send(41_u32).unwrap();
+        });
+        let result = run_blocking_foreground_work(move || {
+            receiving.recv_timeout(std::time::Duration::from_secs(1))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap(), 41);
+        connection.await.unwrap();
+    }
 
     fn definition(identity: &crate::state::AgentDeviceIdentityRecord) -> AgentDefinition {
         let (local_agent_db_path, message_db_path) =
