@@ -2465,6 +2465,9 @@ WS 连接绑定建立前的网络代次，握手期间切换策略使旧候选�
 `select_target`。验证返回 `DiscoverySessionHandle`，选定后返回单目标 `PhoneSessionHandle`。
 句柄只在当前 Core/Vault 的 workspace、device scope 内解析；不是 HTTP credential。
 DPoP 私钥、discovery credential、PST、RAT 均留在 Core 的密封 pending。
+目标列表最多 256 项，只有已绑定控制面地址的 `GET /targets` 响应允许最多 512 KiB；
+其他控制面响应仍为 32 KiB，Realm 响应仍为 8 KiB。声明长度和实际流式正文均受限，
+超限保持 `response_too_large`，不截断候选、不扩大目标授权或 PIN 尝试预算。
 
 开启备份调用 `begin_enable(EnablePinRecoveryRequest)`，明确指定本机 `IdentitySelector`
 和 `UserPresence`；只支持具有当前单一 Ed25519 RootControl 的身份。原根恢复调用

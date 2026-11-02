@@ -8,6 +8,52 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
+// Discovery may legally contain up to 256 targets. Keep its byte budget
+// separate from small control responses and the existing Realm CBOR limit.
+fn response_body_limit(session: &Session, exact: &ExactRequest, realm: bool) -> usize {
+    if realm {
+        8192
+    } else if exact.method == "GET"
+        && exact.url
+            == format!(
+                "{}/targets",
+                session.config.control_base_url.trim_end_matches('/')
+            )
+    {
+        512 * 1024
+    } else {
+        32768
+    }
+}
+
+async fn read_response_bytes(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> crate::ImResult<Zeroizing<Vec<u8>>> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Err(failure("response_too_large", false));
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| failure("network_unavailable", true))?
+    {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(failure("response_too_large", false));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+#[path = "http_tests.rs"]
+mod tests;
+
 pub(crate) fn generate_key() -> String {
     crypto::b64(&SigningKey::random(&mut rand::rngs::OsRng).to_bytes())
 }
@@ -161,24 +207,8 @@ pub(crate) async fn send(
                     .map(|v| (k.as_str().to_owned(), v.to_owned()))
             })
             .collect::<BTreeMap<_, _>>();
-        if response
-            .content_length()
-            .is_some_and(|size| size > if realm { 8192 } else { 32768 })
-        {
-            return Err(failure("response_too_large", false));
-        }
-        let mut response = response;
-        let mut bytes = Zeroizing::new(Vec::new());
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| failure("network_unavailable", true))?
-        {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() > if realm { 8192 } else { 32768 } {
-                return Err(failure("response_too_large", false));
-            }
-        }
+        let limit = response_body_limit(session, exact, realm);
+        let bytes = read_response_bytes(response, limit).await?;
         if let Some(nonce) = headers.get("dpop-nonce") {
             if crypto::decode(nonce)?.len() != 32 {
                 return Err(failure("invalid_nonce", false));
