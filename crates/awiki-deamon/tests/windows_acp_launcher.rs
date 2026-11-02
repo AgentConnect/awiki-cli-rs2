@@ -201,3 +201,73 @@ fn helper_death_terminates_client_and_grandchild() {
 fn daemon_parent_death_terminates_helper_and_client_tree() {
     lifetime(true);
 }
+
+#[test]
+fn isolated_environment_retains_only_named_values_and_inherits_workspace_cwd() {
+    let t = tempfile::tempdir().unwrap();
+    let cwd = t.path().join("native workspace");
+    std::fs::create_dir(&cwd).unwrap();
+    for nested in [false, true] {
+        let mut c = if nested {
+            let daemon = std::env::var_os("AWIKI_WINDOWS_ACP_TEST_DAEMON")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_awiki-deamon")));
+            let mut outer = helper(&std::fs::canonicalize(&cwd).unwrap(), std::process::id());
+            outer
+                .arg(daemon)
+                .arg("__acp-windows-child")
+                .arg(std::process::id().to_string())
+                .arg("--inherit-cwd");
+            outer
+        } else {
+            let mut direct = helper(Path::new("--inherit-cwd"), std::process::id());
+            direct.current_dir(&cwd);
+            direct
+        };
+        let keep = serde_json::to_string(&["SystemRoot", "PYTHONUTF8", "HERMES_HOME"]).unwrap();
+        let result = c.args(["--isolated-env", &keep, "--"])
+            .arg(python())
+            .args(["-c", "import os,json,sys;print(json.dumps({'cwd':os.path.samefile(os.getcwd(),sys.argv[1]),'home':os.environ.get('HERMES_HOME')=='isolated-fixture','systemRoot':bool(os.environ.get('SystemRoot')),'secretAbsent':'OPENAI_API_KEY' not in os.environ,'behaviorAbsent':'HERMES_PROFILE' not in os.environ,'input':sys.stdin.read(),'args':sys.argv[2:]}))"])
+            .arg(&cwd).args(["literal & value", "quote\"value"])
+            .env("HERMES_HOME", "isolated-fixture")
+            .env("OPENAI_API_KEY", "synthetic-unrelated-secret")
+            .env("HERMES_PROFILE", "synthetic-unrelated-profile")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = result;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"protocol-only")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated native helper failed; raw output suppressed"
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            value,
+            json!({"cwd":true,"home":true,"systemRoot":true,"secretAbsent":true,"behaviorAbsent":true,"input":"protocol-only","args":["literal & value","quote\"value"]})
+        );
+    }
+}
+
+#[test]
+fn invalid_environment_name_is_rejected_before_child_start() {
+    let t = tempfile::tempdir().unwrap();
+    let marker = t.path().join("must-not-start");
+    let result = helper(t.path(), std::process::id())
+        .args(["--isolated-env", "[\"OPENAI_API_KEY=invalid\"]", "--"])
+        .arg(python())
+        .args(["-c", "import pathlib,sys;pathlib.Path(sys.argv[1]).touch()"])
+        .arg(&marker)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(!marker.exists());
+    assert_eq!(
+        String::from_utf8(result.stderr).unwrap().trim(),
+        "acp_windows_child_failed"
+    );
+}

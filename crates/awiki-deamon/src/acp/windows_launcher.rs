@@ -4,6 +4,7 @@
 use agent_client_protocol::AcpAgentConfig;
 use anyhow::{bail, Context, Result};
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
@@ -20,6 +21,33 @@ pub(super) fn wrap(config: AcpAgentConfig, cwd: &Path) -> Result<AcpAgentConfig>
         .arg("__acp-windows-child")
         .arg(std::process::id().to_string())
         .arg(cwd.to_string_lossy())
+        .arg(config.command().to_string_lossy())
+        .args(config.arguments().iter().cloned())
+        .envs(config.environment().clone()))
+}
+
+/// Retain only explicitly selected environment names; values stay in the child
+/// environment. The inherited cwd lets an outer workspace launcher remain owner.
+pub(super) fn isolate(
+    config: AcpAgentConfig,
+    passthrough: impl Fn(&str) -> bool,
+) -> Result<AcpAgentConfig> {
+    let mut keys = BTreeSet::new();
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_str().context("hermes_environment_invalid")?;
+        if passthrough(key) {
+            keys.insert(key.to_owned());
+        }
+    }
+    keys.extend(config.environment().keys().cloned());
+    let executable = std::env::current_exe().context("acp_launcher_unavailable")?;
+    Ok(AcpAgentConfig::new(executable)
+        .arg("__acp-windows-child")
+        .arg(std::process::id().to_string())
+        .arg("--inherit-cwd")
+        .arg("--isolated-env")
+        .arg(serde_json::to_string(&keys)?)
+        .arg("--")
         .arg(config.command().to_string_lossy())
         .args(config.arguments().iter().cloned())
         .envs(config.environment().clone()))
@@ -44,7 +72,29 @@ fn execute(arguments: Vec<OsString>) -> Result<i32> {
         bail!("invalid_launcher_arguments");
     }
     let parent: u32 = arguments[0].to_str().context("invalid_parent")?.parse()?;
-    let cwd = PathBuf::from(&arguments[1]);
+    let cwd = if arguments[1] == "--inherit-cwd" {
+        std::env::current_dir().context("cwd_unavailable")?
+    } else {
+        PathBuf::from(&arguments[1])
+    };
+    let isolated_keys = if arguments[2] == "--isolated-env" {
+        if arguments.len() < 6 || arguments[4] != "--" {
+            bail!("invalid_environment_arguments");
+        }
+        let keys: Vec<String> =
+            serde_json::from_str(arguments[3].to_str().context("invalid_environment_names")?)?;
+        if keys.iter().any(|k| k.is_empty() || k.contains(['=', '\0'])) {
+            bail!("invalid_environment_names");
+        }
+        Some(
+            keys.into_iter()
+                .map(|k| k.to_uppercase())
+                .collect::<BTreeSet<_>>(),
+        )
+    } else {
+        None
+    };
+    let command_index = if isolated_keys.is_some() { 5 } else { 2 };
     if parent == 0 || parent == std::process::id() || !cwd.is_absolute() || !cwd.is_dir() {
         bail!("invalid_launcher_context");
     }
@@ -100,8 +150,16 @@ fn execute(arguments: Vec<OsString>) -> Result<i32> {
         }
         std::process::exit(1);
     });
-    let status = Command::new(&arguments[2])
-        .args(&arguments[3..])
+    let mut command = Command::new(&arguments[command_index]);
+    if let Some(keys) = isolated_keys {
+        let environment = std::env::vars_os().filter(|(key, _)| {
+            key.to_str()
+                .is_some_and(|key| keys.contains(&key.to_uppercase()))
+        });
+        command.env_clear().envs(environment);
+    }
+    let status = command
+        .args(&arguments[command_index + 1..])
         .current_dir(&cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

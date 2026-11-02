@@ -336,7 +336,11 @@ pub(super) fn isolated_launch(
         config.environment().contains_key("HERMES_HOME"),
         "hermes_profile_required"
     );
+    #[cfg(windows)]
+    return super::windows_launcher::isolate(config, passthrough);
+    #[cfg(unix)]
     let mut launch = agent_client_protocol::AcpAgentConfig::new("/usr/bin/env");
+    #[cfg(unix)]
     for (key, _) in std::env::vars_os() {
         let Some(key) = key.to_str() else {
             bail!("hermes_environment_invalid");
@@ -345,6 +349,7 @@ pub(super) fn isolated_launch(
             launch = launch.args(["-u", key]);
         }
     }
+    #[cfg(unix)]
     Ok(launch
         .arg(config.command().to_string_lossy())
         .args(config.arguments().iter().cloned())
@@ -352,6 +357,23 @@ pub(super) fn isolated_launch(
 }
 
 fn passthrough(key: &str) -> bool {
+    #[cfg(windows)]
+    let normalized = key.to_uppercase();
+    #[cfg(windows)]
+    let key = normalized.as_str();
+    #[cfg(windows)]
+    if matches!(
+        key,
+        "SYSTEMROOT"
+            | "WINDIR"
+            | "COMSPEC"
+            | "USERPROFILE"
+            | "APPDATA"
+            | "LOCALAPPDATA"
+            | "PATHEXT"
+    ) {
+        return true;
+    }
     matches!(
         key,
         "PATH"

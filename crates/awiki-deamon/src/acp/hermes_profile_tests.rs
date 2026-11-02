@@ -179,7 +179,21 @@ fn launch_does_not_put_credentials_in_arguments_or_inherit_behavioral_overrides(
         .arg("acp")
         .env("HERMES_HOME", "/isolated/home");
     let launch = isolated_launch(base).unwrap();
+    #[cfg(unix)]
     assert_eq!(launch.command(), Path::new("/usr/bin/env"));
+    #[cfg(windows)]
+    {
+        assert_eq!(launch.command(), std::env::current_exe().unwrap());
+        assert_eq!(launch.arguments()[0], "__acp-windows-child");
+        assert_eq!(launch.arguments()[2], "--inherit-cwd");
+        assert_eq!(launch.arguments()[3], "--isolated-env");
+        let names: Vec<String> = serde_json::from_str(&launch.arguments()[4]).unwrap();
+        assert!(names.iter().any(|k| k == "HERMES_HOME"));
+        assert!(!names
+            .iter()
+            .any(|k| k == "OPENAI_API_KEY" || k == "HERMES_PROFILE"));
+        assert!(passthrough("SystemRoot") && passthrough("UserProfile"));
+    }
     assert_eq!(
         &launch.arguments()[launch.arguments().len() - 2..],
         &["/native/hermes", "acp"]
