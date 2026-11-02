@@ -200,9 +200,21 @@ pub fn resolve_cli_binary(name: &str) -> PathBuf {
 }
 
 pub fn find_executable_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
+    let names = executable_names(name);
     std::env::split_paths(path)
-        .map(|dir| dir.join(name))
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| candidate.is_file())
+}
+
+fn executable_names(name: &str) -> Vec<String> {
+    #[cfg(windows)]
+    if Path::new(name).extension().is_none() {
+        return [".exe", ".cmd", ".bat", ""]
+            .into_iter()
+            .map(|extension| format!("{name}{extension}"))
+            .collect();
+    }
+    vec![name.into()]
 }
 
 pub(crate) fn runtime_env_selectors(
@@ -518,8 +530,10 @@ mod tests {
         std::fs::create_dir_all(&v24).unwrap();
         std::fs::create_dir_all(&local_bin).unwrap();
 
-        let path = build_cli_child_path(Some(&home), Some(OsStr::new("/usr/bin:/bin")))
-            .expect("path should be built");
+        let service_path =
+            std::env::join_paths([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]).unwrap();
+        let path =
+            build_cli_child_path(Some(&home), Some(&service_path)).expect("path should be built");
         let entries = std::env::split_paths(&path).collect::<Vec<_>>();
 
         assert_eq!(entries[0], local_bin);
@@ -527,6 +541,28 @@ mod tests {
         assert_eq!(entries[2], v18);
         assert!(entries.contains(&PathBuf::from("/usr/bin")));
         assert!(entries.contains(&PathBuf::from("/bin")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_executable_and_batch_clients_are_found_in_path_order() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("client.cmd"), "fixture").unwrap();
+        std::fs::write(second.join("client.exe"), "fixture").unwrap();
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(
+            find_executable_on_path("client", &path),
+            Some(first.join("client.cmd"))
+        );
+        std::fs::write(first.join("client.exe"), "fixture").unwrap();
+        assert_eq!(
+            find_executable_on_path("client", &path),
+            Some(first.join("client.exe"))
+        );
     }
 
     #[test]
