@@ -35,6 +35,22 @@ Daemon 拥有安装/协议探测、任务接受、唯一私聊等待位、取消
 
 状态事件在本地保存投递次数和下次尝试时间，按到期时间及插入顺序选取有界批次；失败使用 1 秒起、最多 256 秒的指数退避。尚未尝试的事件不被一批持续失败的旧事件挡住，重启保留调度信息和幂等 ID。控制者身份已被权威围栏阻止时，事件保留未发送事实及 `controller_identity_changed` 原因，退出自动扫描。共享最终回复 outbox 同样将该情况收敛为已有的 `failed_terminal`，保留原内容与绑定；不得假报已发送、重新调用模型或改投新身份。
 
+## Windows 原生 ACP 子进程
+
+Windows 通过 Daemon 自身的私有 `__acp-windows-child` 入口设置每会话工作目录，
+不依赖 `/bin/sh`、WSL 或远程 Daemon。程序及 argv 独立传递，协议 stdio 原样继承，
+不会修改整个 Daemon 的 cwd。启动前把 helper 加入仅本次会话的匿名 Windows Job，
+禁止 breakaway，句柄不继承；helper 被 SDK 终止或异常退出时由内核关闭最后句柄并
+终止该树。独立内核句柄监视原 Daemon 的退出，防止 Daemon 异常退出留下客户端。
+正常子进程退出码保持原值，启动失败只输出固定错误码，不回显命令、环境或协议。
+
+该边界只建立 Windows 的进程启动、目录及清理语义；离线 ACP fixture 通过不等于
+真实品牌客户端或模型兼容性通过，也不更改原有分发平台和宿主安装支持范围。
+Windows `canonicalize` 的扩展路径与普通路径可能指向同一目录；测试 peer 使用
+文件系统身份验证 cwd，仍拒绝其他实际目录。
+
+原理见 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+
 ## ACP 与环境
 
 ### 宿主机客户端安装检测

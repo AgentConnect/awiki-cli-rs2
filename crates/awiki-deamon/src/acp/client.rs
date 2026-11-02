@@ -145,13 +145,19 @@ fn launch_in_workspace(
             config = config.args(["--resume", id]);
         }
     }
-    // SDK 2.1 has no child cwd option. A fixed POSIX launcher changes only the
-    // child directory and execs the client in the SDK-owned process group.
-    // Paths are positional arguments, never interpolated into shell source.
-    Ok(AcpAgentConfig::new("/bin/sh")
-        .args([
-            "-c",
-            r#"cd -- "$1" || exit 1
+    #[cfg(windows)]
+    {
+        return super::windows_launcher::wrap(config, cwd);
+    }
+    #[cfg(unix)]
+    {
+        // SDK 2.1 has no child cwd option. A fixed POSIX launcher changes only the
+        // child directory and execs the client in the SDK-owned process group.
+        // Paths are positional arguments, never interpolated into shell source.
+        Ok(AcpAgentConfig::new("/bin/sh")
+            .args([
+                "-c",
+                r#"cd -- "$1" || exit 1
 shift
 daemon_pid="$1"
 shift
@@ -163,13 +169,14 @@ agent_pid=$$
   kill -KILL "-$agent_pid"
 ) </dev/null >/dev/null 2>&1 &
 exec "$@""#,
-            "awiki-acp",
-        ])
-        .arg(cwd.to_string_lossy())
-        .arg(std::process::id().to_string())
-        .arg(config.command().to_string_lossy())
-        .args(config.arguments().iter().cloned())
-        .envs(config.environment().clone()))
+                "awiki-acp",
+            ])
+            .arg(cwd.to_string_lossy())
+            .arg(std::process::id().to_string())
+            .arg(config.command().to_string_lossy())
+            .args(config.arguments().iter().cloned())
+            .envs(config.environment().clone()))
+    }
 }
 
 fn configure_question_tool(

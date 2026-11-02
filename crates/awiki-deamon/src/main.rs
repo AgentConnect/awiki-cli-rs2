@@ -31,6 +31,10 @@ fn run() -> Result<()> {
     }
     if let Some(command) = std::env::args().nth(1) {
         match command.as_str() {
+            #[cfg(windows)]
+            "__acp-windows-child" => {
+                awiki_deamon::acp::windows_launcher::run(std::env::args_os().skip(2));
+            }
             "__acp-mcp-stdio" => {
                 return awiki_deamon::acp::mcp_stdio::run();
             }

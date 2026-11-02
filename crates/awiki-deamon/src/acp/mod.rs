@@ -15,6 +15,8 @@ pub mod session_configuration;
 pub mod store;
 pub mod task_records;
 mod tools;
+#[cfg(windows)]
+pub mod windows_launcher;
 #[cfg(test)]
 mod tools_tests;
 

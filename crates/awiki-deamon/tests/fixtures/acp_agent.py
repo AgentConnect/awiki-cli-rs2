@@ -60,7 +60,7 @@ for line in sys.stdin:
     elif method in ('session/new','session/resume','session/load'):
         cwd=pathlib.Path(params['cwd']);cwd.mkdir(parents=True,exist_ok=True)
         (cwd/'client-capabilities.json').write_text(json.dumps(client_capabilities))
-        assert cwd.resolve() == pathlib.Path.cwd().resolve(), 'process cwd must match the ACP session cwd'
+        assert cwd.samefile(pathlib.Path.cwd()), 'process cwd must match the ACP session cwd'
         with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'sessionId':params.get('sessionId'),'mcp_count':len(params.get('mcpServers',[]))})+'\n')
         if (cwd/'slow-catalog').exists():
             import time
@@ -97,7 +97,7 @@ for line in sys.stdin:
         reply(id,{'sessionId':sid, **({'models':{'currentModelId':current_model,'availableModels':[{'modelId':'flash','name':'Flash'},{'modelId':'pro','name':'Pro'}]}} if model_mode.startswith('legacy') else {'configOptions':config_options()})})
     elif method=='session/list':
         with (cwd/'protocol.jsonl').open('a') as log: log.write(json.dumps({'method':method,'cursor':params.get('cursor')})+'\n')
-        assert pathlib.Path(params['cwd']).resolve() == cwd.resolve()
+        assert pathlib.Path(params['cwd']).samefile(cwd)
         if recovery == 'list-error': emit({'id':id,'error':{'code':-32603,'message':'unavailable'}})
         elif recovery == 'list-malformed': reply(id,{'sessions':[{'title':'invalid item'}]})
         elif recovery == 'list-bad-cursor': reply(id,{'sessions':[],'nextCursor':123})
