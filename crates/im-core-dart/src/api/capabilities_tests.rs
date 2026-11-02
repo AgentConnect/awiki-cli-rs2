@@ -247,3 +247,41 @@ async fn public_subscription_keeps_initial_and_live_updates_and_can_cancel_pendi
         .unwrap()
         .is_none());
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn closing_live_client_releases_windows_database_before_opaque_gc() {
+    let fixture = Fixture::new();
+    fixture
+        .core
+        .bootstrap()
+        .migrate_local_state_async()
+        .await
+        .unwrap();
+    let client = Arc::new(DartImClient::new_with_core(
+        fixture.core.clone(),
+        fixture.client(1),
+    ));
+    client.close().unwrap();
+    assert_eq!(client.clone_core().err().unwrap().code, "object_closed");
+    let Fixture {
+        _root: root,
+        core,
+        material: _,
+    } = fixture;
+    core.stop_backend_discovery();
+    drop(core);
+    // Keep the closed opaque handle alive while Windows checks real file locks.
+    for attempt in 0..50 {
+        match std::fs::remove_dir_all(root.path()) {
+            Ok(()) => {
+                assert_eq!(Arc::strong_count(&client), 1);
+                return;
+            }
+            Err(error) if attempt < 49 && matches!(error.raw_os_error(), Some(32 | 145)) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("A closed live client retained the Windows database: {error}"),
+        }
+    }
+}
