@@ -79,13 +79,21 @@ impl App {
     ) -> Result<(), ExitError> {
         reject_dry_run(self, "id device join poll")?;
         let resolved = self.resolve_config_for_workspace()?;
+        let mut pending_sas: Option<zeroize::Zeroizing<String>> = None;
         let result = crate::m_core_cli_adapter::device_join::poll_new_device_via_im_core_async(
             &resolved,
             flag(command, "session"),
-            display_poll_sas_if_interactive,
+            |sas| {
+                pending_sas = Some(zeroize::Zeroizing::new(sas.to_owned()));
+                Ok(())
+            },
         )
         .await?;
-        self.render_identity_result("awiki-cli id device join poll", &resolved, result)
+        render_poll_then_sas(
+            || self.render_identity_result("awiki-cli id device join poll", &resolved, result),
+            pending_sas.as_ref().map(|sas| sas.as_str()),
+            display_poll_sas_if_interactive,
+        )
     }
 
     pub async fn run_id_device_join_verify_async(
@@ -252,6 +260,24 @@ fn confirm_sas_and_user_presence(sas: &str, management_allowed: bool) -> Result<
     }
     Ok(())
 }
+
+fn render_poll_then_sas(
+    render: impl FnOnce() -> Result<(), ExitError>,
+    sas: Option<&str>,
+    display: impl FnOnce(&str) -> Result<(), ExitError>,
+) -> Result<(), ExitError> {
+    // Finish the safe result before the terminal-only value, so a full JSON
+    // rendering cannot replace the code in the last visible console frame.
+    render()?;
+    if let Some(sas) = sas {
+        display(sas)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "device_join_display_order_tests.rs"]
+mod display_order_tests;
 
 fn display_poll_sas_if_interactive(sas: &str) -> Result<(), ExitError> {
     let interactive = io::stderr().is_terminal();

@@ -124,6 +124,11 @@ remains `response_verified`, including after a previous non-interactive poll or
 process restart. It displays that value only on a foreground TTY; structured
 JSON remains redacted on every invocation.
 
+CLI 先完成脱敏状态结果，再在前台 TTY 的 stderr 单独展示短时 SAS，避免随后完整
+状态输出让确认码从 Windows 终端最终画面中消失。短时值只留在 zeroizing 内存中，
+不进入 JSON、日志、配置或缓存；结果渲染失败时不继续显示成功确认码。管道调用仍
+不显示 SAS，比较及明确批准步骤不变。
+
 `id device join approve` requires a foreground TTY. The user types the locally
 derived SAS and an explicit approval word; the adapter then prepares and
 consumes the one-time approval handle in the same process. The handle is never
