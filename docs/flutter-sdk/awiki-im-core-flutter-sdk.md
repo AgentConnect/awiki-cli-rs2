@@ -36,12 +36,15 @@ v0.1 targets native Flutter on Android, iOS, macOS, and Linux:
 - iOS: device and simulator static-library XCFramework slices.
 - macOS: `aarch64`/`x86_64` XCFramework slices.
 - Linux: `x86_64-unknown-linux-gnu` shared library bundled through the Flutter Linux FFI plugin.
+- Windows x64: `x86_64-pc-windows-msvc` 的 `awiki_im_core.dll`，通过 Windows FFI plugin 随 App 加载；构建产物须与当前 Dart binding 和 Rust 源码匹配。
 
-Windows is not declared as a v0.1 Flutter plugin platform. Flutter Web has a stub so dependent apps can analyze; calling `AwikiImCore.open` on Web throws `UnsupportedError` because `dart:ffi` cannot load the native Rust backend there.
+Flutter Web has a stub so dependent apps can analyze; calling `AwikiImCore.open` on Web throws `UnsupportedError` because `dart:ffi` cannot load the native Rust backend there.
 
 ## Lifecycle and blocking model
 
 The Rust facade exposes opaque `DartImCore` and `DartImClient` objects. Each object has an explicit close/dispose path. After close, Rust calls return `DartImError` with code `object_closed`; the Dart wrapper mirrors this with `AwikiImCoreException`.
+
+关闭 `DartImClient` 时必须同时释放它持有的 Core 引用；即使 Dart 仍保留已关闭的 opaque handle，也不能依赖 GC 才释放本地状态 actor。关闭单个 Client 不会关闭仍由其他 owner 使用的 Core。宿主替换或删除状态目录前，应先停止调用并 dispose 所有 Client 和 Core。
 
 `im-core` is blocking-first. Public Dart APIs are `Future<T>` and must not expose synchronous IO, SQLite, or HTTP calls into widget build paths. FRB generated calls should use the worker-thread model and the wrapper must keep App-facing methods async.
 

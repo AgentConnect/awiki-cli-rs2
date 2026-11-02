@@ -141,6 +141,9 @@ impl DartImClient {
         if let Some(client) = guard.inner.take() {
             client.stop_backend_capabilities();
         }
+        // A closed opaque handle can remain alive until Dart GC. It must not
+        // keep the Core local-state actor alive after explicit disposal.
+        guard.core = None;
         guard.capability_source.send_replace(None);
         Ok(())
     }
@@ -181,3 +184,7 @@ pub async fn local_backend_capabilities(
         .map_err(DartImError::from)?;
     Ok(serde_json::json!(snapshot).to_string())
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;
