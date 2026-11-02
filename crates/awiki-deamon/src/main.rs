@@ -98,7 +98,10 @@ fn is_runtime_wrapper_invocation() -> bool {
                 .and_then(|name| name.to_str())
                 .map(str::to_string)
         })
-        .is_some_and(|name| name == "awiki-deamon-runtime")
+        .is_some_and(|name| {
+            name == "awiki-deamon-runtime"
+                || (cfg!(windows) && name.eq_ignore_ascii_case("awiki-deamon-runtime.exe"))
+        })
 }
 
 fn run_runtime_wrapper(

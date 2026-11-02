@@ -318,6 +318,24 @@ fn write_private_env_file(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn private_file_for_write(path: &Path) -> Result<std::fs::File> {
+    crate::windows_platform::reject_reparse_path(path)?;
+    match crate::windows_platform::create_private_file(path) {
+        Ok(file) => Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            crate::windows_platform::verify_private_path(path)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .context("open private Windows runtime environment file")
+        }
+        Err(error) => Err(error).context("create private Windows runtime environment file"),
+    }
+}
+
+#[cfg(not(windows))]
 fn private_file_for_write(path: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -338,7 +356,11 @@ fn set_private_dir_permissions(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("secure daemon runtime env directory {}", path.display()))?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        crate::windows_platform::secure_path(path, true)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
     }
@@ -352,7 +374,11 @@ fn set_private_file_permissions(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("secure daemon runtime env file {}", path.display()))?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        crate::windows_platform::secure_path(path, false)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
     }

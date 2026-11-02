@@ -23,7 +23,7 @@ pub(crate) fn write_python_fixture(root: &Path, name: &str, source: &str) -> Pat
         std::fs::write(
             &launcher,
             format!(
-                "@echo off\r\nsetlocal DisableDelayedExpansion\r\n\"{}\" \"%~dp0{}\" %*\r\n",
+                "@echo off\r\nsetlocal DisableDelayedExpansion\r\nset PYTHONUTF8=1\r\nset PYTHONIOENCODING=utf-8\r\n\"{}\" \"%~dp0{}\" %*\r\n",
                 python.replace('%', "%%"),
                 name
             ),

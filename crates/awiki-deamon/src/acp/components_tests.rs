@@ -55,10 +55,9 @@ fn unsupported_platform_is_explicit_before_component_lookup() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn rejects_adapter_directory_escape() {
-    use std::os::unix::fs::symlink;
     let (root, _) = fixture();
     let outside = tempfile::tempdir().unwrap();
     let directory = root
@@ -66,7 +65,10 @@ fn rejects_adapter_directory_escape() {
         .join("node_modules/@agentclientprotocol/codex-acp/dist");
     std::fs::remove_dir_all(&directory).unwrap();
     std::fs::write(outside.path().join("index.js"), "other adapter").unwrap();
-    symlink(outside.path(), directory).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(outside.path(), &directory).unwrap();
     assert!(Adapter::from_directory(root.path(), Brand::Codex, "darwin-arm64").is_err());
 }
 

@@ -37,3 +37,7 @@ pub(crate) fn call_pipe_once(
     stream.flush()?;
     read_response_from(stream)
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;
