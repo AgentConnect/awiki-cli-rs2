@@ -6,16 +6,13 @@ use crate::{
 };
 
 fn acp_fixture() -> (TestFixture, DaemonConfig, RuntimeTask, UserMessageEnvelope) {
-    use std::os::unix::fs::PermissionsExt;
     let f = fixture();
     let config = DaemonConfig::for_state_root(f._root.path()).unwrap();
-    let binary = f._root.path().join("hermes-fixture.py");
-    std::fs::write(
-        &binary,
+    let binary = crate::test_support::write_python_fixture(
+        f._root.path(),
+        "hermes-fixture.py",
         include_str!("../../../tests/fixtures/acp_agent.py"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let source = f._root.path().join("source-hermes");
     std::fs::create_dir(&source).unwrap();
     let mut cli = f

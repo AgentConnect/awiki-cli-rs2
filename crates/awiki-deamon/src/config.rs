@@ -335,7 +335,7 @@ impl DaemonConfig {
 
     fn write_persistent_config_value(&self, value: &DaemonPersistentConfig) -> Result<()> {
         if let Some(parent) = self.config_file_path.parent() {
-            std::fs::create_dir_all(parent)
+            create_state_directory(parent)
                 .with_context(|| format!("create daemon config directory {}", parent.display()))?;
         }
         let text = serde_json::to_string_pretty(value)?;
@@ -353,7 +353,7 @@ impl DaemonConfig {
             &self.runtime_temp_dir,
             &logs_dir,
         ] {
-            std::fs::create_dir_all(dir)
+            create_state_directory(dir)
                 .with_context(|| format!("create daemon state directory {}", dir.display()))?;
         }
         for path in [
@@ -365,7 +365,7 @@ impl DaemonConfig {
             &self.audit_log_path,
         ] {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
+                create_state_directory(parent).with_context(|| {
                     format!("create daemon state directory {}", parent.display())
                 })?;
             }
@@ -909,5 +909,16 @@ mod tests {
         assert!(root.path().join("logs").is_dir());
         assert!(config.local_socket_path.parent().unwrap().is_dir());
         assert!(config.audit_log_path.parent().unwrap().is_dir());
+    }
+}
+
+fn create_state_directory(path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::windows_platform::create_private_directory(path.as_ref())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::create_dir_all(path).map_err(Into::into)
     }
 }

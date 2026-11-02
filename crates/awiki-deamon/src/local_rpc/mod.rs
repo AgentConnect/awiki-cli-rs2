@@ -26,6 +26,9 @@ pub use uds::{
     verify_socket_permissions, PeerCredential,
 };
 
+#[cfg(windows)]
+pub(crate) mod windows;
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRpcRequest {
     pub runtime_rpc_token: String,
@@ -296,7 +299,12 @@ pub fn call_uds_once_with_timeout(
         Ok(response)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::call_pipe_once(socket_path, request, timeout)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = socket_path;
         let _ = request;

@@ -317,3 +317,9 @@ async fn initialize_state_for_management(
 pub mod acp;
 #[cfg(test)]
 mod status_tests;
+
+#[cfg(windows)]
+mod windows_platform;
+
+#[cfg(test)]
+mod test_support;

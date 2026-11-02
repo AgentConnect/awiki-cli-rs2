@@ -306,7 +306,7 @@ mod identity_sync_tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn start_runtime_rpc_worker(
     socket_path: PathBuf,
     state: DaemonState,
@@ -314,8 +314,14 @@ pub(super) fn start_runtime_rpc_worker(
     queue_notifier: QueueSchedulerNotifier,
 ) -> Result<RuntimeRpcWorker> {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let listener = bind_uds_listener(&socket_path)?;
-    verify_socket_permissions(&socket_path)?;
+    #[cfg(unix)]
+    let listener = {
+        let listener = bind_uds_listener(&socket_path)?;
+        verify_socket_permissions(&socket_path)?;
+        listener
+    };
+    #[cfg(windows)]
+    let listener = bind_pipe_listener(&socket_path, Arc::clone(&stop))?;
     let worker_stop = Arc::clone(&stop);
     let handle = thread::Builder::new()
         .name("awiki-daemon-local-rpc".to_string())
@@ -324,7 +330,11 @@ pub(super) fn start_runtime_rpc_worker(
                 match listener.accept() {
                     Ok((stream, _)) => {
                         if let Ok(outbox) = outbox.lock() {
-                            if handle_uds_stream_with_outbox(&state, &*outbox, stream).is_ok() {
+                            #[cfg(unix)]
+                            let handled = handle_uds_stream_with_outbox(&state, &*outbox, stream);
+                            #[cfg(windows)]
+                            let handled = handle_pipe_stream_with_outbox(&state, &*outbox, stream);
+                            if handled.is_ok() {
                                 queue_notifier.notify_all();
                             }
                         }
@@ -332,6 +342,8 @@ pub(super) fn start_runtime_rpc_worker(
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }
+                    #[cfg(windows)]
+                    Err(error) if error.kind() == ErrorKind::PermissionDenied => continue,
                     Err(_) => break,
                 }
             }
@@ -343,7 +355,7 @@ pub(super) fn start_runtime_rpc_worker(
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub(super) fn start_runtime_rpc_worker(
     _socket_path: PathBuf,
     _state: DaemonState,

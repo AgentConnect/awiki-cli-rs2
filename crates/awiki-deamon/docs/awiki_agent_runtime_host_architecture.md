@@ -593,6 +593,8 @@ Runtime 的“主动发消息”不直接走 RuntimeEvent；
 
 ## 4. Skill + daemon CLI wrapper + Local RPC 回传链路
 
+Windows 原生宿主采用命名管道承载同一 local RPC 合同，保留 runtime token 及所有权校验；平台锁、OS 身份、ACL、秘密保护和验收边界见 [Windows 原生宿主合同](windows-native-host.md)。该扩展尚在实现，不改变 Unix UDS 行为。
+
 ### 4.1 为什么需要这条链路
 
 daemon 对接 runtime 有两层：

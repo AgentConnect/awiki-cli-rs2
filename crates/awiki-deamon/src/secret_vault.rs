@@ -162,6 +162,7 @@ fn load_or_create_local_root_key(path: &Path) -> Result<[u8; DEVICE_VAULT_ROOT_K
     }
 }
 
+#[cfg(not(windows))]
 fn read_local_root_key_file(path: &Path) -> Result<Option<String>> {
     reject_root_key_symlink(path)?;
     match fs::read_to_string(path) {
@@ -184,6 +185,45 @@ fn read_local_root_key_file(path: &Path) -> Result<Option<String>> {
             Err(err).with_context(|| format!("read daemon vault root key file {}", path.display()))
         }
     }
+}
+
+#[cfg(windows)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsRootEnvelope {
+    format: String,
+    protected: String,
+}
+
+#[cfg(windows)]
+fn read_local_root_key_file(path: &Path) -> Result<Option<String>> {
+    crate::windows_platform::reject_reparse_path(path)?;
+    let metadata = match fs::metadata(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect Windows daemon vault root"),
+    };
+    if metadata.len() > 8192 {
+        bail!("Windows daemon vault root envelope is too large");
+    }
+    if let Some(parent) = path.parent() {
+        crate::windows_platform::verify_private_path(parent)?;
+    }
+    crate::windows_platform::verify_private_path(path)?;
+    let raw = fs::read(path).context("read Windows daemon vault envelope")?;
+    let envelope: WindowsRootEnvelope = serde_json::from_slice(&raw)
+        .context("Windows daemon vault root requires the protected DPAPI envelope; existing data is preserved")?;
+    if envelope.format != "awiki.daemon.dpapi-root.v1" {
+        bail!("unsupported Windows daemon vault root envelope");
+    }
+    let protected = URL_SAFE_NO_PAD
+        .decode(envelope.protected)
+        .context("invalid Windows daemon protected root encoding")?;
+    let root = crate::windows_platform::unprotect_secret(&protected)?;
+    if root.len() != DEVICE_VAULT_ROOT_KEY_LEN {
+        bail!("invalid Windows daemon protected root length");
+    }
+    Ok(Some(URL_SAFE_NO_PAD.encode(root.as_slice())))
 }
 
 enum LocalRootKeyWriteOutcome {
@@ -212,7 +252,13 @@ fn write_local_root_key_file(
         })?;
     }
     reject_root_key_symlink(path)?;
+    #[cfg(not(windows))]
     let encoded = URL_SAFE_NO_PAD.encode(root_key);
+    #[cfg(windows)]
+    let encoded = serde_json::to_string(&WindowsRootEnvelope {
+        format: "awiki.daemon.dpapi-root.v1".into(),
+        protected: URL_SAFE_NO_PAD.encode(crate::windows_platform::protect_secret(root_key)?),
+    })?;
     let mut file = match create_private_file(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -259,7 +305,12 @@ fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
         .open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    crate::windows_platform::create_private_file(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new()
         .create_new(true)
@@ -274,7 +325,12 @@ fn set_private_dir_mode(path: &Path) -> Result<()> {
         .with_context(|| format!("chmod 0700 {}", path.display()))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn set_private_dir_mode(path: &Path) -> Result<()> {
+    crate::windows_platform::secure_path(path, true)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_private_dir_mode(_path: &Path) -> Result<()> {
     Ok(())
 }
@@ -286,7 +342,12 @@ fn set_private_file_mode(path: &Path) -> Result<()> {
         .with_context(|| format!("chmod 0600 {}", path.display()))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn set_private_file_mode(path: &Path) -> Result<()> {
+    crate::windows_platform::secure_path(path, false)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_private_file_mode(_path: &Path) -> Result<()> {
     Ok(())
 }
@@ -411,6 +472,34 @@ mod tests {
         assert_eq!(
             reopened.vault_dir,
             config.secret_vault_dir.join("im-core-encryption")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_root_is_private_dpapi_and_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vault/root-key.b64u");
+        let first = load_or_create_local_root_key(&path).unwrap();
+        let raw = fs::read(&path).unwrap();
+        let envelope: WindowsRootEnvelope = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(envelope.format, "awiki.daemon.dpapi-root.v1");
+        assert!(!String::from_utf8(raw)
+            .unwrap()
+            .contains(&URL_SAFE_NO_PAD.encode(first)));
+        let second = load_or_create_local_root_key(&path).unwrap();
+        assert!(first == second, "reopening changed the protected root");
+        crate::windows_platform::verify_private_path(&path).unwrap();
+        let corrupted = serde_json::to_vec(&WindowsRootEnvelope {
+            format: "awiki.daemon.dpapi-root.v1".into(),
+            protected: "AQ".into(),
+        })
+        .unwrap();
+        fs::write(&path, &corrupted).unwrap();
+        assert!(load_or_create_local_root_key(&path).is_err());
+        assert!(
+            fs::read(&path).unwrap() == corrupted,
+            "a failed open overwrote existing root state"
         );
     }
 

@@ -245,14 +245,11 @@ impl RuntimeWelcomeSender for MockWelcomeSender {
 
 fn fixture() -> (FixtureRoot, DaemonConfig, DaemonState) {
     let root = tempfile::tempdir().unwrap();
-    let executable = root.path().join("fake-agent.py");
-    std::fs::write(
-        &executable,
+    let executable = crate::test_support::write_python_fixture(
+        root.path(),
+        "fake-agent.py",
         include_str!("../../tests/fixtures/acp_agent.py"),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     for name in ["hermes", "opencode"] {
         crate::cli_runtime_env::set_test_client(name, executable.clone());
     }
@@ -3907,14 +3904,11 @@ fn install_acp_test_client(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
 ) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = root.join("fake-acp.py");
-    std::fs::write(
-        &executable,
+    let executable = crate::test_support::write_python_fixture(
+        root,
+        "fake-acp.py",
         include_str!("../../tests/fixtures/acp_agent.py"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let mut profile = profile.clone();
     profile.runtime_plugin_id = crate::acp::PLUGIN_ID.into();
     let workspace = root.join("acp-workspace");

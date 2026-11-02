@@ -14,6 +14,10 @@
 
 这些命令都会加载 daemon 配置、初始化 daemon 状态库，并通过 `im-core` 公开 API 初始化 IM 本地状态。`agent-*` 和 `runtime-list` 是 daemon 自己的最小管理入口，和现有 `awiki-cli` 命令系统保持平行，不依赖 `crates/awiki-cli` 内部模块。
 
+## Windows 原生宿主
+
+Windows 全量本机 E2E 的实现范围、安全边界和验收要求见 [Windows 原生 Daemon](windows-native-host.md)。当前处于实现中，不以既有 Windows CLI/Probe 编译通过宣称长驻 Daemon 可用。
+
 ## 状态目录
 
 产品安装默认使用：

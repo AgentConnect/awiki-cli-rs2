@@ -1,4 +1,6 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -70,7 +72,25 @@ fn acquire_state_root_owner(config: &DaemonConfig) -> Result<StateRootOwnerGuard
     Ok(StateRootOwnerGuard { file })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn acquire_state_root_owner(config: &DaemonConfig) -> Result<StateRootOwnerGuard> {
+    use std::io::Write;
+    let path = state_root_owner_lock_path(config);
+    let mut file = crate::windows_platform::lock_private_file(&path)?;
+    file.set_len(0)
+        .context("truncate Windows owner lock metadata")?;
+    let metadata = json!({
+        "schema": "awiki.daemon.state_root_owner.v1",
+        "owner_status": "active", "process_id": std::process::id(),
+        "acquired_at_ms": current_time_millis()?, "lock_strategy": "LockFileEx",
+    });
+    file.write_all(serde_json::to_string_pretty(&metadata)?.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(StateRootOwnerGuard { file })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn acquire_state_root_owner(_config: &DaemonConfig) -> Result<StateRootOwnerGuard> {
     bail!("daemon_state_root_owner_unsupported: daemon state root owner lock requires Unix flock")
 }
@@ -83,7 +103,7 @@ fn state_root_owner_lock_path(config: &DaemonConfig) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn state_root_owner_guard_rejects_second_owner() {
         let root = tempfile::tempdir().unwrap();
@@ -100,7 +120,7 @@ mod tests {
             .contains(&config.state_root.display().to_string()));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn state_root_owner_guard_releases_on_drop() {
         let root = tempfile::tempdir().unwrap();

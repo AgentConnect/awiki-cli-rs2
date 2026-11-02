@@ -33,6 +33,8 @@ use crate::controller_scope::{
 };
 use crate::inbox::user_delegated::{flush_message_sync_outbox, process_user_delegated_inbox_once};
 use crate::inbox::ControllerTextMessage;
+#[cfg(windows)]
+use crate::local_rpc::windows::{bind_pipe_listener, handle_pipe_stream_with_outbox};
 #[cfg(unix)]
 use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
