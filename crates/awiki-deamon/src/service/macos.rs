@@ -2,6 +2,7 @@ use super::*;
 
 pub const LABEL: &str = "ai.awiki.deamon";
 
+#[cfg(unix)]
 pub fn manage(
     config: &DaemonConfig,
     executable: &Path,
@@ -15,6 +16,15 @@ pub fn manage(
         &format!("gui/{}", unsafe { libc::getuid() }),
         &mut |args| std::process::Command::new("launchctl").args(args).output(),
     )
+}
+
+#[cfg(not(unix))]
+pub fn manage(
+    _config: &DaemonConfig,
+    _executable: &Path,
+    _action: ServiceAction,
+) -> Result<ServiceStatus> {
+    bail!("macOS service management is unavailable on this platform")
 }
 
 // Tests replace the command boundary, never the current user's launchd state.
@@ -187,11 +197,21 @@ fn service_status(config: &DaemonConfig, path: &Path, observed: Option<&str>) ->
     }
 }
 
+#[cfg(unix)]
 pub fn restart_after_upgrade(config: &DaemonConfig, executable: &Path) -> Result<ServiceStatus> {
     // Upgrades may originate in this service, so retain kickstart for a loaded job.
     write_if_changed(&launch_agent_path()?, &plist_content(config, executable))?;
     manage(config, executable, ServiceAction::Restart)
 }
+
+#[cfg(not(unix))]
+pub fn restart_after_upgrade(_config: &DaemonConfig, _executable: &Path) -> Result<ServiceStatus> {
+    bail!("macOS service management is unavailable on this platform")
+}
+
+#[cfg(all(test, windows))]
+#[path = "macos_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(test)]
 #[path = "macos_tests.rs"]
