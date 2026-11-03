@@ -7,6 +7,7 @@ use crate::dto::{
 
 pub struct DartImCore {
     state: Arc<RwLock<DartImCoreState>>,
+    close_lock: tokio::sync::Mutex<()>,
 }
 
 struct DartImCoreState {
@@ -79,6 +80,7 @@ async fn open_core_inner(
         .map_err(DartImError::from)?;
     Ok(Arc::new(DartImCore {
         state: Arc::new(RwLock::new(DartImCoreState { inner: Some(inner) })),
+        close_lock: tokio::sync::Mutex::new(()),
     }))
 }
 
@@ -90,13 +92,23 @@ pub async fn open_core_with_optional_options(
     open_core_inner(config, paths, options).await
 }
 
-pub fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {
-    let mut guard = core
+pub async fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {
+    // 重复关闭也须等待同一次 actor 终止；异步等待期间不持有状态 RwLock。
+    let _close = core.close_lock.lock().await;
+    let inner = core
         .state
         .write()
-        .map_err(|_| DartImError::internal("core lock poisoned"))?;
-    if let Some(core) = guard.inner.take() {
-        core.stop_backend_discovery();
+        .map_err(|_| DartImError::internal("core lock poisoned"))?
+        .inner
+        .take();
+    if let Some(inner) = inner {
+        #[cfg(feature = "sqlite")]
+        inner
+            .shutdown_local_state_for_reset()
+            .await
+            .map_err(DartImError::from)?;
+        #[cfg(not(feature = "sqlite"))]
+        inner.stop_backend_discovery();
     }
     Ok(())
 }
@@ -146,3 +158,7 @@ pub async fn public_backend_capabilities(
         .map_err(DartImError::from)?;
     Ok(serde_json::json!(snapshot).to_string())
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "core_lifecycle_tests.rs"]
+mod lifecycle_tests;

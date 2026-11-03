@@ -46,6 +46,8 @@ The Rust facade exposes opaque `DartImCore` and `DartImClient` objects. Each obj
 
 关闭 `DartImClient` 时必须同时释放它持有的 Core 引用；即使 Dart 仍保留已关闭的 opaque handle，也不能依赖 GC 才释放本地状态 actor。关闭单个 Client 不会关闭仍由其他 owner 使用的 Core。宿主替换或删除状态目录前，应先停止调用并 dispose 所有 Client 和 Core。
 
+`AwikiImCore.dispose` 返回前必须等待本地状态 actor 关闭 SQLite 句柄；内部任务仍保留 Core 引用时也不能依赖引用计数或 Dart GC。并发或重复 dispose 等待同一次关闭完成，关闭过程中不持有状态 RwLock。该 Core 的既有内部引用不得在关闭后继续用于本地状态操作；独立 Core 的数据库不受影响。
+
 `im-core` is blocking-first. Public Dart APIs are `Future<T>` and must not expose synchronous IO, SQLite, or HTTP calls into widget build paths. FRB generated calls should use the worker-thread model and the wrapper must keep App-facing methods async.
 
 ### Local-state upgrade before Core open

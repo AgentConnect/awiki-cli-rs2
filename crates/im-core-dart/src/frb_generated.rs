@@ -1450,7 +1450,7 @@ fn wire__crate__api__core__close_core_impl(
     rust_vec_len_: i32,
     data_len_: i32,
 ) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "close_core",
             port: Some(port_),
@@ -1470,25 +1470,31 @@ fn wire__crate__api__core__close_core_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            move |context| {
-                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
-                    let mut api_core_guard = None;
-                    let decode_indices_ =
-                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                &api_core, 0, false,
-                            ),
-                        ]);
-                    for i in decode_indices_ {
-                        match i {
-                            0 => api_core_guard = Some(api_core.lockable_decode_sync_ref()),
-                            _ => unreachable!(),
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_core_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_core, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_core_guard =
+                                        Some(api_core.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
                         }
-                    }
-                    let api_core_guard = api_core_guard.unwrap();
-                    let output_ok = crate::api::core::close_core(&*api_core_guard)?;
-                    Ok(output_ok)
-                })())
+                        let api_core_guard = api_core_guard.unwrap();
+                        let output_ok = crate::api::core::close_core(&*api_core_guard).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
             }
         },
     )
