@@ -203,11 +203,14 @@ async fn retry_task(task: &mut ManagementTask, io: &mut impl TaskIo) -> crate::I
 mod tests;
 
 #[cfg(feature = "sqlite")]
+#[path = "identity_join_management_file_lock.rs"]
+mod file_lock;
+
+#[cfg(feature = "sqlite")]
 mod runtime {
     use super::*;
     use crate::internal::identity_device_join::management::{save_task, tasks};
     use crate::internal::identity_root_transfer_runtime as transfer;
-    use fs2::FileExt;
     use sha2::{Digest, Sha256};
 
     fn now_ms() -> i64 {
@@ -239,11 +242,7 @@ mod runtime {
             options.mode(0o600);
         }
         let file = options.open(path)?;
-        match FileExt::try_lock_exclusive(&file) {
-            Ok(()) => Ok(Some(file)),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        super::file_lock::try_acquire(file).map_err(crate::ImError::from)
     }
 
     async fn wait_for_worker_lock(
