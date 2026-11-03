@@ -1188,6 +1188,25 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
 fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
     let version = current_schema_version(connection)?;
     if version == 0 {
+        // Existing callers may already own the transaction. Otherwise publish
+        // the initial DDL and version together, with one durable commit.
+        if connection.is_autocommit() {
+            let transaction = rusqlite::Transaction::new_unchecked(
+                connection,
+                rusqlite::TransactionBehavior::Immediate,
+            )
+            .map_err(super::local_state_unavailable)?;
+            // A concurrent initializer can finish while we wait for the writer.
+            if current_schema_version(&transaction)? != 0 {
+                transaction
+                    .commit()
+                    .map_err(super::local_state_unavailable)?;
+                return ensure_schema_version(connection);
+            }
+            create_schema(&transaction, true)?;
+            set_schema_version(&transaction, SCHEMA_VERSION)?;
+            return transaction.commit().map_err(super::local_state_unavailable);
+        }
         create_schema(connection, true)?;
         return set_schema_version(connection, SCHEMA_VERSION);
     }
@@ -3184,3 +3203,7 @@ fn now_utc_like() -> String {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "schema/initialization_tests.rs"]
+mod initialization_tests;

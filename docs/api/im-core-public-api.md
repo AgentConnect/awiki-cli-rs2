@@ -247,6 +247,8 @@ pending secret/file 缺失或孤立时返回稳定
 
 ### 3.2 Core open 前的 local-state 升级与恢复
 
+新建 `user_version=0` 的 local-state 时，Core 将初始 schema DDL 与版本号在同一事务中提交，避免逐条落盘及失败后留下部分 schema。已处于调用方事务时保留其提交／回滚所有权；并发首次打开在取得写锁后重读版本。旧版本升级、WAL／同步持久性、busy timeout 与 actor 关闭协议不变。
+
 release/0710 schema 27 必须在 `ImCore` 打开前通过独立入口升级；普通 open
 只返回 `local_state_upgrade_required`，不能绕过 backup：
 
