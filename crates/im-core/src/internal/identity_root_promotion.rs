@@ -217,9 +217,11 @@ fn mark_coordinator_promoted(
     pending_ref_json: &str,
     auth_generation: u64,
 ) -> crate::ImResult<()> {
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    // Acquire the writer before reading the binding. A deferred snapshot
+    // cannot upgrade while an independent message processor commits writes.
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
     advance_local_account_binding_generation(
         &transaction,
         owner_identity_id,
@@ -519,3 +521,7 @@ INSERT INTO identity_account_bindings (
         assert_eq!(binding_generation, "2");
     }
 }
+
+#[cfg(test)]
+#[path = "identity_root_promotion_contention_tests.rs"]
+mod contention_tests;
