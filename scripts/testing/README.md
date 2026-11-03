@@ -51,3 +51,19 @@ Codex/Claude 的包级初始化另由 `scripts/release/daemon/smoke-acp-componen
 状态/授权/取消/恢复测试接替，不再维护已删除引擎的 argv、输出解析和自动重跑契约。
 
 跨服务和双 APP runner 复用 `prepare_acp_fixture.py --root <全新目录>` 创建离线客户端和固定组件替身；仅 Debug Daemon 接受测试目录，Release 不接受该环境变量。包级初始化仍使用实际固定版本适配器，两层证据分别记录。
+
+## Windows 文件共享诊断
+
+`windows_file_lock_probe.py --root <本轮隔离状态目录>` 仅以 DELETE 访问权探测共享限制，
+不会执行删除、读取文件内容、终止进程或打印路径/文件名。输出只有锁定文件类别、数量及
+系统错误码；最多检查 512 项，并跳过符号链接和 junction。它用于既有测试清理失败后的
+定位，不把失败改成通过，也不延长原清理重试。
+
+使用原生 Windows Python 3.13+ 验证真实共享冲突及句柄释放：
+
+```powershell
+python -I -S scripts/testing/test_windows_file_lock_probe.py
+```
+
+Linux/macOS 跳过这些平台专属检查，不可作为 Windows 通过证据。AWiki Me 的 Windows
+入口显式选择同一 helper 与原生 Python；不向辅助进程传递模型或业务凭据。
