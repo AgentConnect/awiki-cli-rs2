@@ -2252,3 +2252,9 @@ cleanup claim 独立于 V4 journal。显式本地删除移除 V4 journal 前会�
 收尾移交给持久 claim；未捕获 retirement 权限的情形保留 Provider，不推导宽删除许可。
 `Core::open_with_options` 维护入口可继续已验证的精确 claim，已隔离 namespace 的删除
 不依赖新身份仍存在。只读 `list_pending` 不承担删除动作。
+
+## 设备接口凭据更新与目录投影并发（2026-11-05）
+
+`CoreHttpTransport` 对当前 User Service DID-auth endpoint 的已认证 `device_*` RPC，收到 HTTP 401 或 JSON-RPC 1401（包括公开错误码保留的 `json_rpc_code`）后，先通过设备签名的 `get_me` 获取 Bearer，再沿原精确设备 principal 校验、持久化及原业务请求重发链处理。不能把签名直接当作设备业务接口的 Bearer。业务请求仍最多重发一次；刷新失败或 principal 不符不重发业务请求，重发仍被拒绝则返回原错误。临时 Bearer 不刷新/持久化；调用方自管 `authenticated_rpc_once` 预算时仍只发一次。其他 endpoint 的既有签名挑战语义保持不变。
+
+已验证 Handle 的 Persona/identifier/Direct route 投影在读取本地迁移和 binding generation 依据前，使用短 `BEGIN IMMEDIATE` 事务取得写锁。独立同步 actor 或另一进程写入时沿用现有 SQLite 忙等待，不在 deferred WAL 读快照上升级写锁；取得写锁后重新校验已提交代次，继续拒绝倒退代次和同代次 DID 改绑。事务只覆盖原本的本地原子投影，不包含网络请求，不修改 schema、canonical identity 或历史消息。

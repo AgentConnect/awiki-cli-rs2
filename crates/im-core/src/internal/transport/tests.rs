@@ -1233,7 +1233,12 @@ fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
 
 #[tokio::test]
 async fn caller_owned_retry_budget_never_resubmits_after_authentication_rejection() {
-    for rpc_rejection in [false, true] {
+    for (rpc_rejection, method) in [
+        (false, "get_me"),
+        (true, "get_me"),
+        (false, "device_registry_get"),
+        (true, "device_registry_get"),
+    ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -1268,7 +1273,11 @@ async fn caller_owned_retry_budget_never_resubmits_after_authentication_rejectio
             count
         });
         let result = CoreHttpTransport::new(&client)
-            .authenticated_rpc_once("/user-service/v1/did/rpc", "get_me", json!({}))
+            .authenticated_rpc_once(
+                crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+                method,
+                json!({}),
+            )
             .await;
         assert!(result.is_err());
         assert_eq!(server.join().unwrap(), 1);
@@ -1422,4 +1431,305 @@ async fn recovery_exchange_http_errors_survive_real_sync_and_async_transport() {
         );
     }
     server.join().unwrap();
+}
+
+
+fn read_device_rpc_probe_request(stream: &mut std::net::TcpStream) -> (String, Value) {
+    let mut request = read_request_headers(stream);
+    let end = request.find("\r\n\r\n").unwrap() + 4;
+    let length = request[..end]
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap();
+    assert!(length < 65536);
+    while request.len() < end + length {
+        let mut buffer = [0; 2048];
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0);
+        request.push_str(std::str::from_utf8(&buffer[..read]).unwrap());
+    }
+    let payload = serde_json::from_str(&request[end..end + length]).unwrap();
+    (request[..end].to_owned(), payload)
+}
+
+fn serve_device_bearer_refresh_probe(
+    listener: TcpListener,
+    rejection: u8,
+    refreshed_token: String,
+) -> std::thread::JoinHandle<Vec<(String, Value)>> {
+    std::thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut requests = Vec::new();
+        while requests.len() < 3 && Instant::now() < deadline {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("local probe listener: {error}"),
+            };
+            requests.push(read_device_rpc_probe_request(&mut stream));
+            match requests.len() {
+                1 if rejection > 0 => {
+                    let body = if rejection == 2 {
+                        r#"{"jsonrpc":"2.0","id":1,"error":{"code":1401,"message":"unauthorized","data":{"awiki_code":"device.unauthenticated"}}}"#
+                    } else {
+                        r#"{"jsonrpc":"2.0","id":1,"error":{"code":1401,"message":"unauthorized"}}"#
+                    };
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                    stream.flush().unwrap();
+                }
+                1 => write_unauthorized(&mut stream),
+                2 if requests[1].1["method"] == "get_me" => {
+                    write_rpc_success_with_token(&mut stream, &refreshed_token);
+                }
+                2 => {
+                    // 当前缺陷在这里签名重发受保护 RPC；立即闭合而非挂住。
+                    write_unauthorized(&mut stream);
+                    break;
+                }
+                3 => write_rpc_success(&mut stream),
+                _ => unreachable!(),
+            }
+        }
+        requests
+    })
+}
+
+fn assert_device_bearer_refresh_probe(
+    result: crate::ImResult<Value>,
+    requests: Vec<(String, Value)>,
+    initial_token: &str,
+    refreshed_token: &str,
+) {
+    assert_eq!(result.unwrap(), json!({"ok": true}));
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].1["method"], "device_registry_get");
+    assert_eq!(requests[1].1["method"], "get_me");
+    assert_eq!(requests[2].1, requests[0].1);
+    assert!(requests[0]
+        .0
+        .to_ascii_lowercase()
+        .contains(&format!("authorization: bearer {initial_token}").to_ascii_lowercase()));
+    assert!(!requests[1].0.contains(initial_token));
+    assert!(requests[1]
+        .0
+        .to_ascii_lowercase()
+        .contains("signature-input:"));
+    assert!(requests[1].0.to_ascii_lowercase().contains("signature:"));
+    assert!(requests[1]
+        .0
+        .to_ascii_lowercase()
+        .contains("content-digest:"));
+    assert!(requests[2]
+        .0
+        .to_ascii_lowercase()
+        .contains(&format!("authorization: bearer {refreshed_token}").to_ascii_lowercase()));
+}
+
+#[tokio::test]
+async fn protected_device_rpc_refreshes_exact_bearer_before_async_replay() {
+    for rejection in [0, 1, 2] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = host_backed_core(root.path(), &format!("http://{address}"));
+        let (client, bootstrap, initial_token) = host_backed_client(&core);
+        let refreshed_token = host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            1,
+            &["device:manage", "device:read", "message:connect"],
+            "device-refresh",
+        );
+        let server =
+            serve_device_bearer_refresh_probe(listener, rejection, refreshed_token.clone());
+        let result = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+            &mut CoreHttpTransport::new(&client),
+            crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+            "device_registry_get",
+            json!({}),
+        )
+        .await;
+        assert_device_bearer_refresh_probe(
+            result,
+            server.join().unwrap(),
+            &initial_token,
+            &refreshed_token,
+        );
+        assert_eq!(
+            client
+                .runtime()
+                .key_provider
+                .valid_auth_token()
+                .unwrap()
+                .as_deref(),
+            Some(refreshed_token.as_str())
+        );
+    }
+}
+
+#[test]
+fn protected_device_rpc_refreshes_exact_bearer_before_blocking_replay() {
+    for rejection in [0, 1, 2] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = host_backed_core(root.path(), &format!("http://{address}"));
+        let (client, bootstrap, initial_token) = host_backed_client(&core);
+        let refreshed_token = host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            1,
+            &["device:manage", "device:read", "message:connect"],
+            "device-refresh",
+        );
+        let server =
+            serve_device_bearer_refresh_probe(listener, rejection, refreshed_token.clone());
+        let result = AuthenticatedRpcTransport::authenticated_rpc(
+            &mut CoreHttpTransport::new(&client),
+            crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+            "device_registry_get",
+            json!({}),
+        );
+        assert_device_bearer_refresh_probe(
+            result,
+            server.join().unwrap(),
+            &initial_token,
+            &refreshed_token,
+        );
+        assert_eq!(
+            client
+                .runtime()
+                .key_provider
+                .valid_auth_token()
+                .unwrap()
+                .as_deref(),
+            Some(refreshed_token.as_str())
+        );
+    }
+}
+
+fn accept_bounded_device_probe(listener: &TcpListener) -> Option<std::net::TcpStream> {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
+            Err(error) => panic!("local bounded probe: {error}"),
+        }
+    }
+    None
+}
+
+#[test]
+fn protected_device_rpc_rejects_wrong_refresh_claims_and_limits_replay() {
+    for async_transport in [false, true] {
+        for wrong_claims in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let core = host_backed_core(root.path(), &format!("http://{address}"));
+            let (client, bootstrap, initial_token) = host_backed_client(&core);
+            let replacement = host_device_access_token(
+                &bootstrap,
+                if wrong_claims {
+                    "other-account"
+                } else {
+                    HOST_ACCOUNT_ID
+                },
+                bootstrap.protocol_device_id.as_str(),
+                &bootstrap.device_signing_key_id,
+                1,
+                &["device:manage", "device:read", "message:connect"],
+                "bounded-refresh",
+            );
+            let server_token = replacement.clone();
+            let server = std::thread::spawn(move || {
+                let Some(mut stream) = accept_bounded_device_probe(&listener) else {
+                    return Vec::new();
+                };
+                let first = read_device_rpc_probe_request(&mut stream);
+                write_unauthorized(&mut stream);
+                drop(stream);
+                let Some(mut stream) = accept_bounded_device_probe(&listener) else {
+                    return vec![first];
+                };
+                let refresh = read_device_rpc_probe_request(&mut stream);
+                write_rpc_success_with_token(&mut stream, &server_token);
+                drop(stream);
+                let mut requests = vec![first, refresh];
+                if !wrong_claims {
+                    let Some(mut stream) = accept_bounded_device_probe(&listener) else {
+                        return requests;
+                    };
+                    requests.push(read_device_rpc_probe_request(&mut stream));
+                    write_unauthorized(&mut stream);
+                }
+                requests
+            });
+            let mut transport = CoreHttpTransport::new(&client);
+            let result = if async_transport {
+                tokio::runtime::Runtime::new().unwrap().block_on(
+                    AsyncAuthenticatedRpcTransport::authenticated_rpc(
+                        &mut transport,
+                        crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+                        "device_registry_get",
+                        json!({}),
+                    ),
+                )
+            } else {
+                AuthenticatedRpcTransport::authenticated_rpc(
+                    &mut transport,
+                    crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT,
+                    "device_registry_get",
+                    json!({}),
+                )
+            };
+            let requests = server.join().unwrap();
+            assert!(requests.len() >= 2, "probe async={async_transport} wrong_claims={wrong_claims}: {result:?}; requests={}", requests.len());
+            assert_eq!(requests[0].1["method"], "device_registry_get");
+            assert_eq!(requests[1].1["method"], "get_me");
+            if wrong_claims {
+                assert_eq!(requests.len(), 2);
+                assert_eq!(result, Err(crate::ImError::PermissionDenied));
+            } else {
+                assert_eq!(requests.len(), 3);
+                assert_eq!(requests[2].1, requests[0].1);
+                assert!(matches!(
+                    result,
+                    Err(crate::ImError::Service {
+                        status_code: Some(401),
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(
+                client
+                    .runtime()
+                    .key_provider
+                    .valid_auth_token()
+                    .unwrap()
+                    .as_deref(),
+                Some(if wrong_claims {
+                    initial_token.as_str()
+                } else {
+                    replacement.as_str()
+                }),
+            );
+        }
+    }
 }

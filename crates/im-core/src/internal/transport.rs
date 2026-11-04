@@ -655,6 +655,12 @@ impl<'a> CoreHttpTransport<'a> {
         Ok(transport)
     }
 
+    fn device_rpc_requires_bearer(&self, endpoint: &str, method: &str) -> bool {
+        method.starts_with("device_")
+            && self.rpc_url(endpoint)
+                == self.rpc_url(crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT)
+    }
+
     fn rpc_url(&self, endpoint: &str) -> String {
         let endpoint = endpoint.trim();
         if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
@@ -687,7 +693,7 @@ impl<'a> CoreHttpTransport<'a> {
             .map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        let response = self.execute_json_request("POST", &url, body, false)?;
+        let response = self.execute_json_request("POST", &url, body, false, false)?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
@@ -706,7 +712,7 @@ impl<'a> CoreHttpTransport<'a> {
                 detail: err.to_string(),
             })?;
         let response = self
-            .execute_json_request_async("POST", &url, body, false)
+            .execute_json_request_async("POST", &url, body, false, false)
             .await?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
@@ -719,6 +725,7 @@ impl<'a> CoreHttpTransport<'a> {
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value> {
+        let bearer_only = self.device_rpc_requires_bearer(endpoint, method);
         let url = self.rpc_url(endpoint);
         let params = self.with_p6_delivery_context(method, params)?;
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
@@ -728,7 +735,7 @@ impl<'a> CoreHttpTransport<'a> {
         .map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
-        let response = self.execute_json_request("POST", &url, body, false)?;
+        let response = self.execute_json_request("POST", &url, body, false, bearer_only)?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
@@ -754,6 +761,7 @@ impl<'a> CoreHttpTransport<'a> {
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value> {
+        let bearer_only = self.device_rpc_requires_bearer(endpoint, method);
         let url = self.rpc_url(endpoint);
         let params = self.with_p6_delivery_context(method, params)?;
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
@@ -764,7 +772,7 @@ impl<'a> CoreHttpTransport<'a> {
             detail: err.to_string(),
         })?;
         let response = self
-            .execute_json_request_async("POST", &url, body, false)
+            .execute_json_request_async("POST", &url, body, false, bearer_only)
             .await?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
@@ -820,7 +828,7 @@ impl<'a> CoreHttpTransport<'a> {
             url = append_query(&url, query);
         }
         let response = if signed {
-            self.execute_json_request(method, &url, body, false)?
+            self.execute_json_request(method, &url, body, false, false)?
         } else {
             self.execute_unsigned_json_request(method, &url, body)?
         };
@@ -849,7 +857,7 @@ impl<'a> CoreHttpTransport<'a> {
             url = append_query(&url, query);
         }
         let response = if signed {
-            self.execute_json_request_async(method, &url, body, false)
+            self.execute_json_request_async(method, &url, body, false, false)
                 .await?
         } else {
             self.execute_unsigned_json_request_async(method, &url, body)
@@ -912,6 +920,7 @@ impl<'a> CoreHttpTransport<'a> {
         url: &str,
         body: Vec<u8>,
         force_new_auth: bool,
+        bearer_only: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
         if !force_new_auth {
             self.ensure_auth_state_ready()?;
@@ -938,7 +947,14 @@ impl<'a> CoreHttpTransport<'a> {
         let mut response = self.http.execute(request)?;
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
-            let headers = if self.auth.should_retry_after_401(&response.headers) {
+            // Device RPCs do not accept a signature as the business credential.
+            // Refresh through signed get_me, validate/persist its exact principal,
+            // then spend the original single business-replay allowance.
+            let headers = if bearer_only {
+                self.refresh_jwt()?;
+                self.last_auth_retry_consumed = true;
+                self.auth_headers(url, method, body.as_slice(), false)?
+            } else if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers(url, method, &response.headers, body.as_slice())?
             } else {
                 self.auth.clear_token(url);
@@ -964,6 +980,7 @@ impl<'a> CoreHttpTransport<'a> {
         url: &str,
         body: Vec<u8>,
         force_new_auth: bool,
+        bearer_only: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
         if !force_new_auth {
             self.ensure_auth_state_ready()?;
@@ -991,7 +1008,12 @@ impl<'a> CoreHttpTransport<'a> {
         let mut response = self.http.execute_async(request).await?;
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
-            let headers = if self.auth.should_retry_after_401(&response.headers) {
+            let headers = if bearer_only {
+                Box::pin(self.refresh_jwt_async()).await?;
+                self.last_auth_retry_consumed = true;
+                self.auth_headers_async(url, method, body.as_slice(), false)
+                    .await?
+            } else if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers_async(url, method, &response.headers, body.as_slice())
                     .await?
             } else {
@@ -1118,7 +1140,7 @@ impl<'a> CoreHttpTransport<'a> {
         .map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
-        let response = self.execute_json_request("POST", &url, body, true)?;
+        let response = self.execute_json_request("POST", &url, body, true, false)?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         let header_token = crate::internal::key_provider::ProviderBackedDidAuth::response_token(
             &response.headers,
@@ -1167,7 +1189,7 @@ impl<'a> CoreHttpTransport<'a> {
             detail: err.to_string(),
         })?;
         let response = self
-            .execute_json_request_async("POST", &url, body, true)
+            .execute_json_request_async("POST", &url, body, true, false)
             .await?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         let header_token = crate::internal::key_provider::ProviderBackedDidAuth::response_token(
@@ -1574,6 +1596,14 @@ fn validate_access_token_for_client(
     }
 }
 
+fn rpc_authentication_rejected(error: &crate::ImError, device_rpc: bool) -> bool {
+    matches!(error, crate::ImError::Service { code, data, .. }
+        if code.as_deref() == Some("1401")
+            || (device_rpc && data.as_ref()
+                .and_then(|data| data.get("json_rpc_code"))
+                .and_then(Value::as_i64) == Some(1401)))
+}
+
 impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
     fn authenticated_rpc(
         &mut self,
@@ -1583,12 +1613,21 @@ impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
     ) -> crate::ImResult<Value> {
         self.last_auth_retry_consumed = false;
         match self.authenticated_rpc_inner(endpoint, method, params.clone()) {
-            Err(crate::ImError::Service {
-                code: Some(code), ..
-            }) if code == "1401" && !self.ephemeral_bearer && !self.last_auth_retry_consumed => {
-                let url = self.rpc_url(endpoint);
-                self.auth.clear_token(&url);
-                self.jwt_token = None;
+            Err(error)
+                if !self.ephemeral_bearer
+                    && !self.last_auth_retry_consumed
+                    && rpc_authentication_rejected(
+                        &error,
+                        self.device_rpc_requires_bearer(endpoint, method),
+                    ) =>
+            {
+                if self.device_rpc_requires_bearer(endpoint, method) {
+                    self.refresh_jwt()?;
+                } else {
+                    let url = self.rpc_url(endpoint);
+                    self.auth.clear_token(&url);
+                    self.jwt_token = None;
+                }
                 self.last_auth_retry_consumed = true;
                 self.authenticated_rpc_inner(endpoint, method, params)
             }
@@ -1610,12 +1649,21 @@ impl AsyncAuthenticatedRpcTransport for CoreHttpTransport<'_> {
             .authenticated_rpc_inner_async(endpoint, method, params.clone())
             .await
         {
-            Err(crate::ImError::Service {
-                code: Some(code), ..
-            }) if code == "1401" && !self.ephemeral_bearer && !self.last_auth_retry_consumed => {
-                let url = self.rpc_url(endpoint);
-                self.auth.clear_token(&url);
-                self.jwt_token = None;
+            Err(error)
+                if !self.ephemeral_bearer
+                    && !self.last_auth_retry_consumed
+                    && rpc_authentication_rejected(
+                        &error,
+                        self.device_rpc_requires_bearer(endpoint, method),
+                    ) =>
+            {
+                if self.device_rpc_requires_bearer(endpoint, method) {
+                    self.refresh_jwt_async().await?;
+                } else {
+                    let url = self.rpc_url(endpoint);
+                    self.auth.clear_token(&url);
+                    self.jwt_token = None;
+                }
                 self.last_auth_retry_consumed = true;
                 self.authenticated_rpc_inner_async(endpoint, method, params)
                     .await

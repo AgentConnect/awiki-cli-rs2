@@ -301,8 +301,10 @@ pub(crate) fn project_verified_handle_in_domain(
 ) -> crate::ImResult<String> {
     let persona = lookup.peer_persona()?;
     let verified_at = now();
+    // Serialize before reading migration/generation facts. A deferred WAL
+    // snapshot cannot be upgraded after another actor has acquired the writer.
     let transaction = connection
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(super::local_state_unavailable)?;
     let legacy = super::foreign_persona_migration::prepare(
         &transaction,
@@ -795,3 +797,7 @@ FROM peer_profiles WHERE owner_identity_id = 'owner-a'"#,
         assert!(conversation_id.starts_with("dm:peer-scope:v1:"));
     }
 }
+
+#[cfg(test)]
+#[path = "peer_personas_concurrency_tests.rs"]
+mod concurrency_tests;
