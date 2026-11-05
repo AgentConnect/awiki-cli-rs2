@@ -737,7 +737,7 @@ impl<'a> CoreHttpTransport<'a> {
         })?;
         let response = self.execute_json_request("POST", &url, body, false, bearer_only)?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
-        self.capture_token(&url, &response.headers)?;
+        self.capture_business_response_token(&url, &response.headers)?;
         Ok(result)
     }
 
@@ -775,7 +775,7 @@ impl<'a> CoreHttpTransport<'a> {
             .execute_json_request_async("POST", &url, body, false, bearer_only)
             .await?;
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
-        self.capture_token(&url, &response.headers)?;
+        self.capture_business_response_token(&url, &response.headers)?;
         Ok(result)
     }
 
@@ -1223,6 +1223,32 @@ impl<'a> CoreHttpTransport<'a> {
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
         )?;
         Ok(token)
+    }
+
+    // A successful RPC is already committed remotely. During a locally proven
+    // Root completion, the response may carry the accepted after-generation
+    // before custody/index promotion. Defer only that exact token; the Root
+    // coordinator still owns promotion and persistence. Refresh/ephemeral paths
+    // and every other invalid principal retain their strict error behavior.
+    fn capture_business_response_token(
+        &mut self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+    ) -> crate::ImResult<()> {
+        if !self.ephemeral_bearer {
+            if let Some(token) =
+                crate::internal::key_provider::ProviderBackedDidAuth::response_token(headers)?
+            {
+                if matches!(self.validate_received_access_token(&token), Err(crate::ImError::PermissionDenied))
+                    && crate::internal::identity_root_import_completion::matches_accepted_root_token(
+                        self.client, &token,
+                    ).unwrap_or(false)
+                {
+                    return Ok(());
+                }
+            }
+        }
+        self.capture_token(url, headers)
     }
 
     fn capture_token(

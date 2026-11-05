@@ -1765,6 +1765,81 @@ fn validate_completion_success(
     Ok(())
 }
 
+/// Recognize, but never install, a bearer for a locally accepted Root import.
+/// JWT claims alone cannot authorize an advance in generation or management role.
+pub(crate) fn matches_accepted_root_token(
+    client: &crate::core::ImClient,
+    token: &str,
+) -> crate::ImResult<bool> {
+    if client.current_identity().local_alias.is_none() {
+        return Ok(false);
+    }
+    let core = client.core_handle();
+    let entry = local_device_entry(&core, client)?;
+    let Some(authorization) = entry
+        .device_state
+        .as_ref()
+        .filter(|state| state.mode == IdentityDeviceMode::VNext)
+        .and_then(|state| state.authorization.as_ref())
+    else {
+        return Ok(false);
+    };
+    if entry.did != client.did().as_str()
+        || authorization.protocol_device_id.as_str() != client.exact_protocol_device_id()?
+        || authorization.status != DeviceAuthorizationStatus::Active
+        || authorization.role != DeviceAuthorizationRole::Member
+        || authorization.management_ready
+    {
+        return Ok(false);
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let mut statement = connection
+        .prepare(
+            "SELECT message_id FROM identity_root_import_completion_v1
+         WHERE owner_identity_id = ?1 AND local_device_id = ?2
+           AND phase IN ('completion_accepted','token_refreshed','registry_confirmed')
+           AND completion_result_json IS NOT NULL",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let ids = statement
+        .query_map(
+            rusqlite::params![
+                client.current_identity().id.as_str(),
+                client.exact_protocol_device_id()?
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    for id in ids {
+        let record = load_completion_record(
+            &connection,
+            client,
+            &id.map_err(crate::internal::local_state::local_state_unavailable)?,
+        )?;
+        let success: CompletionSuccess = serde_json::from_str(
+            record
+                .completion_result_json
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )
+        .map_err(redacted_serialization)?;
+        validate_completion_success(&core, client, &record, &success)?;
+        let expected = expected_device_access(
+            &entry,
+            authorization,
+            DeviceAuthorizationRole::Admin,
+            true,
+            success.auth_generation,
+        )?;
+        if token_matches_expected(token, &expected) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn expected_completion_generation(
     phase: RootImportCompletionPhase,
     role: DeviceAuthorizationRole,

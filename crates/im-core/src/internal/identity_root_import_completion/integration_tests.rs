@@ -207,6 +207,16 @@ fn response(
             };
             serde_json::json!({"did": cfg.did, "user_id": "root-integration-user", "access_token": super::tests::test_access_token(&expected)})
         }
+        "send_message" => {
+            let mut response = http_json(serde_json::json!({
+                "jsonrpc":"2.0", "id":rpc["id"], "result":{"accepted":true}
+            }));
+            response.headers.insert(
+                "Authorization".into(),
+                format!("Bearer {}", params["responseToken"].as_str().unwrap()),
+            );
+            return Ok(response);
+        }
         "device_root_import_complete" => {
             if state.reject_next_completion_auth {
                 state.reject_next_completion_auth = false;
@@ -1146,4 +1156,161 @@ async fn additive_completion_preserves_original_expiry_through_crash_and_refresh
         assert_promoted(&fixture).await;
         assert_eq!(persisted_import_time(&fixture), imported);
     }
+}
+
+#[tokio::test]
+async fn accepted_root_business_receipt_defers_only_exact_after_token() {
+    use crate::internal::transport::{AuthenticatedRpcTransport, CoreHttpTransport};
+    let fixture = fixture_contract(1, false).await;
+    with_state(fixture.root.path(), |state| {
+        state.crash = Some("after_proof".into())
+    });
+    let mut first = child(fixture.root.path());
+    assert_eq!(wait_child(&mut first).await.code(), Some(86));
+    let core = open_actor(fixture.root.path(), &fixture.cfg.domain, "receiver");
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let entry = local_device_entry(&core, &client).unwrap();
+    let authorization = entry
+        .device_state
+        .as_ref()
+        .unwrap()
+        .authorization
+        .as_ref()
+        .unwrap();
+    let after = expected_device_access(
+        &entry,
+        authorization,
+        DeviceAuthorizationRole::Admin,
+        true,
+        2,
+    )
+    .unwrap();
+    let token = super::tests::test_access_token(&after);
+    let initial = client.runtime().key_provider.valid_auth_token().unwrap();
+    let mut transport = CoreHttpTransport::new(&client);
+    // A next-generation JWT alone is insufficient, even with HTTP 200.
+    let unaccepted = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        "/im/rpc",
+        "send_message",
+        serde_json::json!({"responseToken":token}),
+    )
+    .await;
+    assert!(matches!(unaccepted, Err(crate::ImError::PermissionDenied)));
+    let db = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let record = load_completion_record(&db, &client, &fixture.cfg.metadata.message_id).unwrap();
+    let success = CompletionSuccess {
+        did: fixture.cfg.did.clone(),
+        device_id: fixture.cfg.recipient.clone(),
+        role: "admin".into(),
+        management_ready: true,
+        auth_generation: 2,
+        registry_version: 3,
+        completed_message_id: fixture.cfg.metadata.message_id.clone(),
+    };
+    store_completion_success(
+        &db,
+        client.current_identity().id.as_str(),
+        &record,
+        record.completion_request_hash.as_deref().unwrap(),
+        &success,
+    )
+    .unwrap();
+    for blocking in [false, true] {
+        if blocking && !cfg!(feature = "blocking") {
+            continue;
+        }
+        let params = serde_json::json!({"responseToken":token});
+        let result = if blocking {
+            AuthenticatedRpcTransport::authenticated_rpc(
+                &mut transport,
+                "/im/rpc",
+                "send_message",
+                params,
+            )
+        } else {
+            AsyncAuthenticatedRpcTransport::authenticated_rpc(
+                &mut transport,
+                "/im/rpc",
+                "send_message",
+                params,
+            )
+            .await
+        }
+        .unwrap();
+        assert_eq!(result, serde_json::json!({"accepted":true}));
+        assert_eq!(
+            client.runtime().key_provider.valid_auth_token().unwrap(),
+            initial
+        );
+    }
+    for bad in [
+        "owner",
+        "user",
+        "device",
+        "key",
+        "generation",
+        "scope",
+        "expired",
+    ] {
+        let mut claims = crate::internal::auth::state::decode_jwt_payload(&token).unwrap();
+        match bad {
+            "owner" => {
+                claims["did"] = serde_json::json!("did:example:other");
+                claims["sub"] = claims["did"].clone();
+            }
+            "user" => claims["user_id"] = serde_json::json!("other-user"),
+            "device" => claims["device_id"] = serde_json::json!("other-device"),
+            "key" => claims["key_id"] = serde_json::json!("other-key"),
+            "generation" => claims["auth_generation"] = serde_json::json!(3),
+            "scope" => claims["scopes"] = serde_json::json!(["message:connect"]),
+            "expired" => {
+                claims["iat"] = serde_json::json!(1);
+                claims["nbf"] = serde_json::json!(1);
+                claims["exp"] = serde_json::json!(2);
+            }
+            _ => unreachable!(),
+        }
+        let invalid = format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        );
+        let result = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+            &mut transport,
+            "/im/rpc",
+            "send_message",
+            serde_json::json!({"responseToken":invalid}),
+        )
+        .await;
+        assert!(result.is_err(), "invalid {bad} must not be deferred");
+        assert_eq!(
+            client.runtime().key_provider.valid_auth_token().unwrap(),
+            initial
+        );
+    }
+    // Explicit refresh is still strict while the local device remains a member.
+    with_state(fixture.root.path(), |state| state.completed = true);
+    assert!(matches!(
+        transport.refresh_jwt_async().await,
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert_eq!(
+        client.runtime().key_provider.valid_auth_token().unwrap(),
+        initial
+    );
+    assert_eq!(
+        local_device_entry(&core, &client)
+            .unwrap()
+            .device_state
+            .unwrap()
+            .authorization
+            .unwrap()
+            .auth_generation,
+        1
+    );
 }

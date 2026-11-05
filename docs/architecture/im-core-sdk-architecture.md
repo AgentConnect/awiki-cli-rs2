@@ -2258,3 +2258,18 @@ cleanup claim 独立于 V4 journal。显式本地删除移除 V4 journal 前会�
 `CoreHttpTransport` 对当前 User Service DID-auth endpoint 的已认证 `device_*` RPC，收到 HTTP 401 或 JSON-RPC 1401（包括公开错误码保留的 `json_rpc_code`）后，先通过设备签名的 `get_me` 获取 Bearer，再沿原精确设备 principal 校验、持久化及原业务请求重发链处理。不能把签名直接当作设备业务接口的 Bearer。业务请求仍最多重发一次；刷新失败或 principal 不符不重发业务请求，重发仍被拒绝则返回原错误。临时 Bearer 不刷新/持久化；调用方自管 `authenticated_rpc_once` 预算时仍只发一次。其他 endpoint 的既有签名挑战语义保持不变。
 
 已验证 Handle 的 Persona/identifier/Direct route 投影在读取本地迁移和 binding generation 依据前，使用短 `BEGIN IMMEDIATE` 事务取得写锁。独立同步 actor 或另一进程写入时沿用现有 SQLite 忙等待，不在 deferred WAL 读快照上升级写锁；取得写锁后重新校验已提交代次，继续拒绝倒退代次和同代次 DID 改绑。事务只覆盖原本的本地原子投影，不包含网络请求，不修改 schema、canonical identity 或历史消息。
+
+
+### Root 完成窗口内的成功业务回执（2026-11-05）
+
+普通 authenticated RPC 已解析成功结果后，若附带凭据只因本地 Root 晋升尚未完成而
+不匹配，Core 仅在本地 completion 账本已处于 completion_accepted/token_refreshed/
+registry_confirmed、成功回执精确绑定当前 owner/device/原 message，且严格校验后的
+JWT 与已接受的 Admin/ready/下一代 principal 完全相符时，保留业务成功并丢弃该附带
+凭据。不得提前更新正式凭据、内存 Bearer 或本地角色；Root coordinator 继续拥有
+Registry 确认、custody/index 晋升及最终 token 持久化。此分支不发起业务重试。
+
+没有已接受账本、身份/账号/设备/密钥/代次/scope/audience/时间不符仍拒绝。
+plain/get_me 显式刷新、临时 transport 和调用方自管认证预算保持原严格语义。
+公共 API、错误枚举、协议和 schema 不变。相关单元用真实 native custody 夹具及
+合成 HTTP peer 覆盖同步/异步成功回执、不提前持久化、未接受状态和负向 claims。
